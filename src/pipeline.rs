@@ -1,51 +1,104 @@
-use crate::step::Step;
-use tower::{Layer, ServiceBuilder};
+//! Ranvier Pipeline Core
+//!
+//! Type-safe pipeline abstraction based on the original Flux architecture.
 
-/// A builder for creating Ranvier pipelines.
-///
-/// This is a wrapper around `tower::ServiceBuilder` that enforces `Step` usage
-/// and likely adds Ranvier-specific context management in the future.
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
+/// Common error type for pipeline steps
 #[derive(Debug, Clone)]
-pub struct Pipeline<L> {
-    builder: ServiceBuilder<L>,
+pub enum Error {
+    BadRequest(String),
+    Unauthorized,
+    NotFound,
+    Internal(String),
 }
 
-impl Pipeline<tower::layer::util::Identity> {
-    /// Create a new empty pipeline.
-    pub fn new() -> Self {
-        Self {
-            builder: ServiceBuilder::new(),
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::BadRequest(msg) => write!(f, "Bad Request: {}", msg),
+            Error::Unauthorized => write!(f, "Unauthorized"),
+            Error::NotFound => write!(f, "Not Found"),
+            Error::Internal(msg) => write!(f, "Internal Error: {}", msg),
         }
     }
 }
 
-impl<L> Pipeline<L> {
-    /// Add a generic Tower Layer to the pipeline.
-    pub fn layer<T>(self, layer: T) -> Pipeline<tower::layer::util::Stack<T, L>> {
+impl std::error::Error for Error {}
+
+/// The Pipeline struct using boxed steps
+pub struct Pipeline<In, Out> {
+    executor: Arc<
+        dyn Fn(
+                In,
+                Arc<crate::context::Context>,
+            ) -> Pin<Box<dyn Future<Output = Result<Out, Error>> + Send>>
+            + Send
+            + Sync,
+    >,
+}
+
+impl<In, Out> Clone for Pipeline<In, Out> {
+    fn clone(&self) -> Self {
         Pipeline {
-            builder: self.builder.layer(layer),
+            executor: Arc::clone(&self.executor),
+        }
+    }
+}
+
+impl<In, Out> Pipeline<In, Out>
+where
+    In: Send + 'static,
+    Out: Send + 'static,
+{
+    /// Create a new pipeline from an async function
+    pub fn new<F, Fut>(f: F) -> Self
+    where
+        F: Fn(In, Arc<crate::context::Context>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Out, Error>> + Send + 'static,
+    {
+        Pipeline {
+            executor: Arc::new(move |input, ctx| Box::pin(f(input, ctx))),
         }
     }
 
-    /// Add a Ranvier Step to the pipeline.
-    ///
-    /// This is semantically same as `layer`, but restricts T to be a Step.
-    /// In the future, this might wrap the step to record execution status in Context.
-    pub fn step<S, Service>(self, step: S) -> Pipeline<tower::layer::util::Stack<S, L>>
+    /// Chain another step
+    pub fn pipe<NextOut, F, Fut>(self, next_fn: F) -> Pipeline<In, NextOut>
     where
-        S: Step<Service>,
-        L: Layer<Service>,
+        NextOut: Send + 'static,
+        F: Fn(Out, Arc<crate::context::Context>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<NextOut, Error>> + Send + 'static,
     {
-        self.layer(step)
+        let prev = self.executor;
+        let next = Arc::new(next_fn);
+
+        Pipeline {
+            executor: Arc::new(move |input, ctx| {
+                let prev = Arc::clone(&prev);
+                let next = Arc::clone(&next);
+                let ctx2 = Arc::clone(&ctx);
+
+                Box::pin(async move {
+                    let mid = prev(input, ctx).await?;
+                    next(mid, ctx2).await
+                })
+            }),
+        }
     }
 
-    /// Consume the pipeline builder and wrap a service.
-    ///
-    /// Returns the final Service that processes requests.
-    pub fn service<S>(self, service: S) -> L::Service
-    where
-        L: Layer<S>,
-    {
-        self.builder.service(service)
+    /// Execute the pipeline
+    pub async fn execute(
+        &self,
+        input: In,
+        ctx: Arc<crate::context::Context>,
+    ) -> Result<Out, Error> {
+        (self.executor)(input, ctx).await
     }
+}
+
+/// Helper to create an identity pipeline (pass-through)
+pub fn identity<T: Send + 'static>() -> Pipeline<T, T> {
+    Pipeline::new(|input: T, _ctx| async move { Ok(input) })
 }
