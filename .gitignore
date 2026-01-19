@@ -1,1 +1,8 @@
 /target
+/debug
+/dist
+**/*.rs.bk
+*.pdb
+.idea
+.vscode
+.DS_Store
