@@ -1,0 +1,13 @@
+[package]
+name = "basic-schematic"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ranvier-core = { workspace = true }
+ranvier-macros = { workspace = true }
+tokio = { workspace = true }
+http = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+serde_json = { workspace = true }

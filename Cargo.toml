@@ -1,10 +1,27 @@
-[package]
-name = "ranvier"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+resolver = "2"
+members = [
+    "ranvier",
+    "core",
+    "http",
+    "macros",
+    "examples/basic-schematic",
+    "examples/hello-world",
+    "examples/pipeline-demo",
+    "examples/routing-demo",
+]
 
-[dependencies]
+[workspace.dependencies]
+# Internal Crates
+ranvier-core = { path = "core", version = "0.1.0" }
+ranvier-http = { path = "http", version = "0.1.0" }
+ranvier-macros = { path = "macros", version = "0.1.0" }
+ranvier = { path = "ranvier", version = "0.1.0" }
+
+# Sync Third-party Dependencies
+async-trait = "0.1"
 bytes = "1.11.0"
+futures-core = "0.3"
 futures-util = "0.3.31"
 http = "1.4.0"
 http-body-util = "0.1.3"
@@ -13,6 +30,11 @@ hyper-util = { version = "0.1.19", features = ["full"] }
 pin-project = "1.1.10"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+thiserror = "1.0"
 tokio = { version = "1.49.0", features = ["full"] }
 tower = { version = "0.5.3", features = ["full"] }
 tracing = "0.1.44"
+uuid = { version = "1.6", features = ["v4", "serde"] }
+quote = "1.0"
+syn = { version = "2.0", features = ["full"] }
+proc-macro2 = "1.0"

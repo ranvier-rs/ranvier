@@ -1,0 +1,13 @@
+[package]
+name = "ranvier-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+uuid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+futures-core = { workspace = true }
+http = { workspace = true }
