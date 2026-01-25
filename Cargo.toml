@@ -7,7 +7,6 @@ members = [
     "macros",
     "examples/basic-schematic",
     "examples/hello-world",
-    "examples/pipeline-demo",
     "examples/routing-demo",
 ]
 
@@ -38,3 +37,4 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
 proc-macro2 = "1.0"
+chrono = { version = "0.4", features = ["serde"] }

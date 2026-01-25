@@ -11,3 +11,5 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 futures-core = { workspace = true }
 http = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+anyhow = { version = "1.0", features = ["std"] }

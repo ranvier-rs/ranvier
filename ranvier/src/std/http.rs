@@ -1,71 +1,40 @@
-use http::{Request, Response, HeaderName, HeaderValue};
-use std::task::{Context, Poll};
-use tower::{Layer, Service};
-use std::future::Future;
-use std::pin::Pin;
-use crate::step::Step;
+use crate::bus::Bus;
+use crate::metadata::StepMetadata;
+use crate::module::{Module, ModuleResult};
+use async_trait::async_trait;
+use http::{HeaderName, HeaderValue, response::Builder};
+use uuid::Uuid;
 
-/// A simple step that adds a fixed header to the response.
+/// A simple module that adds a fixed header to the response.
 #[derive(Clone)]
-pub struct SetHeaderLayer {
+pub struct SetHeaderModule {
     key: HeaderName,
     val: HeaderValue,
 }
 
-impl SetHeaderLayer {
+impl SetHeaderModule {
     pub fn new(key: HeaderName, val: HeaderValue) -> Self {
         Self { key, val }
     }
 }
 
-impl<S> Layer<S> for SetHeaderLayer {
-    type Service = SetHeaderService<S>;
-
-    fn layer(&self, inner: S) -> Self::Service {
-        SetHeaderService {
-            inner,
-            key: self.key.clone(),
-            val: self.val.clone(),
+#[async_trait]
+impl Module for SetHeaderModule {
+    fn metadata(&self) -> StepMetadata {
+        StepMetadata {
+            id: Uuid::new_v4(),
+            label: "SetHeader".to_string(),
+            description: None,
+            inputs: vec![],
+            outputs: vec![],
         }
     }
-}
 
-impl<S> Step<S> for SetHeaderLayer {
-    fn id(&self) -> &'static str {
-        "SetHeader"
-    }
-}
-
-#[derive(Clone)]
-pub struct SetHeaderService<S> {
-    inner: S,
-    key: HeaderName,
-    val: HeaderValue,
-}
-
-impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for SetHeaderService<S>
-where
-    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
-    S::Future: Send + 'static,
-{
-    type Response = S::Response;
-    type Error = S::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
-    }
-
-    fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
-        // Clone for the async block
-        let fut = self.inner.call(req);
-        let key = self.key.clone();
-        let val = self.val.clone();
-
-        Box::pin(async move {
-            let mut response = fut.await?;
-            response.headers_mut().insert(key, val);
-            Ok(response)
-        })
+    async fn execute(&self, bus: &mut Bus) -> ModuleResult {
+        // http::response::Builder is a bit stateful.
+        // We have to swap it out to modify it because header() consumes self.
+        let res = std::mem::replace(&mut bus.res, Builder::new());
+        bus.res = res.header(self.key.clone(), self.val.clone());
+        Ok(())
     }
 }
