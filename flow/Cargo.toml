@@ -1,0 +1,7 @@
+[package]
+name = "ranvier-flow"
+version = "0.1.0"
+edition = "2021"
+description = "Typed State Tree - Flow Layer (Pure Rust, No Async)"
+
+[dependencies]

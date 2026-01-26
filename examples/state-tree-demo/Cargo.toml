@@ -1,0 +1,9 @@
+[package]
+name = "state-tree-demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ranvier-flow = { workspace = true }
+ranvier-runtime = { workspace = true }
+tokio = { workspace = true }
