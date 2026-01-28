@@ -1,9 +1,26 @@
+pub mod axon;
 pub mod bus;
-pub mod circuit;
 pub mod metadata;
-pub mod module;
+pub mod outcome;
+pub mod schematic;
+pub mod transition;
 
+// Prelude module for convenient imports
+pub mod prelude {
+    pub use crate::axon::Axon;
+    pub use crate::bus::Bus;
+    pub use crate::metadata::StepMetadata;
+    pub use crate::outcome::{BranchId, NodeId, Outcome};
+    pub use crate::schematic::{Edge, Node, NodeKind, Schematic};
+    pub use crate::transition::Transition;
+}
+
+// Legacy modules removed/deprecated
+// pub mod module;
+// pub mod circuit;
+
+pub use axon::Axon;
 pub use bus::Bus;
-pub use circuit::Circuit;
-pub use metadata::{StepMetadata, TypeInfo};
-pub use module::{Module, ModuleError, ModuleResult};
+pub use outcome::Outcome;
+pub use schematic::Schematic;
+pub use transition::Transition;

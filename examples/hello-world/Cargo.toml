@@ -1,8 +1,11 @@
 [package]
 name = "hello-world"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
-ranvier = { workspace = true }
+ranvier-core = { workspace = true }
 tokio = { workspace = true }
+http = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }

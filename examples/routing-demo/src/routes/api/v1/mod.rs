@@ -1,18 +1,28 @@
-use hyper::body::Incoming;
-use ranvier::prelude::*;
-use std::convert::Infallible;
+use crate::routes::{RouteError, RouteRequest, RouteResponse};
+use ranvier_core::prelude::*;
 
 pub mod users;
 
-pub async fn handler(req: Request<Incoming>, path: &str) -> Result<Response<Full<Bytes>>, Infallible> {
-    // path relative to /api/v1 (e.g. "/users")
+/// V1 API routing transition
+pub async fn route_v1(
+    req: RouteRequest,
+    path: &str,
+) -> anyhow::Result<Outcome<RouteResponse, RouteError>> {
+    // path is relative to /api/v1 (e.g. "/users")
+    let path = path.trim_start_matches('/');
 
-    if let Some(rest) = path.strip_prefix("/users") {
-        return users::handler(req, rest).await;
+    // Route to /users
+    if path == "users" || path.starts_with("users/") {
+        return users::route_users(req, &path["users".len()..]).await;
     }
 
-    match (req.method(), path) {
-        (&Method::GET, "/") => Ok(text("API v1 Root")),
-        _ => Ok(not_found())
+    // API v1 root
+    if path.is_empty() || path == "/" {
+        return Ok(Outcome::Next(RouteResponse {
+            status: 200,
+            body: "API v1 Root".to_string(),
+        }));
     }
+
+    Ok(Outcome::Fault(RouteError::NotFound(format!("/api/v1/{}", path))))
 }

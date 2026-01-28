@@ -1,26 +1,30 @@
-use hyper::body::Incoming;
-use ranvier::prelude::*;
-use std::convert::Infallible;
+use crate::routes::{HttpMethod, RouteError, RouteRequest, RouteResponse};
+use ranvier_core::prelude::*;
 
 /// Handler for /users/:id/*
-pub async fn handler(
-    req: Request<Incoming>,
-    user_id: &str, // Extracted ID passed from parent
-    path: &str,    // Remaining path
-) -> Result<Response<Full<Bytes>>, Infallible> {
-    
-    match (req.method(), path) {
-        (&Method::GET, "") | (&Method::GET, "/") => {
-            Ok(json(&format!("Details for User ID: {}", user_id)))
-        }
+pub async fn route_user_by_id(
+    req: RouteRequest,
+    user_id: &str,
+    path: &str,
+) -> anyhow::Result<Outcome<RouteResponse, RouteError>> {
+    let path = path.trim_start_matches('/');
 
-        (&Method::GET, "/posts") => {
-            Ok(json(&vec![
+    match (req.method, path) {
+        (HttpMethod::GET, "") | (HttpMethod::GET, "/") => Ok(Outcome::Next(RouteResponse {
+            status: 200,
+            body: format!("Details for User ID: {}", user_id),
+        })),
+        (HttpMethod::GET, "posts") => Ok(Outcome::Next(RouteResponse {
+            status: 200,
+            body: serde_json::to_string(&vec![
                 format!("Post 1 by user {}", user_id),
                 format!("Post 2 by user {}", user_id),
-            ]))
-        }
-        
-        _ => Ok(not_found())
+            ])
+            .unwrap_or_default(),
+        })),
+        _ => Ok(Outcome::Fault(RouteError::NotFound(format!(
+            "/api/v1/users/{}/{}",
+            user_id, path
+        )))),
     }
 }
