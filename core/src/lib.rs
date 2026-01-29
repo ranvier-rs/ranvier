@@ -4,6 +4,7 @@ pub mod event;
 pub mod metadata;
 pub mod outcome;
 pub mod schematic;
+pub mod static_gen;
 pub mod telemetry;
 pub mod transition;
 
