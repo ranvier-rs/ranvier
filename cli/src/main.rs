@@ -53,14 +53,13 @@ fn main() -> Result<()> {
 
 /// 예제를 실행하고 schematic JSON 추출
 fn run_schematic_command(example: &str, output: Option<&str>) -> Result<()> {
-    println!("Running example: {}", example);
-
     // 예제는 workspace crate이므로 cargo run -p 사용
+    // -q (quiet): 빌드 로그를 숨기고 JSON만 stdout으로 출력하기 위함
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let workspace_dir = std::path::Path::new(manifest_dir).parent().unwrap();
 
     let output_result = Command::new("cargo")
-        .args(["run", "-p", example])
+        .args(["run", "-q", "-p", example])
         .current_dir(workspace_dir)
         .output()
         .context("Failed to run cargo command")?;
@@ -72,13 +71,18 @@ fn run_schematic_command(example: &str, output: Option<&str>) -> Result<()> {
 
     let json_output = String::from_utf8_lossy(&output_result.stdout);
 
+    // Validate JSON roughly
+    if json_output.trim().is_empty() || !json_output.trim().starts_with('{') {
+        anyhow::bail!("Output is not valid JSON:\n{}", json_output);
+    }
+
     match output {
         Some(path) => {
             std::fs::write(path, json_output.as_bytes()).context("Failed to write output file")?;
             println!("Schematic saved to: {}", path);
         }
         None => {
-            println!("{}", json_output);
+            println!("{}", json_output.trim());
         }
     }
 
