@@ -15,10 +15,7 @@ pub type Executor<T, E> =
 fn type_name_of<T: ?Sized>() -> String {
     let full = type_name::<T>();
     // Extract just the final identifier (e.g., "ValidationTransition" from "module::ValidationTransition")
-    full.split("::")
-        .last()
-        .unwrap_or(full)
-        .to_string()
+    full.split("::").last().unwrap_or(full).to_string()
 }
 
 /// The Axon Builder and Runtime.
@@ -35,6 +32,8 @@ impl<T: Send + 'static, E: Send + 'static> Axon<T, E> {
             id: node_id,
             kind: NodeKind::Ingress,
             label: label.to_string(),
+            input_type: "void".to_string(), // Start has no input really, or we could say Void
+            output_type: type_name_of::<T>(),
             metadata: Default::default(),
         };
 
@@ -68,6 +67,8 @@ impl<T: Send + 'static, E: Send + 'static> Axon<T, E> {
             id: next_node_id.clone(),
             kind: NodeKind::Atom,
             label: trans_label,
+            input_type: type_name_of::<T>(),
+            output_type: type_name_of::<Next>(),
             metadata: Default::default(),
         };
         // Edge from last node to this
@@ -82,6 +83,7 @@ impl<T: Send + 'static, E: Send + 'static> Axon<T, E> {
         self.schematic.edges.push(Edge {
             from: last_node_id,
             to: next_node_id,
+            kind: crate::schematic::EdgeType::Linear,
             label: Some("Next".to_string()),
         });
 
@@ -96,14 +98,16 @@ impl<T: Send + 'static, E: Send + 'static> Axon<T, E> {
                 // Unpack the state from Outcome, preserving control flow
                 let state = match prev_result {
                     Outcome::Next(t) => t,
-                    Outcome::Branch(_, t) => t,
-                    Outcome::Jump(_, t) => t,
-                    Outcome::Emit(_, t) => t,
+                    // If the previous step branched, jumped, or emitted a signal,
+                    // we strictly propagate it and DO NOT execute this step.
+                    Outcome::Branch(id, payload) => return Ok(Outcome::Branch(id, payload)),
+                    Outcome::Jump(id, payload) => return Ok(Outcome::Jump(id, payload)),
+                    Outcome::Emit(evt, payload) => return Ok(Outcome::Emit(evt, payload)),
                     Outcome::Fault(e) => return Ok(Outcome::Fault(e)),
                 };
 
                 // Execute Transition
-                transition.execute(state, bus).await
+                transition.run(state, bus).await
             }) as BoxFuture<'_, AxonResult<Next, E>>
         });
 
@@ -114,14 +118,11 @@ impl<T: Send + 'static, E: Send + 'static> Axon<T, E> {
     }
 
     /// Helper to unpack state from an Outcome, handling early returns.
-    /// Returns None if the Outcome is a Fault (to allow early termination).
+    /// Returns None if the Outcome is not Next.
     pub fn unpack_state(outcome: Outcome<T, E>) -> Option<T> {
         match outcome {
             Outcome::Next(t) => Some(t),
-            Outcome::Branch(_, t) => Some(t),
-            Outcome::Jump(_, t) => Some(t),
-            Outcome::Emit(_, t) => Some(t),
-            Outcome::Fault(_) => None,
+            _ => None,
         }
     }
 

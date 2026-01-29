@@ -27,20 +27,32 @@ pub struct Node {
     pub id: String, // Uuid typically
     pub kind: NodeKind,
     pub label: String,
+    pub input_type: String,
+    pub output_type: String, // Primary output type for Next
     pub metadata: StepMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NodeKind {
-    Ingress, // Handler / Start
-    Atom,    // Single action
-    Synapse, // Connection point / Branch
-    Egress,  // Response / End
+    Ingress,                  // Handler / Start
+    Atom,                     // Single action
+    Synapse,                  // Connection point / Branch
+    Egress,                   // Response / End
+    Subgraph(Box<Schematic>), // Nested graph
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum EdgeType {
+    Linear,         // Outcome::Next
+    Branch(String), // Outcome::Branch(id)
+    Jump,           // Outcome::Jump
+    Fault,          // Outcome::Fault
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {
     pub from: String,
     pub to: String,
-    pub label: Option<String>, // e.g. "Next", "Branch:IsAdmin", "Fault"
+    pub kind: EdgeType,
+    pub label: Option<String>,
 }

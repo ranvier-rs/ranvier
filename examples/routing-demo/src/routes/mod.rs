@@ -51,10 +51,22 @@ pub enum RouteError {
 pub async fn demo_path_routing() {
     // Test different routes
     let requests = vec![
-        RouteRequest { method: HttpMethod::GET, path: "/".to_string() },
-        RouteRequest { method: HttpMethod::GET, path: "/status".to_string() },
-        RouteRequest { method: HttpMethod::POST, path: "/submit".to_string() },
-        RouteRequest { method: HttpMethod::GET, path: "/unknown".to_string() },
+        RouteRequest {
+            method: HttpMethod::GET,
+            path: "/".to_string(),
+        },
+        RouteRequest {
+            method: HttpMethod::GET,
+            path: "/status".to_string(),
+        },
+        RouteRequest {
+            method: HttpMethod::POST,
+            path: "/submit".to_string(),
+        },
+        RouteRequest {
+            method: HttpMethod::GET,
+            path: "/unknown".to_string(),
+        },
     ];
 
     for req in requests {
@@ -71,10 +83,22 @@ pub async fn demo_path_routing() {
 
 pub async fn demo_nested_routing() {
     let requests = vec![
-        RouteRequest { method: HttpMethod::GET, path: "/api/v1/users".to_string() },
-        RouteRequest { method: HttpMethod::POST, path: "/api/v1/users".to_string() },
-        RouteRequest { method: HttpMethod::GET, path: "/api/v1/users/123".to_string() },
-        RouteRequest { method: HttpMethod::GET, path: "/api/v1/users/123/posts".to_string() },
+        RouteRequest {
+            method: HttpMethod::GET,
+            path: "/api/v1/users".to_string(),
+        },
+        RouteRequest {
+            method: HttpMethod::POST,
+            path: "/api/v1/users".to_string(),
+        },
+        RouteRequest {
+            method: HttpMethod::GET,
+            path: "/api/v1/users/123".to_string(),
+        },
+        RouteRequest {
+            method: HttpMethod::GET,
+            path: "/api/v1/users/123/posts".to_string(),
+        },
     ];
 
     for req in requests {
@@ -83,7 +107,11 @@ pub async fn demo_nested_routing() {
         let axon = Axon::start(req.clone(), "ApiRouter").then(ApiRoute);
         match axon.execute(&mut bus).await.unwrap() {
             Outcome::Next(resp) => println!("    {} {}", resp.status, resp.body),
-            Outcome::Branch(route, resp) => println!("    Branch: {} => {} {}", route, resp.status, resp.body),
+            Outcome::Branch(route, resp_box) => {
+                if let Some(resp) = resp_box.downcast_ref::<RouteResponse>() {
+                    println!("    Branch: {} => {} {}", route, resp.status, resp.body)
+                }
+            }
             Outcome::Fault(e) => println!("    Error: {:?}", e),
             _ => {}
         }
@@ -92,9 +120,18 @@ pub async fn demo_nested_routing() {
 
 pub async fn demo_branch_routing() -> anyhow::Result<()> {
     let requests = vec![
-        RouteRequest { method: HttpMethod::GET, path: "/admin/users".to_string() },
-        RouteRequest { method: HttpMethod::GET, path: "/api/posts".to_string() },
-        RouteRequest { method: HttpMethod::GET, path: "/public/home".to_string() },
+        RouteRequest {
+            method: HttpMethod::GET,
+            path: "/admin/users".to_string(),
+        },
+        RouteRequest {
+            method: HttpMethod::GET,
+            path: "/api/posts".to_string(),
+        },
+        RouteRequest {
+            method: HttpMethod::GET,
+            path: "/public/home".to_string(),
+        },
     ];
 
     for req in requests {
@@ -103,7 +140,11 @@ pub async fn demo_branch_routing() -> anyhow::Result<()> {
         let axon = Axon::start(req.clone(), "BranchRouter").then(BranchRoute);
         let result = axon.execute(&mut bus).await?;
         match result {
-            Outcome::Branch(route, req) => println!("    Routed to: {} (path: {})", route, req.path),
+            Outcome::Branch(route, req_box) => {
+                if let Some(req) = req_box.downcast_ref::<RouteRequest>() {
+                    println!("    Routed to: {} (path: {})", route, req.path)
+                }
+            }
             Outcome::Next(req) => println!("    Default route (path: {})", req.path),
             Outcome::Fault(e) => println!("    Error: {:?}", e),
             _ => {}
@@ -125,7 +166,7 @@ struct RootRoute;
 impl Transition<RouteRequest, RouteResponse> for RootRoute {
     type Error = RouteError;
 
-    async fn execute(
+    async fn run(
         &self,
         req: RouteRequest,
         _bus: &mut Bus,
@@ -156,7 +197,7 @@ struct ApiRoute;
 impl Transition<RouteRequest, RouteResponse> for ApiRoute {
     type Error = RouteError;
 
-    async fn execute(
+    async fn run(
         &self,
         req: RouteRequest,
         _bus: &mut Bus,
@@ -187,18 +228,18 @@ struct BranchRoute;
 impl Transition<RouteRequest, RouteRequest> for BranchRoute {
     type Error = RouteError;
 
-    async fn execute(
+    async fn run(
         &self,
         req: RouteRequest,
         _bus: &mut Bus,
     ) -> anyhow::Result<Outcome<RouteRequest, Self::Error>> {
         // Route based on path prefix using Branch outcome
         if req.path.starts_with("/admin") {
-            Ok(Outcome::Branch("admin".to_string(), req))
+            Ok(Outcome::Branch("admin".to_string(), Box::new(req)))
         } else if req.path.starts_with("/api") {
-            Ok(Outcome::Branch("api".to_string(), req))
+            Ok(Outcome::Branch("api".to_string(), Box::new(req)))
         } else if req.path.starts_with("/public") {
-            Ok(Outcome::Branch("public".to_string(), req))
+            Ok(Outcome::Branch("public".to_string(), Box::new(req)))
         } else {
             Ok(Outcome::Next(req))
         }

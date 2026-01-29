@@ -33,9 +33,55 @@ impl Bus {
         self.extra.get_mut::<T>()
     }
 
+    /// Check if a type exists in the Bus.
+    pub fn has<T: Any + Send + Sync + 'static>(&self) -> bool {
+        self.extra.get::<T>().is_some()
+    }
+
     /// Explicitly writes a UTC timestamp.
     /// This is the ONLY recommended way to put time on the Bus.
     pub fn write_time(&mut self, time: chrono::DateTime<chrono::Utc>) {
         self.write(time);
+    }
+}
+
+/// Unique identifier for a connection (e.g., WebSocket connection).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConnectionId(pub uuid::Uuid);
+
+impl ConnectionId {
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+/// A specialized Bus that guarantees a Connection context exists.
+/// This prevents logic that requires a connection from running in a connection-less context (e.g., HTTP).
+pub struct ConnectionBus {
+    inner: Bus,
+    id: ConnectionId,
+}
+
+impl ConnectionBus {
+    pub fn new(id: ConnectionId, bus: Bus) -> Self {
+        Self { inner: bus, id }
+    }
+
+    pub fn id(&self) -> ConnectionId {
+        self.id
+    }
+}
+
+impl std::ops::Deref for ConnectionBus {
+    type Target = Bus;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl std::ops::DerefMut for ConnectionBus {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
     }
 }

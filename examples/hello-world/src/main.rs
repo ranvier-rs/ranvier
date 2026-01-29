@@ -42,7 +42,11 @@ struct Greet;
 impl Transition<(), String> for Greet {
     type Error = anyhow::Error;
 
-    async fn execute(&self, _state: (), _bus: &mut Bus) -> anyhow::Result<Outcome<String, Self::Error>> {
+    async fn run(
+        &self,
+        _state: (),
+        _bus: &mut Bus,
+    ) -> anyhow::Result<Outcome<String, Self::Error>> {
         Ok(Outcome::Next("Hello, Ranvier!".to_string()))
     }
 }
@@ -55,7 +59,11 @@ struct Exclaim;
 impl Transition<String, String> for Exclaim {
     type Error = anyhow::Error;
 
-    async fn execute(&self, state: String, _bus: &mut Bus) -> anyhow::Result<Outcome<String, Self::Error>> {
+    async fn run(
+        &self,
+        state: String,
+        _bus: &mut Bus,
+    ) -> anyhow::Result<Outcome<String, Self::Error>> {
         Ok(Outcome::Next(format!("{} 🚀", state)))
     }
 }
@@ -69,9 +77,7 @@ async fn main() -> anyhow::Result<()> {
     println!("=== Hello World Demo ===\n");
 
     // Build a simple linear Axon
-    let axon = Axon::start((), "HelloWorld")
-        .then(Greet)
-        .then(Exclaim);
+    let axon = Axon::start((), "HelloWorld").then(Greet).then(Exclaim);
 
     // Extract schematic before execution (since execute() takes ownership)
     let node_count = axon.schematic.nodes.len();

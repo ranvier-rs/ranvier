@@ -1,14 +1,17 @@
 pub mod axon;
 pub mod bus;
+pub mod event;
 pub mod metadata;
 pub mod outcome;
 pub mod schematic;
+pub mod telemetry;
 pub mod transition;
 
 // Prelude module for convenient imports
 pub mod prelude {
     pub use crate::axon::Axon;
     pub use crate::bus::Bus;
+    pub use crate::event::{EventSink, EventSource};
     pub use crate::metadata::StepMetadata;
     pub use crate::outcome::{BranchId, NodeId, Outcome};
     pub use crate::schematic::{Edge, Node, NodeKind, Schematic};

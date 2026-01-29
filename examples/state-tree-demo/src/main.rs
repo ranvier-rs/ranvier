@@ -85,7 +85,11 @@ struct ValidationTransition;
 impl Transition<String, ValidatedInput> for ValidationTransition {
     type Error = AppError;
 
-    async fn execute(&self, input: String, bus: &mut Bus) -> anyhow::Result<Outcome<ValidatedInput, Self::Error>> {
+    async fn run(
+        &self,
+        input: String,
+        bus: &mut Bus,
+    ) -> anyhow::Result<Outcome<ValidatedInput, Self::Error>> {
         // Check if input is valid (non-empty)
         if input.is_empty() {
             return Ok(Outcome::Fault(AppError::ValidationFailed(
@@ -112,7 +116,7 @@ struct ProcessingTransition;
 impl Transition<ValidatedInput, ProcessedResult> for ProcessingTransition {
     type Error = AppError;
 
-    async fn execute(
+    async fn run(
         &self,
         input: ValidatedInput,
         _bus: &mut Bus,
@@ -139,16 +143,16 @@ struct RoutingTransition;
 impl Transition<String, String> for RoutingTransition {
     type Error = AppError;
 
-    async fn execute(
+    async fn run(
         &self,
         input: String,
         _bus: &mut Bus,
     ) -> anyhow::Result<Outcome<String, Self::Error>> {
         // Route based on input prefix
         if input.starts_with("admin:") {
-            Ok(Outcome::Branch("admin_route".to_string(), input))
+            Ok(Outcome::Branch("admin_route".to_string(), Box::new(input)))
         } else if input.starts_with("api:") {
-            Ok(Outcome::Branch("api_route".to_string(), input))
+            Ok(Outcome::Branch("api_route".to_string(), Box::new(input)))
         } else {
             Ok(Outcome::Next(input))
         }
@@ -163,7 +167,7 @@ struct AuditTransition;
 impl Transition<String, String> for AuditTransition {
     type Error = AppError;
 
-    async fn execute(
+    async fn run(
         &self,
         input: String,
         _bus: &mut Bus,
@@ -173,7 +177,7 @@ impl Transition<String, String> for AuditTransition {
         println!("[Audit] {}", event);
 
         // Emit the event but continue with the state
-        Ok(Outcome::Emit(event, input))
+        Ok(Outcome::Emit(event, Box::new(input)))
     }
 }
 
@@ -229,8 +233,10 @@ async fn main() -> anyhow::Result<()> {
 
     match &result2 {
         Outcome::Branch(route, data) => {
-            println!("Routed to: {}", route);
-            println!("Data: {}", data);
+            if let Some(s) = data.downcast_ref::<String>() {
+                println!("Routed to: {}", route);
+                println!("Data: {}", s);
+            }
         }
         Outcome::Next(data) => println!("Default route: {}", data),
         _ => {}
@@ -246,7 +252,9 @@ async fn main() -> anyhow::Result<()> {
     match result3 {
         Outcome::Emit(event, state) => {
             println!("Emitted: {}", event);
-            println!("Continued with: {}", state);
+            if let Some(s) = state.downcast_ref::<String>() {
+                println!("Continued with: {}", s);
+            }
         }
         _ => {}
     }

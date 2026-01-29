@@ -15,6 +15,5 @@ where
     type Error: Send + Sync + 'static;
 
     /// Execute the transition
-    async fn execute(&self, state: From, bus: &mut Bus)
-        -> anyhow::Result<Outcome<To, Self::Error>>;
+    async fn run(&self, state: From, bus: &mut Bus) -> anyhow::Result<Outcome<To, Self::Error>>;
 }
