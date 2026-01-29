@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     # "ranvier",  # Deprecated meta-package, depends on old modules
     "core",
+    "cli",
     # "flow",
     # "runtime",
     # "http",

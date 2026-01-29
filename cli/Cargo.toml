@@ -1,0 +1,16 @@
+[package]
+name = "ranvier-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Command-line interface for Ranvier framework"
+authors = ["Ranvier Team"]
+
+[[bin]]
+name = "ranvier"
+path = "src/main.rs"
+
+[dependencies]
+ranvier-core = { path = "../core" }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"

@@ -1,0 +1,116 @@
+//! Ranvier CLI - Command-line interface for Ranvier framework
+//!
+//! # Commands
+//! - `ranvier schematic <example>` - 예제를 실행하고 schematic JSON 출력
+//! - `ranvier studio [file]` - Studio 데스크탑 앱 실행
+
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+use std::process::Command;
+
+/// Ranvier Framework CLI
+#[derive(Parser)]
+#[command(name = "ranvier")]
+#[command(
+    author,
+    version,
+    about = "Command-line interface for Ranvier framework"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Extract schematic JSON from an example
+    Schematic {
+        /// Name of the example to run (e.g., basic-schematic, complex-schematic)
+        example: String,
+
+        /// Output file path (default: stdout)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+
+    /// Launch Ranvier Studio desktop application
+    Studio {
+        /// Optional JSON file to open
+        file: Option<String>,
+    },
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Schematic { example, output } => {
+            run_schematic_command(&example, output.as_deref())
+        }
+        Commands::Studio { file } => run_studio_command(file.as_deref()),
+    }
+}
+
+/// 예제를 실행하고 schematic JSON 추출
+fn run_schematic_command(example: &str, output: Option<&str>) -> Result<()> {
+    println!("Running example: {}", example);
+
+    // 예제는 workspace crate이므로 cargo run -p 사용
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let workspace_dir = std::path::Path::new(manifest_dir).parent().unwrap();
+
+    let output_result = Command::new("cargo")
+        .args(["run", "-p", example])
+        .current_dir(workspace_dir)
+        .output()
+        .context("Failed to run cargo command")?;
+
+    if !output_result.status.success() {
+        let stderr = String::from_utf8_lossy(&output_result.stderr);
+        anyhow::bail!("Example failed to run:\n{}", stderr);
+    }
+
+    let json_output = String::from_utf8_lossy(&output_result.stdout);
+
+    match output {
+        Some(path) => {
+            std::fs::write(path, json_output.as_bytes()).context("Failed to write output file")?;
+            println!("Schematic saved to: {}", path);
+        }
+        None => {
+            println!("{}", json_output);
+        }
+    }
+
+    Ok(())
+}
+
+/// Studio 데스크탑 앱 실행
+fn run_studio_command(file: Option<&str>) -> Result<()> {
+    println!("Launching Ranvier Studio...");
+
+    // Studio 경로 계산
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let studio_path = std::path::Path::new(manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("studio");
+
+    // npm run tauri:dev 또는 빌드된 바이너리 실행
+    let mut cmd = Command::new("npm");
+    cmd.args(["run", "tauri:dev"]).current_dir(&studio_path);
+
+    // 파일이 지정된 경우 환경 변수로 전달
+    if let Some(file_path) = file {
+        let abs_path = std::fs::canonicalize(file_path).context("Failed to resolve file path")?;
+        cmd.env("RANVIER_OPEN_FILE", abs_path);
+        println!("Opening file: {}", file_path);
+    }
+
+    cmd.spawn().context("Failed to launch Studio")?;
+
+    println!("Studio launched successfully.");
+    Ok(())
+}
