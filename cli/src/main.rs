@@ -60,6 +60,7 @@ fn run_schematic_command(example: &str, output: Option<&str>) -> Result<()> {
 
     let output_result = Command::new("cargo")
         .args(["run", "-q", "-p", example])
+        .env("RANVIER_SCHEMATIC", "1")
         .current_dir(workspace_dir)
         .output()
         .context("Failed to run cargo command")?;

@@ -12,6 +12,7 @@ members = [
     "examples/hello-world", "examples/otel-concept",
     "examples/routing-demo", "examples/session-pattern",
     "examples/state-tree-demo", "examples/synapse-demo", "examples/websocket-loop",
+    "examples/order-processing-demo",
 ]
 
 [workspace.dependencies]
