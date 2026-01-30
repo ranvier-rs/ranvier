@@ -2,12 +2,15 @@
 //!
 //! # Commands
 //! - `ranvier new <name>` - Create a new Ranvier project
+//! - `ranvier check [path]` - Validate project and schematic
 //! - `ranvier schematic <example>` - 예제를 실행하고 schematic JSON 출력
 //! - `ranvier codegen <input> [output]` - Schematic JSON을 TypeScript 타입으로 변환
 //! - `ranvier studio [file]` - Studio 데스크탑 앱 실행
 //! - `ranvier build static` - 정적 상태 빌드
 
 mod build;
+mod check;
+mod dev;
 mod new;
 
 use anyhow::{Context, Result};
@@ -38,6 +41,28 @@ enum Commands {
         /// Template to use (minimal, fullstack)
         #[arg(short, long, default_value = "minimal")]
         template: String,
+    },
+
+    /// Validate project and schematic
+    Check {
+        /// Project path (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+
+        /// Automatically fix issues
+        #[arg(long)]
+        fix: bool,
+    },
+
+    /// Start development server
+    Dev {
+        /// Project path (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+
+        /// Port to listen on (default: 3000)
+        #[arg(long)]
+        port: Option<u16>,
     },
 
     /// Extract schematic JSON from an example
@@ -100,6 +125,8 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::New { name, template } => new::run_new_command(&name, Some(template.as_str())),
+        Commands::Check { path, fix } => check::run_check_command(path.as_deref(), fix),
+        Commands::Dev { path, port } => dev::run_dev_command(path.as_deref(), port),
         Commands::Schematic { example, output } => {
             run_schematic_command(&example, output.as_deref())
         }

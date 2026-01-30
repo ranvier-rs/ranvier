@@ -6,10 +6,23 @@
 
 use crate::bus::Bus;
 use crate::outcome::Outcome;
+use crate::schematic::NodeKind;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+/// Legacy trait for static graph nodes (kept for backward compatibility)
+pub trait StaticNode {
+    /// Unique identifier for the node
+    fn id(&self) -> &'static str;
+
+    /// The kind of node (Start, Process, etc.)
+    fn kind(&self) -> NodeKind;
+
+    /// List of IDs of nodes this node connects to
+    fn next_nodes(&self) -> Vec<&'static str>;
+}
 
 /// Marker trait for axons that can be executed statically at build time.
 ///
