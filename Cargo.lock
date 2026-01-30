@@ -603,6 +603,7 @@ name = "ranvier-synapse"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "ranvier-core",
  "serde",
  "serde_json",
@@ -744,6 +745,18 @@ dependencies = [
  "serde",
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "static-build-demo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "http",
+ "ranvier-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -9,6 +9,12 @@ pub mod synapse;
 pub mod telemetry;
 pub mod transition;
 
+// Static generation exports
+pub use static_gen::{
+    read_json_file, write_json_file, StaticAxon, StaticBuildConfig, StaticBuildResult,
+    StaticManifest, StaticStateEntry,
+};
+
 // Prelude module for convenient imports
 pub mod prelude {
     pub use crate::axon::Axon;

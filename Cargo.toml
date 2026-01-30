@@ -13,6 +13,7 @@ members = [
     "examples/routing-demo", "examples/session-pattern",
     "examples/state-tree-demo", "examples/synapse-demo", "examples/websocket-loop",
     "examples/order-processing-demo", "examples/fullstack-demo",
+    "examples/static-build-demo",
     "crates/synapse",
 ]
 

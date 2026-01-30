@@ -4,6 +4,9 @@
 //! - `ranvier schematic <example>` - 예제를 실행하고 schematic JSON 출력
 //! - `ranvier codegen <input> [output]` - Schematic JSON을 TypeScript 타입으로 변환
 //! - `ranvier studio [file]` - Studio 데스크탑 앱 실행
+//! - `ranvier build static` - 정적 상태 빌드
+
+mod build;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -50,6 +53,34 @@ enum Commands {
         #[arg(short, long)]
         output: Option<String>,
     },
+
+    /// Build static state artifacts
+    Build {
+        #[command(subcommand)]
+        target: BuildTarget,
+    },
+}
+
+#[derive(Subcommand)]
+enum BuildTarget {
+    /// Generate static state snapshots (SSG)
+    Static {
+        /// Specific axon to build (default: all discovered)
+        #[arg(short, long)]
+        only: Option<String>,
+
+        /// Output directory (default: ./dist/static)
+        #[arg(short, long)]
+        out: Option<String>,
+
+        /// Disable pretty-printing JSON output
+        #[arg(long, default_value = "true")]
+        pretty: bool,
+
+        /// Example project to build
+        #[arg(short, long)]
+        example: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -61,6 +92,19 @@ fn main() -> Result<()> {
         }
         Commands::Studio { file } => run_studio_command(file.as_deref()),
         Commands::Codegen { input, output } => run_codegen_command(&input, output.as_deref()),
+        Commands::Build { target } => run_build_command(target),
+    }
+}
+
+/// Build command handler
+fn run_build_command(target: BuildTarget) -> Result<()> {
+    match target {
+        BuildTarget::Static {
+            only,
+            out,
+            pretty,
+            example,
+        } => build::run_static_build(example.as_deref(), only.as_deref(), out.as_deref(), pretty),
     }
 }
 
