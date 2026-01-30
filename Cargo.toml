@@ -14,7 +14,9 @@ members = [
     "examples/state-tree-demo", "examples/synapse-demo", "examples/websocket-loop",
     "examples/order-processing-demo", "examples/fullstack-demo",
     "examples/static-build-demo",
+    "examples/db-example",
     "crates/synapse",
+    "crates/db",
 ]
 
 [workspace.dependencies]
@@ -25,6 +27,7 @@ ranvier-runtime = { path = "runtime", version = "0.1.0" }
 ranvier-http = { path = "http", version = "0.1.0" }
 ranvier-macros = { path = "macros", version = "0.1.0" }
 ranvier = { path = "ranvier", version = "0.1.0" }
+ranvier-db = { path = "crates/db", version = "0.1.0" }
 
 
 # Sync Third-party Dependencies
@@ -49,3 +52,4 @@ quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
 proc-macro2 = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "mysql", "sqlite", "chrono", "uuid", "json"] }
