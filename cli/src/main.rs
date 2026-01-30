@@ -2,10 +2,12 @@
 //!
 //! # Commands
 //! - `ranvier schematic <example>` - 예제를 실행하고 schematic JSON 출력
+//! - `ranvier codegen <input> [output]` - Schematic JSON을 TypeScript 타입으로 변환
 //! - `ranvier studio [file]` - Studio 데스크탑 앱 실행
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use ranvier_synapse::TypeScriptGenerator;
 use std::process::Command;
 
 /// Ranvier Framework CLI
@@ -38,6 +40,16 @@ enum Commands {
         /// Optional JSON file to open
         file: Option<String>,
     },
+
+    /// Generate TypeScript types from Schematic JSON
+    Codegen {
+        /// Input Schematic JSON file
+        input: String,
+
+        /// Output TypeScript file (default: stdout)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -48,6 +60,7 @@ fn main() -> Result<()> {
             run_schematic_command(&example, output.as_deref())
         }
         Commands::Studio { file } => run_studio_command(file.as_deref()),
+        Commands::Codegen { input, output } => run_codegen_command(&input, output.as_deref()),
     }
 }
 
@@ -117,5 +130,36 @@ fn run_studio_command(file: Option<&str>) -> Result<()> {
     cmd.spawn().context("Failed to launch Studio")?;
 
     println!("Studio launched successfully.");
+    Ok(())
+}
+
+/// Schematic JSON을 TypeScript로 변환
+fn run_codegen_command(input_path: &str, output_path: Option<&str>) -> Result<()> {
+    // 1. Read JSON
+    let json_content = std::fs::read_to_string(input_path)
+        .with_context(|| format!("Failed to read input file: {}", input_path))?;
+
+    // 2. Parse Schematic
+    let schematic: ranvier_core::schematic::Schematic =
+        serde_json::from_str(&json_content).context("Failed to parse Schematic JSON")?;
+
+    // 3. Generate TypeScript
+    let generator = TypeScriptGenerator::new();
+    let ts_output = generator
+        .generate(&schematic)
+        .context("Failed to generate TypeScript")?;
+
+    // 4. Output
+    match output_path {
+        Some(path) => {
+            std::fs::write(path, ts_output)
+                .with_context(|| format!("Failed to write output file: {}", path))?;
+            println!("TypeScript definitions saved to: {}", path);
+        }
+        None => {
+            println!("{}", ts_output);
+        }
+    }
+
     Ok(())
 }

@@ -1,0 +1,82 @@
+{
+  "name": "My First Schematic",
+  "description": null,
+  "nodes": [
+    {
+      "id": "04548bd6-7a8e-47c8-92fa-65f392c676bc",
+      "kind": "Ingress",
+      "label": "My First Schematic",
+      "input_type": "void",
+      "output_type": "()",
+      "metadata": {
+        "id": "00000000-0000-0000-0000-000000000000",
+        "label": "",
+        "description": null,
+        "inputs": [],
+        "outputs": []
+      }
+    },
+    {
+      "id": "807d7342-9e75-4194-8379-343d903c8d8a",
+      "kind": "Atom",
+      "label": "LogStart",
+      "input_type": "()",
+      "output_type": "String",
+      "metadata": {
+        "id": "00000000-0000-0000-0000-000000000000",
+        "label": "",
+        "description": null,
+        "inputs": [],
+        "outputs": []
+      }
+    },
+    {
+      "id": "ab29ef3e-651c-4190-8a06-a0a9b53be68c",
+      "kind": "Atom",
+      "label": "ProcessData",
+      "input_type": "String",
+      "output_type": "String",
+      "metadata": {
+        "id": "00000000-0000-0000-0000-000000000000",
+        "label": "",
+        "description": null,
+        "inputs": [],
+        "outputs": []
+      }
+    },
+    {
+      "id": "426e0b4c-44d7-477c-a2c5-8cbd2a0a94af",
+      "kind": "Atom",
+      "label": "LogEnd",
+      "input_type": "String",
+      "output_type": "()",
+      "metadata": {
+        "id": "00000000-0000-0000-0000-000000000000",
+        "label": "",
+        "description": null,
+        "inputs": [],
+        "outputs": []
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "04548bd6-7a8e-47c8-92fa-65f392c676bc",
+      "to": "807d7342-9e75-4194-8379-343d903c8d8a",
+      "kind": "Linear",
+      "label": "Next"
+    },
+    {
+      "from": "807d7342-9e75-4194-8379-343d903c8d8a",
+      "to": "ab29ef3e-651c-4190-8a06-a0a9b53be68c",
+      "kind": "Linear",
+      "label": "Next"
+    },
+    {
+      "from": "ab29ef3e-651c-4190-8a06-a0a9b53be68c",
+      "to": "426e0b4c-44d7-477c-a2c5-8cbd2a0a94af",
+      "kind": "Linear",
+      "label": "Next"
+    }
+  ]
+}

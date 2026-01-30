@@ -68,6 +68,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 
 [[package]]
+name = "ascii"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d92bec98840b8f03a5ff5413de5293bfcd8bf96467cf5452609f939ec6f5de16"
+
+[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -143,6 +149,12 @@ dependencies = [
  "wasm-bindgen",
  "windows-link",
 ]
+
+[[package]]
+name = "chunked_transfer"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e4de3bc4ea267985becf712dc6d9eed8b04c953b3fcfb339ebc87acd9804901"
 
 [[package]]
 name = "clap"
@@ -224,6 +236,19 @@ name = "find-msvc-tools"
 version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8591b0bcc8a98a64310a2fae1bb3e9b8564dd10e381e6e28010fde8e8e8568db"
+
+[[package]]
+name = "fullstack-demo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "ranvier-core",
+ "serde",
+ "serde_json",
+ "tiny_http",
+ "tokio",
+]
 
 [[package]]
 name = "futures"
@@ -354,6 +379,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "iana-time-zone"
 version = "0.1.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -459,6 +490,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "order-processing-demo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "ranvier-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "otel-concept"
 version = "0.1.0"
 dependencies = [
@@ -535,6 +579,7 @@ dependencies = [
  "anyhow",
  "clap",
  "ranvier-core",
+ "ranvier-synapse",
  "serde_json",
 ]
 
@@ -551,6 +596,16 @@ dependencies = [
  "serde_json",
  "thiserror",
  "uuid",
+]
+
+[[package]]
+name = "ranvier-synapse"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ranvier-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -685,11 +740,10 @@ dependencies = [
 name = "state-tree-demo"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "async-trait",
- "http",
  "ranvier-core",
- "tokio",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -710,6 +764,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "synapse-demo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "ranvier-core",
+ "tokio",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -727,6 +791,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tiny_http"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "389915df6413a2e74fb181895f933386023c71110878cd0825588928e64cdc82"
+dependencies = [
+ "ascii",
+ "chunked_transfer",
+ "httpdate",
+ "log",
 ]
 
 [[package]]
