@@ -10,9 +10,12 @@ members = [
     "examples/order-processing-demo", "examples/fullstack-demo",
     "examples/static-build-demo",
     "examples/db-example",
+    "examples/otel-demo",
+    "examples/replay-demo",
     "crates/synapse",
     "crates/db",
     "crates/status",
+    "crates/observe",
 ]
 
 [workspace.dependencies]
@@ -20,6 +23,7 @@ members = [
 ranvier-core = { path = "core", version = "0.1.0" }
 ranvier-db = { path = "crates/db", version = "0.1.0" }
 ranvier-status = { path = "crates/status", version = "0.1.0" }
+ranvier-observe = { path = "crates/observe", version = "0.1.0" }
 
 
 # Sync Third-party Dependencies

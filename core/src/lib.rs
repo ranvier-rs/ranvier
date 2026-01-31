@@ -3,10 +3,12 @@ pub mod bus;
 pub mod event;
 pub mod metadata;
 pub mod outcome;
+pub mod replay;
 pub mod schematic;
 pub mod static_gen;
 pub mod synapse;
 pub mod telemetry;
+pub mod timeline;
 pub mod transition;
 
 // Static generation exports

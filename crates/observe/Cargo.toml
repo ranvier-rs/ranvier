@@ -1,0 +1,15 @@
+[package]
+name = "ranvier-observe"
+version = "0.1.0"
+edition = "2021"
+description = "Observability and OTLP integration for Ranvier"
+
+[dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry", "std"] }
+opentelemetry = { version = "0.22", features = ["trace"] }
+opentelemetry_sdk = { version = "0.22", features = ["rt-tokio", "trace"] }
+opentelemetry-otlp = { version = "0.15", features = ["grpc-tonic"] }
+tracing-opentelemetry = "0.23"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"

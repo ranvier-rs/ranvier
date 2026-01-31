@@ -13,3 +13,4 @@ futures-core = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow = { workspace = true }
+tracing = "0.1"

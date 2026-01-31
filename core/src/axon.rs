@@ -17,6 +17,7 @@ use crate::transition::Transition;
 use std::any::type_name;
 use std::future::Future;
 use std::pin::Pin;
+use tracing::Instrument;
 
 /// Type alias for async boxed futures used in Axon execution.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -102,8 +103,12 @@ impl<T: Send + 'static, E: Send + 'static> Axon<T, E> {
         let mut schematic = Schematic::new(label);
         schematic.nodes.push(node);
 
+        let label_owned = label.to_string();
         let executor: Executor<T, E> = Box::new(move |_bus: &mut Bus| {
-            Box::pin(async move { Outcome::Next(initial_state) }) as BoxFuture<'_, Outcome<T, E>>
+            Box::pin(
+                async move { Outcome::Next(initial_state) }
+                    .instrument(tracing::info_span!("Ingress", ranvier.node = %label_owned)),
+            ) as BoxFuture<'_, Outcome<T, E>>
         });
 
         Self {
@@ -137,7 +142,7 @@ impl<T: Send + 'static, E: Send + 'static> Axon<T, E> {
         let next_node = Node {
             id: next_node_id.clone(),
             kind: NodeKind::Atom,
-            label: trans_label,
+            label: trans_label.clone(),
             input_type: type_name_of::<T>(),
             output_type: type_name_of::<Next>(),
             metadata: Default::default(),
@@ -179,7 +184,9 @@ impl<T: Send + 'static, E: Send + 'static> Axon<T, E> {
                 };
 
                 // Execute Transition
-                transition.run(state, bus).await
+                async move { transition.run(state, bus).await }
+                    .instrument(tracing::info_span!("Node", ranvier.node = %trans_label))
+                    .await
             }) as BoxFuture<'_, Outcome<Next, E>>
         });
 
@@ -239,7 +246,10 @@ impl<T: Send + 'static, E: Send + 'static> Axon<T, E> {
     ///
     /// The final `Outcome<T, E>` from the execution chain.
     pub async fn execute(self, bus: &mut Bus) -> Outcome<T, E> {
-        (self.executor)(bus).await
+        let label = self.schematic.name.clone();
+        async move { (self.executor)(bus).await }
+            .instrument(tracing::info_span!("Circuit", ranvier.circuit = %label))
+            .await
     }
 
     /// Get a reference to the Schematic (structural view).
