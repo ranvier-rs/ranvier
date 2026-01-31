@@ -1,13 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    # "ranvier",  # Deprecated meta-package, depends on old modules
     "core",
     "cli",
-    # "flow",
-    # "runtime",
-    # "http",
-    # "macros",
     "examples/basic-schematic", "examples/complex-schematic",
     "examples/hello-world", "examples/otel-concept",
     "examples/routing-demo", "examples/session-pattern",
@@ -22,11 +17,6 @@ members = [
 [workspace.dependencies]
 # Internal Crates
 ranvier-core = { path = "core", version = "0.1.0" }
-ranvier-flow = { path = "flow", version = "0.1.0" }
-ranvier-runtime = { path = "runtime", version = "0.1.0" }
-ranvier-http = { path = "http", version = "0.1.0" }
-ranvier-macros = { path = "macros", version = "0.1.0" }
-ranvier = { path = "ranvier", version = "0.1.0" }
 ranvier-db = { path = "crates/db", version = "0.1.0" }
 
 
