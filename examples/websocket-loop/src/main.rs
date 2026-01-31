@@ -22,8 +22,8 @@ This example demonstrates the "Loop-Axon-Sink" pattern which is the foundation o
 */
 
 use async_trait::async_trait;
+use ranvier_core::event::{EventSink, EventSource};
 use ranvier_core::prelude::*;
-use ranvier_core::event::{EventSource, EventSink};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -65,7 +65,7 @@ impl MockWebSocket {
                 content: s.to_string(),
             })
             .collect();
-        
+
         Self {
             incoming,
             outgoing: Arc::new(Mutex::new(Vec::new())),
@@ -105,9 +105,13 @@ struct ProcessMessage;
 impl Transition<WsMessage, ChatEvent> for ProcessMessage {
     type Error = anyhow::Error;
 
-    async fn run(&self, input: WsMessage, _bus: &mut Bus) -> anyhow::Result<Outcome<ChatEvent, Self::Error>> {
+    async fn run(
+        &self,
+        input: WsMessage,
+        _bus: &mut Bus,
+    ) -> anyhow::Result<Outcome<ChatEvent, Self::Error>> {
         println!("[Process] Processing msg #{}: {}", input.id, input.content);
-        
+
         // Simple logic: If message is "exit", stop the loop (in real app, we might Emit a Close event)
         if input.content == "exit" {
             // Check discussion 162: Control Flow. We can use Jump to End or similar.
@@ -129,7 +133,11 @@ struct Broadcast;
 impl Transition<ChatEvent, String> for Broadcast {
     type Error = anyhow::Error;
 
-    async fn run(&self, input: ChatEvent, _bus: &mut Bus) -> anyhow::Result<Outcome<String, Self::Error>> {
+    async fn run(
+        &self,
+        input: ChatEvent,
+        _bus: &mut Bus,
+    ) -> anyhow::Result<Outcome<String, Self::Error>> {
         let response = format!("User {} said: {}", input.user_id, input.message);
         Ok(Outcome::Next(response))
     }
@@ -145,22 +153,17 @@ async fn main() -> anyhow::Result<()> {
 
     // 1. Setup Mock Connection (Source + Sink)
     // In a real app, this would be a real WebSocket stream split into SplitStream/SplitSink
-    let mut ws = MockWebSocket::new(vec![
-        "hello",
-        "ranvier",
-        "is logic",
-        "exit",
-    ]);
+    let mut ws = MockWebSocket::new(vec!["hello", "ranvier", "is logic", "exit"]);
 
-    // We must clone the sink part to pass into the loop context if needed, 
+    // We must clone the sink part to pass into the loop context if needed,
     // or just use it at the end of the loop.
     // For traits, we usually wrap Sink in Arc<Mutex<>> or use channels if it requires mutability.
     // Here MockWebSocket implements EventSink via &self (interior mutability for outgoing), so reference is fine if lifetime allows.
     // But since loop runs async, we need shared ownership.
-    let ws_sink = Arc::new(ws.outgoing.clone()); 
-    // Note: In real Rust async, splitting Source/Sink is common. 
+    let ws_sink = Arc::new(ws.outgoing.clone());
+    // Note: In real Rust async, splitting Source/Sink is common.
     // For this mock, `ws` holds state. We'll just run the loop on `ws`.
-    
+
     // 2. The Event Loop
     println!("--- Starting Event Loop ---");
     while let Some(msg) = ws.next_event().await {
@@ -173,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
             .then(Broadcast);
 
         let mut bus = Bus::new(http::Request::new(()));
-        
+
         // 4. Execute Axon
         match axon.execute(&mut bus).await {
             Ok(Outcome::Next(response)) => {

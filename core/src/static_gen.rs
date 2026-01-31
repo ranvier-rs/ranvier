@@ -37,6 +37,29 @@ pub trait StaticNode {
 /// # Example
 ///
 /// ```rust
+/// use ranvier_core::static_gen::StaticAxon;
+/// use ranvier_core::Bus;
+/// use ranvier_core::Outcome;
+/// use anyhow::Result;
+///
+/// # #[derive(serde::Serialize)]
+/// # struct LandingState { title: String }
+/// #
+/// # #[derive(Debug, Clone)]
+/// # struct AppError;
+/// #
+/// # impl std::fmt::Display for AppError {
+/// #     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+/// #         write!(f, "AppError")
+/// #     }
+/// # }
+/// #
+/// # impl std::error::Error for AppError {}
+/// #
+/// # impl From<anyhow::Error> for AppError {
+/// #     fn from(_: anyhow::Error) -> Self { AppError }
+/// # }
+/// #
 /// struct LandingPageAxon;
 ///
 /// impl StaticAxon for LandingPageAxon {
@@ -47,9 +70,9 @@ pub trait StaticNode {
 ///         "landing_page"
 ///     }
 ///
-///     fn generate(&self, bus: &mut Bus) -> Result<Outcome<LandingState, AppError>> {
+///     fn generate(&self, _bus: &mut Bus) -> Result<Outcome<LandingState, AppError>> {
 ///         // Load features, pricing from read-only sources
-///         Ok(Outcome::Next(LandingState { ... }))
+///         Ok(Outcome::Next(LandingState { title: "Welcome".to_string() }))
 ///     }
 /// }
 /// ```
@@ -200,11 +223,7 @@ pub struct StaticBuildResult {
 }
 
 /// Write a serializable value to a JSON file.
-pub fn write_json_file<T: Serialize>(
-    path: &Path,
-    value: &T,
-    pretty: bool,
-) -> anyhow::Result<()> {
+pub fn write_json_file<T: Serialize>(path: &Path, value: &T, pretty: bool) -> anyhow::Result<()> {
     let json = if pretty {
         serde_json::to_string_pretty(value)?
     } else {
@@ -221,9 +240,7 @@ pub fn write_json_file<T: Serialize>(
 }
 
 /// Read a JSON file and deserialize it.
-pub fn read_json_file<T: for<'de> Deserialize<'de>>(
-    path: &Path,
-) -> anyhow::Result<T> {
+pub fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> anyhow::Result<T> {
     let content = std::fs::read_to_string(path)?;
     let value = serde_json::from_str(&content)?;
     Ok(value)

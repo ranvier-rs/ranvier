@@ -1,4 +1,10 @@
-use crate::prelude::*;
+//! # Telemetry: Observability Decorators
+//!
+//! This module provides decorators for adding observability to Transitions.
+
+use crate::bus::Bus;
+use crate::outcome::Outcome;
+use crate::transition::Transition;
 use async_trait::async_trait;
 use std::fmt::Debug;
 
@@ -45,7 +51,7 @@ where
 {
     type Error = T::Error;
 
-    async fn run(&self, input: From, bus: &mut Bus) -> anyhow::Result<Outcome<To, Self::Error>> {
+    async fn run(&self, input: From, bus: &mut Bus) -> Outcome<To, Self::Error> {
         // 1. Start Span
         println!("[Trace] Start Span: '{}' | Input: {:?}", self.name, input);
         let start = std::time::Instant::now();
@@ -56,40 +62,34 @@ where
         // 3. End Span
         let duration = start.elapsed();
         match &result {
-            Ok(Outcome::Next(val)) => {
+            Outcome::Next(val) => {
                 println!(
                     "[Trace] End Span: '{}' | Duration: {:?} | Outcome: Next({:?})",
                     self.name, duration, val
                 );
             }
-            Ok(Outcome::Branch(id, _)) => {
+            Outcome::Branch(id, _) => {
                 println!(
                     "[Trace] End Span: '{}' | Duration: {:?} | Outcome: Branch({})",
                     self.name, duration, id
                 );
             }
-            Ok(Outcome::Jump(id, _)) => {
+            Outcome::Jump(id, _) => {
                 println!(
                     "[Trace] End Span: '{}' | Duration: {:?} | Outcome: Jump({})",
                     self.name, duration, id
                 );
             }
-            Ok(Outcome::Emit(event_type, _)) => {
+            Outcome::Emit(event_type, _) => {
                 println!(
                     "[Trace] End Span: '{}' | Duration: {:?} | Outcome: Emit({})",
                     self.name, duration, event_type
                 );
             }
-            Ok(Outcome::Fault(_)) => {
+            Outcome::Fault(_) => {
                 println!(
                     "[Trace] End Span: '{}' | Duration: {:?} | Outcome: Fault",
                     self.name, duration
-                );
-            }
-            Err(e) => {
-                println!(
-                    "[Trace] End Span: '{}' | Duration: {:?} | Error: {:?}",
-                    self.name, duration, e
                 );
             }
         }

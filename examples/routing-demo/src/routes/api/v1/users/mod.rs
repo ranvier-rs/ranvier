@@ -29,7 +29,10 @@ pub async fn route_users(
             status: 201,
             body: "User Created".to_string(),
         })),
-        _ => Ok(Outcome::Fault(RouteError::NotFound(format!("/api/v1/users/{}", path)))),
+        _ => Ok(Outcome::Fault(RouteError::NotFound(format!(
+            "/api/v1/users/{}",
+            path
+        )))),
     }
 }
 

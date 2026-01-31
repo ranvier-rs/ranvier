@@ -13,8 +13,8 @@ It uses the `Traced` wrapper to automatically generate spans for Transitions.
 */
 
 use async_trait::async_trait;
-use ranvier_core::prelude::*;
 use ranvier_core::bus::{ConnectionBus, ConnectionId};
+use ranvier_core::prelude::*;
 use ranvier_core::telemetry::Traced;
 use std::fmt::Debug;
 
@@ -52,15 +52,21 @@ struct Authenticate;
 impl Transition<HttpRequest, AuthUser> for Authenticate {
     type Error = anyhow::Error;
 
-    async fn run(&self, input: HttpRequest, bus: &mut Bus) -> anyhow::Result<Outcome<AuthUser, Self::Error>> {
+    async fn run(
+        &self,
+        input: HttpRequest,
+        bus: &mut Bus,
+    ) -> anyhow::Result<Outcome<AuthUser, Self::Error>> {
         // Access Connection ID if available
         // Note: bus here is &mut Bus, but we know we started with ConnectionBus
         // If we need strict typing, we might use a trait or specialized read.
-        
+
         // Let's simulate checking a header
         if input.path == "/login" {
             // Fail flow
-            return Ok(Outcome::Fault(anyhow::anyhow!("Login not supported in this demo")));
+            return Ok(Outcome::Fault(anyhow::anyhow!(
+                "Login not supported in this demo"
+            )));
         }
 
         Ok(Outcome::Next(AuthUser {
@@ -78,7 +84,11 @@ struct HandleRequest;
 impl Transition<AuthUser, HttpResponse> for HandleRequest {
     type Error = anyhow::Error;
 
-    async fn run(&self, input: AuthUser, _bus: &mut Bus) -> anyhow::Result<Outcome<HttpResponse, Self::Error>> {
+    async fn run(
+        &self,
+        input: AuthUser,
+        _bus: &mut Bus,
+    ) -> anyhow::Result<Outcome<HttpResponse, Self::Error>> {
         Ok(Outcome::Next(HttpResponse {
             status: 200,
             body: format!("Hello, {}! You are {}.", input.id, input.role),
@@ -121,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
             println!("\n[Result] Status: {}, Body: {}", res.status, res.body);
         }
         Ok(Outcome::Fault(e)) => {
-             println!("\n[Result] Fault: {:?}", e);
+            println!("\n[Result] Fault: {:?}", e);
         }
         _ => println!("\n[Result] Other outcome"),
     }

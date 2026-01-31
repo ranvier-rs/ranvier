@@ -252,7 +252,10 @@ impl TxBus {
     ) -> Result<Outcome<T, E>, TransactionError> {
         if let Some(tx) = self.tx.take() {
             match &outcome {
-                Outcome::Next(_) | Outcome::Branch(_, _) | Outcome::Jump(_, _) | Outcome::Emit(_, _) => {
+                Outcome::Next(_)
+                | Outcome::Branch(_, _)
+                | Outcome::Jump(_, _)
+                | Outcome::Emit(_, _) => {
                     tx.commit().await?;
                 }
                 Outcome::Fault(_) => {

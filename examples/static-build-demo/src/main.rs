@@ -110,7 +110,8 @@ impl StaticAxon for LandingPageAxon {
                 FeatureItem {
                     id: "axon".to_string(),
                     title: "Axon Execution".to_string(),
-                    description: "Build typed decision trees with explicit control flow".to_string(),
+                    description: "Build typed decision trees with explicit control flow"
+                        .to_string(),
                     icon: "⚡".to_string(),
                 },
                 FeatureItem {
@@ -298,7 +299,8 @@ impl StaticAxon for DocsIndexAxon {
 // ============================================================
 
 /// Registry of all static axons in this project
-fn get_static_axons() -> Vec<Box<dyn StaticAxon<Output = serde_json::Value, Error = anyhow::Error>>> {
+fn get_static_axons() -> Vec<Box<dyn StaticAxon<Output = serde_json::Value, Error = anyhow::Error>>>
+{
     vec![
         Box::new(ValueAxon::new(LandingPageAxon)),
         Box::new(ValueAxon::new(PricingPageAxon)),

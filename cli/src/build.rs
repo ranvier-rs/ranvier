@@ -46,15 +46,13 @@ fn run_single_static_build(
 
 /// Build all static axons in an example
 fn run_all_static_build(example: Option<&str>, config: &StaticBuildConfig) -> Result<()> {
-    let example_name =
-        example.context("Please specify an example with --example <name>")?;
+    let example_name = example.context("Please specify an example with --example <name>")?;
 
     println!("Building all static axons from example: {}", example_name);
 
     // Create output directory
     let output_dir = PathBuf::from(config.get_output_dir());
-    std::fs::create_dir_all(&output_dir)
-        .context("Failed to create output directory")?;
+    std::fs::create_dir_all(&output_dir).context("Failed to create output directory")?;
 
     // Run the example with static build environment variable
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -90,11 +88,7 @@ fn run_all_static_build(example: Option<&str>, config: &StaticBuildConfig) -> Re
 }
 
 /// Build static state from an example project
-fn build_example_static(
-    example_name: &str,
-    _name: &str,
-    config: &StaticBuildConfig,
-) -> Result<()> {
+fn build_example_static(example_name: &str, _name: &str, config: &StaticBuildConfig) -> Result<()> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let workspace_dir = std::path::Path::new(manifest_dir).parent().unwrap();
 

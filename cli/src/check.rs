@@ -84,7 +84,10 @@ fn analyze_project_structure(project_dir: &PathBuf) -> Result<()> {
         // Check for Transition implementations
         let transition_count = content.matches("impl Transition").count();
         if transition_count > 0 {
-            println!("  ✅ Found {} Transition implementation(s)", transition_count);
+            println!(
+                "  ✅ Found {} Transition implementation(s)",
+                transition_count
+            );
         }
     }
 

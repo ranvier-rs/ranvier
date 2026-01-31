@@ -19,7 +19,10 @@ impl Synapse for InventorySynapse {
     type Error = String;
 
     async fn call(&self, item_ids: Self::Input) -> Result<Self::Output, Self::Error> {
-        println!("\x1b[36m[Inventory]\x1b[0m Checking stock for {} items...", item_ids.len());
+        println!(
+            "\x1b[36m[Inventory]\x1b[0m Checking stock for {} items...",
+            item_ids.len()
+        );
         sleep(Duration::from_millis(300)).await; // Latency
 
         let mut db = self.inventory.lock().unwrap();
@@ -27,7 +30,10 @@ impl Synapse for InventorySynapse {
             if let Some(product) = db.get_mut(&id) {
                 if product.stock > 0 {
                     product.stock -= 1;
-                    println!("\x1b[36m[Inventory]\x1b[0m Reserved '{}'. Remaining: {}", product.name, product.stock);
+                    println!(
+                        "\x1b[36m[Inventory]\x1b[0m Reserved '{}'. Remaining: {}",
+                        product.name, product.stock
+                    );
                 } else {
                     println!("\x1b[31m[Inventory]\x1b[0m Out of stock: {}", product.name);
                     return Ok(false);
@@ -50,7 +56,10 @@ impl Synapse for PaymentSynapse {
     type Error = String;
 
     async fn call(&self, amount: Self::Input) -> Result<Self::Output, Self::Error> {
-        println!("\x1b[33m[Payment]\x1b[0m Processing transaction: ${}", amount);
+        println!(
+            "\x1b[33m[Payment]\x1b[0m Processing transaction: ${}",
+            amount
+        );
         sleep(Duration::from_millis(500)).await;
 
         if amount > 1000 {
@@ -73,9 +82,12 @@ impl Synapse for ShippingSynapse {
     type Error = String;
 
     async fn call(&self, order_id: Self::Input) -> Result<Self::Output, Self::Error> {
-        println!("\x1b[35m[Shipping]\x1b[0m Dispatching Order #{}...", order_id);
+        println!(
+            "\x1b[35m[Shipping]\x1b[0m Dispatching Order #{}...",
+            order_id
+        );
         sleep(Duration::from_millis(400)).await;
-        
+
         let tracking = format!("TRK-{}", uuid::Uuid::new_v4());
         println!("\x1b[35m[Shipping]\x1b[0m Shipped! Tracking: {}", tracking);
         Ok(tracking)

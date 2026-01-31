@@ -62,13 +62,9 @@ struct LogStart;
 impl Transition<(), String> for LogStart {
     type Error = anyhow::Error;
 
-    async fn run(
-        &self,
-        _state: (),
-        _bus: &mut Bus,
-    ) -> anyhow::Result<Outcome<String, Self::Error>> {
+    async fn run(&self, _state: (), _bus: &mut Bus) -> Outcome<String, Self::Error> {
         println!("[Axon] Circuit started.");
-        Ok(Outcome::Next("Initial state".to_string()))
+        Outcome::Next("Initial state".to_string())
     }
 }
 
@@ -80,13 +76,9 @@ struct ProcessData;
 impl Transition<String, String> for ProcessData {
     type Error = anyhow::Error;
 
-    async fn run(
-        &self,
-        state: String,
-        _bus: &mut Bus,
-    ) -> anyhow::Result<Outcome<String, Self::Error>> {
+    async fn run(&self, state: String, _bus: &mut Bus) -> Outcome<String, Self::Error> {
         println!("[Axon] Processing data: {}", state);
-        Ok(Outcome::Next(format!("Processed: {}", state)))
+        Outcome::Next(format!("Processed: {}", state))
     }
 }
 
@@ -98,9 +90,9 @@ struct LogEnd;
 impl Transition<String, ()> for LogEnd {
     type Error = anyhow::Error;
 
-    async fn run(&self, state: String, _bus: &mut Bus) -> anyhow::Result<Outcome<(), Self::Error>> {
+    async fn run(&self, state: String, _bus: &mut Bus) -> Outcome<(), Self::Error> {
         println!("[Axon] Circuit ended with: {}", state);
-        Ok(Outcome::Next(()))
+        Outcome::Next(())
     }
 }
 
@@ -134,8 +126,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Execute the Axon
     println!("=== Running Axon ===");
-    let mut bus = Bus::new(http::Request::new(()));
-    let result = axon.execute(&mut bus).await?;
+    let mut bus = Bus::new();
+    let result = axon.execute(&mut bus).await;
     println!("Final Result: {:?}", result);
 
     // Demonstrate Axon helper methods

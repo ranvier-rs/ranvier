@@ -94,7 +94,10 @@ fn generate_main_rs(name: &str, template: &str) -> Result<String> {
         "minimal" => Ok(generate_minimal_main_rs(name)),
         "fullstack" => Ok(generate_fullstack_main_rs(name)),
         _ => {
-            anyhow::bail!("Unknown template: {}. Available: minimal, fullstack", template)
+            anyhow::bail!(
+                "Unknown template: {}. Available: minimal, fullstack",
+                template
+            )
         }
     }
 }
@@ -292,6 +295,12 @@ pub struct HomePageState {{
 fn sanitize_name(name: &str) -> String {
     name.replace('-', "_")
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }

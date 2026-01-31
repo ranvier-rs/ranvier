@@ -24,5 +24,8 @@ pub async fn route_v1(
         }));
     }
 
-    Ok(Outcome::Fault(RouteError::NotFound(format!("/api/v1/{}", path))))
+    Ok(Outcome::Fault(RouteError::NotFound(format!(
+        "/api/v1/{}",
+        path
+    ))))
 }

@@ -12,7 +12,7 @@ pub mod transition;
 // Static generation exports
 pub use static_gen::{
     read_json_file, write_json_file, StaticAxon, StaticBuildConfig, StaticBuildResult,
-    StaticManifest, StaticStateEntry, StaticNode,
+    StaticManifest, StaticNode, StaticStateEntry,
 };
 
 // Prelude module for convenient imports

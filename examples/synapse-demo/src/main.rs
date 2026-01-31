@@ -24,8 +24,11 @@ impl Synapse for PostgresSynapse {
     type Error = String;
 
     async fn call(&self, user_id: Self::Input) -> Result<Self::Output, Self::Error> {
-        println!("[Synapse] Connecting to Postgres at {}...", self.connection_string);
-        
+        println!(
+            "[Synapse] Connecting to Postgres at {}...",
+            self.connection_string
+        );
+
         // Simulate network latency
         sleep(Duration::from_millis(500)).await;
 
@@ -54,7 +57,7 @@ struct GetUserNode {
 impl GetUserNode {
     async fn execute(&self, user_id: u32) -> Result<()> {
         println!("\n[Node] Executing GetUserNode for ID: {}", user_id);
-        
+
         match self.db.call(user_id).await {
             Ok(Some(user)) => {
                 println!("[Node] Success: Found {:?}", user);

@@ -26,7 +26,11 @@ struct Authenticate;
 impl Transition<LoginInput, UserContext> for Authenticate {
     type Error = anyhow::Error;
 
-    async fn run(&self, input: LoginInput, _bus: &mut Bus) -> Result<Outcome<UserContext, Self::Error>> {
+    async fn run(
+        &self,
+        input: LoginInput,
+        _bus: &mut Bus,
+    ) -> Result<Outcome<UserContext, Self::Error>> {
         if input.username == "admin" {
             Ok(Outcome::Next(UserContext {
                 user_id: "u1".to_string(),
@@ -35,7 +39,10 @@ impl Transition<LoginInput, UserContext> for Authenticate {
         } else {
             // In a real app, this would be a Branch or Emit
             // For now, let's simulate a Branch return
-            Ok(Outcome::Branch("LoginFailed".to_string(), Box::new("Invalid credentials".to_string())))
+            Ok(Outcome::Branch(
+                "LoginFailed".to_string(),
+                Box::new("Invalid credentials".to_string()),
+            ))
         }
     }
 }
@@ -52,13 +59,12 @@ async fn main() -> Result<()> {
 
     // 1. Build the Linear Axon
     // Axon currently builds the 'Happy Path' automatically
-    let mut axon = Axon::start(input, "StartFlow")
-        .then(Authenticate);
+    let mut axon = Axon::start(input, "StartFlow").then(Authenticate);
 
     // 2. Start Manual Schematic Enhancement
     // Since Axon's Builder doesn't yet support auto-extraction of Branches,
     // we manually inject the structural knowledge here to demonstrate the Schematic's capability.
-    
+
     // Find the 'Authenticate' node (it's the last one)
     let auth_node_id = axon.schematic.nodes.last().unwrap().id.clone();
 
@@ -92,12 +98,11 @@ async fn main() -> Result<()> {
         output_type: "Void".to_string(),
         metadata: Default::default(),
     };
-    
+
     // Add Subgraph to the main graph (conceptually unconnected for now, just to show JSON structure)
     axon.schematic.nodes.push(fail_node);
     axon.schematic.edges.push(fail_edge);
     axon.schematic.nodes.push(subgraph_node);
-
 
     // 3. Export JSON
     let json = serde_json::to_string_pretty(&axon.schematic)?;
