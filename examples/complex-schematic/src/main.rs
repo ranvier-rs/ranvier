@@ -77,6 +77,7 @@ async fn main() -> Result<()> {
         input_type: "String".to_string(), // Error message
         output_type: "Void".to_string(),
         metadata: Default::default(),
+        source_location: None,
     };
 
     // Create a Branch Edge
@@ -97,6 +98,7 @@ async fn main() -> Result<()> {
         input_type: "UserContext".to_string(),
         output_type: "Void".to_string(),
         metadata: Default::default(),
+        source_location: None,
     };
 
     // Add Subgraph to the main graph (conceptually unconnected for now, just to show JSON structure)

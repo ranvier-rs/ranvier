@@ -96,6 +96,7 @@ impl<T: Send + 'static, E: Send + 'static> Axon<T, E> {
             input_type: "void".to_string(), // Start has no input
             output_type: type_name_of::<T>(),
             metadata: Default::default(),
+            source_location: None,
         };
 
         let mut schematic = Schematic::new(label);
@@ -140,6 +141,7 @@ impl<T: Send + 'static, E: Send + 'static> Axon<T, E> {
             input_type: type_name_of::<T>(),
             output_type: type_name_of::<Next>(),
             metadata: Default::default(),
+            source_location: None,
         };
         // Edge from last node to this
         let last_node_id = self
@@ -211,6 +213,7 @@ impl<T: Send + 'static, E: Send + 'static> Axon<T, E> {
             input_type: type_name_of::<T>(),
             output_type: type_name_of::<T>(),
             metadata: Default::default(),
+            source_location: None,
         };
 
         self.schematic.nodes.push(branch_node);
