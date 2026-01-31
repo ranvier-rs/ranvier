@@ -12,6 +12,7 @@ mod build;
 mod check;
 mod dev;
 mod new;
+mod status;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -96,6 +97,12 @@ enum Commands {
         #[command(subcommand)]
         target: BuildTarget,
     },
+
+    /// Status Page commands
+    Status {
+        #[command(subcommand)]
+        action: StatusAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -120,6 +127,38 @@ enum BuildTarget {
     },
 }
 
+#[derive(Subcommand)]
+enum StatusAction {
+    /// Build static Status Page HTML
+    Build {
+        /// Output directory (default: ./dist/status)
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Service name for the status page
+        #[arg(short, long)]
+        service: Option<String>,
+
+        /// Input status.json file (optional)
+        #[arg(short, long)]
+        file: Option<String>,
+    },
+
+    /// Generate Status Page from example schematic
+    FromSchematic {
+        /// Example package name
+        example: String,
+
+        /// Output directory (default: ./dist/status)
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Service name override
+        #[arg(short, long)]
+        service: Option<String>,
+    },
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -133,6 +172,7 @@ fn main() -> Result<()> {
         Commands::Studio { file } => run_studio_command(file.as_deref()),
         Commands::Codegen { input, output } => run_codegen_command(&input, output.as_deref()),
         Commands::Build { target } => run_build_command(target),
+        Commands::Status { action } => run_status_command(action),
     }
 }
 
@@ -246,4 +286,20 @@ fn run_codegen_command(input_path: &str, output_path: Option<&str>) -> Result<()
     }
 
     Ok(())
+}
+
+/// Status Page 명령 핸들러
+fn run_status_command(action: StatusAction) -> Result<()> {
+    match action {
+        StatusAction::Build {
+            output,
+            service,
+            file,
+        } => status::run_status_build(output.as_deref(), service.as_deref(), file.as_deref()),
+        StatusAction::FromSchematic {
+            example,
+            output,
+            service,
+        } => status::run_status_from_schematic(&example, output.as_deref(), service.as_deref()),
+    }
 }
