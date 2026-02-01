@@ -103,8 +103,8 @@ async fn main() -> anyhow::Result<()> {
     setup_schema(&pool).await?;
 
     // Store pool on the Bus
-    let mut bus = Bus::new(http::Request::builder().uri("/").body(()).unwrap());
-    bus.write(pool);
+    let mut bus = Bus::new();
+    bus.insert(pool);
 
     // Example 1: Create a user
     println!("\n📝 Creating user...");
@@ -116,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
     let result = Axon::start(create_request, "create_user")
         .then(PgNode::new(CreateUser))
         .execute(&mut bus)
-        .await?;
+        .await;
 
     match result {
         Outcome::Next(user) => {
@@ -133,7 +133,7 @@ async fn main() -> anyhow::Result<()> {
     let result = Axon::start(UserId(1), "get_user")
         .then(PgNode::new(GetUserById))
         .execute(&mut bus)
-        .await?;
+        .await;
 
     match result {
         Outcome::Next(user) => {
@@ -150,7 +150,7 @@ async fn main() -> anyhow::Result<()> {
     let result = Axon::start((), "list_users")
         .then(PgNode::new(ListUsers))
         .execute(&mut bus)
-        .await?;
+        .await;
 
     match result {
         Outcome::Next(users) => {

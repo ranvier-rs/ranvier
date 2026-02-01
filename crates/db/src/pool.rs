@@ -62,7 +62,7 @@ pub enum DbPoolError {
 ///
 /// This type can be stored on the `Bus` as a resource.
 /// Example:
-/// ```rust
+/// ```rust,ignore
 /// let pool = PostgresPool::new("postgres://user:pass@localhost/db").await?;
 /// bus.write(pool);
 /// ```

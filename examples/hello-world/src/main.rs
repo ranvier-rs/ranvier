@@ -42,12 +42,8 @@ struct Greet;
 impl Transition<(), String> for Greet {
     type Error = anyhow::Error;
 
-    async fn run(
-        &self,
-        _state: (),
-        _bus: &mut Bus,
-    ) -> anyhow::Result<Outcome<String, Self::Error>> {
-        Ok(Outcome::Next("Hello, Ranvier!".to_string()))
+    async fn run(&self, _state: (), _bus: &mut Bus) -> Outcome<String, Self::Error> {
+        Outcome::Next("Hello, Ranvier!".to_string())
     }
 }
 
@@ -59,12 +55,8 @@ struct Exclaim;
 impl Transition<String, String> for Exclaim {
     type Error = anyhow::Error;
 
-    async fn run(
-        &self,
-        state: String,
-        _bus: &mut Bus,
-    ) -> anyhow::Result<Outcome<String, Self::Error>> {
-        Ok(Outcome::Next(format!("{} 🚀", state)))
+    async fn run(&self, state: String, _bus: &mut Bus) -> Outcome<String, Self::Error> {
+        Outcome::Next(format!("{} 🚀", state))
     }
 }
 
@@ -83,8 +75,8 @@ async fn main() -> anyhow::Result<()> {
     let node_count = axon.schematic.nodes.len();
 
     // Execute
-    let mut bus = Bus::new(http::Request::new(()));
-    let result = axon.execute(&mut bus).await?;
+    let mut bus = Bus::new();
+    let result = axon.execute(&mut bus).await;
 
     // Print result
     match result {

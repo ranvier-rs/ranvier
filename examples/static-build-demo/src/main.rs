@@ -360,7 +360,7 @@ fn run_static_build(output_dir: &str) -> Result<()> {
 
         // Create an empty request for static context
         let empty_req = Request::builder().uri("/").body(()).unwrap();
-        let mut bus = Bus::new(empty_req);
+        let mut bus = Bus::new();
         match axon.generate(&mut bus) {
             Ok(Outcome::Next(value)) => {
                 let file_name = format!("{}.json", name);

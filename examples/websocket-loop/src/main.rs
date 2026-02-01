@@ -105,11 +105,7 @@ struct ProcessMessage;
 impl Transition<WsMessage, ChatEvent> for ProcessMessage {
     type Error = anyhow::Error;
 
-    async fn run(
-        &self,
-        input: WsMessage,
-        _bus: &mut Bus,
-    ) -> anyhow::Result<Outcome<ChatEvent, Self::Error>> {
+    async fn run(&self, input: WsMessage, _bus: &mut Bus) -> Outcome<ChatEvent, Self::Error> {
         println!("[Process] Processing msg #{}: {}", input.id, input.content);
 
         // Simple logic: If message is "exit", stop the loop (in real app, we might Emit a Close event)
@@ -118,10 +114,10 @@ impl Transition<WsMessage, ChatEvent> for ProcessMessage {
             // For this demo, let's just process it.
         }
 
-        Ok(Outcome::Next(ChatEvent {
+        Outcome::Next(ChatEvent {
             user_id: "user_1".to_string(),
             message: input.content.to_uppercase(),
-        }))
+        })
     }
 }
 
@@ -133,13 +129,9 @@ struct Broadcast;
 impl Transition<ChatEvent, String> for Broadcast {
     type Error = anyhow::Error;
 
-    async fn run(
-        &self,
-        input: ChatEvent,
-        _bus: &mut Bus,
-    ) -> anyhow::Result<Outcome<String, Self::Error>> {
+    async fn run(&self, input: ChatEvent, _bus: &mut Bus) -> Outcome<String, Self::Error> {
         let response = format!("User {} said: {}", input.user_id, input.message);
-        Ok(Outcome::Next(response))
+        Outcome::Next(response)
     }
 }
 
@@ -175,21 +167,21 @@ async fn main() -> anyhow::Result<()> {
             .then(ProcessMessage)
             .then(Broadcast);
 
-        let mut bus = Bus::new(http::Request::new(()));
+        let mut bus = Bus::new();
 
         // 4. Execute Axon
         match axon.execute(&mut bus).await {
-            Ok(Outcome::Next(response)) => {
+            Outcome::Next(response) => {
                 // 5. Send result to Sink
                 if let Err(e) = ws.send_event(response).await {
                     eprintln!("Failed to send: {}", e);
                 }
             }
-            Ok(Outcome::Branch(_id, _val)) => {
+            Outcome::Branch(_id, _val) => {
                 println!("Branched (not handled in this loop demo)");
             }
-            Ok(_) => {}
-            Err(e) => eprintln!("Axon Error: {}", e),
+            Outcome::Fault(e) => eprintln!("Axon Error: {}", e),
+            _ => {}
         }
     }
 

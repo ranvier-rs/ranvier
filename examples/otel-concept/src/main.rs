@@ -52,11 +52,7 @@ struct Authenticate;
 impl Transition<HttpRequest, AuthUser> for Authenticate {
     type Error = anyhow::Error;
 
-    async fn run(
-        &self,
-        input: HttpRequest,
-        bus: &mut Bus,
-    ) -> anyhow::Result<Outcome<AuthUser, Self::Error>> {
+    async fn run(&self, input: HttpRequest, _bus: &mut Bus) -> Outcome<AuthUser, Self::Error> {
         // Access Connection ID if available
         // Note: bus here is &mut Bus, but we know we started with ConnectionBus
         // If we need strict typing, we might use a trait or specialized read.
@@ -64,15 +60,13 @@ impl Transition<HttpRequest, AuthUser> for Authenticate {
         // Let's simulate checking a header
         if input.path == "/login" {
             // Fail flow
-            return Ok(Outcome::Fault(anyhow::anyhow!(
-                "Login not supported in this demo"
-            )));
+            return Outcome::Fault(anyhow::anyhow!("Login not supported in this demo"));
         }
 
-        Ok(Outcome::Next(AuthUser {
+        Outcome::Next(AuthUser {
             id: "user_123".to_string(),
             role: "admin".to_string(),
-        }))
+        })
     }
 }
 
@@ -84,15 +78,11 @@ struct HandleRequest;
 impl Transition<AuthUser, HttpResponse> for HandleRequest {
     type Error = anyhow::Error;
 
-    async fn run(
-        &self,
-        input: AuthUser,
-        _bus: &mut Bus,
-    ) -> anyhow::Result<Outcome<HttpResponse, Self::Error>> {
-        Ok(Outcome::Next(HttpResponse {
+    async fn run(&self, input: AuthUser, _bus: &mut Bus) -> Outcome<HttpResponse, Self::Error> {
+        Outcome::Next(HttpResponse {
             status: 200,
             body: format!("Hello, {}! You are {}.", input.id, input.role),
-        }))
+        })
     }
 }
 
@@ -107,10 +97,10 @@ async fn main() -> anyhow::Result<()> {
     // 1. Setup Request and Connection Context
     let req = http::Request::new(());
     let conn_id = ConnectionId::new();
-    let bus = Bus::new(req);
-    let mut conn_bus = ConnectionBus::new(conn_id, bus);
+    let bus = Bus::new();
+    let mut conn_bus = ConnectionBus::from_bus(conn_id, bus);
 
-    println!("[System] Connection ID: {:?}", conn_bus.id());
+    println!("[System] Connection ID: {:?}", conn_bus.connection_id());
 
     // 2. Define Axon with Tracing Wrappers
     // Provide a name for each span
@@ -127,10 +117,10 @@ async fn main() -> anyhow::Result<()> {
     // 3. Execute
     // Note: ConnectionBus derefs to Bus, so we can pass it as &mut Bus
     match axon.execute(&mut conn_bus).await {
-        Ok(Outcome::Next(res)) => {
+        Outcome::Next(res) => {
             println!("\n[Result] Status: {}, Body: {}", res.status, res.body);
         }
-        Ok(Outcome::Fault(e)) => {
+        Outcome::Fault(e) => {
             println!("\n[Result] Fault: {:?}", e);
         }
         _ => println!("\n[Result] Other outcome"),

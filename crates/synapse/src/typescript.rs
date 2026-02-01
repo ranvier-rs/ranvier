@@ -92,7 +92,8 @@ impl TypeScriptGenerator {
     pub fn generate_query_hooks(&self, schematic: &Schematic) -> Result<String> {
         let mut ts = String::new();
 
-        ts.push_str("// Query hooks (TanStack Query / Svelte Query compatible)\n\n");
+        ts.push_str("// Query hooks (TanStack Query / Svelte Query compatible)\n");
+        ts.push_str("import { useQuery } from '@tanstack/svelte-query';\n\n");
 
         for node in &schematic.nodes {
             let safe_label = self.sanitize_identifier(&node.label);
@@ -106,7 +107,7 @@ impl TypeScriptGenerator {
             ts.push_str(&format!("  return useQuery({{\n"));
             ts.push_str(&format!("    queryKey: [{}],\n", query_key));
             ts.push_str(&format!(
-                "    queryFn: () => fetch(`/api/{}').then(r => r.json()),\n",
+                "    queryFn: () => fetch(`/api/{}`).then(r => r.json()),\n",
                 safe_label.to_lowercase()
             ));
             ts.push_str(&format!("    ...options,\n"));

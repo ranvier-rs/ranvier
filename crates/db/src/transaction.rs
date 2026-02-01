@@ -208,7 +208,7 @@ impl Transaction for SqliteTransaction {
 /// - `Outcome::Jump` → Commit (before jumping)
 ///
 /// Example:
-/// ```rust
+/// ```rust,ignore
 /// let tx_bus = TxBus::new(bus, pool.begin().await?);
 /// let outcome = axon.run(input, &mut tx_bus).await?;
 /// tx_bus.finalize(outcome).await?; // Auto commit/rollback

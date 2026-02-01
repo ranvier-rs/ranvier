@@ -142,20 +142,21 @@ where
     From: Send + Sync + 'static,
     To: Send + Sync + 'static,
 {
-    type Error = T::Error;
+    type Error = anyhow::Error;
 
-    async fn run(&self, input: From, bus: &mut Bus) -> anyhow::Result<Outcome<To, Self::Error>> {
-        let pool_resource = bus
-            .read::<super::pool::PostgresPool>()
-            .ok_or_else(|| anyhow::anyhow!("PostgresPool not found on Bus"))?;
+    async fn run(&self, input: From, bus: &mut Bus) -> Outcome<To, Self::Error> {
+        let pool_resource = match bus.read::<super::pool::PostgresPool>() {
+            Some(p) => p,
+            None => {
+                return Outcome::Fault(anyhow::anyhow!("PostgresPool not found on Bus"));
+            }
+        };
 
         let pool = pool_resource.inner();
         match self.inner.run(input, pool).await {
-            Ok(result) => Ok(Outcome::Next(result)),
-            Err(DbError::NoRows) => {
-                anyhow::bail!("Record not found")
-            }
-            Err(e) => anyhow::bail!("Database error: {}", e),
+            Ok(result) => Outcome::Next(result),
+            Err(DbError::NoRows) => Outcome::Fault(anyhow::anyhow!("Record not found")),
+            Err(e) => Outcome::Fault(anyhow::anyhow!("Database error: {}", e)),
         }
     }
 }
@@ -220,45 +221,48 @@ where
     From: Send + Sync + 'static,
     To: Send + Sync + 'static,
 {
-    type Error = T::Error;
+    type Error = anyhow::Error;
 
-    async fn run(&self, input: From, bus: &mut Bus) -> anyhow::Result<Outcome<To, Self::Error>> {
-        let pool_resource = bus
-            .read::<super::pool::PostgresPool>()
-            .ok_or_else(|| anyhow::anyhow!("PostgresPool not found on Bus"))?;
+    async fn run(&self, input: From, bus: &mut Bus) -> Outcome<To, Self::Error> {
+        let pool_resource = match bus.read::<super::pool::PostgresPool>() {
+            Some(p) => p,
+            None => {
+                return Outcome::Fault(anyhow::anyhow!("PostgresPool not found on Bus"));
+            }
+        };
 
         let pool = pool_resource.inner();
 
         // Begin transaction
-        let tx = pool
-            .begin()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to begin transaction: {}", e))?;
+        let tx = match pool.begin().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                return Outcome::Fault(anyhow::anyhow!("Failed to begin transaction: {}", e));
+            }
+        };
 
         // Execute the transition with the transaction
-        // Note: For true transaction support, we'd pass the transaction itself.
-        // This simplified version uses the pool directly.
         let result = match self.inner.run(input, pool).await {
             Ok(result) => Outcome::Next(result),
             Err(DbError::NoRows) => {
-                tx.rollback()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Rollback failed: {}", e))?;
-                anyhow::bail!("Record not found")
+                if let Err(e) = tx.rollback().await {
+                    return Outcome::Fault(anyhow::anyhow!("Rollback failed: {}", e));
+                }
+                return Outcome::Fault(anyhow::anyhow!("Record not found"));
             }
             Err(e) => {
-                tx.rollback()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Rollback failed: {}", e))?;
-                anyhow::bail!("Database error: {}", e)
+                if let Err(e) = tx.rollback().await {
+                    return Outcome::Fault(anyhow::anyhow!("Rollback failed: {}", e));
+                }
+                return Outcome::Fault(anyhow::anyhow!("Database error: {}", e));
             }
         };
 
         // Commit on success
-        tx.commit()
-            .await
-            .map_err(|e| anyhow::anyhow!("Commit failed: {}", e))?;
+        if let Err(e) = tx.commit().await {
+            return Outcome::Fault(anyhow::anyhow!("Commit failed: {}", e));
+        }
 
-        Ok(result)
+        result
     }
 }

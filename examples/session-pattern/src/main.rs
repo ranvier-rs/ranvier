@@ -64,11 +64,7 @@ struct LoadSession;
 impl Transition<String, String> for LoadSession {
     type Error = anyhow::Error;
 
-    async fn run(
-        &self,
-        req: String,
-        bus: &mut Bus,
-    ) -> anyhow::Result<Outcome<String, Self::Error>> {
+    async fn run(&self, req: String, bus: &mut Bus) -> Outcome<String, Self::Error> {
         // Simulate extracting cookie from "Request" (here just the string input)
         // In real app: bus.req.headers().get("Cookie")...
         let sid = if req.contains("sid=") {
@@ -85,7 +81,7 @@ impl Transition<String, String> for LoadSession {
             if let Some(session) = SessionStore::load(&sid) {
                 println!("[LoadSession] Session loaded for: {}", session.username);
                 // CRITICAL: Explicitly write session to Bus
-                bus.write(session);
+                bus.insert(session);
             } else {
                 println!("[LoadSession] Invalid Session ID");
             }
@@ -94,7 +90,7 @@ impl Transition<String, String> for LoadSession {
         }
 
         // Always continue. Session presence is checked later.
-        Ok(Outcome::Next(req))
+        Outcome::Next(req)
     }
 }
 
@@ -106,22 +102,18 @@ struct RequireAuth;
 impl Transition<String, String> for RequireAuth {
     type Error = anyhow::Error;
 
-    async fn run(
-        &self,
-        req: String,
-        bus: &mut Bus,
-    ) -> anyhow::Result<Outcome<String, Self::Error>> {
+    async fn run(&self, req: String, bus: &mut Bus) -> Outcome<String, Self::Error> {
         // Check if session exists in Bus
         if bus.has::<UserSession>() {
             println!("[RequireAuth] Authorized.");
-            Ok(Outcome::Next(req))
+            Outcome::Next(req)
         } else {
             println!("[RequireAuth] Unauthorized! Branching to login.");
             // Branch to "login_flow" with reason
-            Ok(Outcome::Branch(
+            Outcome::Branch(
                 "login_flow".to_string(),
-                Box::new("Authentication Required".to_string()),
-            ))
+                Some(serde_json::json!("Authentication Required")),
+            )
         }
     }
 }
@@ -134,21 +126,15 @@ struct UserProfile;
 impl Transition<String, String> for UserProfile {
     type Error = anyhow::Error;
 
-    async fn run(
-        &self,
-        _req: String,
-        bus: &mut Bus,
-    ) -> anyhow::Result<Outcome<String, Self::Error>> {
+    async fn run(&self, _req: String, bus: &mut Bus) -> Outcome<String, Self::Error> {
         // Safe unwrap because we are after RequireAuth
         // But idiomatic way is to use if let to be safe or map
         if let Some(session) = bus.read::<UserSession>() {
             let profile = format!("Profile: {} (Roles: {:?})", session.username, session.roles);
-            Ok(Outcome::Next(profile))
+            Outcome::Next(profile)
         } else {
             // Should not happen if schematic is correct, but runtime safe
-            Ok(Outcome::Fault(anyhow::anyhow!(
-                "Session missing in UserProfile"
-            )))
+            Outcome::Fault(anyhow::anyhow!("Session missing in UserProfile"))
         }
     }
 }
@@ -173,8 +159,8 @@ async fn main() -> anyhow::Result<()> {
     // Schematic
     // println!("{}", serde_json::to_string_pretty(&axon.schematic)?);
 
-    let mut bus = Bus::new(http::Request::new(()));
-    let result = axon.execute(&mut bus).await?;
+    let mut bus = Bus::new();
+    let result = axon.execute(&mut bus).await;
 
     match result {
         Outcome::Next(profile) => println!("Success: {}", profile),
@@ -192,13 +178,13 @@ async fn main() -> anyhow::Result<()> {
         .then(RequireAuth)
         .then(UserProfile);
 
-    let mut bus2 = Bus::new(http::Request::new(()));
-    let result2 = axon2.execute(&mut bus2).await?;
+    let mut bus2 = Bus::new();
+    let result2 = axon2.execute(&mut bus2).await;
 
     match result2 {
         Outcome::Next(profile) => println!("Success: {}", profile),
         Outcome::Branch(route, reason) => {
-            if let Some(r) = reason.downcast_ref::<String>() {
+            if let Some(r) = reason.as_ref().and_then(|v| v.as_str()) {
                 println!("Redirected to '{}': {}", route, r);
             }
         }

@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use ranvier_core::synapse::Synapse;
 use serde::Serialize;
 use std::sync::Arc;
-use tiny_http::{Response, Server};
+use tiny_http::{Request, Response, Server};
 
 // --- HTTP Listener Synapse ---
 pub struct HttpListenerSynapse {
@@ -27,6 +27,7 @@ impl HttpListenerSynapse {
 pub struct HttpRequest {
     pub url: String,
     pub method: String,
+    pub request: Request,
 }
 
 #[derive(Serialize)]
@@ -65,23 +66,12 @@ impl Synapse for HttpListenerSynapse {
         let url = request.url().to_string();
         let method = request.method().to_string();
 
-        // For this demo, we immediately respond "200 OK" to acknowledge receipt,
-        // OR we store the request in a buffer to be handled?
-        // To keep it simple: We just return the metadata.
-        // The demo logic assumes the Node *waits* for a request.
+        // We DO NOT respond here anymore. We pass the request to the node.
 
-        // Quick hack: respond OK immediately so browser doesn't hang,
-        // but in real world we might want to return the Workflow result.
-        // Doing that with this Synapse trait structure (Call -> Return) is tricky for typical "Server" pattern.
-        // BUT, we can make the Synapse `call` execute the generic "Wait for Request" action.
-
-        // Respond with CORS for basic localhost dev
-        let response = Response::from_string("{\"status\":\"processing\"}").with_header(
-            tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
-        );
-
-        let _ = request.respond(response);
-
-        Ok(HttpRequest { url, method })
+        Ok(HttpRequest {
+            url,
+            method,
+            request,
+        })
     }
 }

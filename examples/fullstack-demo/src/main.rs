@@ -6,63 +6,65 @@ use ranvier_core::prelude::*;
 use ranvier_core::static_gen::StaticNode;
 use ranvier_core::synapse::Synapse;
 use std::sync::Arc;
+use tiny_http::{Method, Response};
 
-// --- Node: WaitForRequest ---
-// This node blocks until an HTTP request arrives.
-struct WaitForRequestNode {
+// --- Node: ProcessData (Matches basic-schematic) ---
+// This guarantees the generated client's `useProcessData` hook works.
+struct ProcessDataNode {
     synapse: Arc<HttpListenerSynapse>,
-    next: &'static str,
 }
 
-impl StaticNode for WaitForRequestNode {
+impl StaticNode for ProcessDataNode {
     fn id(&self) -> &'static str {
-        "wait_for_request"
+        "process_data"
     }
     fn kind(&self) -> NodeKind {
         NodeKind::Ingress
-    } // It's an entry point
+    }
     fn next_nodes(&self) -> Vec<&'static str> {
-        vec![self.next]
+        vec![]
     }
 }
 
-impl WaitForRequestNode {
-    async fn execute(&self) -> Result<Outcome<String, String>> {
-        println!("\x1b[1m[Node]\x1b[0m Waiting for HTTP Order...");
-
+impl ProcessDataNode {
+    async fn execute(&self) -> Result<()> {
+        // We look for GET /api/process_data
         match self.synapse.call(()).await {
             Ok(req) => {
-                println!("\x1b[32m[Node]\x1b[0m Received {} {}", req.method, req.url);
-                Ok(Outcome::Next(req.url)) // Pass URL as payload
+                if req.method.as_str() == "GET" && req.url.contains("/api/process_data") {
+                    println!("\x1b[32m[Node]\x1b[0m Received API Request: {}", req.url);
+
+                    // Respond with JSON matching the expected output type (String)
+                    // In basic-schematic: ProcessData: String -> String.
+                    // The client expects the Ouptut of ProcessData which is String.
+                    // For a query hook, it expects the JSON response.
+
+                    let response_json = serde_json::json!("Processed Data from Backend");
+                    let response = Response::from_string(response_json.to_string())
+                        .with_header(
+                            tiny_http::Header::from_bytes(
+                                &b"Content-Type"[..],
+                                &b"application/json"[..],
+                            )
+                            .unwrap(),
+                        )
+                        .with_header(
+                            tiny_http::Header::from_bytes(
+                                &b"Access-Control-Allow-Origin"[..],
+                                &b"*"[..],
+                            )
+                            .unwrap(),
+                        );
+
+                    req.request.respond(response)?;
+                } else {
+                    // Ignore other requests or 404
+                    let _ = req.request.respond(Response::empty(404));
+                }
             }
-            Err(e) => Ok(Outcome::Fault(e)),
+            Err(_) => {}
         }
-    }
-}
-
-// --- Node: ProcessOrder ---
-struct ProcessOrderNode {
-    next: &'static str,
-}
-
-impl StaticNode for ProcessOrderNode {
-    fn id(&self) -> &'static str {
-        "process_order"
-    }
-    fn kind(&self) -> NodeKind {
-        NodeKind::Atom
-    }
-    fn next_nodes(&self) -> Vec<&'static str> {
-        vec![self.next]
-    }
-}
-
-impl ProcessOrderNode {
-    async fn execute(&self, url: String) -> Result<Outcome<String, String>> {
-        println!("\x1b[1m[Node]\x1b[0m Processing Order from URL: {}", url);
-        // Simulate logic
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        Ok(Outcome::Next("ORDER-SUCCESS-999".to_string()))
+        Ok(())
     }
 }
 
@@ -72,27 +74,15 @@ async fn main() -> Result<()> {
 
     let listener = Arc::new(HttpListenerSynapse::new(3030));
 
-    let ingress = WaitForRequestNode {
+    let process_data = ProcessDataNode {
         synapse: listener.clone(),
-        next: "process_order",
     };
 
-    let processor = ProcessOrderNode { next: "end" };
-
-    // Main Loop: simple server loop
+    // Main Loop
     loop {
-        // Step 1: Ingress
-        match ingress.execute().await? {
-            Outcome::Next(payload) => {
-                // Step 2: Process
-                match processor.execute(payload).await? {
-                    Outcome::Next(result) => {
-                        println!("\x1b[1m[Node]\x1b[0m Finished: {}\n", result);
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
+        // Handle requests
+        if let Err(e) = process_data.execute().await {
+            eprintln!("Error: {}", e);
         }
     }
 }

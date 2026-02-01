@@ -26,23 +26,19 @@ struct Authenticate;
 impl Transition<LoginInput, UserContext> for Authenticate {
     type Error = anyhow::Error;
 
-    async fn run(
-        &self,
-        input: LoginInput,
-        _bus: &mut Bus,
-    ) -> Result<Outcome<UserContext, Self::Error>> {
+    async fn run(&self, input: LoginInput, _bus: &mut Bus) -> Outcome<UserContext, Self::Error> {
         if input.username == "admin" {
-            Ok(Outcome::Next(UserContext {
+            Outcome::Next(UserContext {
                 user_id: "u1".to_string(),
                 role: "admin".to_string(),
-            }))
+            })
         } else {
             // In a real app, this would be a Branch or Emit
             // For now, let's simulate a Branch return
-            Ok(Outcome::Branch(
+            Outcome::Branch(
                 "LoginFailed".to_string(),
-                Box::new("Invalid credentials".to_string()),
-            ))
+                Some(serde_json::json!("Invalid credentials")),
+            )
         }
     }
 }

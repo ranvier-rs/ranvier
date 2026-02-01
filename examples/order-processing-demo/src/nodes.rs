@@ -33,7 +33,7 @@ impl ValidateOrderNode {
             return Ok(Outcome::Fault("Invalid amount".into()));
         }
         if request.items.is_empty() {
-            return Ok(Outcome::Branch("empty_cart".into(), Box::new(())));
+            return Ok(Outcome::Branch("empty_cart".into(), None));
         }
 
         Ok(Outcome::Next(()))
@@ -64,7 +64,10 @@ impl ReserveInventoryNode {
 
         match self.synapse.call(items.clone()).await {
             Ok(true) => Ok(Outcome::Next(items)),
-            Ok(false) => Ok(Outcome::Branch("out_of_stock".into(), Box::new(items))),
+            Ok(false) => Ok(Outcome::Branch(
+                "out_of_stock".into(),
+                Some(serde_json::to_value(items).unwrap()),
+            )),
             Err(e) => Ok(Outcome::Fault(e)),
         }
     }
@@ -94,7 +97,7 @@ impl PaymentNode {
 
         match self.synapse.call(amount).await {
             Ok(true) => Ok(Outcome::Next(())),
-            Ok(false) => Ok(Outcome::Branch("payment_declined".into(), Box::new(()))),
+            Ok(false) => Ok(Outcome::Branch("payment_declined".into(), None)),
             Err(e) => Ok(Outcome::Fault(e)),
         }
     }

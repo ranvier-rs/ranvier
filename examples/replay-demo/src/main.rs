@@ -42,17 +42,34 @@ async fn main() -> anyhow::Result<()> {
     println!("Starting Replay...");
     loop {
         match engine.next_step() {
-            Some(frame) => {
-                match frame.event {
-                    TimelineEvent::NodeEnter { node_label, timestamp, .. } => {
-                        println!("[{:>5}] 🟢 Enter Node: {}", timestamp - start_time, node_label);
-                    }
-                    TimelineEvent::NodeExit { outcome_type, duration_ms, timestamp, .. } => {
-                        println!("[{:>5}] 🔴 Exit Node : {} ({}ms) -> Outcome: {}", timestamp - start_time, "<unknown>", duration_ms, outcome_type);
-                    }
-                    _ => {}
+            Some(frame) => match frame.event {
+                TimelineEvent::NodeEnter {
+                    node_label,
+                    timestamp,
+                    ..
+                } => {
+                    println!(
+                        "[{:>5}] 🟢 Enter Node: {}",
+                        timestamp - start_time,
+                        node_label
+                    );
                 }
-            }
+                TimelineEvent::NodeExit {
+                    outcome_type,
+                    duration_ms,
+                    timestamp,
+                    ..
+                } => {
+                    println!(
+                        "[{:>5}] 🔴 Exit Node : {} ({}ms) -> Outcome: {}",
+                        timestamp - start_time,
+                        "<unknown>",
+                        duration_ms,
+                        outcome_type
+                    );
+                }
+                _ => {}
+            },
             None => {
                 println!("Replay Finished.");
                 break;

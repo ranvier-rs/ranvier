@@ -1,6 +1,6 @@
+use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_observe::init_stdout_tracing;
-use async_trait::async_trait;
 use tracing::instrument;
 
 // Define a simple Transition
