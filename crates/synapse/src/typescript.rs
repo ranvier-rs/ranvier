@@ -125,11 +125,11 @@ impl TypeScriptGenerator {
         ts.push_str("export type WsMessage<T> = {\n");
         ts.push_str("  type: string;\n");
         ts.push_str("  data: T;\n");
-        ts.push_str("}};\n\n");
+        ts.push_str("};\n\n");
 
         ts.push_str("export function createWsConnection<T>(url: string) {\n");
         ts.push_str("  const ws = new WebSocket(url);\n\n");
-        ts.push_str("  return {{\n");
+        ts.push_str("  return {\n");
         ts.push_str(
             "    on: (event: 'message' | 'open' | 'close', handler: (data: T) => void) => {\n",
         );
@@ -137,16 +137,16 @@ impl TypeScriptGenerator {
         ts.push_str("        if (e.type === 'message') {\n");
         ts.push_str("          const msg = JSON.parse((e as MessageEvent).data);\n");
         ts.push_str("          handler(msg.data);\n");
-        ts.push_str("        }} else {\n");
+        ts.push_str("        } else {\n");
         ts.push_str("          handler(null as any);\n");
-        ts.push_str("        }}\n");
-        ts.push_str("      }});\n");
+        ts.push_str("        }\n");
+        ts.push_str("      });\n");
         ts.push_str("      return ws;\n");
-        ts.push_str("    }},\n");
+        ts.push_str("    },\n");
         ts.push_str("    send: (data: T) => ws.send(JSON.stringify(data)),\n");
         ts.push_str("    close: () => ws.close(),\n");
-        ts.push_str("  }};\n");
-        ts.push_str("}}\n\n");
+        ts.push_str("  };\n");
+        ts.push_str("}\n\n");
 
         // Generate subscription functions for egress nodes
         for node in &schematic.nodes {
@@ -164,7 +164,7 @@ impl TypeScriptGenerator {
                     safe_label,
                     safe_label.to_lowercase()
                 ));
-                ts.push_str("}}\n\n");
+                ts.push_str("}\n\n");
             }
         }
 
