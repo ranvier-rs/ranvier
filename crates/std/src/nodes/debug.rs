@@ -40,3 +40,31 @@ where
         Outcome::next(input)
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ErrorNode<T> {
+    pub error_message: String,
+    #[serde(skip)]
+    pub _marker: PhantomData<T>,
+}
+
+impl<T> ErrorNode<T> {
+    pub fn new(error_message: impl Into<String>) -> Self {
+        Self {
+            error_message: error_message.into(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+#[async_trait]
+impl<T> Transition<T, T> for ErrorNode<T>
+where
+    T: Send + Sync + 'static,
+{
+    type Error = String;
+
+    async fn run(&self, _input: T, _bus: &mut Bus) -> Outcome<T, Self::Error> {
+        Outcome::fault(self.error_message.clone())
+    }
+}

@@ -1669,6 +1669,7 @@ name = "ranvier-std"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "rand",
  "ranvier-core",
  "schemars",
  "serde",

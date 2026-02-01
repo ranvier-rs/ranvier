@@ -12,6 +12,7 @@ tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = "1.2.0"
+rand = "0.8"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
