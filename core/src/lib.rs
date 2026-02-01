@@ -5,6 +5,7 @@ pub mod metadata;
 pub mod outcome;
 pub mod replay;
 pub mod schematic;
+pub mod service;
 pub mod static_gen;
 pub mod synapse;
 pub mod telemetry;
@@ -25,6 +26,7 @@ pub mod prelude {
     pub use crate::metadata::StepMetadata;
     pub use crate::outcome::{BranchId, NodeId, Outcome};
     pub use crate::schematic::{Edge, Node, NodeKind, Schematic};
+    pub use crate::service::RanvierService;
     pub use crate::transition::Transition;
 }
 
@@ -35,5 +37,7 @@ pub mod prelude {
 pub use axon::Axon;
 pub use bus::Bus;
 pub use outcome::Outcome;
+pub use replay::ReplayEngine;
 pub use schematic::Schematic;
+pub use service::RanvierService;
 pub use transition::Transition;

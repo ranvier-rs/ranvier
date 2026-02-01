@@ -1,3 +1,11 @@
+use http::Request;
+use hyper::server::conn::http1;
+use hyper_util::rt::TokioIo;
+use hyper_util::service::TowerToHyperService;
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
+
 use ranvier_core::prelude::*;
 use ranvier_std::prelude::*;
 
@@ -5,28 +13,9 @@ use ranvier_std::prelude::*;
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    println!("Running Ranvier Standard Library Demo...");
+    println!("Running Ranvier Standard Library Demo (Hyper/Tower Foundation)...");
 
-    // 1. Math Demo: (5 + 10) * 2 = 30
-    let math_pipeline = Axon::start(5, "Math Demo")
-        .then(MathNode::new(MathOperation::Add, 10))
-        .then(MathNode::new(MathOperation::Mul, 2));
-
-    let mut bus = Bus::new();
-    let result = math_pipeline.execute(&mut bus).await;
-    println!("Math Result: {:?}", result);
-
-    // 2. String Demo: "hello" -> UPPER -> Append " WORLD"
-    let string_pipeline = Axon::start("hello".to_string(), "String Demo")
-        .then(StringNode::new(StringOperation::ToUpper))
-        .then(StringNode::new(StringOperation::Append(
-            " WORLD".to_string(),
-        )));
-
-    let result = string_pipeline.execute(&mut bus).await;
-    println!("String Result: {:?}", result);
-
-    // 3. Logic Demo (Existing)
+    // 1. Logic Demo Pipeline
     let filter = FilterNode::new(|s: &String| s.len() > 5);
     let switch = SwitchNode::new(|s: &String| {
         if s.contains("Hello") {
@@ -36,13 +25,38 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let logic_pipeline = Axon::start("Hello Ranvier".to_string(), "Logic Demo")
+    // Define Axon: In=String, Out=String
+    // We explicitly specify types since start() doesn't take value to infer from
+    let logic_pipeline = Axon::<String, String, Infallible>::start("Logic Demo")
         .then(LogNode::new("Start", "info"))
         .then(filter)
         .then(switch);
 
-    let result = logic_pipeline.execute(&mut bus).await;
-    println!("Logic Result: {:?}", result);
+    // Create the Service
+    // Converter: Request -> String ("Hello Ranvier")
+    let converter =
+        |req: Request<hyper::body::Incoming>, _bus: &mut Bus| "Hello Ranvier".to_string();
 
-    Ok(())
+    let service = RanvierService::new(logic_pipeline, converter);
+
+    // Bind to port
+    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    let listener = TcpListener::bind(addr).await?;
+    println!("Listening on http://{}", addr);
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let io = TokioIo::new(stream);
+        let service_clone = service.clone();
+        let hyper_service = TowerToHyperService::new(service_clone);
+
+        tokio::task::spawn(async move {
+            if let Err(err) = http1::Builder::new()
+                .serve_connection(io, hyper_service)
+                .await
+            {
+                println!("Error serving connection: {:?}", err);
+            }
+        });
+    }
 }
