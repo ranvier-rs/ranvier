@@ -7,13 +7,28 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Running Ranvier Standard Library Demo...");
 
-    // Axon executes the chain: String -> LogNode -> RandomBranchNode
-    // if probability check passes (0.5) -> Next -> LogNode("Main Path")
-    // if probability check fails -> Branch("alternative_path") -> Execution stops with Branch outcome
-    let axon = Axon::start("Hello World".to_string(), "Demo Axon")
+    // Axon executes the chain: String -> FilterNode -> SwitchNode
+
+    // 1. FILTER: Accept only string longer than 5 chars
+    let filter = FilterNode::new(|s: &String| s.len() > 5);
+
+    // 2. SWITCH: Branch based on content
+    let switch = SwitchNode::new(|s: &String| {
+        if s.contains("Hello") {
+            "greeting".to_string()
+        } else {
+            "other".to_string()
+        }
+    });
+
+    let axon = Axon::start("Hello Ranvier".to_string(), "Demo Axon")
         .then(LogNode::new("Start", "info"))
-        .then(RandomBranchNode::new(0.5, "alternative_path"))
-        .then(LogNode::new("Main Path (Lucky!)", "info"));
+        .then(filter)
+        .then(switch)
+        .then(LogNode::new(
+            "This should not be reached due to switch",
+            "warn",
+        ));
 
     let mut bus = Bus::new();
     let result = axon.execute(&mut bus).await;
@@ -21,9 +36,9 @@ async fn main() -> anyhow::Result<()> {
     println!("Execution Result: {:?}", result);
 
     match result {
-        Outcome::Next(_) => println!("Finished on Main Path"),
-        Outcome::Branch(id, payload) => println!("Branched to: {} with payload: {:?}", id, payload),
-        _ => println!("Other outcome"),
+        Outcome::Branch(id, payload) => println!("Switched to: {} with payload: {:?}", id, payload),
+        Outcome::Fault(e) => println!("Filtered out: {}", e),
+        _ => println!("Unexpected outcome"),
     }
 
     Ok(())
