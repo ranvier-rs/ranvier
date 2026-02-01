@@ -1668,7 +1668,9 @@ dependencies = [
 name = "ranvier-std"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
+ "num-traits",
  "rand",
  "ranvier-core",
  "schemars",
