@@ -113,9 +113,9 @@ async fn main() -> anyhow::Result<()> {
         email: "alice@example.com".to_string(),
     };
 
-    let result = Axon::start(create_request, "create_user")
+    let result = Axon::<CreateUserRequest, CreateUserRequest, anyhow::Error>::start("create_user")
         .then(PgNode::new(CreateUser))
-        .execute(&mut bus)
+        .execute(create_request, &mut bus)
         .await;
 
     match result {
@@ -130,9 +130,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Example 2: Get user by ID
     println!("\n🔍 Looking up user by ID (1)...");
-    let result = Axon::start(UserId(1), "get_user")
+    let result = Axon::<UserId, UserId, anyhow::Error>::start("get_user")
         .then(PgNode::new(GetUserById))
-        .execute(&mut bus)
+        .execute(UserId(1), &mut bus)
         .await;
 
     match result {
@@ -147,9 +147,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Example 3: List all users
     println!("\n📋 Listing all users...");
-    let result = Axon::start((), "list_users")
+    let result = Axon::<(), (), anyhow::Error>::start("list_users")
         .then(PgNode::new(ListUsers))
-        .execute(&mut bus)
+        .execute((), &mut bus)
         .await;
 
     match result {

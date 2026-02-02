@@ -27,13 +27,13 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Tracing initialized. Starting Axon...");
 
     // 2. Define Axon
-    let axon = Axon::start(10, "CalculationCircuit")
+    let axon = Axon::<i32, i32, std::convert::Infallible>::start("CalculationCircuit")
         .then(AddOne)
         .then(AddOne);
 
     // 3. Execute
     let mut bus = Bus::new();
-    let result = axon.execute(&mut bus).await;
+    let result = axon.execute(10, &mut bus).await;
 
     tracing::info!("Execution Result: {:?}", result);
 

@@ -73,8 +73,9 @@ pub async fn demo_path_routing() {
     for req in requests {
         println!("  {} {} => ", req.method.as_str(), req.path);
         let mut bus = Bus::new();
-        let axon = Axon::start(req.clone(), "RootRouter").then(RootRoute);
-        match axon.execute(&mut bus).await {
+        let axon =
+            Axon::<RouteRequest, RouteRequest, RouteError>::start("RootRouter").then(RootRoute);
+        match axon.execute(req, &mut bus).await {
             Outcome::Next(resp) => println!("    {} {}", resp.status, resp.body),
             Outcome::Fault(e) => println!("    Error: {:?}", e),
             _ => {}
@@ -105,8 +106,9 @@ pub async fn demo_nested_routing() {
     for req in requests {
         println!("  {} {} => ", req.method.as_str(), req.path);
         let mut bus = Bus::new();
-        let axon = Axon::start(req.clone(), "ApiRouter").then(ApiRoute);
-        match axon.execute(&mut bus).await {
+        let axon =
+            Axon::<RouteRequest, RouteRequest, RouteError>::start("ApiRouter").then(ApiRoute);
+        match axon.execute(req.clone(), &mut bus).await {
             Outcome::Next(resp) => println!("    {} {}", resp.status, resp.body),
             Outcome::Branch(route, resp_box) => {
                 println!("    Branch: {} => {:?}", route, resp_box);
@@ -136,8 +138,9 @@ pub async fn demo_branch_routing() -> anyhow::Result<()> {
     for req in requests {
         println!("  {} {} => ", req.method.as_str(), req.path);
         let mut bus = Bus::new();
-        let axon = Axon::start(req.clone(), "BranchRouter").then(BranchRoute);
-        let result = axon.execute(&mut bus).await;
+        let axon =
+            Axon::<RouteRequest, RouteRequest, RouteError>::start("BranchRouter").then(BranchRoute);
+        let result = axon.execute(req.clone(), &mut bus).await;
         match result {
             Outcome::Branch(route, req_val) => {
                 println!("    Routed to: {} (payload: {:?})", route, req_val);

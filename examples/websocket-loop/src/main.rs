@@ -163,14 +163,14 @@ async fn main() -> anyhow::Result<()> {
 
         // 3. Define the Axon for this event kind
         // Note: Axons are light and created per event typically, or reused if stateless.
-        let axon = Axon::start(msg, "ChatFlow")
+        let axon = Axon::<WsMessage, WsMessage, anyhow::Error>::start("ChatFlow")
             .then(ProcessMessage)
             .then(Broadcast);
 
         let mut bus = Bus::new();
 
         // 4. Execute Axon
-        match axon.execute(&mut bus).await {
+        match axon.execute(msg, &mut bus).await {
             Outcome::Next(response) => {
                 // 5. Send result to Sink
                 if let Err(e) = ws.send_event(response).await {

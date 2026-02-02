@@ -151,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
     println!("--- Case 1: Valid Session ---");
     let req_valid = "GET /profile (Cookie: sid=valid_sid_123)".to_string();
 
-    let axon = Axon::start(req_valid, "SecureProfileFlow")
+    let axon = Axon::<String, String, anyhow::Error>::start("SecureProfileFlow")
         .then(LoadSession)
         .then(RequireAuth)
         .then(UserProfile);
@@ -160,7 +160,7 @@ async fn main() -> anyhow::Result<()> {
     // println!("{}", serde_json::to_string_pretty(&axon.schematic)?);
 
     let mut bus = Bus::new();
-    let result = axon.execute(&mut bus).await;
+    let result = axon.execute(req_valid, &mut bus).await;
 
     match result {
         Outcome::Next(profile) => println!("Success: {}", profile),
@@ -173,13 +173,13 @@ async fn main() -> anyhow::Result<()> {
     println!("\n--- Case 2: No/Invalid Session ---");
     let req_invalid = "GET /profile (No Cookie)".to_string();
 
-    let axon2 = Axon::start(req_invalid, "SecureProfileFlow")
+    let axon2 = Axon::<String, String, anyhow::Error>::start("SecureProfileFlow")
         .then(LoadSession)
         .then(RequireAuth)
         .then(UserProfile);
 
     let mut bus2 = Bus::new();
-    let result2 = axon2.execute(&mut bus2).await;
+    let result2 = axon2.execute(req_invalid, &mut bus2).await;
 
     match result2 {
         Outcome::Next(profile) => println!("Success: {}", profile),

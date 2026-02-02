@@ -103,7 +103,7 @@ impl Transition<String, ()> for LogEnd {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Build the Axon (Execution chain)
-    let axon = Axon::start((), "My First Schematic")
+    let axon = Axon::<(), (), anyhow::Error>::start("My First Schematic")
         .then(LogStart)
         .then(ProcessData)
         .then(LogEnd);
@@ -127,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
     // Execute the Axon
     println!("=== Running Axon ===");
     let mut bus = Bus::new();
-    let result = axon.execute(&mut bus).await;
+    let result = axon.execute((), &mut bus).await;
     println!("Final Result: {:?}", result);
 
     // Demonstrate Axon helper methods

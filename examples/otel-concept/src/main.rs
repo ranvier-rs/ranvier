@@ -104,19 +104,20 @@ async fn main() -> anyhow::Result<()> {
 
     // 2. Define Axon with Tracing Wrappers
     // Provide a name for each span
-    let axon = Axon::start(
-        HttpRequest {
-            path: "/dashboard".to_string(),
-            method: "GET".to_string(),
-        },
-        "HttpTransaction",
-    )
-    .then(Traced::new(Authenticate, "Authenticate"))
-    .then(Traced::new(HandleRequest, "HandleRequest"));
+    // 2. Define Axon with Tracing Wrappers
+    // Provide a name for each span
+    let axon = Axon::<HttpRequest, HttpRequest, anyhow::Error>::start("HttpTransaction")
+        .then(Traced::new(Authenticate, "Authenticate"))
+        .then(Traced::new(HandleRequest, "HandleRequest"));
 
     // 3. Execute
+    let req_input = HttpRequest {
+        path: "/dashboard".to_string(),
+        method: "GET".to_string(),
+    };
+
     // Note: ConnectionBus derefs to Bus, so we can pass it as &mut Bus
-    match axon.execute(&mut conn_bus).await {
+    match axon.execute(req_input, &mut conn_bus).await {
         Outcome::Next(res) => {
             println!("\n[Result] Status: {}, Body: {}", res.status, res.body);
         }
