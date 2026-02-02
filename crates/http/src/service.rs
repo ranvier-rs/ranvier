@@ -1,15 +1,21 @@
-use std::convert::Infallible;
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+//! # RanvierService - Tower Service Adapter
+//!
+//! Adapts Ranvier Axon execution to Tower's Service trait.
+//! This allows Ranvier circuits to be used with any Tower-compatible infrastructure.
+//!
+//! ## Design (Discussion 190)
+//!
+//! > "ranvier-http is an adapter that converts Ranvier Axon into tower::Service"
 
 use bytes::Bytes;
 use http::{Request, Response};
 use http_body_util::Full;
+use ranvier_core::prelude::*;
+use std::convert::Infallible;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use tower::Service;
-
-use crate::axon::Axon;
-use crate::bus::Bus;
 
 /// The foundational logic engine service.
 /// Adapts HTTP requests to Axon executions.
@@ -31,7 +37,7 @@ where
     B: Send + 'static,
     In: Send + Sync + 'static,
     Out: Send + Sync + 'static,
-    E: Send + 'static + std::fmt::Debug, // Debug for logging error
+    E: Send + 'static + std::fmt::Debug,
     F: Fn(Request<B>, &mut Bus) -> In + Clone + Send + Sync + 'static,
 {
     type Response = Response<Full<Bytes>>;
@@ -56,13 +62,11 @@ where
             let _result = axon.execute(input, &mut bus).await;
 
             // 3. Egress Adapter: Outcome -> Response
-            // In a real impl, Outcome should likely contain Response, or we map it.
-            // For now, we debug print.
+            // TODO: Properly map Outcome to Response based on application needs
             let body_str = format!(
                 "Ranvier Execution Result: {:?}",
                 "result (Debug missing on Outcome?)"
             );
-            // Note: Outcome might not be Debug. Using placeholder.
 
             let response = Response::new(Full::new(Bytes::from(body_str)));
             Ok(response)

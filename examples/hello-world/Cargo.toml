@@ -3,9 +3,15 @@ name = "hello-world"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "hello-world"
+path = "src/main.rs"
+
 [dependencies]
 ranvier-core = { workspace = true }
+ranvier-http = { workspace = true }
 tokio = { workspace = true }
-http = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = "0.3"

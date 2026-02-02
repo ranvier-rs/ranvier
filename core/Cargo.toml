@@ -2,6 +2,7 @@
 name = "ranvier-core"
 version = "0.1.0"
 edition = "2021"
+description = "Protocol-agnostic core for Ranvier - Typed Decision Engine"
 
 [dependencies]
 uuid = { workspace = true }
@@ -14,8 +15,5 @@ chrono = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow = { workspace = true }
 tracing = "0.1"
-hyper = { workspace = true }
-tower = { workspace = true }
-http = { workspace = true }
-http-body-util = { workspace = true }
-bytes = { workspace = true }
+# NOTE: hyper, tower, http removed per Discussion 190 - Core MUST be Protocol-agnostic
+# HTTP-related functionality now lives in ranvier-http

@@ -43,10 +43,11 @@ fn type_name_of<T: ?Sized>() -> String {
 ///
 /// ## Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// use ranvier_core::prelude::*;
 /// // ...
-/// let axon = Axon::<(), String, _>::start("My Axon")
+/// // Start with an identity Axon (In -> In)
+/// let axon = Axon::<(), (), _>::new("My Axon")
 ///     .then(StepA)
 ///     .then(StepB);
 ///
@@ -75,6 +76,20 @@ where
     In: Send + Sync + 'static,
     E: Send + 'static,
 {
+    /// Create a new Axon flow with the given label.
+    /// This is the preferred entry point per Flat API guidelines.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let hello = Axon::new("HelloWorld")
+    ///     .then(GreetBlock)
+    ///     .then(ExclaimBlock);
+    /// ```
+    pub fn new(label: &str) -> Self {
+        Self::start(label)
+    }
+
     /// Start defining a new Axon flow.
     /// This creates an Identity Axon (In -> In).
     pub fn start(label: &str) -> Self {

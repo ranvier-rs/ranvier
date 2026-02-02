@@ -1,40 +1,27 @@
 /*!
-# Hello World 예제
+# Hello World - Ranvier Flat API Example
 
-## 예제 목적
-Ranvier의 가장 기초적인 **Axon 빌더 패턴**과 **Outcome 기반 제어 흐름**을 보여줍니다.
+## Purpose
+Demonstrates the **Flat API** pattern (Discussion 192-193):
+- User code depth ≤ 2
+- `Ranvier::http()` is an Ingress Circuit Builder, not a web server
 
-## 학습 내용
-- **Axon::start()**: 실행 경로의 시작점 정의
-- **Axon::then()**: Transition을 순차적으로 연결
-- **Outcome::Next**: 선형 실행 흐름 표현
-- **Schematic**: 실행 경로의 자동 생성되는 구조 정보
-
-## 실행 방법
+## Running
 ```bash
 cargo run --bin hello-world
+# Open http://127.0.0.1:3000/ in browser
 ```
-
-## 기능 설명
-이 예제는 Ranvier를 시작하기 가장 간단한 진입점입니다.
-1. 빈 상태 `()` 에서 시작하여 문자열 상태로 변환
-2. 두 개의 Transition(`Greet`, `Exclaim`)을 체이닝
-3. 실행 후 Schematic 노드 수 확인
 */
-
-//! # Hello World Demo - Minimal Axon Example
-//!
-//! This is the simplest possible example showing the Axon pattern.
-//! It demonstrates linear execution flow with Outcome-based control.
 
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
+use ranvier_http::prelude::*;
 
 // ============================================================================
-// 1. Define Simple Transitions
+// 1. Define Simple Transitions (Business Logic)
 // ============================================================================
 
-/// 첫 번째 Transition: 빈 상태에서 인사말 생성
+/// First Transition: Generate greeting message
 #[derive(Clone)]
 struct Greet;
 
@@ -47,7 +34,7 @@ impl Transition<(), String> for Greet {
     }
 }
 
-/// 두 번째 Transition: 문자열에 이모지 추가
+/// Second Transition: Add emoji to message
 #[derive(Clone)]
 struct Exclaim;
 
@@ -61,31 +48,35 @@ impl Transition<String, String> for Exclaim {
 }
 
 // ============================================================================
-// 2. Main - Build and Execute Axon
+// 2. Main - Build and Wire Circuits with Flat API
 // ============================================================================
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    println!("=== Hello World Demo ===\n");
+    // Initialize tracing for observability
+    tracing_subscriber::fmt::init();
 
-    // Build a simple linear Axon
-    let axon = Axon::start((), "HelloWorld").then(Greet).then(Exclaim);
+    println!("=== Ranvier Flat API Demo ===\n");
 
-    // Extract schematic before execution (since execute() takes ownership)
-    let node_count = axon.schematic.nodes.len();
+    // 1. Logic Circuit (Flat, Declarative)
+    //    This is the "what to do" - depth = 1
+    //    Note: Axon::new("label") creates an identity Axon<T, T, E>
+    //          We start with () and transform to String via transitions
+    let hello = Axon::<(), (), anyhow::Error>::new("HelloWorld")
+        .then(Greet)
+        .then(Exclaim);
 
-    // Execute
-    let mut bus = Bus::new();
-    let result = axon.execute(&mut bus).await;
+    println!("Circuit defined with {} nodes", hello.schematic.nodes.len());
+    println!("Starting server on http://127.0.0.1:3000\n");
 
-    // Print result
-    match result {
-        Outcome::Next(message) => println!("{}", message),
-        _ => println!("Unexpected outcome: {:?}", result),
-    }
-
-    println!("\n=== Schematic Nodes ===");
-    println!("Total nodes: {}", node_count);
+    // 2. Ingress Configuration (Also Flat)
+    //    This is the "how it enters" - depth = 2
+    Ranvier::http()
+        .bind("127.0.0.1:3000")
+        .route("/", hello)
+        .run()
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     Ok(())
 }
