@@ -1,7 +1,7 @@
 //! # Axon: Executable Decision Tree
 //!
 //! The `Axon` is the **runtime execution path** of a Typed Decision Tree.
-//! It functions as a reusable Pipeline<In, Out>.
+//! It functions as a reusable Typed Decision flow (Axon<In, Out, E>).
 //!
 //! ## Design Philosophy
 //!
@@ -38,7 +38,7 @@ fn type_name_of<T: ?Sized>() -> String {
 
 /// The Axon Builder and Runtime.
 ///
-/// `Axon` represents an executable decision tree (Pipeline).
+/// `Axon` represents an executable decision tree.
 /// It is reusable and thread-safe.
 ///
 /// ## Example

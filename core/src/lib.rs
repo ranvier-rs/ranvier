@@ -10,12 +10,12 @@ pub mod timeline;
 pub mod transition;
 
 // NOTE: service module moved to ranvier-http (Discussion 190: Protocol-agnostic Core)
-// For RanvierService, use: ranvier_http::RanvierService
+// For Ingress adapters, use: ranvier_http
 
 // Static generation exports
 pub use static_gen::{
-    read_json_file, write_json_file, StaticAxon, StaticBuildConfig, StaticBuildResult,
-    StaticManifest, StaticNode, StaticStateEntry,
+    StaticAxon, StaticBuildConfig, StaticBuildResult, StaticManifest, StaticNode, StaticStateEntry,
+    read_json_file, write_json_file,
 };
 
 // Prelude module for convenient imports

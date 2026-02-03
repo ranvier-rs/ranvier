@@ -1,6 +1,6 @@
 //! # Transition: Typed State Transformation
 //!
-//! The `Transition` trait defines the contract for state transformations.
+//! The `Transition` trait defines the contract for state transformations within a Decision Tree.
 //!
 //! ## Design Philosophy
 //!

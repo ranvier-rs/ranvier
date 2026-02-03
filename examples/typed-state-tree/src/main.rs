@@ -2,7 +2,7 @@
 # Typed State Tree Example
 
 This example demonstrates how to use Rust enums to represent a "Typed State Tree".
-Instead of a simple linear pipeline, the Axon moves between explicit domain states.
+Instead of a simple linear flow, the Axon moves between explicit domain states.
 
 ## Key Concepts
 1. **Explicit States**: Each stage in the process is represented by a variant in an enum.

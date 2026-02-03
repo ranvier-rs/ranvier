@@ -17,7 +17,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Running Ranvier Standard Library Demo (Hyper/Tower Foundation)...");
 
-    // 1. Logic Demo Pipeline
+    // 1. Logic Demo Decision flow
     let filter = FilterNode::new(|s: &String| s.len() > 5);
     let switch = SwitchNode::new(|s: &String| {
         if s.contains("Hello") {
@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Define Axon: In=String, Out=String
     // We explicitly specify types since start() doesn't take value to infer from
-    let logic_pipeline = Axon::<String, String, Infallible>::start("Logic Demo")
+    let logic_flow = Axon::<String, String, Infallible>::start("Logic Demo")
         .then(LogNode::new("Start", "info"))
         .then(filter)
         .then(switch);
@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     let converter =
         |_req: Request<hyper::body::Incoming>, _bus: &mut Bus| "Hello Ranvier".to_string();
 
-    let service = RanvierService::new(logic_pipeline, converter);
+    let service = RanvierService::new(logic_flow, converter);
 
     // Bind to port
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
