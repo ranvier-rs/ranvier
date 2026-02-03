@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use ranvier_core::prelude::*;
 use ranvier_core::synapse::Synapse;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -8,8 +7,8 @@ use tokio::time::sleep;
 // --- Mock Domain Data ---
 #[derive(Debug)]
 struct User {
-    id: u32,
-    username: String,
+    _id: u32,
+    _username: String,
 }
 
 // --- Define Synapse (Integration) ---
@@ -43,8 +42,8 @@ impl Synapse for PostgresSynapse {
 
         println!("[Synapse] User {} found.", user_id);
         Ok(Some(User {
-            id: user_id,
-            username: format!("user_{}", user_id),
+            _id: user_id,
+            _username: format!("user_{}", user_id),
         }))
     }
 }

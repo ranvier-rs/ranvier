@@ -1,8 +1,12 @@
 [package]
 name = "ranvier-std"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 description = "Standard Module Library for Ranvier"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 ranvier-core = { workspace = true }

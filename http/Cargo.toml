@@ -1,7 +1,11 @@
 [package]
 name = "ranvier-http"
-version = "0.1.0"
-edition = "2021"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+version.workspace = true
+edition.workspace = true
 description = "HTTP Ingress adapter for Ranvier - Tower-native Service implementation"
 
 [dependencies]

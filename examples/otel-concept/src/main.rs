@@ -26,7 +26,7 @@ use std::fmt::Debug;
 #[derive(Debug, Clone)]
 struct HttpRequest {
     path: String,
-    method: String,
+    _method: String,
 }
 
 #[derive(Debug, Clone)]
@@ -96,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
     println!("=== OTLP Tracing Concept ===\n");
 
     // 1. Setup Request and Connection Context
-    let req = http::Request::new(());
+    let _req = http::Request::new(());
     let conn_id = ConnectionId::new();
     let bus = Bus::new();
     let mut conn_bus = ConnectionBus::from_bus(conn_id, bus);
@@ -114,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
     // 3. Execute
     let req_input = HttpRequest {
         path: "/dashboard".to_string(),
-        method: "GET".to_string(),
+        _method: "GET".to_string(),
     };
 
     // Note: ConnectionBus derefs to Bus, so we can pass it as &mut Bus

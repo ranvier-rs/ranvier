@@ -6,7 +6,7 @@ use ranvier_core::prelude::*;
 use ranvier_core::static_gen::StaticNode;
 use ranvier_core::synapse::Synapse;
 use std::sync::Arc;
-use tiny_http::{Method, Response};
+use tiny_http::Response;
 
 // --- Node: ProcessData (Matches basic-schematic) ---
 // This guarantees the generated client's `useProcessData` hook works.

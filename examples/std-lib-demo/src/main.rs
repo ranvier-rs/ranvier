@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
     // Create the Service
     // Converter: Request -> String ("Hello Ranvier")
     let converter =
-        |req: Request<hyper::body::Incoming>, _bus: &mut Bus| "Hello Ranvier".to_string();
+        |_req: Request<hyper::body::Incoming>, _bus: &mut Bus| "Hello Ranvier".to_string();
 
     let service = RanvierService::new(logic_pipeline, converter);
 

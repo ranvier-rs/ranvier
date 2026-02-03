@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use ranvier_core::synapse::Synapse;
 use serde::Serialize;
 use std::sync::Arc;
-use tiny_http::{Request, Response, Server};
+use tiny_http::{Request, Server};
 
 // --- HTTP Listener Synapse ---
 pub struct HttpListenerSynapse {
@@ -31,6 +31,7 @@ pub struct HttpRequest {
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)]
 pub struct HttpResponse {
     pub status: u16,
     pub body: String,

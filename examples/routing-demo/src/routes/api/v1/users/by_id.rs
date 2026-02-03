@@ -2,6 +2,7 @@ use crate::routes::{HttpMethod, RouteError, RouteRequest, RouteResponse};
 use ranvier_core::prelude::*;
 
 /// Handler for /users/:id/*
+#[allow(dead_code)]
 pub async fn route_user_by_id(
     req: RouteRequest,
     user_id: &str,

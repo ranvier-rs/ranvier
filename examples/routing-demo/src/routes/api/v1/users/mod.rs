@@ -5,6 +5,7 @@ pub mod by_id;
 
 /// Users routing transition
 /// Handles /api/v1/users and /api/v1/users/:id/*
+#[allow(dead_code)]
 pub async fn route_users(
     req: RouteRequest,
     path: &str,
@@ -37,6 +38,7 @@ pub async fn route_users(
 }
 
 /// Helper to extract the first path segment
+#[allow(dead_code)]
 fn extract_segment(path: &str) -> Option<(&str, &str)> {
     let rest = path.trim_start_matches('/');
     if rest.is_empty() {

@@ -4,6 +4,7 @@ use ranvier_core::prelude::*;
 pub mod users;
 
 /// V1 API routing transition
+#[allow(dead_code)]
 pub async fn route_v1(
     req: RouteRequest,
     path: &str,

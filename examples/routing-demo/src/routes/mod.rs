@@ -40,6 +40,7 @@ pub struct RouteResponse {
 
 /// Error type for routing
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum RouteError {
     NotFound(String),
     MethodNotAllowed(String),
@@ -205,7 +206,7 @@ impl Transition<RouteRequest, RouteResponse> for ApiRoute {
         let rest = &path[4..];
 
         // Check for /v1
-        if let Some(v1_rest) = rest.strip_prefix("/v1") {
+        if let Some(_v1_rest) = rest.strip_prefix("/v1") {
             // Note: route_v1 likely returns Result<Outcome>. Need to check API module.
             // Assuming it needs update too, or we wrap it here.
             // For now, let's assume route_v1 returns Result and we unwrap it, OR update route_v1.

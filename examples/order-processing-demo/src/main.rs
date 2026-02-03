@@ -147,7 +147,7 @@ async fn main() -> Result<()> {
         Outcome::Next(_) => {
             // Step 2: Reserve
             match reserve.execute(request.items.clone()).await? {
-                Outcome::Next(items) => {
+                Outcome::Next(_items) => {
                     // Step 3: Payment
                     match payment.execute(request.total_amount).await? {
                         Outcome::Next(_) => {

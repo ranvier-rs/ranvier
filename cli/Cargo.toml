@@ -1,9 +1,12 @@
 [package]
 name = "ranvier-cli"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 description = "Command-line interface for Ranvier framework"
-authors = ["Ranvier Team"]
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [[bin]]
 name = "ranvier"
@@ -16,4 +19,3 @@ ranvier-status = { path = "../crates/status" }
 clap = { version = "4", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
-

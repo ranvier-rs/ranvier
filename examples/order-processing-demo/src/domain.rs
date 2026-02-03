@@ -15,6 +15,7 @@ pub struct OrderRequest {
     pub total_amount: u32,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OrderStatus {
     Pending,
@@ -25,6 +26,7 @@ pub enum OrderStatus {
     Failed(String),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
     pub id: String,

@@ -1,4 +1,4 @@
-use crate::domain::{OrderRequest, Product};
+use crate::domain::Product;
 use anyhow::Result;
 use async_trait::async_trait;
 use ranvier_core::synapse::Synapse;

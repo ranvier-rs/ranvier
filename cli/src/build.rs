@@ -121,6 +121,7 @@ fn build_example_static(example_name: &str, _name: &str, config: &StaticBuildCon
 }
 
 /// Write the manifest file
+#[allow(dead_code)]
 pub fn write_manifest(output_dir: &PathBuf, manifest: &StaticManifest) -> Result<()> {
     let manifest_path = output_dir.join("manifest.json");
     write_json_file(&manifest_path, manifest, true)?;

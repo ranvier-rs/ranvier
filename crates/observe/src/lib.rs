@@ -1,6 +1,4 @@
-use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::trace::Tracer;
 use opentelemetry_sdk::{runtime, Resource};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;

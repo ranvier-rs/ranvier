@@ -359,7 +359,7 @@ fn run_static_build(output_dir: &str) -> Result<()> {
         println!("   📦 Building: {}", name);
 
         // Create an empty request for static context
-        let empty_req = Request::builder().uri("/").body(()).unwrap();
+        let _empty_req = Request::builder().uri("/").body(()).unwrap();
         let mut bus = Bus::new();
         match axon.generate(&mut bus) {
             Ok(Outcome::Next(value)) => {

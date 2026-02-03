@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+
 members = [
     "core",
     "runtime",
@@ -28,6 +29,16 @@ members = [
     "crates/status",
     "crates/observe",
 ]
+
+[workspace.package]
+authors = ["CELLAXON Inc."]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ranvier-rs/ranvier"
+homepage = "https://ranvier.studio"
+edition = "2024"
+version = "0.1.0"
+keywords = ["automation", "workflow", "decision-engine", "circuit", "async"]
+categories = ["asynchronous", "development-tools", "web-programming"]
 
 [workspace.dependencies]
 # Internal Crates
