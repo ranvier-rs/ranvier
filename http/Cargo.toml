@@ -29,3 +29,4 @@ bytes = { workspace = true }
 # Utilities
 thiserror = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }

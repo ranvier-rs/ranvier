@@ -91,8 +91,10 @@ where
             id: node_id,
             kind: NodeKind::Ingress,
             label: label.to_string(),
+            description: None,
             input_type: "void".to_string(),
             output_type: type_name_of::<In>(),
+            resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
             source_location: None,
         };
@@ -125,8 +127,6 @@ where
         Next: Send + Sync + 'static,
         Trans: Transition<Out, Next, Resources = Res, Error = E> + Clone + Send + Sync + 'static,
     {
-        let trans_label = type_name_of::<Trans>();
-
         // Decompose self to avoid partial move issues
         let Axon {
             mut schematic,
@@ -138,9 +138,11 @@ where
         let next_node = Node {
             id: next_node_id.clone(),
             kind: NodeKind::Atom,
-            label: trans_label.clone(),
+            label: transition.label(),
+            description: transition.description(),
             input_type: type_name_of::<Out>(),
             output_type: type_name_of::<Next>(),
+            resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
             source_location: None,
         };
@@ -175,8 +177,20 @@ where
                         other => return other.map(|_| unreachable!()),
                     };
 
-                    // Run this step
-                    trans.run(state, res, bus).await
+                    // Run this step with automatic instrumentation
+                    let label = trans.label();
+                    let res_type = std::any::type_name::<Res>()
+                        .split("::")
+                        .last()
+                        .unwrap_or("unknown");
+
+                    async move { trans.run(state, res, bus).await }
+                        .instrument(tracing::info_span!(
+                            "Node",
+                            ranvier.node = %label,
+                            ranvier.resource_type = %res_type
+                        ))
+                        .await
                 })
             },
         );
@@ -201,8 +215,10 @@ where
             id: uuid::Uuid::new_v4().to_string(),
             kind: NodeKind::Synapse,
             label: label.to_string(),
+            description: None,
             input_type: type_name_of::<Out>(),
             output_type: type_name_of::<Out>(),
+            resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
             source_location: None,
         };

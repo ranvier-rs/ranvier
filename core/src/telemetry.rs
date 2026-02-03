@@ -46,8 +46,8 @@ impl<T> Traced<T> {
 impl<T, From, To> Transition<From, To> for Traced<T>
 where
     T: Transition<From, To>,
-    From: Send + 'static + Debug, // Input must be Debug for tracing
-    To: Send + 'static + Debug,   // Output must be Debug for tracing
+    From: Send + 'static + Debug,
+    To: Send + 'static + Debug,
 {
     type Error = T::Error;
     type Resources = T::Resources;
@@ -58,48 +58,41 @@ where
         resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<To, Self::Error> {
-        // 1. Start Span
-        println!("[Trace] Start Span: '{}' | Input: {:?}", self.name, input);
-        let start = std::time::Instant::now();
+        use tracing::{Instrument, info_span};
 
-        // 2. Run Inner Transition
-        let result = self.inner.run(input, resources, bus).await;
+        let span = info_span!(
+            "Node",
+            ranvier.node = %self.name,
+            ranvier.resource_type = %std::any::type_name::<Self::Resources>().split("::").last().unwrap_or("unknown")
+        );
 
-        // 3. End Span
-        let duration = start.elapsed();
-        match &result {
-            Outcome::Next(val) => {
-                println!(
-                    "[Trace] End Span: '{}' | Duration: {:?} | Outcome: Next({:?})",
-                    self.name, duration, val
-                );
+        async move {
+            tracing::debug!(?input, "Entering node transition");
+            let start = std::time::Instant::now();
+
+            let result = self.inner.run(input, resources, bus).await;
+
+            let duration = start.elapsed();
+            match &result {
+                Outcome::Next(val) => {
+                    tracing::info!(?val, ?duration, "Transition completed: Next");
+                }
+                Outcome::Branch(id, _) => {
+                    tracing::info!(?id, ?duration, "Transition completed: Branch");
+                }
+                Outcome::Jump(id, _) => {
+                    tracing::info!(?id, ?duration, "Transition completed: Jump");
+                }
+                Outcome::Emit(event_type, _) => {
+                    tracing::info!(?event_type, ?duration, "Transition completed: Emit");
+                }
+                Outcome::Fault(e) => {
+                    tracing::error!(error = ?e, ?duration, "Transition failed: Fault");
+                }
             }
-            Outcome::Branch(id, _) => {
-                println!(
-                    "[Trace] End Span: '{}' | Duration: {:?} | Outcome: Branch({})",
-                    self.name, duration, id
-                );
-            }
-            Outcome::Jump(id, _) => {
-                println!(
-                    "[Trace] End Span: '{}' | Duration: {:?} | Outcome: Jump({})",
-                    self.name, duration, id
-                );
-            }
-            Outcome::Emit(event_type, _) => {
-                println!(
-                    "[Trace] End Span: '{}' | Duration: {:?} | Outcome: Emit({})",
-                    self.name, duration, event_type
-                );
-            }
-            Outcome::Fault(_) => {
-                println!(
-                    "[Trace] End Span: '{}' | Duration: {:?} | Outcome: Fault",
-                    self.name, duration
-                );
-            }
+            result
         }
-
-        result
+        .instrument(span)
+        .await
     }
 }

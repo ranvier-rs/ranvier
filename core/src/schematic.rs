@@ -97,8 +97,11 @@ pub struct Node {
     pub id: String, // Uuid typically
     pub kind: NodeKind,
     pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub input_type: String,
     pub output_type: String, // Primary output type for Next
+    pub resource_type: String,
     pub metadata: StepMetadata,
     /// 소스 코드 위치 (Studio Code↔Node 매핑용)
     #[serde(skip_serializing_if = "Option::is_none")]

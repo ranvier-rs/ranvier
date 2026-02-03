@@ -30,6 +30,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower::Service;
+use tracing::Instrument;
 
 /// The Ranvier Framework entry point.
 ///
@@ -96,32 +97,48 @@ where
     {
         let path_str: String = path.into();
         let circuit = Arc::new(circuit);
+        let path_for_map = path_str.clone();
+        let path_for_handler = path_str;
 
         let handler: RouteHandler<R> = Arc::new(move |_req: Request<Incoming>, res: &R| {
             let circuit = circuit.clone();
             let res = res.clone(); // R must be Clone
-            Box::pin(async move {
-                let mut bus = Bus::new();
-                let result = circuit.execute((), &res, &mut bus).await;
+            let path = path_for_handler.clone();
 
-                match result {
-                    Outcome::Next(body) => Response::builder()
-                        .status(StatusCode::OK)
-                        .body(Full::new(Bytes::from(body)))
-                        .unwrap(),
-                    Outcome::Fault(e) => Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Full::new(Bytes::from(format!("Error: {:?}", e))))
-                        .unwrap(),
-                    _ => Response::builder()
-                        .status(StatusCode::OK)
-                        .body(Full::new(Bytes::from("OK")))
-                        .unwrap(),
+            Box::pin(async move {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let span = tracing::info_span!(
+                    "HTTPRequest",
+                    ranvier.http.method = %Method::GET,
+                    ranvier.http.path = %path,
+                    ranvier.http.request_id = %request_id
+                );
+
+                async move {
+                    let mut bus = Bus::new();
+                    let result = circuit.execute((), &res, &mut bus).await;
+
+                    match result {
+                        Outcome::Next(body) => Response::builder()
+                            .status(StatusCode::OK)
+                            .body(Full::new(Bytes::from(body)))
+                            .unwrap(),
+                        Outcome::Fault(e) => Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Full::new(Bytes::from(format!("Error: {:?}", e))))
+                            .unwrap(),
+                        _ => Response::builder()
+                            .status(StatusCode::OK)
+                            .body(Full::new(Bytes::from("OK")))
+                            .unwrap(),
+                    }
                 }
+                .instrument(span)
+                .await
             }) as Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
         });
 
-        self.routes.insert((Method::GET, path_str), handler);
+        self.routes.insert((Method::GET, path_for_map), handler);
         self
     }
     /// Register a route with a specific HTTP method.
@@ -143,32 +160,51 @@ where
     {
         let path_str: String = path.into();
         let circuit = Arc::new(circuit);
+        let path_for_map = path_str.clone();
+        let path_for_handler = path_str;
+        let method_for_map = method.clone();
+        let method_for_handler = method;
 
         let handler: RouteHandler<R> = Arc::new(move |_req: Request<Incoming>, res: &R| {
             let circuit = circuit.clone();
             let res = res.clone();
-            Box::pin(async move {
-                let mut bus = Bus::new();
-                let result = circuit.execute((), &res, &mut bus).await;
+            let path = path_for_handler.clone();
+            let method = method_for_handler.clone();
 
-                match result {
-                    Outcome::Next(body) => Response::builder()
-                        .status(StatusCode::OK)
-                        .body(Full::new(Bytes::from(body)))
-                        .unwrap(),
-                    Outcome::Fault(e) => Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Full::new(Bytes::from(format!("Error: {:?}", e))))
-                        .unwrap(),
-                    _ => Response::builder()
-                        .status(StatusCode::OK)
-                        .body(Full::new(Bytes::from("OK")))
-                        .unwrap(),
+            Box::pin(async move {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let span = tracing::info_span!(
+                    "HTTPRequest",
+                    ranvier.http.method = %method,
+                    ranvier.http.path = %path,
+                    ranvier.http.request_id = %request_id
+                );
+
+                async move {
+                    let mut bus = Bus::new();
+                    let result = circuit.execute((), &res, &mut bus).await;
+
+                    match result {
+                        Outcome::Next(body) => Response::builder()
+                            .status(StatusCode::OK)
+                            .body(Full::new(Bytes::from(body)))
+                            .unwrap(),
+                        Outcome::Fault(e) => Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Full::new(Bytes::from(format!("Error: {:?}", e))))
+                            .unwrap(),
+                        _ => Response::builder()
+                            .status(StatusCode::OK)
+                            .body(Full::new(Bytes::from("OK")))
+                            .unwrap(),
+                    }
                 }
+                .instrument(span)
+                .await
             }) as Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
         });
 
-        self.routes.insert((method, path_str), handler);
+        self.routes.insert((method_for_map, path_for_map), handler);
         self
     }
 
@@ -192,19 +228,30 @@ where
             let circuit = circuit.clone();
             let res = res.clone();
             Box::pin(async move {
-                let mut bus = Bus::new();
-                let result = circuit.execute((), &res, &mut bus).await;
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let span = tracing::info_span!(
+                    "HTTPRequest",
+                    ranvier.http.method = "FALLBACK",
+                    ranvier.http.request_id = %request_id
+                );
 
-                match result {
-                    Outcome::Next(body) => Response::builder()
-                        .status(StatusCode::NOT_FOUND)
-                        .body(Full::new(Bytes::from(body)))
-                        .unwrap(),
-                    _ => Response::builder()
-                        .status(StatusCode::NOT_FOUND)
-                        .body(Full::new(Bytes::from("Not Found")))
-                        .unwrap(),
+                async move {
+                    let mut bus = Bus::new();
+                    let result = circuit.execute((), &res, &mut bus).await;
+
+                    match result {
+                        Outcome::Next(body) => Response::builder()
+                            .status(StatusCode::NOT_FOUND)
+                            .body(Full::new(Bytes::from(body)))
+                            .unwrap(),
+                        _ => Response::builder()
+                            .status(StatusCode::NOT_FOUND)
+                            .body(Full::new(Bytes::from("Not Found")))
+                            .unwrap(),
+                    }
                 }
+                .instrument(span)
+                .await
             }) as Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
         });
 

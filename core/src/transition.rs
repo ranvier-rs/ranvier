@@ -11,6 +11,7 @@
 use crate::bus::Bus;
 use crate::outcome::Outcome;
 use async_trait::async_trait;
+use std::fmt::Debug;
 
 /// Resource requirement for a transition.
 ///
@@ -58,11 +59,34 @@ where
     To: Send + 'static,
 {
     /// Domain-specific error type (e.g., AuthError, ValidationError)
-    type Error: Send + Sync + 'static;
+    type Error: Send + Sync + Debug + 'static;
 
     /// The type of resources required by this transition.
     /// This follows the "Hard-Wired Types" principle from the Master Plan.
     type Resources: ResourceRequirement;
+
+    /// Execute the transition.
+    ///
+    /// # Parameters
+    ///
+    /// * `state` - The input state of type `From`
+    /// * `resources` - Typed access to required resources
+    /// * `bus` - The base Bus (for cross-cutting concerns like telemetry)
+    ///
+    /// # Returns
+    ///
+    /// An `Outcome<To, Self::Error>` determining the next step.
+    /// Returns a human-readable label for this transition.
+    /// Defaults to the type name.
+    fn label(&self) -> String {
+        let full = std::any::type_name::<Self>();
+        full.split("::").last().unwrap_or(full).to_string()
+    }
+
+    /// Returns a detailed description of what this transition does.
+    fn description(&self) -> Option<String> {
+        None
+    }
 
     /// Execute the transition.
     ///

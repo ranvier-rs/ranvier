@@ -1765,6 +1765,7 @@ dependencies = [
  "sqlx",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -1785,6 +1786,7 @@ dependencies = [
  "tokio",
  "tower 0.5.3",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -78,8 +78,10 @@ async fn main() -> Result<()> {
         id: fail_node_id.clone(),
         kind: NodeKind::Egress,
         label: "LoginFailedHandler".to_string(),
+        description: Some("Handles failed login attempts".to_string()),
         input_type: "String".to_string(), // Error message
         output_type: "Void".to_string(),
+        resource_type: "()".to_string(),
         metadata: Default::default(),
         source_location: None,
     };
@@ -99,8 +101,10 @@ async fn main() -> Result<()> {
         id: subgraph_id.clone(),
         kind: NodeKind::Subgraph(Box::new(sub_schematic)),
         label: "AuditProcess".to_string(),
+        description: Some("Nested sub-flow for auditing".to_string()),
         input_type: "UserContext".to_string(),
         output_type: "Void".to_string(),
+        resource_type: "()".to_string(),
         metadata: Default::default(),
         source_location: None,
     };

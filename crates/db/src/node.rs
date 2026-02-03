@@ -80,6 +80,12 @@ where
     /// Domain-specific error type (converted to DbError on failures)
     type Error: Send + Sync + 'static;
 
+    /// Returns information about the SQL operation for observability.
+    /// Can return the SQL string (sanitized) or table names.
+    fn sql_info(&self) -> Option<String> {
+        None
+    }
+
     /// Execute the database transition with pool access.
     ///
     /// This method receives the input state and the database pool,
@@ -161,6 +167,11 @@ where
         _bus: &mut Bus,
     ) -> Outcome<To, Self::Error> {
         let pool = resources.pg_pool();
+
+        if let Some(sql) = self.inner.sql_info() {
+            tracing::debug!(ranvier.db.sql = %sql, "Executing database operation");
+        }
+
         match self.inner.run(input, pool).await {
             Ok(result) => Outcome::Next(result),
             Err(DbError::NoRows) => Outcome::Fault(anyhow::anyhow!("Record not found")),
@@ -253,8 +264,10 @@ where
         };
 
         // Execute the transition with the transaction
-        // Note: DbTransition receives &PgPool. In a real app, you might want to pass the &mut Transaction.
-        // For this refactor, we keep the signature but the transaction is managed here.
+        if let Some(sql) = self.inner.sql_info() {
+            tracing::debug!(ranvier.db.sql = %sql, "Executing transactional database operation");
+        }
+
         let result = match self.inner.run(input, pool).await {
             Ok(result) => Outcome::Next(result),
             Err(DbError::NoRows) => {
