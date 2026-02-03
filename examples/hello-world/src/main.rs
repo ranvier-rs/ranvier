@@ -29,8 +29,14 @@ struct Greet;
 #[async_trait]
 impl Transition<(), String> for Greet {
     type Error = anyhow::Error;
+    type Resources = ();
 
-    async fn run(&self, _state: (), _bus: &mut Bus) -> Outcome<String, Self::Error> {
+    async fn run(
+        &self,
+        _state: (),
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<String, Self::Error> {
         Outcome::Next("Hello, Ranvier!".to_string())
     }
 }
@@ -42,8 +48,14 @@ struct Exclaim;
 #[async_trait]
 impl Transition<String, String> for Exclaim {
     type Error = anyhow::Error;
+    type Resources = ();
 
-    async fn run(&self, state: String, _bus: &mut Bus) -> Outcome<String, Self::Error> {
+    async fn run(
+        &self,
+        state: String,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<String, Self::Error> {
         Outcome::Next(format!("{} 🚀", state))
     }
 }
@@ -75,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
     Ranvier::http()
         .bind("127.0.0.1:3000")
         .route("/", hello)
-        .run()
+        .run(())
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 

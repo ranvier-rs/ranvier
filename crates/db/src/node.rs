@@ -36,6 +36,11 @@ pub enum DbError {
 /// Result type for database queries.
 pub type QueryResult<T> = Result<T, DbError>;
 
+/// Resource requirement for database operations.
+pub trait DbResources: ranvier_core::transition::ResourceRequirement {
+    fn pg_pool(&self) -> &sqlx::PgPool;
+}
+
 // ============== DbTransition Trait ==============
 
 /// A transition that performs database operations with direct pool access.
@@ -96,21 +101,23 @@ where
 ///     .then(PgNode::new(ValidateUser))
 ///     .branch(|user| match user.role { ... });
 /// ```
-pub struct PgNode<T, From, To>
+pub struct PgNode<T, From, To, R>
 where
     T: DbTransition<From, To> + Send + Sync,
     From: Send + Sync + 'static,
     To: Send + Sync + 'static,
+    R: DbResources,
 {
     inner: T,
-    _phantom: std::marker::PhantomData<(From, To)>,
+    _phantom: std::marker::PhantomData<(From, To, R)>,
 }
 
-impl<T, From, To> PgNode<T, From, To>
+impl<T, From, To, R> PgNode<T, From, To, R>
 where
     T: DbTransition<From, To> + Send + Sync,
     From: Send + Sync + 'static,
     To: Send + Sync + 'static,
+    R: DbResources,
 {
     /// Create a new PostgreSQL node.
     pub fn new(inner: T) -> Self {
@@ -121,11 +128,12 @@ where
     }
 }
 
-impl<T, From, To> Clone for PgNode<T, From, To>
+impl<T, From, To, R> Clone for PgNode<T, From, To, R>
 where
     T: DbTransition<From, To> + Send + Sync + Clone,
     From: Send + Sync + 'static,
     To: Send + Sync + 'static,
+    R: DbResources,
 {
     fn clone(&self) -> Self {
         Self {
@@ -136,23 +144,23 @@ where
 }
 
 #[async_trait]
-impl<T, From, To> Transition<From, To> for PgNode<T, From, To>
+impl<T, From, To, R> Transition<From, To> for PgNode<T, From, To, R>
 where
     T: DbTransition<From, To> + Send + Sync,
     From: Send + Sync + 'static,
     To: Send + Sync + 'static,
+    R: DbResources,
 {
     type Error = anyhow::Error;
+    type Resources = R;
 
-    async fn run(&self, input: From, bus: &mut Bus) -> Outcome<To, Self::Error> {
-        let pool_resource = match bus.read::<super::pool::PostgresPool>() {
-            Some(p) => p,
-            None => {
-                return Outcome::Fault(anyhow::anyhow!("PostgresPool not found on Bus"));
-            }
-        };
-
-        let pool = pool_resource.inner();
+    async fn run(
+        &self,
+        input: From,
+        resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<To, Self::Error> {
+        let pool = resources.pg_pool();
         match self.inner.run(input, pool).await {
             Ok(result) => Outcome::Next(result),
             Err(DbError::NoRows) => Outcome::Fault(anyhow::anyhow!("Record not found")),
@@ -175,21 +183,23 @@ where
 ///     .then(TxPgNode::new(CreateUserOrder))
 ///     .then(TxPgNode::new(UpdateInventory));
 /// ```
-pub struct TxPgNode<T, From, To>
+pub struct TxPgNode<T, From, To, R>
 where
     T: DbTransition<From, To> + Send + Sync,
     From: Send + Sync + 'static,
     To: Send + Sync + 'static,
+    R: DbResources,
 {
     inner: T,
-    _phantom: std::marker::PhantomData<(From, To)>,
+    _phantom: std::marker::PhantomData<(From, To, R)>,
 }
 
-impl<T, From, To> TxPgNode<T, From, To>
+impl<T, From, To, R> TxPgNode<T, From, To, R>
 where
     T: DbTransition<From, To> + Send + Sync,
     From: Send + Sync + 'static,
     To: Send + Sync + 'static,
+    R: DbResources,
 {
     /// Create a new transactional PostgreSQL node.
     pub fn new(inner: T) -> Self {
@@ -200,11 +210,12 @@ where
     }
 }
 
-impl<T, From, To> Clone for TxPgNode<T, From, To>
+impl<T, From, To, R> Clone for TxPgNode<T, From, To, R>
 where
     T: DbTransition<From, To> + Send + Sync + Clone,
     From: Send + Sync + 'static,
     To: Send + Sync + 'static,
+    R: DbResources,
 {
     fn clone(&self) -> Self {
         Self {
@@ -215,23 +226,23 @@ where
 }
 
 #[async_trait]
-impl<T, From, To> Transition<From, To> for TxPgNode<T, From, To>
+impl<T, From, To, R> Transition<From, To> for TxPgNode<T, From, To, R>
 where
     T: DbTransition<From, To> + Send + Sync,
     From: Send + Sync + 'static,
     To: Send + Sync + 'static,
+    R: DbResources,
 {
     type Error = anyhow::Error;
+    type Resources = R;
 
-    async fn run(&self, input: From, bus: &mut Bus) -> Outcome<To, Self::Error> {
-        let pool_resource = match bus.read::<super::pool::PostgresPool>() {
-            Some(p) => p,
-            None => {
-                return Outcome::Fault(anyhow::anyhow!("PostgresPool not found on Bus"));
-            }
-        };
-
-        let pool = pool_resource.inner();
+    async fn run(
+        &self,
+        input: From,
+        resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<To, Self::Error> {
+        let pool = resources.pg_pool();
 
         // Begin transaction
         let tx = match pool.begin().await {
@@ -242,6 +253,8 @@ where
         };
 
         // Execute the transition with the transaction
+        // Note: DbTransition receives &PgPool. In a real app, you might want to pass the &mut Transaction.
+        // For this refactor, we keep the signature but the transaction is managed here.
         let result = match self.inner.run(input, pool).await {
             Ok(result) => Outcome::Next(result),
             Err(DbError::NoRows) => {

@@ -52,8 +52,14 @@ struct Authenticate;
 #[async_trait]
 impl Transition<HttpRequest, AuthUser> for Authenticate {
     type Error = anyhow::Error;
+    type Resources = ();
 
-    async fn run(&self, input: HttpRequest, _bus: &mut Bus) -> Outcome<AuthUser, Self::Error> {
+    async fn run(
+        &self,
+        input: HttpRequest,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<AuthUser, Self::Error> {
         // Access Connection ID if available
         // Note: bus here is &mut Bus, but we know we started with ConnectionBus
         // If we need strict typing, we might use a trait or specialized read.
@@ -78,8 +84,14 @@ struct HandleRequest;
 #[async_trait]
 impl Transition<AuthUser, HttpResponse> for HandleRequest {
     type Error = anyhow::Error;
+    type Resources = ();
 
-    async fn run(&self, input: AuthUser, _bus: &mut Bus) -> Outcome<HttpResponse, Self::Error> {
+    async fn run(
+        &self,
+        input: AuthUser,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<HttpResponse, Self::Error> {
         Outcome::Next(HttpResponse {
             status: 200,
             body: format!("Hello, {}! You are {}.", input.id, input.role),
@@ -118,7 +130,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Note: ConnectionBus derefs to Bus, so we can pass it as &mut Bus
-    match axon.execute(req_input, &mut conn_bus).await {
+    match axon.execute(req_input, &(), &mut conn_bus).await {
         Outcome::Next(res) => {
             println!("\n[Result] Status: {}, Body: {}", res.status, res.body);
         }

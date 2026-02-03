@@ -12,6 +12,15 @@ use crate::bus::Bus;
 use crate::outcome::Outcome;
 use async_trait::async_trait;
 
+/// Resource requirement for a transition.
+///
+/// This trait is used to mark types that can be injected as resources.
+/// Implementations should usually be a struct representing a bundle of resources.
+pub trait ResourceRequirement: Send + Sync + 'static {}
+
+/// Blanket implementation for () if no resources are needed.
+impl ResourceRequirement for () {}
+
 /// The contract for a Typed State Transition.
 ///
 /// `Transition` converts state `From` to `Outcome<To, Error>`.
@@ -51,22 +60,27 @@ where
     /// Domain-specific error type (e.g., AuthError, ValidationError)
     type Error: Send + Sync + 'static;
 
+    /// The type of resources required by this transition.
+    /// This follows the "Hard-Wired Types" principle from the Master Plan.
+    type Resources: ResourceRequirement;
+
     /// Execute the transition.
     ///
     /// # Parameters
     ///
     /// * `state` - The input state of type `From`
-    /// * `bus` - Mutable reference to the resource Bus
+    /// * `resources` - Typed access to required resources
+    /// * `bus` - The base Bus (for cross-cutting concerns like telemetry)
     ///
     /// # Returns
     ///
-    /// An `Outcome<To, Self::Error>` determining the next step:
-    /// * `Outcome::Next(to)` - Continue to the next transition
-    /// * `Outcome::Branch(id, payload)` - Branch to a named path
-    /// * `Outcome::Jump(id, payload)` - Jump to a specific node
-    /// * `Outcome::Emit(event, payload)` - Emit a side-effect event
-    /// * `Outcome::Fault(err)` - Enter the error path
-    async fn run(&self, state: From, bus: &mut Bus) -> Outcome<To, Self::Error>;
+    /// An `Outcome<To, Self::Error>` determining the next step.
+    async fn run(
+        &self,
+        state: From,
+        resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<To, Self::Error>;
 }
 
 /// Blanket implementation for `Arc<T>` where `T: Transition`.
@@ -75,14 +89,20 @@ where
 #[async_trait]
 impl<T, From, To> Transition<From, To> for std::sync::Arc<T>
 where
-    T: Transition<From, To>,
+    T: Transition<From, To> + Send + Sync + 'static,
     From: Send + 'static,
     To: Send + 'static,
 {
     type Error = T::Error;
+    type Resources = T::Resources;
 
-    async fn run(&self, state: From, bus: &mut Bus) -> Outcome<To, Self::Error> {
-        self.as_ref().run(state, bus).await
+    async fn run(
+        &self,
+        state: From,
+        resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<To, Self::Error> {
+        self.as_ref().run(state, resources, bus).await
     }
 }
 
@@ -95,8 +115,14 @@ mod tests {
     #[async_trait]
     impl Transition<i32, i32> for AddOne {
         type Error = std::convert::Infallible;
+        type Resources = ();
 
-        async fn run(&self, state: i32, _bus: &mut Bus) -> Outcome<i32, Self::Error> {
+        async fn run(
+            &self,
+            state: i32,
+            _resources: &Self::Resources,
+            _bus: &mut Bus,
+        ) -> Outcome<i32, Self::Error> {
             Outcome::Next(state + 1)
         }
     }
@@ -104,7 +130,7 @@ mod tests {
     #[tokio::test]
     async fn test_transition_basic() {
         let mut bus = Bus::new();
-        let result = AddOne.run(41, &mut bus).await;
+        let result = AddOne.run(41, &(), &mut bus).await;
         assert!(matches!(result, Outcome::Next(42)));
     }
 }

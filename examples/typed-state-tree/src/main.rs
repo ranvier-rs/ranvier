@@ -40,8 +40,14 @@ struct Authenticate;
 #[async_trait]
 impl Transition<FlowState, FlowState> for Authenticate {
     type Error = anyhow::Error;
+    type Resources = ();
 
-    async fn run(&self, state: FlowState, _bus: &mut Bus) -> Outcome<FlowState, Self::Error> {
+    async fn run(
+        &self,
+        state: FlowState,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<FlowState, Self::Error> {
         if let FlowState::RequestReceived(uri) = state {
             println!("[Sync] Authenticating request for: {}", uri);
 
@@ -69,8 +75,14 @@ struct FetchContent;
 #[async_trait]
 impl Transition<FlowState, FlowState> for FetchContent {
     type Error = anyhow::Error;
+    type Resources = ();
 
-    async fn run(&self, state: FlowState, _bus: &mut Bus) -> Outcome<FlowState, Self::Error> {
+    async fn run(
+        &self,
+        state: FlowState,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<FlowState, Self::Error> {
         if let FlowState::Authenticated { user_id, path } = state {
             println!("[Sync] Fetching content for user {} at {}", user_id, path);
 
@@ -104,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
     // Case 1: Valid Path
     println!("--- Case 1: Valid Path ---");
     let input1 = FlowState::RequestReceived("/dashboard".to_string());
-    match axon.execute(input1, &mut bus).await {
+    match axon.execute(input1, &(), &mut bus).await {
         Outcome::Next(final_state) => {
             if let FlowState::ContentLoaded { data, .. } = final_state {
                 println!("Success! Final Data: {}", data);
@@ -117,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
     // Case 2: Forbidden Path
     println!("\n--- Case 2: Forbidden Path ---");
     let input2 = FlowState::RequestReceived("/forbidden".to_string());
-    match axon.execute(input2, &mut bus).await {
+    match axon.execute(input2, &(), &mut bus).await {
         Outcome::Fault(e) => println!("Caught expected error: {}", e),
         other => println!("Unexpected result: {:?}", other),
     }

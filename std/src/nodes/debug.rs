@@ -29,8 +29,14 @@ where
     T: Debug + Send + Sync + 'static,
 {
     type Error = std::convert::Infallible;
+    type Resources = ();
 
-    async fn run(&self, input: T, _bus: &mut Bus) -> Outcome<T, Self::Error> {
+    async fn run(
+        &self,
+        input: T,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<T, Self::Error> {
         match self.level.as_str() {
             "error" => tracing::error!("{}: {:?}", self.message, input),
             "warn" => tracing::warn!("{}: {:?}", self.message, input),
@@ -63,8 +69,14 @@ where
     T: Send + Sync + 'static,
 {
     type Error = String;
+    type Resources = ();
 
-    async fn run(&self, _input: T, _bus: &mut Bus) -> Outcome<T, Self::Error> {
+    async fn run(
+        &self,
+        _input: T,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<T, Self::Error> {
         Outcome::fault(self.error_message.clone())
     }
 }

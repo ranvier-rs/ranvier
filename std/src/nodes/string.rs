@@ -26,8 +26,14 @@ impl StringNode {
 #[async_trait]
 impl Transition<String, String> for StringNode {
     type Error = std::convert::Infallible;
+    type Resources = ();
 
-    async fn run(&self, input: String, _bus: &mut Bus) -> Outcome<String, Self::Error> {
+    async fn run(
+        &self,
+        input: String,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<String, Self::Error> {
         match &self.operation {
             StringOperation::Append(s) => Outcome::next(format!("{}{}", input, s)),
             StringOperation::Prepend(s) => Outcome::next(format!("{}{}", s, input)),

@@ -39,27 +39,17 @@ pub struct Ranvier;
 
 impl Ranvier {
     /// Create an HTTP Ingress Circuit Builder.
-    ///
-    /// This is the primary entry point for building HTTP applications with Ranvier.
-    /// The returned builder uses a flat API (depth ≤ 2) per Discussion 192.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// Ranvier::http()
-    ///     .bind("127.0.0.1:3000")
-    ///     .route("/", my_circuit)
-    ///     .run()
-    ///     .await?;
-    /// ```
-    pub fn http() -> HttpIngress {
+    pub fn http<R>() -> HttpIngress<R>
+    where
+        R: ranvier_core::transition::ResourceRequirement + Clone,
+    {
         HttpIngress::new()
     }
 }
 
 /// Route handler type: boxed async function returning Response
-type RouteHandler = Arc<
-    dyn Fn(Request<Incoming>) -> Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
+type RouteHandler<R> = Arc<
+    dyn Fn(Request<Incoming>, &R) -> Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
         + Send
         + Sync,
 >;
@@ -69,62 +59,50 @@ type RouteHandler = Arc<
 /// Wires HTTP inputs to Ranvier Circuits. This is NOT a web server—it's a circuit wiring tool.
 ///
 /// **Ingress is part of Schematic** (separate layer: Ingress → Circuit → Egress)
-pub struct HttpIngress {
+pub struct HttpIngress<R = ()> {
     /// Bind address (e.g., "127.0.0.1:3000")
     addr: Option<String>,
     /// Routes: (Method, Path) -> Handler
-    routes: HashMap<(Method, String), RouteHandler>,
+    routes: HashMap<(Method, String), RouteHandler<R>>,
     /// Fallback circuit for unmatched routes
-    fallback: Option<RouteHandler>,
+    fallback: Option<RouteHandler<R>>,
+    _phantom: std::marker::PhantomData<R>,
 }
 
-impl HttpIngress {
+impl<R> HttpIngress<R>
+where
+    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+{
     /// Create a new empty HttpIngress builder.
     pub fn new() -> Self {
         Self {
             addr: None,
             routes: HashMap::new(),
             fallback: None,
+            _phantom: std::marker::PhantomData,
         }
     }
 
     /// Set the bind address for the server.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// Ranvier::http().bind("127.0.0.1:3000")
-    /// ```
     pub fn bind(mut self, addr: impl Into<String>) -> Self {
         self.addr = Some(addr.into());
         self
     }
 
     /// Register a route with a circuit.
-    ///
-    /// The circuit receives `()` as input and should produce a `String` output.
-    /// For more complex input handling, use the Bus to pass request data.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let hello = Axon::new("Hello").then(GreetBlock);
-    /// Ranvier::http()
-    ///     .route("/", hello)
-    ///     .route("/users", user_circuit)
-    /// ```
-    pub fn route<E>(mut self, path: impl Into<String>, circuit: Axon<(), String, E>) -> Self
+    pub fn route<E>(mut self, path: impl Into<String>, circuit: Axon<(), String, E, R>) -> Self
     where
         E: Send + 'static + std::fmt::Debug,
     {
         let path_str: String = path.into();
         let circuit = Arc::new(circuit);
 
-        let handler: RouteHandler = Arc::new(move |_req: Request<Incoming>| {
+        let handler: RouteHandler<R> = Arc::new(move |_req: Request<Incoming>, res: &R| {
             let circuit = circuit.clone();
+            let res = res.clone(); // R must be Clone
             Box::pin(async move {
                 let mut bus = Bus::new();
-                let result = circuit.execute((), &mut bus).await;
+                let result = circuit.execute((), &res, &mut bus).await;
 
                 match result {
                     Outcome::Next(body) => Response::builder()
@@ -146,7 +124,6 @@ impl HttpIngress {
         self.routes.insert((Method::GET, path_str), handler);
         self
     }
-
     /// Register a route with a specific HTTP method.
     ///
     /// # Example
@@ -159,7 +136,7 @@ impl HttpIngress {
         mut self,
         method: Method,
         path: impl Into<String>,
-        circuit: Axon<(), String, E>,
+        circuit: Axon<(), String, E, R>,
     ) -> Self
     where
         E: Send + 'static + std::fmt::Debug,
@@ -167,11 +144,12 @@ impl HttpIngress {
         let path_str: String = path.into();
         let circuit = Arc::new(circuit);
 
-        let handler: RouteHandler = Arc::new(move |_req: Request<Incoming>| {
+        let handler: RouteHandler<R> = Arc::new(move |_req: Request<Incoming>, res: &R| {
             let circuit = circuit.clone();
+            let res = res.clone();
             Box::pin(async move {
                 let mut bus = Bus::new();
-                let result = circuit.execute((), &mut bus).await;
+                let result = circuit.execute((), &res, &mut bus).await;
 
                 match result {
                     Outcome::Next(body) => Response::builder()
@@ -204,17 +182,18 @@ impl HttpIngress {
     ///     .route("/", home)
     ///     .fallback(not_found)
     /// ```
-    pub fn fallback<E>(mut self, circuit: Axon<(), String, E>) -> Self
+    pub fn fallback<E>(mut self, circuit: Axon<(), String, E, R>) -> Self
     where
         E: Send + 'static + std::fmt::Debug,
     {
         let circuit = Arc::new(circuit);
 
-        let handler: RouteHandler = Arc::new(move |_req: Request<Incoming>| {
+        let handler: RouteHandler<R> = Arc::new(move |_req: Request<Incoming>, res: &R| {
             let circuit = circuit.clone();
+            let res = res.clone();
             Box::pin(async move {
                 let mut bus = Bus::new();
-                let result = circuit.execute((), &mut bus).await;
+                let result = circuit.execute((), &res, &mut bus).await;
 
                 match result {
                     Outcome::Next(body) => Response::builder()
@@ -233,26 +212,14 @@ impl HttpIngress {
         self
     }
 
-    /// Run the HTTP server.
-    ///
-    /// This starts The Hyper server and listens for incoming connections.
-    /// The server will run until interrupted.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// Ranvier::http()
-    ///     .bind("127.0.0.1:3000")
-    ///     .route("/", hello)
-    ///     .run()
-    ///     .await?;
-    /// ```
-    pub async fn run(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    /// Run the HTTP server with required resources.
+    pub async fn run(self, resources: R) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let addr_str = self.addr.as_deref().unwrap_or("127.0.0.1:3000");
         let addr: SocketAddr = addr_str.parse()?;
 
         let routes = Arc::new(self.routes);
         let fallback = self.fallback;
+        let resources = Arc::new(resources);
 
         let listener = TcpListener::bind(addr).await?;
         tracing::info!("Ranvier HTTP Ingress listening on http://{}", addr);
@@ -263,11 +230,14 @@ impl HttpIngress {
 
             let routes = routes.clone();
             let fallback = fallback.clone();
+            let resources = resources.clone();
 
             tokio::task::spawn(async move {
+                let resources = resources.clone();
                 let service = service_fn(move |req: Request<Incoming>| {
                     let routes = routes.clone();
                     let fallback = fallback.clone();
+                    let resources = resources.clone();
 
                     async move {
                         let method = req.method().clone();
@@ -275,9 +245,9 @@ impl HttpIngress {
 
                         // Try to find a matching route
                         if let Some(handler) = routes.get(&(method.clone(), path.clone())) {
-                            Ok::<_, Infallible>(handler(req).await)
+                            Ok::<_, Infallible>(handler(req, &resources).await)
                         } else if let Some(ref fb) = fallback {
-                            Ok(fb(req).await)
+                            Ok(fb(req, &resources).await)
                         } else {
                             // Default 404
                             Ok(Response::builder()
@@ -310,22 +280,23 @@ impl HttpIngress {
     /// let raw_service = ingress.into_raw_service();
     /// // Use raw_service with existing Tower infrastructure
     /// ```
-    pub fn into_raw_service(
-        self,
-    ) -> impl Service<
-        Request<Incoming>,
-        Response = Response<Full<Bytes>>,
-        Error = Infallible,
-        Future = Pin<Box<dyn Future<Output = Result<Response<Full<Bytes>>, Infallible>> + Send>>,
-    > + Clone {
+    pub fn into_raw_service(self, resources: R) -> RawIngressService<R> {
         let routes = Arc::new(self.routes);
         let fallback = self.fallback;
+        let resources = Arc::new(resources);
 
-        RawIngressService { routes, fallback }
+        RawIngressService {
+            routes,
+            fallback,
+            resources,
+        }
     }
 }
 
-impl Default for HttpIngress {
+impl<R> Default for HttpIngress<R>
+where
+    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+{
     fn default() -> Self {
         Self::new()
     }
@@ -333,12 +304,16 @@ impl Default for HttpIngress {
 
 /// Internal service type for `into_raw_service()`
 #[derive(Clone)]
-struct RawIngressService {
-    routes: Arc<HashMap<(Method, String), RouteHandler>>,
-    fallback: Option<RouteHandler>,
+pub struct RawIngressService<R> {
+    routes: Arc<HashMap<(Method, String), RouteHandler<R>>>,
+    fallback: Option<RouteHandler<R>>,
+    resources: Arc<R>,
 }
 
-impl Service<Request<Incoming>> for RawIngressService {
+impl<R> Service<Request<Incoming>> for RawIngressService<R>
+where
+    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+{
     type Response = Response<Full<Bytes>>;
     type Error = Infallible;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -353,15 +328,16 @@ impl Service<Request<Incoming>> for RawIngressService {
     fn call(&mut self, req: Request<Incoming>) -> Self::Future {
         let routes = self.routes.clone();
         let fallback = self.fallback.clone();
+        let resources = self.resources.clone();
 
         Box::pin(async move {
             let method = req.method().clone();
             let path = req.uri().path().to_string();
 
             if let Some(handler) = routes.get(&(method, path)) {
-                Ok(handler(req).await)
+                Ok(handler(req, &resources).await)
             } else if let Some(ref fb) = fallback {
-                Ok(fb(req).await)
+                Ok(fb(req, &resources).await)
             } else {
                 Ok(Response::builder()
                     .status(StatusCode::NOT_FOUND)

@@ -11,10 +11,16 @@ struct AddOne;
 #[async_trait]
 impl Transition<i32, i32> for AddOne {
     type Error = std::convert::Infallible;
+    type Resources = ();
 
     // Optional: Add tracing to inner logic too
-    #[instrument(skip(self, _bus))]
-    async fn run(&self, state: i32, _bus: &mut Bus) -> Outcome<i32, Self::Error> {
+    #[instrument(skip(self, _resources, _bus))]
+    async fn run(
+        &self,
+        state: i32,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<i32, Self::Error> {
         tracing::info!("Adding one to {}", state);
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         Outcome::Next(state + 1)
@@ -34,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 3. Execute
     let mut bus = Bus::new();
-    let result = axon.execute(10, &mut bus).await;
+    let result = axon.execute(10, &(), &mut bus).await;
 
     tracing::info!("Execution Result: {:?}", result);
 

@@ -105,8 +105,14 @@ struct ProcessMessage;
 #[async_trait]
 impl Transition<WsMessage, ChatEvent> for ProcessMessage {
     type Error = anyhow::Error;
+    type Resources = ();
 
-    async fn run(&self, input: WsMessage, _bus: &mut Bus) -> Outcome<ChatEvent, Self::Error> {
+    async fn run(
+        &self,
+        input: WsMessage,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<ChatEvent, Self::Error> {
         println!("[Process] Processing msg #{}: {}", input.id, input.content);
 
         // Simple logic: If message is "exit", stop the loop (in real app, we might Emit a Close event)
@@ -129,8 +135,14 @@ struct Broadcast;
 #[async_trait]
 impl Transition<ChatEvent, String> for Broadcast {
     type Error = anyhow::Error;
+    type Resources = ();
 
-    async fn run(&self, input: ChatEvent, _bus: &mut Bus) -> Outcome<String, Self::Error> {
+    async fn run(
+        &self,
+        input: ChatEvent,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<String, Self::Error> {
         let response = format!("User {} said: {}", input.user_id, input.message);
         Outcome::Next(response)
     }
@@ -169,9 +181,8 @@ async fn main() -> anyhow::Result<()> {
             .then(Broadcast);
 
         let mut bus = Bus::new();
-
         // 4. Execute Axon
-        match axon.execute(msg, &mut bus).await {
+        match axon.execute(msg, &(), &mut bus).await {
             Outcome::Next(response) => {
                 // 5. Send result to Sink
                 if let Err(e) = ws.send_event(response).await {

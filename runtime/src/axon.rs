@@ -25,10 +25,10 @@ use tracing::Instrument;
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Executor type for Axon steps.
-/// Now takes an input state `In` and returns an `Outcome<Out, E>`.
+/// Now takes an input state `In`, a resource bundle `Res`, and returns an `Outcome<Out, E>`.
 /// Must be Send + Sync to be reusable across threads and clones.
-pub type Executor<In, Out, E> =
-    Arc<dyn for<'a> Fn(In, &'a mut Bus) -> BoxFuture<'a, Outcome<Out, E>> + Send + Sync>;
+pub type Executor<In, Out, E, Res> =
+    Arc<dyn for<'a> Fn(In, &'a Res, &'a mut Bus) -> BoxFuture<'a, Outcome<Out, E>> + Send + Sync>;
 
 /// Helper to extract a readable type name from a type.
 fn type_name_of<T: ?Sized>() -> String {
@@ -55,14 +55,14 @@ fn type_name_of<T: ?Sized>() -> String {
 /// let res1 = axon.execute((), &mut bus1).await;
 /// let res2 = axon.execute((), &mut bus2).await;
 /// ```
-pub struct Axon<In, Out, E> {
+pub struct Axon<In, Out, E, Res = ()> {
     /// The static structure (for visualization/analysis)
     pub schematic: Schematic,
     /// The runtime executor
-    executor: Executor<In, Out, E>,
+    executor: Executor<In, Out, E, Res>,
 }
 
-impl<In, Out, E> Clone for Axon<In, Out, E> {
+impl<In, Out, E, Res> Clone for Axon<In, Out, E, Res> {
     fn clone(&self) -> Self {
         Self {
             schematic: self.schematic.clone(),
@@ -71,34 +71,27 @@ impl<In, Out, E> Clone for Axon<In, Out, E> {
     }
 }
 
-impl<In, E> Axon<In, In, E>
+impl<In, E, Res> Axon<In, In, E, Res>
 where
     In: Send + Sync + 'static,
     E: Send + 'static,
+    Res: ranvier_core::transition::ResourceRequirement,
 {
     /// Create a new Axon flow with the given label.
     /// This is the preferred entry point per Flat API guidelines.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let hello = Axon::new("HelloWorld")
-    ///     .then(GreetBlock)
-    ///     .then(ExclaimBlock);
-    /// ```
     pub fn new(label: &str) -> Self {
         Self::start(label)
     }
 
     /// Start defining a new Axon flow.
-    /// This creates an Identity Axon (In -> In).
+    /// This creates an Identity Axon (In -> In) with no initial resource requirements.
     pub fn start(label: &str) -> Self {
         let node_id = uuid::Uuid::new_v4().to_string();
         let node = Node {
             id: node_id,
             kind: NodeKind::Ingress,
             label: label.to_string(),
-            input_type: "void".to_string(), // Ingress usually starts from void/external
+            input_type: "void".to_string(),
             output_type: type_name_of::<In>(),
             metadata: Default::default(),
             source_location: None,
@@ -107,12 +100,8 @@ where
         let mut schematic = Schematic::new(label);
         schematic.nodes.push(node);
 
-        // The initial executor is just an identity function matching the In type
-        let executor: Executor<In, In, E> = Arc::new(
-            move |input: In, _bus: &mut Bus| -> BoxFuture<'_, Outcome<In, E>> {
-                Box::pin(std::future::ready(Outcome::Next(input)))
-            },
-        );
+        let executor: Executor<In, In, E, Res> =
+            Arc::new(move |input, _res, _bus| Box::pin(std::future::ready(Outcome::Next(input))));
 
         Self {
             schematic,
@@ -121,17 +110,20 @@ where
     }
 }
 
-impl<In, Out, E> Axon<In, Out, E>
+impl<In, Out, E, Res> Axon<In, Out, E, Res>
 where
     In: Send + Sync + 'static,
     Out: Send + Sync + 'static,
     E: Send + 'static,
+    Res: ranvier_core::transition::ResourceRequirement,
 {
     /// Chain a transition to this Axon.
-    pub fn then<Next, Trans>(self, transition: Trans) -> Axon<In, Next, E>
+    ///
+    /// Requires the transition to use the SAME resource bundle as the previous steps.
+    pub fn then<Next, Trans>(self, transition: Trans) -> Axon<In, Next, E, Res>
     where
         Next: Send + Sync + 'static,
-        Trans: Transition<Out, Next, Error = E> + Clone + Send + Sync + 'static,
+        Trans: Transition<Out, Next, Resources = Res, Error = E> + Clone + Send + Sync + 'static,
     {
         let trans_label = type_name_of::<Trans>();
 
@@ -162,33 +154,29 @@ where
         schematic.nodes.push(next_node);
         schematic.edges.push(Edge {
             from: last_node_id,
-            to: next_node_id,
+            to: next_node_id.clone(),
             kind: EdgeType::Linear,
             label: Some("Next".to_string()),
         });
 
         // Compose Executor
-        let next_executor: Executor<In, Next, E> = Arc::new(
-            move |input: In, bus: &mut Bus| -> BoxFuture<'_, Outcome<Next, E>> {
+        let next_executor: Executor<In, Next, E, Res> = Arc::new(
+            move |input: In, res: &Res, bus: &mut Bus| -> BoxFuture<'_, Outcome<Next, E>> {
                 let prev = prev_executor.clone();
                 let trans = transition.clone();
-                let _label = trans_label.clone();
 
                 Box::pin(async move {
                     // Run previous step
-                    let prev_result = prev(input, bus).await;
+                    let prev_result = prev(input, res, bus).await;
 
                     // Unpack
                     let state = match prev_result {
                         Outcome::Next(t) => t,
-                        Outcome::Branch(id, p) => return Outcome::Branch(id, p),
-                        Outcome::Jump(id, p) => return Outcome::Jump(id, p),
-                        Outcome::Emit(evt, p) => return Outcome::Emit(evt, p),
-                        Outcome::Fault(e) => return Outcome::Fault(e),
+                        other => return other.map(|_| unreachable!()),
                     };
 
                     // Run this step
-                    async move { trans.run(state, bus).await }.await
+                    trans.run(state, res, bus).await
                 })
             },
         );
@@ -230,10 +218,10 @@ where
         self
     }
 
-    /// Execute the Axon with the given input.
-    pub async fn execute(&self, input: In, bus: &mut Bus) -> Outcome<Out, E> {
+    /// Execute the Axon with the given input and resources.
+    pub async fn execute(&self, input: In, resources: &Res, bus: &mut Bus) -> Outcome<Out, E> {
         let label = self.schematic.name.clone();
-        async move { (self.executor)(input, bus).await }
+        async move { (self.executor)(input, resources, bus).await }
             .instrument(tracing::info_span!("Circuit", ranvier.circuit = %label))
             .await
     }

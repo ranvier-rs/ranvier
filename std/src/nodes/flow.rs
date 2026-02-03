@@ -27,8 +27,14 @@ where
     T: Send + Sync + 'static,
 {
     type Error = std::convert::Infallible;
+    type Resources = ();
 
-    async fn run(&self, input: T, _bus: &mut Bus) -> Outcome<T, Self::Error> {
+    async fn run(
+        &self,
+        input: T,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<T, Self::Error> {
         tokio::time::sleep(Duration::from_millis(self.duration_ms)).await;
         Outcome::next(input)
     }
@@ -60,8 +66,14 @@ where
     T: Send + Sync + 'static,
 {
     type Error = std::convert::Infallible;
+    type Resources = ();
 
-    async fn run(&self, input: T, _bus: &mut Bus) -> Outcome<T, Self::Error> {
+    async fn run(
+        &self,
+        input: T,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<T, Self::Error> {
         Outcome::next(input)
     }
 }

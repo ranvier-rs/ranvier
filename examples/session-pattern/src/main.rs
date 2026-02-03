@@ -64,8 +64,14 @@ struct LoadSession;
 #[async_trait]
 impl Transition<String, String> for LoadSession {
     type Error = anyhow::Error;
+    type Resources = ();
 
-    async fn run(&self, req: String, bus: &mut Bus) -> Outcome<String, Self::Error> {
+    async fn run(
+        &self,
+        req: String,
+        _resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<String, Self::Error> {
         // Simulate extracting cookie from "Request" (here just the string input)
         // In real app: bus.req.headers().get("Cookie")...
         let sid = if req.contains("sid=") {
@@ -102,8 +108,14 @@ struct RequireAuth;
 #[async_trait]
 impl Transition<String, String> for RequireAuth {
     type Error = anyhow::Error;
+    type Resources = ();
 
-    async fn run(&self, req: String, bus: &mut Bus) -> Outcome<String, Self::Error> {
+    async fn run(
+        &self,
+        req: String,
+        _resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<String, Self::Error> {
         // Check if session exists in Bus
         if bus.has::<UserSession>() {
             println!("[RequireAuth] Authorized.");
@@ -126,8 +138,14 @@ struct UserProfile;
 #[async_trait]
 impl Transition<String, String> for UserProfile {
     type Error = anyhow::Error;
+    type Resources = ();
 
-    async fn run(&self, _req: String, bus: &mut Bus) -> Outcome<String, Self::Error> {
+    async fn run(
+        &self,
+        _req: String,
+        _resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<String, Self::Error> {
         // Safe unwrap because we are after RequireAuth
         // But idiomatic way is to use if let to be safe or map
         if let Some(session) = bus.read::<UserSession>() {
@@ -161,7 +179,7 @@ async fn main() -> anyhow::Result<()> {
     // println!("{}", serde_json::to_string_pretty(&axon.schematic)?);
 
     let mut bus = Bus::new();
-    let result = axon.execute(req_valid, &mut bus).await;
+    let result = axon.execute(req_valid, &(), &mut bus).await;
 
     match result {
         Outcome::Next(profile) => println!("Success: {}", profile),
@@ -180,7 +198,7 @@ async fn main() -> anyhow::Result<()> {
         .then(UserProfile);
 
     let mut bus2 = Bus::new();
-    let result2 = axon2.execute(req_invalid, &mut bus2).await;
+    let result2 = axon2.execute(req_invalid, &(), &mut bus2).await;
 
     match result2 {
         Outcome::Next(profile) => println!("Success: {}", profile),

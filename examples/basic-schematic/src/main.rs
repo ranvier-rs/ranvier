@@ -62,8 +62,14 @@ struct LogStart;
 #[async_trait]
 impl Transition<(), String> for LogStart {
     type Error = anyhow::Error;
+    type Resources = ();
 
-    async fn run(&self, _state: (), _bus: &mut Bus) -> Outcome<String, Self::Error> {
+    async fn run(
+        &self,
+        _state: (),
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<String, Self::Error> {
         println!("[Axon] Circuit started.");
         Outcome::Next("Initial state".to_string())
     }
@@ -76,8 +82,14 @@ struct ProcessData;
 #[async_trait]
 impl Transition<String, String> for ProcessData {
     type Error = anyhow::Error;
+    type Resources = ();
 
-    async fn run(&self, state: String, _bus: &mut Bus) -> Outcome<String, Self::Error> {
+    async fn run(
+        &self,
+        state: String,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<String, Self::Error> {
         println!("[Axon] Processing data: {}", state);
         Outcome::Next(format!("Processed: {}", state))
     }
@@ -90,8 +102,14 @@ struct LogEnd;
 #[async_trait]
 impl Transition<String, ()> for LogEnd {
     type Error = anyhow::Error;
+    type Resources = ();
 
-    async fn run(&self, state: String, _bus: &mut Bus) -> Outcome<(), Self::Error> {
+    async fn run(
+        &self,
+        state: String,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<(), Self::Error> {
         println!("[Axon] Circuit ended with: {}", state);
         Outcome::Next(())
     }
@@ -128,7 +146,7 @@ async fn main() -> anyhow::Result<()> {
     // Execute the Axon
     println!("=== Running Axon ===");
     let mut bus = Bus::new();
-    let result = axon.execute((), &mut bus).await;
+    let result = axon.execute((), &(), &mut bus).await;
     println!("Final Result: {:?}", result);
 
     // Demonstrate Axon helper methods

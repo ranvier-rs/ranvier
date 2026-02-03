@@ -5,6 +5,8 @@
 
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
+use ranvier_core::transition::ResourceRequirement;
+use ranvier_db::node::DbResources;
 use ranvier_db::prelude::*;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
@@ -86,6 +88,21 @@ impl DbTransition<(), Vec<User>> for ListUsers {
     }
 }
 
+// ============== Resources ==============
+
+#[derive(Clone)]
+struct AppResources {
+    pool: PostgresPool,
+}
+
+impl ResourceRequirement for AppResources {}
+
+impl DbResources for AppResources {
+    fn pg_pool(&self) -> &sqlx::PgPool {
+        self.pool.inner()
+    }
+}
+
 // ============== Main Entry Point ==============
 
 #[tokio::main]
@@ -103,9 +120,9 @@ async fn main() -> anyhow::Result<()> {
     // Create a test table if it doesn't exist
     setup_schema(&pool).await?;
 
-    // Store pool on the Bus
+    // Create resource bundle
+    let resources = AppResources { pool };
     let mut bus = Bus::new();
-    bus.insert(pool);
 
     // Example 1: Create a user
     println!("\n📝 Creating user...");
@@ -114,10 +131,12 @@ async fn main() -> anyhow::Result<()> {
         email: "alice@example.com".to_string(),
     };
 
-    let result = Axon::<CreateUserRequest, CreateUserRequest, anyhow::Error>::start("create_user")
-        .then(PgNode::new(CreateUser))
-        .execute(create_request, &mut bus)
-        .await;
+    let result = Axon::<CreateUserRequest, CreateUserRequest, anyhow::Error, AppResources>::start(
+        "create_user",
+    )
+    .then(PgNode::new(CreateUser))
+    .execute(create_request, &resources, &mut bus)
+    .await;
 
     match result {
         Outcome::Next(user) => {
@@ -131,9 +150,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Example 2: Get user by ID
     println!("\n🔍 Looking up user by ID (1)...");
-    let result = Axon::<UserId, UserId, anyhow::Error>::start("get_user")
+    let result = Axon::<UserId, UserId, anyhow::Error, AppResources>::start("get_user")
         .then(PgNode::new(GetUserById))
-        .execute(UserId(1), &mut bus)
+        .execute(UserId(1), &resources, &mut bus)
         .await;
 
     match result {
@@ -148,9 +167,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Example 3: List all users
     println!("\n📋 Listing all users...");
-    let result = Axon::<(), (), anyhow::Error>::start("list_users")
+    let result = Axon::<(), (), anyhow::Error, AppResources>::start("list_users")
         .then(PgNode::new(ListUsers))
-        .execute((), &mut bus)
+        .execute((), &resources, &mut bus)
         .await;
 
     match result {

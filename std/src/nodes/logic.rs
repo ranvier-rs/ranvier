@@ -28,8 +28,14 @@ where
     T: Send + Sync + 'static + Clone + Serialize,
 {
     type Error = std::convert::Infallible;
+    type Resources = ();
 
-    async fn run(&self, input: T, _bus: &mut Bus) -> Outcome<T, Self::Error> {
+    async fn run(
+        &self,
+        input: T,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<T, Self::Error> {
         if rand::random::<f64>() < self.probability {
             Outcome::next(input)
         } else {
@@ -84,8 +90,14 @@ where
     F: Fn(&T) -> bool + Send + Sync + 'static,
 {
     type Error = std::convert::Infallible;
+    type Resources = ();
 
-    async fn run(&self, input: T, _bus: &mut Bus) -> Outcome<T, Self::Error> {
+    async fn run(
+        &self,
+        input: T,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<T, Self::Error> {
         if (self.predicate)(&input) {
             Outcome::next(input)
         } else {
@@ -137,8 +149,14 @@ where
     F: Fn(&T) -> String + Send + Sync + 'static,
 {
     type Error = std::convert::Infallible;
+    type Resources = ();
 
-    async fn run(&self, input: T, _bus: &mut Bus) -> Outcome<T, Self::Error> {
+    async fn run(
+        &self,
+        input: T,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<T, Self::Error> {
         let branch_id = (self.matcher)(&input);
         let payload = serde_json::to_value(&input).ok();
         Outcome::branch(branch_id, payload)

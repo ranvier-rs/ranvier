@@ -77,7 +77,7 @@ pub async fn demo_path_routing() {
         let mut bus = Bus::new();
         let axon =
             Axon::<RouteRequest, RouteRequest, RouteError>::start("RootRouter").then(RootRoute);
-        match axon.execute(req, &mut bus).await {
+        match axon.execute(req, &(), &mut bus).await {
             Outcome::Next(resp) => println!("    {} {}", resp.status, resp.body),
             Outcome::Fault(e) => println!("    Error: {:?}", e),
             _ => {}
@@ -110,7 +110,7 @@ pub async fn demo_nested_routing() {
         let mut bus = Bus::new();
         let axon =
             Axon::<RouteRequest, RouteRequest, RouteError>::start("ApiRouter").then(ApiRoute);
-        match axon.execute(req.clone(), &mut bus).await {
+        match axon.execute(req.clone(), &(), &mut bus).await {
             Outcome::Next(resp) => println!("    {} {}", resp.status, resp.body),
             Outcome::Branch(route, resp_box) => {
                 println!("    Branch: {} => {:?}", route, resp_box);
@@ -142,7 +142,7 @@ pub async fn demo_branch_routing() -> anyhow::Result<()> {
         let mut bus = Bus::new();
         let axon =
             Axon::<RouteRequest, RouteRequest, RouteError>::start("BranchRouter").then(BranchRoute);
-        let result = axon.execute(req.clone(), &mut bus).await;
+        let result = axon.execute(req.clone(), &(), &mut bus).await;
         match result {
             Outcome::Branch(route, req_val) => {
                 println!("    Routed to: {} (payload: {:?})", route, req_val);
@@ -167,8 +167,14 @@ struct RootRoute;
 #[async_trait]
 impl Transition<RouteRequest, RouteResponse> for RootRoute {
     type Error = RouteError;
+    type Resources = ();
 
-    async fn run(&self, req: RouteRequest, _bus: &mut Bus) -> Outcome<RouteResponse, Self::Error> {
+    async fn run(
+        &self,
+        req: RouteRequest,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<RouteResponse, Self::Error> {
         match (req.method, req.path.as_str()) {
             (HttpMethod::GET, "/") => Outcome::Next(RouteResponse {
                 status: 200,
@@ -194,8 +200,14 @@ struct ApiRoute;
 #[async_trait]
 impl Transition<RouteRequest, RouteResponse> for ApiRoute {
     type Error = RouteError;
+    type Resources = ();
 
-    async fn run(&self, req: RouteRequest, _bus: &mut Bus) -> Outcome<RouteResponse, Self::Error> {
+    async fn run(
+        &self,
+        req: RouteRequest,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<RouteResponse, Self::Error> {
         // Check if path starts with /api
         if !req.path.starts_with("/api") {
             return Outcome::Fault(RouteError::NotFound(req.path));
@@ -228,8 +240,14 @@ struct BranchRoute;
 #[async_trait]
 impl Transition<RouteRequest, RouteRequest> for BranchRoute {
     type Error = RouteError;
+    type Resources = ();
 
-    async fn run(&self, req: RouteRequest, _bus: &mut Bus) -> Outcome<RouteRequest, Self::Error> {
+    async fn run(
+        &self,
+        req: RouteRequest,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<RouteRequest, Self::Error> {
         // Route based on path prefix using Branch outcome
         if req.path.starts_with("/admin") {
             let p = serde_json::to_value(&req).ok();

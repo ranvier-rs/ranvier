@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     let converter =
         |_req: Request<hyper::body::Incoming>, _bus: &mut Bus| "Hello Ranvier".to_string();
 
-    let service = RanvierService::new(logic_flow, converter);
+    let service = RanvierService::new(logic_flow, converter, ());
 
     // Bind to port
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));

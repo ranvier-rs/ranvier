@@ -26,8 +26,14 @@ struct Authenticate;
 #[async_trait]
 impl Transition<LoginInput, UserContext> for Authenticate {
     type Error = anyhow::Error;
+    type Resources = ();
 
-    async fn run(&self, input: LoginInput, _bus: &mut Bus) -> Outcome<UserContext, Self::Error> {
+    async fn run(
+        &self,
+        input: LoginInput,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<UserContext, Self::Error> {
         if input.username == "admin" {
             Outcome::Next(UserContext {
                 user_id: "u1".to_string(),

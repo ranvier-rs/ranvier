@@ -15,31 +15,39 @@ use ranvier_runtime::Axon;
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use tower::Service;
 
 /// The foundational logic engine service.
 /// Adapts HTTP requests to Axon executions.
 #[derive(Clone)]
-pub struct RanvierService<In, Out, E, F> {
-    axon: Axon<In, Out, E>,
+pub struct RanvierService<In, Out, E, F, Res = ()> {
+    axon: Axon<In, Out, E, Res>,
     /// Converts a Request into the Axon's input state and potentially populates the Bus.
     converter: F,
+    /// Resources used by the axon
+    resources: Arc<Res>,
 }
 
-impl<In, Out, E, F> RanvierService<In, Out, E, F> {
-    pub fn new(axon: Axon<In, Out, E>, converter: F) -> Self {
-        Self { axon, converter }
+impl<In, Out, E, F, Res> RanvierService<In, Out, E, F, Res> {
+    pub fn new(axon: Axon<In, Out, E, Res>, converter: F, resources: Res) -> Self {
+        Self {
+            axon,
+            converter,
+            resources: Arc::new(resources),
+        }
     }
 }
 
-impl<B, In, Out, E, F> Service<Request<B>> for RanvierService<In, Out, E, F>
+impl<B, In, Out, E, F, Res> Service<Request<B>> for RanvierService<In, Out, E, F, Res>
 where
     B: Send + 'static,
     In: Send + Sync + 'static,
     Out: Send + Sync + 'static,
     E: Send + 'static + std::fmt::Debug,
     F: Fn(Request<B>, &mut Bus) -> In + Clone + Send + Sync + 'static,
+    Res: ranvier_core::transition::ResourceRequirement + Send + Sync + 'static,
 {
     type Response = Response<Full<Bytes>>;
     type Error = Infallible;
@@ -52,6 +60,7 @@ where
     fn call(&mut self, req: Request<B>) -> Self::Future {
         let axon = self.axon.clone();
         let converter = self.converter.clone();
+        let resources = self.resources.clone();
 
         Box::pin(async move {
             let mut bus = Bus::new();
@@ -60,7 +69,7 @@ where
             let input = converter(req, &mut bus);
 
             // 2. Run Axon
-            let _result = axon.execute(input, &mut bus).await;
+            let _result = axon.execute(input, &resources, &mut bus).await;
 
             // 3. Egress Adapter: Outcome -> Response
             // TODO: Properly map Outcome to Response based on application needs

@@ -37,8 +37,14 @@ where
     T: Num + Clone + Send + Sync + Debug + 'static,
 {
     type Error = std::convert::Infallible;
+    type Resources = ();
 
-    async fn run(&self, input: T, _bus: &mut Bus) -> Outcome<T, Self::Error> {
+    async fn run(
+        &self,
+        input: T,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<T, Self::Error> {
         let result = match self.operation {
             MathOperation::Add => input.clone() + self.operand.clone(),
             MathOperation::Sub => input.clone() - self.operand.clone(),

@@ -50,14 +50,20 @@ where
     To: Send + 'static + Debug,   // Output must be Debug for tracing
 {
     type Error = T::Error;
+    type Resources = T::Resources;
 
-    async fn run(&self, input: From, bus: &mut Bus) -> Outcome<To, Self::Error> {
+    async fn run(
+        &self,
+        input: From,
+        resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<To, Self::Error> {
         // 1. Start Span
         println!("[Trace] Start Span: '{}' | Input: {:?}", self.name, input);
         let start = std::time::Instant::now();
 
         // 2. Run Inner Transition
-        let result = self.inner.run(input, bus).await;
+        let result = self.inner.run(input, resources, bus).await;
 
         // 3. End Span
         let duration = start.elapsed();
