@@ -10,6 +10,7 @@ description = "Async Execution Engine for Ranvier"
 
 [dependencies]
 ranvier-core = { path = "../core", version = "0.1.0" }
+ranvier-inspector = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }

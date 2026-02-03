@@ -1,0 +1,15 @@
+[package]
+name = "ranvier-inspector"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ranvier-core = { path = "../../core" }
+axum = { version = "0.7", features = ["ws"] }
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+futures = "0.3"
+tracing-subscriber = { workspace = true, features = ["registry"] }

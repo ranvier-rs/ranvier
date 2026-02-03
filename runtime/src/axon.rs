@@ -242,6 +242,21 @@ where
             .await
     }
 
+    /// Starts the Ranvier Inspector for this Axon on the specified port.
+    /// This spawns a background task to serve the Schematic.
+    pub fn serve_inspector(self, port: u16) -> Self {
+        let schematic = self.schematic.clone();
+        tokio::spawn(async move {
+            if let Err(e) = ranvier_inspector::Inspector::new(schematic, port)
+                .serve()
+                .await
+            {
+                tracing::error!("Inspector server failed: {}", e);
+            }
+        });
+        self
+    }
+
     /// Get a reference to the Schematic (structural view).
     pub fn schematic(&self) -> &Schematic {
         &self.schematic

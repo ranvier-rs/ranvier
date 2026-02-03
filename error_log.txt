@@ -1,0 +1,56 @@
+    Checking studio-demo v0.1.0 (E:\project\ranvier\ranvier-workspace\ranvier\examples\studio-demo)
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `async_trait`
+ --> examples\studio-demo\src\main.rs:6:1
+  |
+6 | #[transition]
+  | ^^^^^^^^^^^^^ use of unresolved module or unlinked crate `async_trait`
+  |
+  = note: this error originates in the attribute macro `transition` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `async_trait`
+  --> examples\studio-demo\src\main.rs:11:1
+   |
+11 | #[transition]
+   | ^^^^^^^^^^^^^ use of unresolved module or unlinked crate `async_trait`
+   |
+   = note: this error originates in the attribute macro `transition` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0195]: lifetime parameters or bounds on method `run` do not match the trait declaration
+   --> examples\studio-demo\src\main.rs:6:14
+    |
+  6 |   #[transition]
+    |                ^ lifetimes do not match method in trait
+    |
+   ::: E:\project\ranvier\ranvier-workspace\ranvier\core\src\transition.rs:102:5
+    |
+102 | /     async fn run(
+103 | |         &self,
+104 | |         state: From,
+105 | |         resources: &Self::Resources,
+106 | |         bus: &mut Bus,
+107 | |     ) -> Outcome<To, Self::Error>;
+    | |__________________________________- lifetimes in impl do not match this method in trait
+    |
+    = note: this error originates in the attribute macro `transition` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0195]: lifetime parameters or bounds on method `run` do not match the trait declaration
+   --> examples\studio-demo\src\main.rs:11:14
+    |
+ 11 |   #[transition]
+    |                ^ lifetimes do not match method in trait
+    |
+   ::: E:\project\ranvier\ranvier-workspace\ranvier\core\src\transition.rs:102:5
+    |
+102 | /     async fn run(
+103 | |         &self,
+104 | |         state: From,
+105 | |         resources: &Self::Resources,
+106 | |         bus: &mut Bus,
+107 | |     ) -> Outcome<To, Self::Error>;
+    | |__________________________________- lifetimes in impl do not match this method in trait
+    |
+    = note: this error originates in the attribute macro `transition` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+Some errors have detailed explanations: E0195, E0433.
+For more information about an error, try `rustc --explain E0195`.
+error: could not compile `studio-demo` (bin "studio-demo") due to 4 previous errors
