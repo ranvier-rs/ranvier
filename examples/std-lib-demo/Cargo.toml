@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 ranvier-core = { workspace = true }
+ranvier-runtime = { workspace = true }
 ranvier-std = { workspace = true }
 ranvier-http = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

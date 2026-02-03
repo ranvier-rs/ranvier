@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 ranvier-core = { path = "../../core" }
+ranvier-runtime = { path = "../../runtime" }
 tokio = { version = "1.43.0", features = ["full"] }
 async-trait = "0.1"
 anyhow = "1.0"

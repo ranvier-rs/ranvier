@@ -24,6 +24,7 @@ This example demonstrates the "Loop-Axon-Sink" pattern which is the foundation o
 use async_trait::async_trait;
 use ranvier_core::event::{EventSink, EventSource};
 use ranvier_core::prelude::*;
+use ranvier_runtime::Axon;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 

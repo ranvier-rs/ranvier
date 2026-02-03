@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use ranvier_core::bus::{ConnectionBus, ConnectionId};
 use ranvier_core::prelude::*;
 use ranvier_core::telemetry::Traced;
+use ranvier_runtime::Axon;
 use std::fmt::Debug;
 
 // ============================================================================

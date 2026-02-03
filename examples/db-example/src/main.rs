@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_db::prelude::*;
+use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 
 // ============== Domain Types ==============

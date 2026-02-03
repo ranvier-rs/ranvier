@@ -1,5 +1,5 @@
-use ranvier_core::replay::ReplayEngine;
 use ranvier_core::timeline::{Timeline, TimelineEvent};
+use ranvier_runtime::replay::ReplayEngine;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

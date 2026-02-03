@@ -19,6 +19,7 @@ This example demonstrates the "Session as Resource" pattern in Ranvier.
 
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
+use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================

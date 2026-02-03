@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 ranvier-core = { workspace = true }
+ranvier-runtime = { workspace = true }
 ranvier-db = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }

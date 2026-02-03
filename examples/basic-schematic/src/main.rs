@@ -49,6 +49,7 @@ cargo run --bin basic-schematic
 
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
+use ranvier_runtime::Axon;
 
 // ============================================================================
 // 1. Define Transitions (Atomic Steps)

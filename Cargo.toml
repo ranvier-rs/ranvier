@@ -22,6 +22,7 @@ members = [
     "examples/otel-demo",
     "examples/replay-demo",
     "examples/std-lib-demo",
+    "examples/typed-state-tree",
     "crates/synapse",
     "crates/db",
     "crates/status",
