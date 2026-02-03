@@ -11,10 +11,10 @@
 //!
 //! "Axon is the flowing thing, Schematic is the visible thing."
 
-use crate::bus::Bus;
-use crate::outcome::Outcome;
-use crate::schematic::{Edge, EdgeType, Node, NodeKind, Schematic};
-use crate::transition::Transition;
+use ranvier_core::bus::Bus;
+use ranvier_core::outcome::Outcome;
+use ranvier_core::schematic::{Edge, EdgeType, Node, NodeKind, Schematic};
+use ranvier_core::transition::Transition;
 use std::any::type_name;
 use std::future::Future;
 use std::pin::Pin;

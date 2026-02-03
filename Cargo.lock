@@ -840,6 +840,7 @@ dependencies = [
  "async-trait",
  "ranvier-core",
  "ranvier-http",
+ "ranvier-runtime",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1774,6 +1775,7 @@ dependencies = [
  "hyper 1.8.1",
  "hyper-util",
  "ranvier-core",
+ "ranvier-runtime",
  "thiserror 1.0.69",
  "tokio",
  "tower 0.5.3",
@@ -1792,6 +1794,19 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ranvier-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-core",
+ "futures-util",
+ "ranvier-core",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1817,6 +1832,7 @@ dependencies = [
  "num-traits",
  "rand",
  "ranvier-core",
+ "ranvier-runtime",
  "schemars",
  "serde",
  "serde_json",

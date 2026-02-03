@@ -1,4 +1,4 @@
-use crate::timeline::{Timeline, TimelineEvent};
+use ranvier_core::timeline::{Timeline, TimelineEvent};
 
 /// ReplayEngine reconstructs the execution state from a Timeline.
 /// It creates a "virtual" cursor that moves through the circuit based on recorded events.

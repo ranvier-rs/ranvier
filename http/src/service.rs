@@ -11,6 +11,7 @@ use bytes::Bytes;
 use http::{Request, Response};
 use http_body_util::Full;
 use ranvier_core::prelude::*;
+use ranvier_runtime::Axon;
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;

@@ -2,8 +2,10 @@
 resolver = "2"
 members = [
     "core",
+    "runtime",
+    "http",
+    "std",
     "cli",
-    "crates/http",
     "examples/basic-schematic",
     "examples/complex-schematic",
     "examples/hello-world",
@@ -24,17 +26,17 @@ members = [
     "crates/db",
     "crates/status",
     "crates/observe",
-    "crates/std",
 ]
 
 [workspace.dependencies]
 # Internal Crates
 ranvier-core = { path = "core", version = "0.1.0" }
-ranvier-http = { path = "crates/http", version = "0.1.0" }
+ranvier-runtime = { path = "runtime", version = "0.1.0" }
+ranvier-http = { path = "http", version = "0.1.0" }
 ranvier-db = { path = "crates/db", version = "0.1.0" }
 ranvier-status = { path = "crates/status", version = "0.1.0" }
 ranvier-observe = { path = "crates/observe", version = "0.1.0" }
-ranvier-std = { path = "crates/std", version = "0.1.0" }
+ranvier-std = { path = "std", version = "0.1.0" }
 
 
 # Sync Third-party Dependencies

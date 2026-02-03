@@ -16,6 +16,7 @@ cargo run --bin hello-world
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_http::prelude::*;
+use ranvier_runtime::Axon;
 
 // ============================================================================
 // 1. Define Simple Transitions (Business Logic)
