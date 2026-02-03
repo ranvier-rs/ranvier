@@ -1,0 +1,16 @@
+[package]
+name = "flat-api-demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ranvier-core = { path = "../../core" }
+ranvier-runtime = { path = "../../runtime" }
+ranvier-http = { path = "../../http" }
+ranvier-macros = { path = "../../macros" }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+http = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

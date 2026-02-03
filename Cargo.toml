@@ -7,6 +7,7 @@ members = [
     "http",
     "std",
     "cli",
+    "macros",
     "examples/basic-schematic",
     "examples/complex-schematic",
     "examples/hello-world",
@@ -28,6 +29,7 @@ members = [
     "crates/db",
     "crates/status",
     "crates/observe",
+    "examples/flat-api-demo",
 ]
 
 [workspace.package]
@@ -49,6 +51,7 @@ ranvier-db = { path = "crates/db", version = "0.1.0" }
 ranvier-status = { path = "crates/status", version = "0.1.0" }
 ranvier-observe = { path = "crates/observe", version = "0.1.0" }
 ranvier-std = { path = "std", version = "0.1.0" }
+ranvier-macros = { path = "macros", version = "0.1.0" }
 
 
 # Sync Third-party Dependencies
