@@ -14,8 +14,8 @@ path = "src/main.rs"
 
 [dependencies]
 ranvier-core = { path = "../core" }
-ranvier-synapse = { path = "../crates/synapse" }
-ranvier-status = { path = "../crates/status" }
+ranvier-synapse = { path = "../extensions/synapse" }
+ranvier-status = { path = "../extensions/status" }
 clap = { version = "4", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
