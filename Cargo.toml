@@ -6,7 +6,6 @@ members = [
     "runtime",
     "http",
     "std",
-    "cli",
     "macros",
     "examples/basic-schematic",
     "examples/complex-schematic",
