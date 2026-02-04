@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
     // That prevents it from being a runnable demo app.
 
     // SOLUTION:
-    // I will modify `ranvier-cli` to set an environment variable `RANVIER_SCHEMATIC=1`.
+    // I will modify `ranvier` CLI (package: `ranvier-cli`) to set `RANVIER_SCHEMATIC=1`.
     // Then checking that env var here.
 
     // But first let's finish the code. I will assume `RANVIER_SCHEMATIC` env var.
