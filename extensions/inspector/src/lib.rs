@@ -7,7 +7,9 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use ranvier_core::schematic::Schematic;
+use ranvier_core::schematic::{NodeKind, Schematic};
+use serde_json::Value;
+use std::fs;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::broadcast;
@@ -28,25 +30,80 @@ fn get_sender() -> &'static broadcast::Sender<String> {
 pub struct Inspector {
     port: u16,
     schematic: Arc<Mutex<Schematic>>,
+    public_projection: Arc<Mutex<Option<Value>>>,
+    internal_projection: Arc<Mutex<Option<Value>>>,
 }
 
 impl Inspector {
     pub fn new(schematic: Schematic, port: u16) -> Self {
         // Ensure channel exists
         get_sender();
+        let public_projection = default_public_projection(&schematic);
+        let internal_projection = default_internal_projection(&schematic);
 
         Self {
             port,
             schematic: Arc::new(Mutex::new(schematic)),
+            public_projection: Arc::new(Mutex::new(Some(public_projection))),
+            internal_projection: Arc::new(Mutex::new(Some(internal_projection))),
         }
     }
 
+    /// Attach a read-only public projection artifact.
+    pub fn with_public_projection(self, projection: Value) -> Self {
+        if let Ok(mut slot) = self.public_projection.lock() {
+            *slot = Some(projection);
+        }
+        self
+    }
+
+    /// Attach a read-only internal projection artifact.
+    pub fn with_internal_projection(self, projection: Value) -> Self {
+        if let Ok(mut slot) = self.internal_projection.lock() {
+            *slot = Some(projection);
+        }
+        self
+    }
+
+    /// Load optional projection artifacts from environment variables:
+    /// - `RANVIER_TRACE_PUBLIC_PATH`
+    /// - `RANVIER_TRACE_INTERNAL_PATH`
+    ///
+    /// Invalid files are ignored with warning logs; bootstrap projections remain active.
+    pub fn with_projection_files_from_env(self) -> Self {
+        let mut inspector = self;
+
+        if let Ok(path) = std::env::var("RANVIER_TRACE_PUBLIC_PATH") {
+            match read_projection_file(&path) {
+                Ok(v) => inspector = inspector.with_public_projection(v),
+                Err(e) => tracing::warn!("Failed to load public projection from {}: {}", path, e),
+            }
+        }
+
+        if let Ok(path) = std::env::var("RANVIER_TRACE_INTERNAL_PATH") {
+            match read_projection_file(&path) {
+                Ok(v) => inspector = inspector.with_internal_projection(v),
+                Err(e) => tracing::warn!("Failed to load internal projection from {}: {}", path, e),
+            }
+        }
+
+        inspector
+    }
+
     pub async fn serve(self) -> Result<(), std::io::Error> {
+        let state = InspectorState {
+            schematic: self.schematic.clone(),
+            public_projection: self.public_projection.clone(),
+            internal_projection: self.internal_projection.clone(),
+        };
+
         let app = Router::new()
             .route("/schematic", get(get_schematic))
+            .route("/trace/public", get(get_public_projection))
+            .route("/trace/internal", get(get_internal_projection))
             .route("/events", get(ws_handler))
             .layer(CorsLayer::permissive())
-            .with_state(self.schematic);
+            .with_state(state);
 
         let addr = SocketAddr::from(([0, 0, 0, 0], self.port));
         tracing::info!("Ranvier Inspector listening on http://{}", addr);
@@ -54,6 +111,80 @@ impl Inspector {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, app).await
     }
+}
+
+fn default_public_projection(schematic: &Schematic) -> Value {
+    serde_json::json!({
+        "service_name": schematic.name,
+        "window_start": "1970-01-01T00:00:00Z",
+        "window_end": "1970-01-01T00:00:00Z",
+        "overall_status": "operational",
+        "circuits": [
+            {
+                "name": schematic.name,
+                "status": "operational",
+                "success_rate": 1.0,
+                "error_rate": 0.0,
+                "p95_latency_ms": 0.0
+            }
+        ]
+    })
+}
+
+fn default_internal_projection(schematic: &Schematic) -> Value {
+    let nodes = schematic
+        .nodes
+        .iter()
+        .map(|n| {
+            serde_json::json!({
+                "node_id": n.id,
+                "label": n.label,
+                "kind": node_kind_name(&n.kind),
+                "entered_at": "1970-01-01T00:00:00Z",
+                "exited_at": "1970-01-01T00:00:00Z",
+                "latency_ms": 0.0,
+                "outcome_type": "Next",
+                "branch_id": Value::Null,
+                "error_code": Value::Null,
+                "error_category": Value::Null
+            })
+        })
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "trace_id": "bootstrap",
+        "circuit_id": schematic.id,
+        "started_at": "1970-01-01T00:00:00Z",
+        "finished_at": "1970-01-01T00:00:00Z",
+        "nodes": nodes,
+        "summary": {
+            "node_count": schematic.nodes.len(),
+            "fault_count": 0,
+            "branch_count": 0
+        }
+    })
+}
+
+fn node_kind_name(kind: &NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Ingress => "Ingress",
+        NodeKind::Atom => "Atom",
+        NodeKind::Synapse => "Synapse",
+        NodeKind::Egress => "Egress",
+        NodeKind::Subgraph(_) => "Subgraph",
+    }
+}
+
+fn read_projection_file(path: &str) -> Result<Value, String> {
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    serde_json::from_str::<Value>(&content).map_err(|e| e.to_string())
+}
+
+#[derive(Clone)]
+struct InspectorState {
+    schematic: Arc<Mutex<Schematic>>,
+    public_projection: Arc<Mutex<Option<Value>>>,
+    internal_projection: Arc<Mutex<Option<Value>>>,
 }
 
 pub fn layer() -> InspectorLayer {
@@ -96,14 +227,34 @@ where
     }
 }
 
-async fn get_schematic(State(schematic): State<Arc<Mutex<Schematic>>>) -> Json<Schematic> {
-    let schematic = schematic.lock().unwrap();
+async fn get_schematic(State(state): State<InspectorState>) -> Json<Schematic> {
+    let schematic = state.schematic.lock().unwrap();
     Json(schematic.clone())
+}
+
+async fn get_public_projection(State(state): State<InspectorState>) -> Json<Value> {
+    let projection = state
+        .public_projection
+        .lock()
+        .ok()
+        .and_then(|v| v.clone())
+        .unwrap_or(Value::Null);
+    Json(projection)
+}
+
+async fn get_internal_projection(State(state): State<InspectorState>) -> Json<Value> {
+    let projection = state
+        .internal_projection
+        .lock()
+        .ok()
+        .and_then(|v| v.clone())
+        .unwrap_or(Value::Null);
+    Json(projection)
 }
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
-    State(_): State<Arc<Mutex<Schematic>>>,
+    State(_): State<InspectorState>,
 ) -> impl IntoResponse {
     ws.on_upgrade(handle_socket)
 }

@@ -14,11 +14,15 @@
 use ranvier_core::bus::Bus;
 use ranvier_core::outcome::Outcome;
 use ranvier_core::schematic::{Edge, EdgeType, Node, NodeKind, Schematic};
+use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_core::transition::Transition;
+use std::fs;
 use std::any::type_name;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::Instrument;
 
 /// Type alias for async boxed futures used in Axon execution.
@@ -162,10 +166,14 @@ where
         });
 
         // Compose Executor
+        let node_id_for_exec = next_node_id.clone();
+        let node_label_for_exec = transition.label();
         let next_executor: Executor<In, Next, E, Res> = Arc::new(
             move |input: In, res: &Res, bus: &mut Bus| -> BoxFuture<'_, Outcome<Next, E>> {
                 let prev = prev_executor.clone();
                 let trans = transition.clone();
+                let timeline_node_id = node_id_for_exec.clone();
+                let timeline_node_label = node_label_for_exec.clone();
 
                 Box::pin(async move {
                     // Run previous step
@@ -184,13 +192,44 @@ where
                         .last()
                         .unwrap_or("unknown");
 
-                    async move { trans.run(state, res, bus).await }
+                    let enter_ts = now_ms();
+                    if let Some(timeline) = bus.read_mut::<Timeline>() {
+                        timeline.push(TimelineEvent::NodeEnter {
+                            node_id: timeline_node_id.clone(),
+                            node_label: timeline_node_label.clone(),
+                            timestamp: enter_ts,
+                        });
+                    }
+
+                    let started = std::time::Instant::now();
+                    let result = trans
+                        .run(state, res, bus)
                         .instrument(tracing::info_span!(
                             "Node",
                             ranvier.node = %label,
                             ranvier.resource_type = %res_type
                         ))
-                        .await
+                        .await;
+                    let duration_ms = started.elapsed().as_millis() as u64;
+                    let exit_ts = now_ms();
+
+                    if let Some(timeline) = bus.read_mut::<Timeline>() {
+                        timeline.push(TimelineEvent::NodeExit {
+                            node_id: timeline_node_id.clone(),
+                            outcome_type: outcome_type_name(&result),
+                            duration_ms,
+                            timestamp: exit_ts,
+                        });
+
+                        if let Outcome::Branch(branch_id, _) = &result {
+                            timeline.push(TimelineEvent::Branchtaken {
+                                branch_id: branch_id.clone(),
+                                timestamp: exit_ts,
+                            });
+                        }
+                    }
+
+                    result
                 })
             },
         );
@@ -236,10 +275,51 @@ where
 
     /// Execute the Axon with the given input and resources.
     pub async fn execute(&self, input: In, resources: &Res, bus: &mut Bus) -> Outcome<Out, E> {
+        let should_capture = should_attach_timeline(bus);
+        let inserted_timeline = if should_capture {
+            ensure_timeline(bus)
+        } else {
+            false
+        };
+        let ingress_started = std::time::Instant::now();
+        let ingress_enter_ts = now_ms();
+        if should_capture
+            && let (Some(timeline), Some(ingress)) =
+            (bus.read_mut::<Timeline>(), self.schematic.nodes.first())
+        {
+            timeline.push(TimelineEvent::NodeEnter {
+                node_id: ingress.id.clone(),
+                node_label: ingress.label.clone(),
+                timestamp: ingress_enter_ts,
+            });
+        }
+
         let label = self.schematic.name.clone();
-        async move { (self.executor)(input, resources, bus).await }
+        let outcome = (self.executor)(input, resources, bus)
             .instrument(tracing::info_span!("Circuit", ranvier.circuit = %label))
-            .await
+            .await;
+
+        let ingress_exit_ts = now_ms();
+        if should_capture
+            && let (Some(timeline), Some(ingress)) =
+            (bus.read_mut::<Timeline>(), self.schematic.nodes.first())
+        {
+            timeline.push(TimelineEvent::NodeExit {
+                node_id: ingress.id.clone(),
+                outcome_type: outcome_type_name(&outcome),
+                duration_ms: ingress_started.elapsed().as_millis() as u64,
+                timestamp: ingress_exit_ts,
+            });
+        }
+
+        if should_capture {
+            maybe_export_timeline(bus, &outcome);
+        }
+        if inserted_timeline {
+            let _ = bus.remove::<Timeline>();
+        }
+
+        outcome
     }
 
     /// Starts the Ranvier Inspector for this Axon on the specified port.
@@ -248,6 +328,7 @@ where
         let schematic = self.schematic.clone();
         tokio::spawn(async move {
             if let Err(e) = ranvier_inspector::Inspector::new(schematic, port)
+                .with_projection_files_from_env()
                 .serve()
                 .await
             {
@@ -266,4 +347,321 @@ where
     pub fn into_schematic(self) -> Schematic {
         self.schematic
     }
+}
+
+fn maybe_export_timeline<Out, E>(bus: &mut Bus, outcome: &Outcome<Out, E>) {
+    let path = match std::env::var("RANVIER_TIMELINE_OUTPUT") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => return,
+    };
+
+    let sampled = sampled_by_bus_id(bus.id, timeline_sample_rate());
+    let policy = timeline_adaptive_policy();
+    let forced = should_force_export(outcome, &policy);
+    let should_export = sampled || forced;
+    if !should_export {
+        record_sampling_stats(false, sampled, forced, "none", &policy);
+        return;
+    }
+
+    let mut timeline = bus.read::<Timeline>().cloned().unwrap_or_default();
+    timeline.sort();
+
+    let mode = std::env::var("RANVIER_TIMELINE_MODE")
+        .unwrap_or_else(|_| "overwrite".to_string())
+        .to_ascii_lowercase();
+
+    if let Err(err) = write_timeline_with_policy(&path, &mode, timeline) {
+        tracing::warn!(
+            "Failed to persist timeline file {} (mode={}): {}",
+            path,
+            mode,
+            err
+        );
+        record_sampling_stats(false, sampled, forced, &mode, &policy);
+    } else {
+        record_sampling_stats(true, sampled, forced, &mode, &policy);
+    }
+}
+
+fn outcome_type_name<Out, E>(outcome: &Outcome<Out, E>) -> String {
+    match outcome {
+        Outcome::Next(_) => "Next".to_string(),
+        Outcome::Branch(id, _) => format!("Branch:{}", id),
+        Outcome::Jump(id, _) => format!("Jump:{}", id),
+        Outcome::Emit(event_type, _) => format!("Emit:{}", event_type),
+        Outcome::Fault(_) => "Fault".to_string(),
+    }
+}
+
+fn ensure_timeline(bus: &mut Bus) -> bool {
+    if bus.has::<Timeline>() {
+        false
+    } else {
+        bus.insert(Timeline::new());
+        true
+    }
+}
+
+fn should_attach_timeline(bus: &Bus) -> bool {
+    // Respect explicitly provided timeline collector from caller.
+    if bus.has::<Timeline>() {
+        return true;
+    }
+
+    // Attach timeline when runtime export path exists.
+    has_timeline_output_path()
+}
+
+fn has_timeline_output_path() -> bool {
+    std::env::var("RANVIER_TIMELINE_OUTPUT")
+        .ok()
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn timeline_sample_rate() -> f64 {
+    std::env::var("RANVIER_TIMELINE_SAMPLE_RATE")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v.clamp(0.0, 1.0))
+        .unwrap_or(1.0)
+}
+
+fn sampled_by_bus_id(bus_id: uuid::Uuid, rate: f64) -> bool {
+    if rate <= 0.0 {
+        return false;
+    }
+    if rate >= 1.0 {
+        return true;
+    }
+    let bucket = (bus_id.as_u128() % 10_000) as f64 / 10_000.0;
+    bucket < rate
+}
+
+fn timeline_adaptive_policy() -> String {
+    std::env::var("RANVIER_TIMELINE_ADAPTIVE")
+        .unwrap_or_else(|_| "fault_branch".to_string())
+        .to_ascii_lowercase()
+}
+
+fn should_force_export<Out, E>(outcome: &Outcome<Out, E>, policy: &str) -> bool {
+    match policy {
+        "off" => false,
+        "fault_only" => matches!(outcome, Outcome::Fault(_)),
+        "fault_branch_emit" => {
+            matches!(
+                outcome,
+                Outcome::Fault(_) | Outcome::Branch(_, _) | Outcome::Emit(_, _)
+            )
+        }
+        _ => matches!(outcome, Outcome::Fault(_) | Outcome::Branch(_, _)),
+    }
+}
+
+#[derive(Default, Clone)]
+struct SamplingStats {
+    total_decisions: u64,
+    exported: u64,
+    skipped: u64,
+    sampled_exports: u64,
+    forced_exports: u64,
+    last_mode: String,
+    last_policy: String,
+    last_updated_ms: u64,
+}
+
+static TIMELINE_SAMPLING_STATS: OnceLock<Mutex<SamplingStats>> = OnceLock::new();
+
+fn stats_cell() -> &'static Mutex<SamplingStats> {
+    TIMELINE_SAMPLING_STATS.get_or_init(|| Mutex::new(SamplingStats::default()))
+}
+
+fn record_sampling_stats(exported: bool, sampled: bool, forced: bool, mode: &str, policy: &str) {
+    let snapshot = {
+        let mut stats = match stats_cell().lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+
+        stats.total_decisions += 1;
+        if exported {
+            stats.exported += 1;
+        } else {
+            stats.skipped += 1;
+        }
+        if sampled && exported {
+            stats.sampled_exports += 1;
+        }
+        if forced && exported {
+            stats.forced_exports += 1;
+        }
+        stats.last_mode = mode.to_string();
+        stats.last_policy = policy.to_string();
+        stats.last_updated_ms = now_ms();
+        stats.clone()
+    };
+
+    tracing::debug!(
+        ranvier.timeline.total_decisions = snapshot.total_decisions,
+        ranvier.timeline.exported = snapshot.exported,
+        ranvier.timeline.skipped = snapshot.skipped,
+        ranvier.timeline.sampled_exports = snapshot.sampled_exports,
+        ranvier.timeline.forced_exports = snapshot.forced_exports,
+        ranvier.timeline.mode = %snapshot.last_mode,
+        ranvier.timeline.policy = %snapshot.last_policy,
+        "Timeline sampling stats updated"
+    );
+
+    if let Some(path) = timeline_stats_output_path() {
+        let payload = serde_json::json!({
+            "total_decisions": snapshot.total_decisions,
+            "exported": snapshot.exported,
+            "skipped": snapshot.skipped,
+            "sampled_exports": snapshot.sampled_exports,
+            "forced_exports": snapshot.forced_exports,
+            "last_mode": snapshot.last_mode,
+            "last_policy": snapshot.last_policy,
+            "last_updated_ms": snapshot.last_updated_ms
+        });
+        if let Some(parent) = Path::new(&path).parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Err(err) = fs::write(&path, payload.to_string()) {
+            tracing::warn!("Failed to write timeline sampling stats {}: {}", path, err);
+        }
+    }
+}
+
+fn timeline_stats_output_path() -> Option<String> {
+    std::env::var("RANVIER_TIMELINE_STATS_OUTPUT")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+}
+
+fn write_timeline_with_policy(path: &str, mode: &str, mut timeline: Timeline) -> Result<(), String> {
+    match mode {
+        "append" => {
+            if Path::new(path).exists() {
+                let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+                match serde_json::from_str::<Timeline>(&content) {
+                    Ok(mut existing) => {
+                        existing.events.append(&mut timeline.events);
+                        existing.sort();
+                        if let Some(max_events) = max_events_limit() {
+                            truncate_timeline_events(&mut existing, max_events);
+                        }
+                        write_timeline_json(path, &existing)
+                    }
+                    Err(_) => {
+                        // Fallback: if existing is invalid, replace with current timeline
+                        if let Some(max_events) = max_events_limit() {
+                            truncate_timeline_events(&mut timeline, max_events);
+                        }
+                        write_timeline_json(path, &timeline)
+                    }
+                }
+            } else {
+                if let Some(max_events) = max_events_limit() {
+                    truncate_timeline_events(&mut timeline, max_events);
+                }
+                write_timeline_json(path, &timeline)
+            }
+        }
+        "rotate" => {
+            let rotated_path = rotated_path(path, now_ms());
+            write_timeline_json(rotated_path.to_string_lossy().as_ref(), &timeline)?;
+            if let Some(keep) = rotate_keep_limit() {
+                cleanup_rotated_files(path, keep)?;
+            }
+            Ok(())
+        }
+        _ => write_timeline_json(path, &timeline),
+    }
+}
+
+fn write_timeline_json(path: &str, timeline: &Timeline) -> Result<(), String> {
+    if let Some(parent) = Path::new(path).parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+    }
+    let json = serde_json::to_string_pretty(timeline).map_err(|e| e.to_string())?;
+    fs::write(path, json).map_err(|e| e.to_string())
+}
+
+fn rotated_path(path: &str, suffix: u64) -> PathBuf {
+    let p = Path::new(path);
+    let parent = p.parent().unwrap_or_else(|| Path::new(""));
+    let stem = p
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("timeline");
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("json");
+    parent.join(format!("{}_{}.{}", stem, suffix, ext))
+}
+
+fn max_events_limit() -> Option<usize> {
+    std::env::var("RANVIER_TIMELINE_MAX_EVENTS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+}
+
+fn rotate_keep_limit() -> Option<usize> {
+    std::env::var("RANVIER_TIMELINE_ROTATE_KEEP")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+}
+
+fn truncate_timeline_events(timeline: &mut Timeline, max_events: usize) {
+    let len = timeline.events.len();
+    if len > max_events {
+        let keep_from = len - max_events;
+        timeline.events = timeline.events.split_off(keep_from);
+    }
+}
+
+fn cleanup_rotated_files(base_path: &str, keep: usize) -> Result<(), String> {
+    let p = Path::new(base_path);
+    let parent = p.parent().unwrap_or_else(|| Path::new("."));
+    let stem = p
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("timeline");
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("json");
+    let prefix = format!("{}_", stem);
+    let suffix = format!(".{}", ext);
+
+    let mut files = fs::read_dir(parent)
+        .map_err(|e| e.to_string())?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with(&prefix) && name.ends_with(&suffix)
+        })
+        .filter_map(|entry| {
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            Some((entry.path(), modified))
+        })
+        .collect::<Vec<_>>();
+
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+    for (path, _) in files.into_iter().skip(keep) {
+        let _ = fs::remove_file(path);
+    }
+    Ok(())
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }

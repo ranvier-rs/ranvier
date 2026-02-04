@@ -1796,6 +1796,7 @@ dependencies = [
  "futures-util",
  "ranvier-core",
  "ranvier-inspector",
+ "serde_json",
  "tokio",
  "tracing",
  "uuid",
