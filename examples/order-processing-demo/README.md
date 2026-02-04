@@ -11,6 +11,7 @@ This app simulates an e-commerce order processing flow:
 
 ## Key Features
 
+- **Axon-Centered Runtime**: Uses `Axon::new().then(...)` as the executable decision path.
 - **Synapse Integration**: Shows how to cleanly abstract side-effects (DB, API) using the `Synapse` trait.
 - **Type-Safe Outcomes**: Uses `Outcome::Next`, `Branch`, and `Fault` to model business logic.
 - **Static State Generation (SSG)**: Can extract its own topology graph without running the workflow.
@@ -18,7 +19,10 @@ This app simulates an e-commerce order processing flow:
 ## How to Run
 
 ### 1. Run the Runtime Logic
-Executes the defined scenarios (Success, Out of Stock, etc.) and prints logs.
+Executes three finite scenarios and prints logs:
+1. Success
+2. Payment declined
+3. Out of stock
 
 ```bash
 cargo run -p order-processing-demo
@@ -38,7 +42,7 @@ Incoming Request: OrderRequest { ... }
 ```
 
 ### 2. Extract Schematic (SSG)
-Uses `RANVIER_SCHEMATIC=1` to generate the Visual Topology JSON.
+Uses `RANVIER_SCHEMATIC=1` to generate Ranvier `Schematic` JSON.
 
 ```bash
 # Using Ranvier CLI
@@ -51,11 +55,11 @@ RANVIER_SCHEMATIC=1 cargo run -q -p order-processing-demo
 **Output:**
 ```json
 {
-  "nodes": [
-    { "id": "validate_order", "next": ["reserve_inventory"] },
-    { "id": "reserve_inventory", "next": ["process_payment"] },
-    ...
-  ] 
+  "schema_version": "1.0",
+  "id": "<uuid>",
+  "name": "OrderProcessing",
+  "nodes": [...],
+  "edges": [...]
 }
 ```
 

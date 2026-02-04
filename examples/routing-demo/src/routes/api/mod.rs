@@ -1,4 +1,3 @@
-// API module - placeholder for API-related routing logic
-// This module demonstrates how nested routing can be organized
+// API module for nested route handlers used by the routing demo.
 
 pub mod v1;

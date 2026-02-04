@@ -9,8 +9,12 @@
             // Call Ranvier Backend
             const res = await fetch("http://localhost:3030/api/order", {
                 method: "POST",
+                headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ item: "Ranvier t-shirt" })
             });
+            if (!res.ok) {
+                throw new Error(`HTTP ${res.status}`);
+            }
             const data = await res.json();
             status = `Success! Response: ${JSON.stringify(data)}`;
         } catch (e) {
@@ -24,7 +28,7 @@
 <main>
     <h1>Ranvier Full-Stack Demo</h1>
     <p>This frontend runs on port 5173 (Vite).</p>
-    <p>The backend runs on port 3030 (Ranvier/tiny_http).</p>
+    <p>The backend runs on port 3030 (experimental Ranvier/tiny_http).</p>
     
     <div class="card">
         <button on:click={placeOrder} disabled={loading}>

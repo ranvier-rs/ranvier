@@ -208,28 +208,29 @@ impl Transition<RouteRequest, RouteResponse> for ApiRoute {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<RouteResponse, Self::Error> {
-        // Check if path starts with /api
-        if !req.path.starts_with("/api") {
-            return Outcome::Fault(RouteError::NotFound(req.path));
+        let full_path = req.path.clone();
+        if !full_path.starts_with("/api") {
+            return Outcome::Fault(RouteError::NotFound(full_path));
         }
 
-        // Strip /api and continue - clone path to avoid borrow issues
-        let path = req.path.clone();
-        let rest = &path[4..];
-
-        // Check for /v1
-        if let Some(_v1_rest) = rest.strip_prefix("/v1") {
-            // Note: route_v1 likely returns Result<Outcome>. Need to check API module.
-            // Assuming it needs update too, or we wrap it here.
-            // For now, let's assume route_v1 returns Result and we unwrap it, OR update route_v1.
-            // Wait, api::v1::route_v1 is in another file. I should check it.
-            // If I can't check it now, I'll assumme it needs fix.
-            return Outcome::Fault(RouteError::NotFound(
-                "API Not Implemented in this refactor".into(),
-            ));
+        let api_path = full_path.strip_prefix("/api").unwrap_or("");
+        if api_path.is_empty() || api_path == "/" {
+            return Outcome::Next(RouteResponse {
+                status: 200,
+                body: "API Root".to_string(),
+            });
         }
 
-        Outcome::Fault(RouteError::NotFound(req.path))
+        if let Some(v1_path) = api_path.strip_prefix("/v1") {
+            return match api::v1::route_v1(req, v1_path).await {
+                Ok(outcome) => outcome,
+                Err(error) => Outcome::Fault(RouteError::BadRequest(format!(
+                    "Failed to route /api/v1 request: {error}"
+                ))),
+            };
+        }
+
+        Outcome::Fault(RouteError::NotFound(full_path))
     }
 }
 

@@ -1456,6 +1456,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "ranvier-core",
+ "ranvier-runtime",
  "serde",
  "serde_json",
  "tokio",

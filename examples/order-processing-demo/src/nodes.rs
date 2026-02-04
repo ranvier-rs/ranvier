@@ -1,132 +1,112 @@
-use crate::domain::OrderRequest;
-use crate::synapses::{InventorySynapse, PaymentSynapse, ShippingSynapse};
-use anyhow::Result;
+use crate::domain::{OrderRequest, OrderResources};
+use async_trait::async_trait;
 use ranvier_core::prelude::*;
-use ranvier_core::static_gen::StaticNode;
 use ranvier_core::synapse::Synapse;
 
-// --- Node 1: Validate Order ---
-pub struct ValidateOrderNode {
-    pub next: &'static str,
-}
+#[derive(Clone)]
+pub struct ValidateOrder;
 
-impl StaticNode for ValidateOrderNode {
-    fn id(&self) -> &'static str {
-        "validate_order"
-    }
-    fn kind(&self) -> NodeKind {
-        NodeKind::Atom
-    }
-    fn next_nodes(&self) -> Vec<&'static str> {
-        vec![self.next]
-    }
-}
+#[async_trait]
+impl Transition<OrderRequest, OrderRequest> for ValidateOrder {
+    type Error = String;
+    type Resources = OrderResources;
 
-impl ValidateOrderNode {
-    pub async fn execute(&self, request: &OrderRequest) -> Result<Outcome<(), String>> {
+    async fn run(
+        &self,
+        request: OrderRequest,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<OrderRequest, Self::Error> {
         println!(
             "\x1b[1m[Node]\x1b[0m Validating Order #{}...",
             request.order_id
         );
 
         if request.total_amount <= 0 {
-            return Ok(Outcome::Fault("Invalid amount".into()));
+            return Outcome::Fault("Invalid amount".into());
         }
         if request.items.is_empty() {
-            return Ok(Outcome::Branch("empty_cart".into(), None));
+            return Outcome::Branch("empty_cart".into(), None);
         }
 
-        Ok(Outcome::Next(()))
+        Outcome::Next(request)
     }
 }
 
-// --- Node 2: Reserve Inventory ---
-pub struct ReserveInventoryNode {
-    pub synapse: InventorySynapse,
-    pub next: &'static str,
-}
+#[derive(Clone)]
+pub struct ReserveInventory;
 
-impl StaticNode for ReserveInventoryNode {
-    fn id(&self) -> &'static str {
-        "reserve_inventory"
-    }
-    fn kind(&self) -> NodeKind {
-        NodeKind::Atom
-    }
-    fn next_nodes(&self) -> Vec<&'static str> {
-        vec![self.next]
-    }
-}
+#[async_trait]
+impl Transition<OrderRequest, OrderRequest> for ReserveInventory {
+    type Error = String;
+    type Resources = OrderResources;
 
-impl ReserveInventoryNode {
-    pub async fn execute(&self, items: Vec<String>) -> Result<Outcome<Vec<String>, String>> {
+    async fn run(
+        &self,
+        request: OrderRequest,
+        resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<OrderRequest, Self::Error> {
         println!("\x1b[1m[Node]\x1b[0m Reserving Inventory...");
 
-        match self.synapse.call(items.clone()).await {
-            Ok(true) => Ok(Outcome::Next(items)),
-            Ok(false) => Ok(Outcome::Branch(
+        match resources.inventory.call(request.items.clone()).await {
+            Ok(true) => Outcome::Next(request),
+            Ok(false) => Outcome::Branch(
                 "out_of_stock".into(),
-                Some(serde_json::to_value(items).unwrap()),
-            )),
-            Err(e) => Ok(Outcome::Fault(e)),
+                Some(serde_json::to_value(&request.items).unwrap_or_default()),
+            ),
+            Err(e) => Outcome::Fault(e),
         }
     }
 }
 
-// --- Node 3: Payment ---
-pub struct PaymentNode {
-    pub synapse: PaymentSynapse,
-    pub next: &'static str,
-}
+#[derive(Clone)]
+pub struct ProcessPayment;
 
-impl StaticNode for PaymentNode {
-    fn id(&self) -> &'static str {
-        "process_payment"
-    }
-    fn kind(&self) -> NodeKind {
-        NodeKind::Atom
-    }
-    fn next_nodes(&self) -> Vec<&'static str> {
-        vec![self.next]
-    }
-}
+#[async_trait]
+impl Transition<OrderRequest, OrderRequest> for ProcessPayment {
+    type Error = String;
+    type Resources = OrderResources;
 
-impl PaymentNode {
-    pub async fn execute(&self, amount: u32) -> Result<Outcome<(), String>> {
+    async fn run(
+        &self,
+        request: OrderRequest,
+        resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<OrderRequest, Self::Error> {
         println!("\x1b[1m[Node]\x1b[0m Processing Payment...");
 
-        match self.synapse.call(amount).await {
-            Ok(true) => Ok(Outcome::Next(())),
-            Ok(false) => Ok(Outcome::Branch("payment_declined".into(), None)),
-            Err(e) => Ok(Outcome::Fault(e)),
+        match resources.payment.call(request.total_amount).await {
+            Ok(true) => Outcome::Next(request),
+            Ok(false) => Outcome::Branch("payment_declined".into(), None),
+            Err(e) => Outcome::Fault(e),
         }
     }
 }
 
-// --- Node 4: Ship Order ---
-pub struct ShipOrderNode {
-    pub synapse: ShippingSynapse,
-}
+#[derive(Clone)]
+pub struct ShipOrder;
 
-impl StaticNode for ShipOrderNode {
-    fn id(&self) -> &'static str {
-        "ship_order"
-    }
-    fn kind(&self) -> NodeKind {
-        NodeKind::Egress
-    }
-    fn next_nodes(&self) -> Vec<&'static str> {
-        vec![]
-    }
-}
+#[async_trait]
+impl Transition<OrderRequest, String> for ShipOrder {
+    type Error = String;
+    type Resources = OrderResources;
 
-impl ShipOrderNode {
-    pub async fn execute(&self, order_id: String) -> Result<Outcome<String, String>> {
+    fn description(&self) -> Option<String> {
+        Some("Egress step that dispatches the order and returns tracking id".to_string())
+    }
+
+    async fn run(
+        &self,
+        request: OrderRequest,
+        resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<String, Self::Error> {
         println!("\x1b[1m[Node]\x1b[0m Shipping Order...");
 
-        match self.synapse.call(order_id).await {
-            Ok(tracking) => Ok(Outcome::Next(tracking)),
-            Err(e) => Ok(Outcome::Fault(e)),
+        match resources.shipping.call(request.order_id).await {
+            Ok(tracking) => Outcome::Next(tracking),
+            Err(e) => Outcome::Fault(e),
         }
     }
 }

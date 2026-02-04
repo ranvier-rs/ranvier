@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ranvier-core = { path = "../../core" }
-ranvier-runtime = { path = "../../runtime" }
+ranvier-core = { path = "../../../core" }
+ranvier-runtime = { path = "../../../runtime" }
 anyhow = "1.0"
 tokio = { version = "1", features = ["full"] }

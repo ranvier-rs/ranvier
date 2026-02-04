@@ -44,9 +44,7 @@ impl Synapse for HttpListenerSynapse {
     type Error = String;
 
     async fn call(&self, _: Self::Input) -> Result<Self::Output, Self::Error> {
-        // Blocks until a request is received (Pseudo-async for demo)
-        // In a real async impl, we'd use tokio::net::TcpListener
-        // tiny_http is synchronous, so we're blocking a thread here.
+        // tiny_http is sync; run recv in spawn_blocking for compatibility with async flow.
         println!("\x1b[36m[HttpListener]\x1b[0m Waiting for request...");
 
         let server = self.server.clone();
@@ -57,17 +55,8 @@ impl Synapse for HttpListenerSynapse {
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
 
-        // We can't return the Request object directly because of lifetimes/ownership in tiny_http
-        // So we extract what we need and ideally we'd pass a channel to respond?
-        // Synapse trait is Request-Response.
-        // But HTTP Server is "Event Source".
-        // This mismatch highlights why we usually use Synapse for OUTBOUND calls (DB, API).
-        // For INBOUND (Triggers), we usually use the "Node" as the entry point calling `recv`.
-
         let url = request.url().to_string();
         let method = request.method().to_string();
-
-        // We DO NOT respond here anymore. We pass the request to the node.
 
         Ok(HttpRequest {
             url,
