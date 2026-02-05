@@ -1696,6 +1696,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ranvier"
+version = "0.1.0"
+dependencies = [
+ "ranvier-core",
+ "ranvier-http",
+ "ranvier-runtime",
+ "ranvier-std",
+]
+
+[[package]]
 name = "ranvier-core"
 version = "0.1.0"
 dependencies = [

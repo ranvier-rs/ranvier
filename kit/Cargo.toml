@@ -1,0 +1,23 @@
+[package]
+name = "ranvier"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+version.workspace = true
+edition.workspace = true
+description = "Typed Decision Engine facade crate for Ranvier"
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["http", "std"]
+http = ["dep:ranvier-http"]
+std = ["dep:ranvier-std"]
+
+[dependencies]
+ranvier-core = { workspace = true }
+ranvier-runtime = { workspace = true }
+ranvier-http = { workspace = true, optional = true }
+ranvier-std = { workspace = true, optional = true }
