@@ -1,10 +1,15 @@
 [package]
 name = "ranvier-inspector"
-version = "0.1.0"
-edition = "2021"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+version.workspace = true
+edition.workspace = true
+description = "Inspector endpoints for Ranvier schematics and traces"
 
 [dependencies]
-ranvier-core = { path = "../../core" }
+ranvier-core = { workspace = true }
 axum = { version = "0.7", features = ["ws"] }
 tokio = { workspace = true, features = ["full"] }
 serde = { workspace = true, features = ["derive"] }

@@ -1,11 +1,16 @@
 [package]
 name = "ranvier-synapse"
-version = "0.1.0"
-edition = "2021"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+version.workspace = true
+edition.workspace = true
+description = "Synapse data contracts for Ranvier automation flows"
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-ranvier-core = { path = "../../core" }
-anyhow = "1.0"
-chrono = { version = "0.4", features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+ranvier-core = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
