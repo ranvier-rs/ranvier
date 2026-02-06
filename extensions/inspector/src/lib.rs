@@ -40,6 +40,13 @@ impl InspectorMode {
             _ => Self::Dev,
         }
     }
+
+    fn from_str(mode: &str) -> Self {
+        match mode.to_ascii_lowercase().as_str() {
+            "prod" | "production" => Self::Prod,
+            _ => Self::Dev,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -152,6 +159,17 @@ impl Inspector {
     pub fn with_mode_from_env(mut self) -> Self {
         let mode = InspectorMode::from_env();
         self.surface_policy = SurfacePolicy::for_mode(mode);
+        self
+    }
+
+    /// Configure inspector route surface explicitly.
+    ///
+    /// Accepted values:
+    /// - `dev` (default)
+    /// - `prod` / `production`
+    pub fn with_mode(mut self, mode: &str) -> Self {
+        let parsed = InspectorMode::from_str(mode);
+        self.surface_policy = SurfacePolicy::for_mode(parsed);
         self
     }
 
@@ -376,5 +394,109 @@ async fn handle_socket(mut socket: WebSocket) {
         if socket.send(Message::Text(msg)).await.is_err() {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ranvier_core::schematic::Schematic;
+    use std::time::Duration;
+
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind ephemeral port")
+            .local_addr()
+            .expect("local addr")
+            .port()
+    }
+
+    async fn wait_ready(port: u16) {
+        let client = reqwest::Client::new();
+        for _ in 0..30 {
+            if client
+                .get(format!("http://127.0.0.1:{port}/schematic"))
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("inspector server did not become ready");
+    }
+
+    #[tokio::test]
+    async fn dev_mode_exposes_quick_view_and_internal_routes() {
+        let port = free_port();
+        let inspector = Inspector::new(Schematic::new("dev-test"), port).with_mode("dev");
+        let handle = tokio::spawn(async move {
+            let _ = inspector.serve().await;
+        });
+        wait_ready(port).await;
+
+        let client = reqwest::Client::new();
+        let quick = client
+            .get(format!("http://127.0.0.1:{port}/quick-view"))
+            .send()
+            .await
+            .expect("quick-view request");
+        let internal = client
+            .get(format!("http://127.0.0.1:{port}/trace/internal"))
+            .send()
+            .await
+            .expect("internal request");
+        let events = client
+            .get(format!("http://127.0.0.1:{port}/events"))
+            .send()
+            .await
+            .expect("events request");
+
+        assert_eq!(quick.status(), reqwest::StatusCode::OK);
+        assert_eq!(internal.status(), reqwest::StatusCode::OK);
+        assert_ne!(events.status(), reqwest::StatusCode::NOT_FOUND);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn prod_mode_hides_quick_view_and_internal_routes() {
+        let port = free_port();
+        let inspector = Inspector::new(Schematic::new("prod-test"), port).with_mode("prod");
+        let handle = tokio::spawn(async move {
+            let _ = inspector.serve().await;
+        });
+        wait_ready(port).await;
+
+        let client = reqwest::Client::new();
+        let quick = client
+            .get(format!("http://127.0.0.1:{port}/quick-view"))
+            .send()
+            .await
+            .expect("quick-view request");
+        let internal = client
+            .get(format!("http://127.0.0.1:{port}/trace/internal"))
+            .send()
+            .await
+            .expect("internal request");
+        let events = client
+            .get(format!("http://127.0.0.1:{port}/events"))
+            .send()
+            .await
+            .expect("events request");
+        let public = client
+            .get(format!("http://127.0.0.1:{port}/trace/public"))
+            .send()
+            .await
+            .expect("public request");
+
+        assert_eq!(quick.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(internal.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(events.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(public.status(), reqwest::StatusCode::OK);
+
+        handle.abort();
     }
 }
