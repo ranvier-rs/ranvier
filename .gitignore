@@ -6,3 +6,6 @@
 .idea
 .vscode
 .DS_Store
+**/.svelte-kit
+**/node_modules
+**/dist
