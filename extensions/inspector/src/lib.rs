@@ -23,6 +23,49 @@ const QUICK_VIEW_HTML: &str = include_str!("quick_view/index.html");
 const QUICK_VIEW_JS: &str = include_str!("quick_view/app.js");
 const QUICK_VIEW_CSS: &str = include_str!("quick_view/styles.css");
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InspectorMode {
+    Dev,
+    Prod,
+}
+
+impl InspectorMode {
+    fn from_env() -> Self {
+        match std::env::var("RANVIER_MODE")
+            .unwrap_or_else(|_| "dev".to_string())
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "prod" | "production" => Self::Prod,
+            _ => Self::Dev,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SurfacePolicy {
+    expose_internal: bool,
+    expose_events: bool,
+    expose_quick_view: bool,
+}
+
+impl SurfacePolicy {
+    fn for_mode(mode: InspectorMode) -> Self {
+        match mode {
+            InspectorMode::Dev => Self {
+                expose_internal: true,
+                expose_events: true,
+                expose_quick_view: true,
+            },
+            InspectorMode::Prod => Self {
+                expose_internal: false,
+                expose_events: false,
+                expose_quick_view: false,
+            },
+        }
+    }
+}
+
 fn get_sender() -> &'static broadcast::Sender<String> {
     EVENT_CHANNEL.get_or_init(|| {
         let (tx, _rx) = broadcast::channel(100);
@@ -36,6 +79,7 @@ pub struct Inspector {
     schematic: Arc<Mutex<Schematic>>,
     public_projection: Arc<Mutex<Option<Value>>>,
     internal_projection: Arc<Mutex<Option<Value>>>,
+    surface_policy: SurfacePolicy,
 }
 
 impl Inspector {
@@ -50,6 +94,7 @@ impl Inspector {
             schematic: Arc::new(Mutex::new(schematic)),
             public_projection: Arc::new(Mutex::new(Some(public_projection))),
             internal_projection: Arc::new(Mutex::new(Some(internal_projection))),
+            surface_policy: SurfacePolicy::for_mode(InspectorMode::Dev),
         }
     }
 
@@ -94,6 +139,16 @@ impl Inspector {
         inspector
     }
 
+    /// Configure inspector route surface using `RANVIER_MODE=dev|prod`.
+    ///
+    /// - `dev` (default): expose `/trace/internal`, `/events`, `/quick-view`
+    /// - `prod`: hide internal/event/quick-view routes and keep public read-only endpoints
+    pub fn with_mode_from_env(mut self) -> Self {
+        let mode = InspectorMode::from_env();
+        self.surface_policy = SurfacePolicy::for_mode(mode);
+        self
+    }
+
     pub async fn serve(self) -> Result<(), std::io::Error> {
         let state = InspectorState {
             schematic: self.schematic.clone(),
@@ -101,16 +156,27 @@ impl Inspector {
             internal_projection: self.internal_projection.clone(),
         };
 
-        let app = Router::new()
+        let mut app = Router::new()
             .route("/schematic", get(get_schematic))
             .route("/trace/public", get(get_public_projection))
-            .route("/trace/internal", get(get_internal_projection))
-            .route("/quick-view", get(get_quick_view_html))
-            .route("/quick-view/app.js", get(get_quick_view_js))
-            .route("/quick-view/styles.css", get(get_quick_view_css))
-            .route("/events", get(ws_handler))
-            .layer(CorsLayer::permissive())
-            .with_state(state);
+            .layer(CorsLayer::permissive());
+
+        if self.surface_policy.expose_internal {
+            app = app.route("/trace/internal", get(get_internal_projection));
+        }
+
+        if self.surface_policy.expose_events {
+            app = app.route("/events", get(ws_handler));
+        }
+
+        if self.surface_policy.expose_quick_view {
+            app = app
+                .route("/quick-view", get(get_quick_view_html))
+                .route("/quick-view/app.js", get(get_quick_view_js))
+                .route("/quick-view/styles.css", get(get_quick_view_css));
+        }
+
+        let app = app.with_state(state);
 
         let addr = SocketAddr::from(([0, 0, 0, 0], self.port));
         tracing::info!("Ranvier Inspector listening on http://{}", addr);

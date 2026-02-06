@@ -36,8 +36,9 @@ async fn main() -> anyhow::Result<()> {
 
     let axon = info_axon.serve_inspector(9000);
 
-    tracing::info!("Inspector running on http://localhost:9000/quick-view");
-    tracing::info!("Raw endpoints: /schematic, /trace/public, /trace/internal");
+    tracing::info!("Inspector mode: RANVIER_MODE=dev|prod, enabled by RANVIER_INSPECTOR=1|0");
+    tracing::info!("Inspector dev page: http://localhost:9000/quick-view");
+    tracing::info!("Raw endpoints: /schematic, /trace/public, /trace/internal (dev only)");
 
     loop {
         tracing::info!("Executing Axon...");

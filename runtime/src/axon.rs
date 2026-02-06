@@ -325,10 +325,16 @@ where
     /// Starts the Ranvier Inspector for this Axon on the specified port.
     /// This spawns a background task to serve the Schematic.
     pub fn serve_inspector(self, port: u16) -> Self {
+        if !inspector_enabled_from_env() {
+            tracing::info!("Inspector disabled by RANVIER_INSPECTOR");
+            return self;
+        }
+
         let schematic = self.schematic.clone();
         tokio::spawn(async move {
             if let Err(e) = ranvier_inspector::Inspector::new(schematic, port)
                 .with_projection_files_from_env()
+                .with_mode_from_env()
                 .serve()
                 .await
             {
@@ -346,6 +352,13 @@ where
     /// Consume and return the Schematic.
     pub fn into_schematic(self) -> Schematic {
         self.schematic
+    }
+}
+
+fn inspector_enabled_from_env() -> bool {
+    match std::env::var("RANVIER_INSPECTOR") {
+        Ok(v) => matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"),
+        Err(_) => true,
     }
 }
 
