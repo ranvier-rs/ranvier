@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ranvier Inspector Quick View</title>
+    <link rel="stylesheet" href="/quick-view/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Ranvier Circuit Quick View</h1>
+      <div class="actions">
+        <button id="reload-btn" type="button">Reload</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel">
+        <h2>Circuit</h2>
+        <p id="circuit-meta" class="meta">Loading...</p>
+        <svg id="graph" viewBox="0 0 960 420" aria-label="Circuit graph"></svg>
+      </section>
+
+      <section class="panel">
+        <h2>Trace (Internal)</h2>
+        <ul id="trace-list"></ul>
+      </section>
+
+      <section class="panel">
+        <h2>Status (Public)</h2>
+        <pre id="public-view"></pre>
+      </section>
+    </main>
+
+    <script src="/quick-view/app.js" defer></script>
+  </body>
+</html>

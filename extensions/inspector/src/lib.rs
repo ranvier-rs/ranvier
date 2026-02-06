@@ -3,6 +3,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         State,
     },
+    http::header,
     response::IntoResponse,
     routing::get,
     Json, Router,
@@ -18,6 +19,9 @@ use tracing::{Event, Id, Subscriber};
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
 static EVENT_CHANNEL: OnceLock<broadcast::Sender<String>> = OnceLock::new();
+const QUICK_VIEW_HTML: &str = include_str!("quick_view/index.html");
+const QUICK_VIEW_JS: &str = include_str!("quick_view/app.js");
+const QUICK_VIEW_CSS: &str = include_str!("quick_view/styles.css");
 
 fn get_sender() -> &'static broadcast::Sender<String> {
     EVENT_CHANNEL.get_or_init(|| {
@@ -101,6 +105,9 @@ impl Inspector {
             .route("/schematic", get(get_schematic))
             .route("/trace/public", get(get_public_projection))
             .route("/trace/internal", get(get_internal_projection))
+            .route("/quick-view", get(get_quick_view_html))
+            .route("/quick-view/app.js", get(get_quick_view_js))
+            .route("/quick-view/styles.css", get(get_quick_view_css))
             .route("/events", get(ws_handler))
             .layer(CorsLayer::permissive())
             .with_state(state);
@@ -257,6 +264,21 @@ async fn ws_handler(
     State(_): State<InspectorState>,
 ) -> impl IntoResponse {
     ws.on_upgrade(handle_socket)
+}
+
+async fn get_quick_view_html() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], QUICK_VIEW_HTML)
+}
+
+async fn get_quick_view_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        QUICK_VIEW_JS,
+    )
+}
+
+async fn get_quick_view_css() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], QUICK_VIEW_CSS)
 }
 
 async fn handle_socket(mut socket: WebSocket) {

@@ -36,7 +36,8 @@ async fn main() -> anyhow::Result<()> {
 
     let axon = info_axon.serve_inspector(9000);
 
-    tracing::info!("Inspector running on http://localhost:9000/schematic");
+    tracing::info!("Inspector running on http://localhost:9000/quick-view");
+    tracing::info!("Raw endpoints: /schematic, /trace/public, /trace/internal");
 
     loop {
         tracing::info!("Executing Axon...");
