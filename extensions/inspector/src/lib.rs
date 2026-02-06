@@ -79,6 +79,8 @@ pub struct Inspector {
     schematic: Arc<Mutex<Schematic>>,
     public_projection: Arc<Mutex<Option<Value>>>,
     internal_projection: Arc<Mutex<Option<Value>>>,
+    public_projection_path: Option<String>,
+    internal_projection_path: Option<String>,
     surface_policy: SurfacePolicy,
 }
 
@@ -94,6 +96,8 @@ impl Inspector {
             schematic: Arc::new(Mutex::new(schematic)),
             public_projection: Arc::new(Mutex::new(Some(public_projection))),
             internal_projection: Arc::new(Mutex::new(Some(internal_projection))),
+            public_projection_path: None,
+            internal_projection_path: None,
             surface_policy: SurfacePolicy::for_mode(InspectorMode::Dev),
         }
     }
@@ -123,6 +127,7 @@ impl Inspector {
         let mut inspector = self;
 
         if let Ok(path) = std::env::var("RANVIER_TRACE_PUBLIC_PATH") {
+            inspector.public_projection_path = Some(path.clone());
             match read_projection_file(&path) {
                 Ok(v) => inspector = inspector.with_public_projection(v),
                 Err(e) => tracing::warn!("Failed to load public projection from {}: {}", path, e),
@@ -130,6 +135,7 @@ impl Inspector {
         }
 
         if let Ok(path) = std::env::var("RANVIER_TRACE_INTERNAL_PATH") {
+            inspector.internal_projection_path = Some(path.clone());
             match read_projection_file(&path) {
                 Ok(v) => inspector = inspector.with_internal_projection(v),
                 Err(e) => tracing::warn!("Failed to load internal projection from {}: {}", path, e),
@@ -154,6 +160,8 @@ impl Inspector {
             schematic: self.schematic.clone(),
             public_projection: self.public_projection.clone(),
             internal_projection: self.internal_projection.clone(),
+            public_projection_path: self.public_projection_path.clone(),
+            internal_projection_path: self.internal_projection_path.clone(),
         };
 
         let mut app = Router::new()
@@ -258,6 +266,8 @@ struct InspectorState {
     schematic: Arc<Mutex<Schematic>>,
     public_projection: Arc<Mutex<Option<Value>>>,
     internal_projection: Arc<Mutex<Option<Value>>>,
+    public_projection_path: Option<String>,
+    internal_projection_path: Option<String>,
 }
 
 pub fn layer() -> InspectorLayer {
@@ -306,6 +316,12 @@ async fn get_schematic(State(state): State<InspectorState>) -> Json<Schematic> {
 }
 
 async fn get_public_projection(State(state): State<InspectorState>) -> Json<Value> {
+    if let Some(path) = &state.public_projection_path {
+        if let Ok(v) = read_projection_file(path) {
+            return Json(v);
+        }
+    }
+
     let projection = state
         .public_projection
         .lock()
@@ -316,6 +332,12 @@ async fn get_public_projection(State(state): State<InspectorState>) -> Json<Valu
 }
 
 async fn get_internal_projection(State(state): State<InspectorState>) -> Json<Value> {
+    if let Some(path) = &state.internal_projection_path {
+        if let Ok(v) = read_projection_file(path) {
+            return Json(v);
+        }
+    }
+
     let projection = state
         .internal_projection
         .lock()
