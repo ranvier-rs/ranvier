@@ -678,3 +678,49 @@ fn now_ms() -> u64 {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{sampled_by_bus_id, should_force_export};
+    use ranvier_core::Outcome;
+    use uuid::Uuid;
+
+    #[test]
+    fn adaptive_policy_force_export_matrix() {
+        let next = Outcome::<(), &'static str>::Next(());
+        let branch = Outcome::<(), &'static str>::Branch("declined".to_string(), None);
+        let emit = Outcome::<(), &'static str>::Emit("audit".to_string(), None);
+        let fault = Outcome::<(), &'static str>::Fault("boom");
+
+        assert!(!should_force_export(&next, "off"));
+        assert!(!should_force_export(&fault, "off"));
+
+        assert!(!should_force_export(&branch, "fault_only"));
+        assert!(should_force_export(&fault, "fault_only"));
+
+        assert!(should_force_export(&branch, "fault_branch"));
+        assert!(!should_force_export(&emit, "fault_branch"));
+        assert!(should_force_export(&fault, "fault_branch"));
+
+        assert!(should_force_export(&branch, "fault_branch_emit"));
+        assert!(should_force_export(&emit, "fault_branch_emit"));
+        assert!(should_force_export(&fault, "fault_branch_emit"));
+    }
+
+    #[test]
+    fn sampling_and_adaptive_combination_decisions() {
+        let bus_id = Uuid::nil();
+        let next = Outcome::<(), &'static str>::Next(());
+        let fault = Outcome::<(), &'static str>::Fault("boom");
+
+        let sampled_never = sampled_by_bus_id(bus_id, 0.0);
+        assert!(!sampled_never);
+        assert!(!(sampled_never || should_force_export(&next, "off")));
+        assert!(sampled_never || should_force_export(&fault, "fault_only"));
+
+        let sampled_always = sampled_by_bus_id(bus_id, 1.0);
+        assert!(sampled_always);
+        assert!(sampled_always || should_force_export(&next, "off"));
+        assert!(sampled_always || should_force_export(&fault, "off"));
+    }
+}
