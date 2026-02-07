@@ -42,14 +42,14 @@ Incoming Request: OrderRequest { ... }
 ```
 
 ### 2. Extract Schematic (SSG)
-Uses `RANVIER_SCHEMATIC=1` to generate Ranvier `Schematic` JSON.
+Uses `--schematic` mode to generate Ranvier `Schematic` JSON.
 
 ```bash
 # Using Ranvier CLI
 ranvier schematic order-processing-demo
 
 # Or manually
-RANVIER_SCHEMATIC=1 cargo run -q -p order-processing-demo
+cargo run -q -p order-processing-demo -- --schematic
 ```
 
 **Output:**

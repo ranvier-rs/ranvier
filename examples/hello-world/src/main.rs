@@ -69,8 +69,6 @@ async fn main() -> anyhow::Result<()> {
     // Initialize tracing for observability
     tracing_subscriber::fmt::init();
 
-    println!("=== Ranvier Flat API Demo ===\n");
-
     // 1. Logic Circuit (Flat, Declarative)
     //    This is the "what to do" - depth = 1
     //    Note: Axon::new("label") creates an identity Axon<T, T, E>
@@ -79,6 +77,11 @@ async fn main() -> anyhow::Result<()> {
         .then(Greet)
         .then(Exclaim);
 
+    if hello.maybe_export_and_exit()? {
+        return Ok(());
+    }
+
+    println!("=== Ranvier Flat API Demo ===\n");
     println!("Circuit defined with {} nodes", hello.schematic.nodes.len());
     println!("Starting server on http://127.0.0.1:3000\n");
 

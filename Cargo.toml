@@ -50,7 +50,7 @@ ranvier-core = { path = "core", version = "0.1.0" }
 ranvier-runtime = { path = "runtime", version = "0.1.0" }
 ranvier-http = { path = "http", version = "0.1.0" }
 ranvier-db = { path = "extensions/db", version = "0.1.0" }
-ranvier-status = { path = "extensions/status", version = "0.1.0" }
+ranvier-status = { path = "extensions/status", version = "0.1.1" }
 ranvier-observe = { path = "extensions/observe", version = "0.1.0" }
 ranvier-inspector = { path = "extensions/inspector", version = "0.1.0" }
 ranvier-std = { path = "std", version = "0.1.0" }

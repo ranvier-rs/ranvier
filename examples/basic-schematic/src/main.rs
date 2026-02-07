@@ -127,14 +127,12 @@ async fn main() -> anyhow::Result<()> {
         .then(ProcessData)
         .then(LogEnd);
 
-    // Extract Schematic (Static structure) before execution
-    let schematic_json = serde_json::to_string_pretty(&axon.schematic)?;
-
-    // If running from CLI for schematic extraction, print JSON and exit
-    if std::env::var("RANVIER_SCHEMATIC").is_ok() {
-        println!("{}", schematic_json);
+    if axon.maybe_export_and_exit()? {
         return Ok(());
     }
+
+    // Extract Schematic (Static structure) before execution
+    let schematic_json = serde_json::to_string_pretty(&axon.schematic)?;
 
     let node_count = axon.schematic.nodes.len();
     let edge_count = axon.schematic.edges.len();

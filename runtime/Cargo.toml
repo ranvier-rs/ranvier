@@ -18,3 +18,4 @@ uuid = { workspace = true }
 futures-core = { workspace = true }
 futures-util = { workspace = true }
 serde_json = { workspace = true }
+anyhow = { workspace = true }

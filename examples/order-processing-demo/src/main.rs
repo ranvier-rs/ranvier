@@ -51,8 +51,7 @@ async fn main() -> Result<()> {
         .then(ShipOrder);
 
     // 3) Schematic mode for CLI integration
-    if std::env::var("RANVIER_SCHEMATIC").is_ok() {
-        println!("{}", serde_json::to_string_pretty(axon.schematic())?);
+    if axon.maybe_export_and_exit()? {
         return Ok(());
     }
 

@@ -36,6 +36,15 @@ async fn main() -> anyhow::Result<()> {
         .then(step_one)
         .then(step_two);
 
+    if info_axon.maybe_export_and_exit_with(|request| {
+        tracing::info!(
+            "Schematic mode requested. Skipping inspector bootstrap and runtime loop. output={:?}",
+            request.output
+        );
+    })? {
+        return Ok(());
+    }
+
     // Configure default local artifact paths for "run once and inspect" workflow.
     let dist_dir = PathBuf::from("./dist/studio-demo");
     fs::create_dir_all(&dist_dir)?;

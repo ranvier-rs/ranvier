@@ -16,8 +16,9 @@ use ranvier_core::outcome::Outcome;
 use ranvier_core::schematic::{Edge, EdgeType, Node, NodeKind, Schematic};
 use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_core::transition::Transition;
-use std::fs;
 use std::any::type_name;
+use std::ffi::OsString;
+use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -64,6 +65,13 @@ pub struct Axon<In, Out, E, Res = ()> {
     pub schematic: Schematic,
     /// The runtime executor
     executor: Executor<In, Out, E, Res>,
+}
+
+/// Schematic export request derived from command-line args/env.
+#[derive(Debug, Clone)]
+pub struct SchematicExportRequest {
+    /// Optional output file path. If omitted, schematic is written to stdout.
+    pub output: Option<PathBuf>,
 }
 
 impl<In, Out, E, Res> Clone for Axon<In, Out, E, Res> {
@@ -353,6 +361,119 @@ where
     /// Consume and return the Schematic.
     pub fn into_schematic(self) -> Schematic {
         self.schematic
+    }
+
+    /// Detect schematic export mode from runtime flags.
+    ///
+    /// Supported triggers:
+    /// - `RANVIER_SCHEMATIC=1|true|on|yes`
+    /// - `--schematic`
+    ///
+    /// Optional output path:
+    /// - `RANVIER_SCHEMATIC_OUTPUT=<path>`
+    /// - `--schematic-output <path>` / `--schematic-output=<path>`
+    /// - `--output <path>` / `--output=<path>` (only relevant in schematic mode)
+    pub fn schematic_export_request(&self) -> Option<SchematicExportRequest> {
+        schematic_export_request_from_process()
+    }
+
+    /// Export schematic and return `true` when schematic mode is active.
+    ///
+    /// Use this once after circuit construction and before server/custom loops:
+    ///
+    /// ```rust,ignore
+    /// let axon = build_axon();
+    /// if axon.maybe_export_and_exit()? {
+    ///     return Ok(());
+    /// }
+    /// // Normal runtime path...
+    /// ```
+    pub fn maybe_export_and_exit(
+        &self,
+    ) -> anyhow::Result<bool> {
+        self.maybe_export_and_exit_with(|_| ())
+    }
+
+    /// Same as [`Self::maybe_export_and_exit`] but allows a custom hook right before export/exit.
+    ///
+    /// This is useful when your app has custom loop/bootstrap behavior and you want
+    /// to skip or cleanup that logic in schematic mode.
+    pub fn maybe_export_and_exit_with<F>(
+        &self,
+        on_before_exit: F,
+    ) -> anyhow::Result<bool>
+    where
+        F: FnOnce(&SchematicExportRequest),
+    {
+        let Some(request) = self.schematic_export_request() else {
+            return Ok(false);
+        };
+        on_before_exit(&request);
+        self.export_schematic(&request)?;
+        Ok(true)
+    }
+
+    /// Export schematic according to the provided request.
+    pub fn export_schematic(
+        &self,
+        request: &SchematicExportRequest,
+    ) -> anyhow::Result<()> {
+        let json = serde_json::to_string_pretty(self.schematic())?;
+        if let Some(path) = &request.output {
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    fs::create_dir_all(parent)?;
+                }
+            }
+            fs::write(path, json.as_bytes())?;
+            return Ok(());
+        }
+        println!("{}", json);
+        Ok(())
+    }
+}
+
+fn schematic_export_request_from_process() -> Option<SchematicExportRequest> {
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let mut enabled = env_flag_is_true("RANVIER_SCHEMATIC");
+    let mut output = std::env::var_os("RANVIER_SCHEMATIC_OUTPUT").map(PathBuf::from);
+
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].to_string_lossy();
+
+        if arg == "--schematic" {
+            enabled = true;
+            i += 1;
+            continue;
+        }
+
+        if arg == "--schematic-output" || arg == "--output" {
+            if let Some(next) = args.get(i + 1) {
+                output = Some(PathBuf::from(next));
+                i += 2;
+                continue;
+            }
+        } else if let Some(value) = arg.strip_prefix("--schematic-output=") {
+            output = Some(PathBuf::from(value));
+        } else if let Some(value) = arg.strip_prefix("--output=") {
+            output = Some(PathBuf::from(value));
+        }
+
+        i += 1;
+    }
+
+    if enabled {
+        Some(SchematicExportRequest { output })
+    } else {
+        None
+    }
+}
+
+fn env_flag_is_true(key: &str) -> bool {
+    match std::env::var(key) {
+        Ok(v) => matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"),
+        Err(_) => false,
     }
 }
 
