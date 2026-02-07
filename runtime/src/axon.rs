@@ -13,13 +13,14 @@
 
 use ranvier_core::bus::Bus;
 use ranvier_core::outcome::Outcome;
-use ranvier_core::schematic::{Edge, EdgeType, Node, NodeKind, Schematic};
+use ranvier_core::schematic::{Edge, EdgeType, Node, NodeKind, Schematic, SourceLocation};
 use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_core::transition::Transition;
 use std::any::type_name;
 use std::ffi::OsString;
 use std::fs;
 use std::future::Future;
+use std::panic::Location;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -91,13 +92,24 @@ where
 {
     /// Create a new Axon flow with the given label.
     /// This is the preferred entry point per Flat API guidelines.
+    #[track_caller]
     pub fn new(label: &str) -> Self {
-        Self::start(label)
+        let caller = Location::caller();
+        Self::start_with_source(label, caller)
     }
 
     /// Start defining a new Axon flow.
     /// This creates an Identity Axon (In -> In) with no initial resource requirements.
+    #[track_caller]
     pub fn start(label: &str) -> Self {
+        let caller = Location::caller();
+        Self::start_with_source(label, caller)
+    }
+
+    fn start_with_source(
+        label: &str,
+        caller: &'static Location<'static>,
+    ) -> Self {
         let node_id = uuid::Uuid::new_v4().to_string();
         let node = Node {
             id: node_id,
@@ -108,7 +120,7 @@ where
             output_type: type_name_of::<In>(),
             resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
-            source_location: None,
+            source_location: Some(SourceLocation::new(caller.file(), caller.line())),
         };
 
         let mut schematic = Schematic::new(label);
@@ -134,11 +146,13 @@ where
     /// Chain a transition to this Axon.
     ///
     /// Requires the transition to use the SAME resource bundle as the previous steps.
+    #[track_caller]
     pub fn then<Next, Trans>(self, transition: Trans) -> Axon<In, Next, E, Res>
     where
         Next: Send + Sync + 'static,
         Trans: Transition<Out, Next, Resources = Res, Error = E> + Clone + Send + Sync + 'static,
     {
+        let caller = Location::caller();
         // Decompose self to avoid partial move issues
         let Axon {
             mut schematic,
@@ -156,7 +170,7 @@ where
             output_type: type_name_of::<Next>(),
             resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
-            source_location: None,
+            source_location: Some(SourceLocation::new(caller.file(), caller.line())),
         };
 
         let last_node_id = schematic
@@ -249,7 +263,9 @@ where
     }
 
     /// Add a branch point
+    #[track_caller]
     pub fn branch(mut self, branch_id: impl Into<String>, label: &str) -> Self {
+        let caller = Location::caller();
         let branch_id_str = branch_id.into();
         let last_node_id = self
             .schematic
@@ -267,7 +283,7 @@ where
             output_type: type_name_of::<Out>(),
             resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
-            source_location: None,
+            source_location: Some(SourceLocation::new(caller.file(), caller.line())),
         };
 
         self.schematic.nodes.push(branch_node);

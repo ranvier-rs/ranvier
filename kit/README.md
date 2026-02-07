@@ -59,13 +59,13 @@ Default features include the HTTP ingress adapter and std nodes.
 To slim down dependencies:
 
 ```toml
-ranvier = { version = "0.1.1", default-features = false }
+ranvier = { version = "0.1.2", default-features = false }
 ```
 
 You can enable features explicitly:
 
 ```toml
-ranvier = { version = "0.1.1", features = ["http", "std"] }
+ranvier = { version = "0.1.2", features = ["http", "std"] }
 ```
 
 ## Crates

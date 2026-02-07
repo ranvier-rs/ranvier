@@ -9,7 +9,7 @@ edition.workspace = true
 description = "Async Execution Engine for Ranvier"
 
 [dependencies]
-ranvier-core = { path = "../core", version = "0.1.1" }
+ranvier-core = { path = "../core", version = "0.1.2" }
 ranvier-inspector = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
