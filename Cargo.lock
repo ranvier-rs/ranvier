@@ -2695,11 +2695,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "chrono",
  "ranvier-core",
  "ranvier-inspector",
  "ranvier-macros",
  "ranvier-runtime",
+ "ranvier-status",
  "serde_json",
  "tokio",
  "tracing",

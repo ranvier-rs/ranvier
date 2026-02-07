@@ -7,6 +7,7 @@ edition = "2021"
 ranvier-core = { path = "../../core" }
 ranvier-runtime = { path = "../../runtime" }
 ranvier-inspector = { workspace = true }
+ranvier-status = { workspace = true }
 ranvier-macros = { path = "../../macros" }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
@@ -14,4 +15,3 @@ tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde_json = { workspace = true }
-chrono = { workspace = true }

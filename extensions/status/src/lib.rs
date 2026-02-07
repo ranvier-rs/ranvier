@@ -11,6 +11,7 @@
 
 pub mod data;
 pub mod generator;
+pub mod projection;
 mod templates;
 
 pub use data::{
@@ -18,3 +19,4 @@ pub use data::{
     ServiceStatus, StatusData,
 };
 pub use generator::StatusPageGenerator;
+pub use projection::{projections_from_timeline, write_projection_files, ProjectionArtifacts, TimelineProjectionOptions};
