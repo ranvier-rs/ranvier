@@ -40,19 +40,19 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/ranvier-rs/ranvier"
 homepage = "https://ranvier.studio"
 edition = "2024"
-version = "0.1.0"
+version = "0.1.1"
 keywords = ["automation", "workflow", "decision-engine", "circuit", "async"]
 categories = ["asynchronous", "development-tools", "web-programming"]
 
 [workspace.dependencies]
 # Internal Crates
-ranvier-core = { path = "core", version = "0.1.0" }
-ranvier-runtime = { path = "runtime", version = "0.1.0" }
-ranvier-http = { path = "http", version = "0.1.0" }
+ranvier-core = { path = "core", version = "0.1.1" }
+ranvier-runtime = { path = "runtime", version = "0.1.1" }
+ranvier-http = { path = "http", version = "0.1.1" }
 ranvier-db = { path = "extensions/db", version = "0.1.0" }
 ranvier-status = { path = "extensions/status", version = "0.1.1" }
 ranvier-observe = { path = "extensions/observe", version = "0.1.0" }
-ranvier-inspector = { path = "extensions/inspector", version = "0.1.0" }
+ranvier-inspector = { path = "extensions/inspector", version = "0.1.1" }
 ranvier-std = { path = "std", version = "0.1.0" }
 ranvier-macros = { path = "macros", version = "0.1.0" }
 

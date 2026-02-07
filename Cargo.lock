@@ -1824,7 +1824,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ranvier-core",
  "ranvier-http",
@@ -1834,7 +1834,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1869,7 +1869,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-http"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1889,7 +1889,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-inspector"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum 0.7.9",
  "futures",
@@ -1928,7 +1928,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1975,7 +1975,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-synapse"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
