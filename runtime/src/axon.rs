@@ -335,6 +335,7 @@ where
             if let Err(e) = ranvier_inspector::Inspector::new(schematic, port)
                 .with_projection_files_from_env()
                 .with_mode_from_env()
+                .with_auth_policy_from_env()
                 .serve()
                 .await
             {

@@ -3,7 +3,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         State,
     },
-    http::header,
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
     Json, Router,
@@ -73,6 +73,35 @@ impl SurfacePolicy {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AccessRole {
+    Viewer,
+    Operator,
+    Admin,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AuthPolicy {
+    enforce_headers: bool,
+    require_tenant_for_internal: bool,
+}
+
+impl AuthPolicy {
+    fn default() -> Self {
+        Self {
+            enforce_headers: false,
+            require_tenant_for_internal: false,
+        }
+    }
+
+    fn from_env() -> Self {
+        Self {
+            enforce_headers: env_flag("RANVIER_AUTH_ENFORCE", false),
+            require_tenant_for_internal: env_flag("RANVIER_AUTH_REQUIRE_TENANT_INTERNAL", false),
+        }
+    }
+}
+
 fn get_sender() -> &'static broadcast::Sender<String> {
     EVENT_CHANNEL.get_or_init(|| {
         let (tx, _rx) = broadcast::channel(100);
@@ -89,6 +118,7 @@ pub struct Inspector {
     public_projection_path: Option<String>,
     internal_projection_path: Option<String>,
     surface_policy: SurfacePolicy,
+    auth_policy: AuthPolicy,
 }
 
 impl Inspector {
@@ -106,6 +136,7 @@ impl Inspector {
             public_projection_path: None,
             internal_projection_path: None,
             surface_policy: SurfacePolicy::for_mode(InspectorMode::Dev),
+            auth_policy: AuthPolicy::default(),
         }
     }
 
@@ -173,6 +204,27 @@ impl Inspector {
         self
     }
 
+    /// Configure auth policy using environment variables.
+    ///
+    /// - `RANVIER_AUTH_ENFORCE=1`: require `X-Ranvier-Role` on inspector endpoints.
+    /// - `RANVIER_AUTH_REQUIRE_TENANT_INTERNAL=1`: require `X-Ranvier-Tenant` for internal endpoints.
+    pub fn with_auth_policy_from_env(mut self) -> Self {
+        self.auth_policy = AuthPolicy::from_env();
+        self
+    }
+
+    /// Toggle role-header enforcement.
+    pub fn with_auth_enforcement(mut self, enabled: bool) -> Self {
+        self.auth_policy.enforce_headers = enabled;
+        self
+    }
+
+    /// Toggle tenant-header requirement for internal endpoints.
+    pub fn with_require_tenant_for_internal(mut self, required: bool) -> Self {
+        self.auth_policy.require_tenant_for_internal = required;
+        self
+    }
+
     pub async fn serve(self) -> Result<(), std::io::Error> {
         let state = InspectorState {
             schematic: self.schematic.clone(),
@@ -180,6 +232,7 @@ impl Inspector {
             internal_projection: self.internal_projection.clone(),
             public_projection_path: self.public_projection_path.clone(),
             internal_projection_path: self.internal_projection_path.clone(),
+            auth_policy: self.auth_policy,
         };
 
         let mut app = Router::new()
@@ -286,6 +339,7 @@ struct InspectorState {
     internal_projection: Arc<Mutex<Option<Value>>>,
     public_projection_path: Option<String>,
     internal_projection_path: Option<String>,
+    auth_policy: AuthPolicy,
 }
 
 pub fn layer() -> InspectorLayer {
@@ -328,15 +382,23 @@ where
     }
 }
 
-async fn get_schematic(State(state): State<InspectorState>) -> Json<Schematic> {
+async fn get_schematic(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+) -> Result<Json<Schematic>, (StatusCode, Json<Value>)> {
+    ensure_public_access(&headers, &state.auth_policy)?;
     let schematic = state.schematic.lock().unwrap();
-    Json(schematic.clone())
+    Ok(Json(schematic.clone()))
 }
 
-async fn get_public_projection(State(state): State<InspectorState>) -> Json<Value> {
+async fn get_public_projection(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_public_access(&headers, &state.auth_policy)?;
     if let Some(path) = &state.public_projection_path {
         if let Ok(v) = read_projection_file(path) {
-            return Json(v);
+            return Ok(Json(v));
         }
     }
 
@@ -346,13 +408,17 @@ async fn get_public_projection(State(state): State<InspectorState>) -> Json<Valu
         .ok()
         .and_then(|v| v.clone())
         .unwrap_or(Value::Null);
-    Json(projection)
+    Ok(Json(projection))
 }
 
-async fn get_internal_projection(State(state): State<InspectorState>) -> Json<Value> {
+async fn get_internal_projection(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
     if let Some(path) = &state.internal_projection_path {
         if let Ok(v) = read_projection_file(path) {
-            return Json(v);
+            return Ok(Json(v));
         }
     }
 
@@ -362,13 +428,17 @@ async fn get_internal_projection(State(state): State<InspectorState>) -> Json<Va
         .ok()
         .and_then(|v| v.clone())
         .unwrap_or(Value::Null);
-    Json(projection)
+    Ok(Json(projection))
 }
 
 async fn ws_handler(
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
-    State(_): State<InspectorState>,
+    State(state): State<InspectorState>,
 ) -> impl IntoResponse {
+    if let Err(err) = ensure_internal_access(&headers, &state.auth_policy) {
+        return err.into_response();
+    }
     ws.on_upgrade(handle_socket)
 }
 
@@ -397,6 +467,83 @@ async fn handle_socket(mut socket: WebSocket) {
     }
 }
 
+fn env_flag(name: &str, default: bool) -> bool {
+    match std::env::var(name) {
+        Ok(v) => matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"),
+        Err(_) => default,
+    }
+}
+
+fn parse_role(headers: &HeaderMap) -> Result<AccessRole, &'static str> {
+    let raw = headers
+        .get("x-ranvier-role")
+        .ok_or("missing_x_ranvier_role")?
+        .to_str()
+        .map_err(|_| "invalid_x_ranvier_role")?
+        .trim()
+        .to_ascii_lowercase();
+
+    match raw.as_str() {
+        "viewer" => Ok(AccessRole::Viewer),
+        "operator" => Ok(AccessRole::Operator),
+        "admin" => Ok(AccessRole::Admin),
+        _ => Err("invalid_x_ranvier_role"),
+    }
+}
+
+fn has_tenant(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-ranvier-tenant")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn policy_error(code: StatusCode, message: &'static str) -> (StatusCode, Json<Value>) {
+    (
+        code,
+        Json(serde_json::json!({
+            "error": message
+        })),
+    )
+}
+
+fn ensure_public_access(
+    headers: &HeaderMap,
+    policy: &AuthPolicy,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if !policy.enforce_headers {
+        return Ok(());
+    }
+    parse_role(headers)
+        .map(|_| ())
+        .map_err(|e| policy_error(StatusCode::UNAUTHORIZED, e))
+}
+
+fn ensure_internal_access(
+    headers: &HeaderMap,
+    policy: &AuthPolicy,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if !policy.enforce_headers {
+        return Ok(());
+    }
+
+    let role = parse_role(headers).map_err(|e| policy_error(StatusCode::UNAUTHORIZED, e))?;
+    if role == AccessRole::Viewer {
+        return Err(policy_error(
+            StatusCode::FORBIDDEN,
+            "role_forbidden_for_internal_endpoint",
+        ));
+    }
+    if policy.require_tenant_for_internal && !has_tenant(headers) {
+        return Err(policy_error(
+            StatusCode::FORBIDDEN,
+            "missing_x_ranvier_tenant",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,7 +565,7 @@ mod tests {
                 .get(format!("http://127.0.0.1:{port}/schematic"))
                 .send()
                 .await
-                .map(|r| r.status().is_success())
+                .map(|_| true)
                 .unwrap_or(false)
             {
                 return;
@@ -496,6 +643,70 @@ mod tests {
         assert_eq!(internal.status(), reqwest::StatusCode::NOT_FOUND);
         assert_eq!(events.status(), reqwest::StatusCode::NOT_FOUND);
         assert_eq!(public.status(), reqwest::StatusCode::OK);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn auth_enforcement_rejects_missing_role_header() {
+        let port = free_port();
+        let inspector = Inspector::new(Schematic::new("auth-public"), port)
+            .with_mode("dev")
+            .with_auth_enforcement(true);
+        let handle = tokio::spawn(async move {
+            let _ = inspector.serve().await;
+        });
+        wait_ready(port).await;
+
+        let client = reqwest::Client::new();
+        let schematic = client
+            .get(format!("http://127.0.0.1:{port}/schematic"))
+            .send()
+            .await
+            .expect("schematic request");
+        assert_eq!(schematic.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn auth_enforcement_blocks_viewer_internal_and_requires_tenant() {
+        let port = free_port();
+        let inspector = Inspector::new(Schematic::new("auth-internal"), port)
+            .with_mode("dev")
+            .with_auth_enforcement(true)
+            .with_require_tenant_for_internal(true);
+        let handle = tokio::spawn(async move {
+            let _ = inspector.serve().await;
+        });
+        wait_ready(port).await;
+
+        let client = reqwest::Client::new();
+
+        let viewer_internal = client
+            .get(format!("http://127.0.0.1:{port}/trace/internal"))
+            .header("X-Ranvier-Role", "viewer")
+            .send()
+            .await
+            .expect("viewer internal request");
+        assert_eq!(viewer_internal.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let operator_no_tenant = client
+            .get(format!("http://127.0.0.1:{port}/trace/internal"))
+            .header("X-Ranvier-Role", "operator")
+            .send()
+            .await
+            .expect("operator internal request");
+        assert_eq!(operator_no_tenant.status(), reqwest::StatusCode::FORBIDDEN);
+
+        let operator_with_tenant = client
+            .get(format!("http://127.0.0.1:{port}/trace/internal"))
+            .header("X-Ranvier-Role", "operator")
+            .header("X-Ranvier-Tenant", "team-a")
+            .send()
+            .await
+            .expect("operator internal with tenant request");
+        assert_eq!(operator_with_tenant.status(), reqwest::StatusCode::OK);
 
         handle.abort();
     }
