@@ -216,3 +216,88 @@ fn parse_outcome_descriptor(outcome: &str) -> OutcomeDescriptor {
         branch_id: None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ranvier_core::timeline::{Timeline, TimelineEvent};
+    use tempfile::tempdir;
+
+    fn sample_timeline() -> Timeline {
+        let mut t = Timeline::new();
+        t.push(TimelineEvent::NodeEnter {
+            node_id: "n1".to_string(),
+            node_label: "Ingress".to_string(),
+            timestamp: 1_700_000_000_000,
+        });
+        t.push(TimelineEvent::NodeExit {
+            node_id: "n1".to_string(),
+            outcome_type: "Next".to_string(),
+            duration_ms: 5,
+            timestamp: 1_700_000_000_010,
+        });
+        t.push(TimelineEvent::NodeEnter {
+            node_id: "n2".to_string(),
+            node_label: "Decision".to_string(),
+            timestamp: 1_700_000_000_020,
+        });
+        t.push(TimelineEvent::NodeExit {
+            node_id: "n2".to_string(),
+            outcome_type: "Branch:payment_declined".to_string(),
+            duration_ms: 11,
+            timestamp: 1_700_000_000_040,
+        });
+        t.push(TimelineEvent::Branchtaken {
+            branch_id: "payment_declined".to_string(),
+            timestamp: 1_700_000_000_041,
+        });
+        t
+    }
+
+    #[test]
+    fn projections_from_timeline_builds_expected_shapes() {
+        let timeline = sample_timeline();
+        let mut options = TimelineProjectionOptions::new("Ranvier Service", "order_api");
+        options.circuit_version = Some("0.1.0".to_string());
+        options.trace_id = "trace-test".to_string();
+
+        let artifacts = projections_from_timeline(&timeline, &options).expect("projection");
+        let public = artifacts.public_projection;
+        let internal = artifacts.internal_projection;
+
+        assert_eq!(public["service_name"], "Ranvier Service");
+        assert_eq!(public["circuits"][0]["name"], "order_api");
+        assert_eq!(internal["trace_id"], "trace-test");
+        assert_eq!(internal["circuit_version"], "0.1.0");
+        assert_eq!(internal["summary"]["node_count"], 2);
+        assert_eq!(internal["summary"]["branch_count"], 1);
+        assert_eq!(internal["nodes"][1]["branch_id"], "payment_declined");
+    }
+
+    #[test]
+    fn write_projection_files_writes_json_files() {
+        let timeline = sample_timeline();
+        let options = TimelineProjectionOptions::new("Ranvier Service", "order_api");
+        let artifacts = projections_from_timeline(&timeline, &options).expect("projection");
+        let dir = tempdir().expect("tempdir");
+
+        let (public_path, internal_path) =
+            write_projection_files(dir.path(), &artifacts).expect("write files");
+
+        assert!(public_path.exists());
+        assert!(internal_path.exists());
+
+        let public_raw = std::fs::read_to_string(public_path).expect("read public");
+        let internal_raw = std::fs::read_to_string(internal_path).expect("read internal");
+        assert!(public_raw.contains("\"overall_status\""));
+        assert!(internal_raw.contains("\"trace_id\""));
+    }
+
+    #[test]
+    fn projections_from_empty_timeline_returns_error() {
+        let timeline = Timeline::new();
+        let options = TimelineProjectionOptions::new("Ranvier Service", "order_api");
+        let result = projections_from_timeline(&timeline, &options);
+        assert!(result.is_err());
+    }
+}
