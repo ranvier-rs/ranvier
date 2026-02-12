@@ -109,7 +109,7 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[allow(non_camel_case_types)]
         #vis struct #original_ident;
 
-        #[async_trait::async_trait]
+        #[::async_trait::async_trait]
         impl ranvier_core::transition::Transition<#input_type, #output_type> for #original_ident {
             type Error = #error_type;
             type Resources = #res_type;

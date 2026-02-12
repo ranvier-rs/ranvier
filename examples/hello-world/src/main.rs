@@ -13,9 +13,9 @@ cargo run --bin hello-world
 ```
 */
 
-use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_http::prelude::*;
+use ranvier_macros::transition;
 use ranvier_runtime::Axon;
 
 // ============================================================================
@@ -23,41 +23,15 @@ use ranvier_runtime::Axon;
 // ============================================================================
 
 /// First Transition: Generate greeting message
-#[derive(Clone)]
-struct Greet;
-
-#[async_trait]
-impl Transition<(), String> for Greet {
-    type Error = anyhow::Error;
-    type Resources = ();
-
-    async fn run(
-        &self,
-        _state: (),
-        _resources: &Self::Resources,
-        _bus: &mut Bus,
-    ) -> Outcome<String, Self::Error> {
-        Outcome::Next("Hello, Ranvier!".to_string())
-    }
+#[transition]
+async fn greet(_state: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, anyhow::Error> {
+    Outcome::Next("Hello, Ranvier!".to_string())
 }
 
 /// Second Transition: Add emoji to message
-#[derive(Clone)]
-struct Exclaim;
-
-#[async_trait]
-impl Transition<String, String> for Exclaim {
-    type Error = anyhow::Error;
-    type Resources = ();
-
-    async fn run(
-        &self,
-        state: String,
-        _resources: &Self::Resources,
-        _bus: &mut Bus,
-    ) -> Outcome<String, Self::Error> {
-        Outcome::Next(format!("{} 🚀", state))
-    }
+#[transition]
+async fn exclaim(state: String, _resources: &(), _bus: &mut Bus) -> Outcome<String, anyhow::Error> {
+    Outcome::Next(format!("{} 🚀", state))
 }
 
 // ============================================================================
@@ -74,8 +48,8 @@ async fn main() -> anyhow::Result<()> {
     //    Note: Axon::new("label") creates an identity Axon<T, T, E>
     //          We start with () and transform to String via transitions
     let hello = Axon::<(), (), anyhow::Error>::new("HelloWorld")
-        .then(Greet)
-        .then(Exclaim);
+        .then(greet)
+        .then(exclaim);
 
     if hello.maybe_export_and_exit()? {
         return Ok(());
