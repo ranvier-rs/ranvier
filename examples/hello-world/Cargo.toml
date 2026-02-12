@@ -14,5 +14,5 @@ ranvier-http = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-tracing = { workspace = true }
+ranvier-macros = { workspace = true }
 tracing-subscriber = "0.3"

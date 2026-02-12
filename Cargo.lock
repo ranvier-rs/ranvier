@@ -837,9 +837,9 @@ dependencies = [
  "async-trait",
  "ranvier-core",
  "ranvier-http",
+ "ranvier-macros",
  "ranvier-runtime",
  "tokio",
- "tracing",
  "tracing-subscriber",
 ]
 
