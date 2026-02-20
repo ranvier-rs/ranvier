@@ -15,7 +15,10 @@ impl Transition<i32, i32> for AddOne {
     type Resources = ();
 
     // Optional: Add tracing to inner logic too
-    #[instrument(skip(self, _resources, _bus))]
+    #[instrument(
+        skip(self, _resources, _bus),
+        fields(customer_email = "demo.user@example.com", api_key = "demo-api-key-123")
+    )]
     async fn run(
         &self,
         state: i32,
