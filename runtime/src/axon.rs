@@ -18,7 +18,8 @@ use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_core::transition::Transition;
 use crate::persistence::{
     CompletionState, CompensationAutoTrigger, CompensationContext, CompensationHandle,
-    PersistenceAutoComplete, PersistenceEnvelope, PersistenceHandle, PersistenceTraceId,
+    CompensationIdempotencyHandle, CompensationRetryPolicy, PersistenceAutoComplete,
+    PersistenceEnvelope, PersistenceHandle, PersistenceTraceId,
 };
 use std::any::type_name;
 use std::ffi::OsString;
@@ -312,6 +313,8 @@ where
         let label = self.schematic.name.clone();
         let persistence_handle = bus.read::<PersistenceHandle>().cloned();
         let compensation_handle = bus.read::<CompensationHandle>().cloned();
+        let compensation_retry_policy = compensation_retry_policy(bus);
+        let compensation_idempotency = bus.read::<CompensationIdempotencyHandle>().cloned();
         let persistence_start_step = if let Some(handle) = persistence_handle.as_ref() {
             let start_step = next_persistence_step(handle, &trace_id).await;
             persist_execution_event(handle, &trace_id, &label, start_step, "Enter").await;
@@ -390,7 +393,14 @@ where
                     timestamp_ms: now_ms(),
                 };
 
-                if run_compensation(compensation, context).await {
+                if run_compensation(
+                    compensation,
+                    context,
+                    compensation_retry_policy,
+                    compensation_idempotency.clone(),
+                )
+                .await
+                {
                     persist_execution_event(
                         handle,
                         &trace_id,
@@ -656,6 +666,12 @@ fn compensation_auto_trigger(bus: &Bus) -> bool {
         .unwrap_or(true)
 }
 
+fn compensation_retry_policy(bus: &Bus) -> CompensationRetryPolicy {
+    bus.read::<CompensationRetryPolicy>()
+        .copied()
+        .unwrap_or_default()
+}
+
 async fn next_persistence_step(handle: &PersistenceHandle, trace_id: &str) -> u64 {
     let store = handle.store();
     match store.load(trace_id).await {
@@ -716,22 +732,80 @@ async fn persist_completion(handle: &PersistenceHandle, trace_id: &str, completi
     }
 }
 
-async fn run_compensation(handle: &CompensationHandle, context: CompensationContext) -> bool {
+fn compensation_idempotency_key(context: &CompensationContext) -> String {
+    format!("{}:{}:{}", context.trace_id, context.circuit, context.fault_kind)
+}
+
+async fn run_compensation(
+    handle: &CompensationHandle,
+    context: CompensationContext,
+    retry_policy: CompensationRetryPolicy,
+    idempotency: Option<CompensationIdempotencyHandle>,
+) -> bool {
     let hook = handle.hook();
-    match hook.compensate(context.clone()).await {
-        Ok(()) => true,
-        Err(err) => {
-            tracing::warn!(
-                trace_id = %context.trace_id,
-                circuit = %context.circuit,
-                fault_kind = %context.fault_kind,
-                fault_step = context.fault_step,
-                error = %err,
-                "Compensation hook failed"
-            );
-            false
+    let key = compensation_idempotency_key(&context);
+
+    if let Some(store_handle) = idempotency.as_ref() {
+        let store = store_handle.store();
+        match store.was_compensated(&key).await {
+            Ok(true) => {
+                tracing::info!(
+                    trace_id = %context.trace_id,
+                    circuit = %context.circuit,
+                    key = %key,
+                    "Compensation already recorded; skipping duplicate hook execution"
+                );
+                return true;
+            }
+            Ok(false) => {}
+            Err(err) => {
+                tracing::warn!(
+                    trace_id = %context.trace_id,
+                    key = %key,
+                    error = %err,
+                    "Failed to check compensation idempotency state"
+                );
+            }
         }
     }
+
+    let max_attempts = retry_policy.max_attempts.max(1);
+    for attempt in 1..=max_attempts {
+        match hook.compensate(context.clone()).await {
+            Ok(()) => {
+                if let Some(store_handle) = idempotency.as_ref() {
+                    let store = store_handle.store();
+                    if let Err(err) = store.mark_compensated(&key).await {
+                        tracing::warn!(
+                            trace_id = %context.trace_id,
+                            key = %key,
+                            error = %err,
+                            "Failed to mark compensation idempotency state"
+                        );
+                    }
+                }
+                return true;
+            }
+            Err(err) => {
+                let is_last = attempt == max_attempts;
+                tracing::warn!(
+                    trace_id = %context.trace_id,
+                    circuit = %context.circuit,
+                    fault_kind = %context.fault_kind,
+                    fault_step = context.fault_step,
+                    attempt,
+                    max_attempts,
+                    error = %err,
+                    "Compensation hook attempt failed"
+                );
+                if !is_last && retry_policy.backoff_ms > 0 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(retry_policy.backoff_ms))
+                        .await;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn ensure_timeline(bus: &mut Bus) -> bool {
@@ -1009,8 +1083,9 @@ mod tests {
     use super::{sampled_by_bus_id, should_force_export, Axon};
     use crate::persistence::{
         CompletionState, CompensationContext, CompensationHandle, CompensationHook,
-        InMemoryPersistenceStore, PersistenceAutoComplete, PersistenceHandle, PersistenceStore,
-        PersistenceTraceId,
+        CompensationIdempotencyHandle, CompensationRetryPolicy,
+        InMemoryCompensationIdempotencyStore, InMemoryPersistenceStore, PersistenceAutoComplete,
+        PersistenceHandle, PersistenceStore, PersistenceTraceId,
     };
     use anyhow::Result;
     use async_trait::async_trait;
@@ -1106,6 +1181,28 @@ mod tests {
             self.calls.lock().await.push(context);
             if self.should_fail {
                 return Err(anyhow::anyhow!("compensation failed"));
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct FlakyCompensationHook {
+        calls: Arc<Mutex<u32>>,
+        failures_remaining: Arc<Mutex<u32>>,
+    }
+
+    #[async_trait]
+    impl CompensationHook for FlakyCompensationHook {
+        async fn compensate(&self, _context: CompensationContext) -> Result<()> {
+            {
+                let mut calls = self.calls.lock().await;
+                *calls += 1;
+            }
+            let mut failures_remaining = self.failures_remaining.lock().await;
+            if *failures_remaining > 0 {
+                *failures_remaining -= 1;
+                return Err(anyhow::anyhow!("transient compensation failure"));
             }
             Ok(())
         }
@@ -1230,6 +1327,78 @@ mod tests {
         assert_eq!(persisted.events.len(), 2);
         assert_eq!(persisted.events[1].outcome_kind, "Fault");
         assert_eq!(persisted.completion, Some(CompletionState::Fault));
+
+        let recorded = calls.lock().await;
+        assert_eq!(recorded.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn compensation_retry_policy_succeeds_after_retries() {
+        let store_impl = Arc::new(InMemoryPersistenceStore::new());
+        let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
+        let calls = Arc::new(Mutex::new(0u32));
+        let failures_remaining = Arc::new(Mutex::new(2u32));
+        let compensation = FlakyCompensationHook {
+            calls: calls.clone(),
+            failures_remaining,
+        };
+
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(store_dyn));
+        bus.insert(PersistenceTraceId::new("trace-retry-success"));
+        bus.insert(CompensationHandle::from_hook(compensation));
+        bus.insert(CompensationRetryPolicy {
+            max_attempts: 3,
+            backoff_ms: 0,
+        });
+
+        let axon = Axon::<i32, i32, &'static str>::start("CompensationRetry").then(AlwaysFault);
+        let outcome = axon.execute(7, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Fault("boom")));
+
+        let persisted = store_impl
+            .load("trace-retry-success")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.completion, Some(CompletionState::Compensated));
+        assert_eq!(persisted.events.last().map(|e| e.outcome_kind.as_str()), Some("Compensated"));
+
+        let attempt_count = calls.lock().await;
+        assert_eq!(*attempt_count, 3);
+    }
+
+    #[tokio::test]
+    async fn compensation_idempotency_skips_duplicate_hook_execution() {
+        let store_impl = Arc::new(InMemoryPersistenceStore::new());
+        let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let compensation = RecordingCompensationHook {
+            calls: calls.clone(),
+            should_fail: false,
+        };
+        let idempotency = InMemoryCompensationIdempotencyStore::new();
+
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(store_dyn));
+        bus.insert(PersistenceTraceId::new("trace-idempotent"));
+        bus.insert(PersistenceAutoComplete(false));
+        bus.insert(CompensationHandle::from_hook(compensation));
+        bus.insert(CompensationIdempotencyHandle::from_store(idempotency));
+
+        let axon =
+            Axon::<i32, i32, &'static str>::start("CompensationIdempotency").then(AlwaysFault);
+
+        let outcome1 = axon.execute(7, &(), &mut bus).await;
+        let outcome2 = axon.execute(8, &(), &mut bus).await;
+        assert!(matches!(outcome1, Outcome::Fault("boom")));
+        assert!(matches!(outcome2, Outcome::Fault("boom")));
+
+        let persisted = store_impl.load("trace-idempotent").await.unwrap().unwrap();
+        assert_eq!(persisted.completion, None);
+        assert_eq!(persisted.events.len(), 6);
+        assert_eq!(persisted.events[2].outcome_kind, "Compensated");
+        assert_eq!(persisted.events[5].outcome_kind, "Compensated");
 
         let recorded = calls.lock().await;
         assert_eq!(recorded.len(), 1);

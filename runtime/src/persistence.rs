@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -108,6 +108,24 @@ pub struct CompensationContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompensationAutoTrigger(pub bool);
 
+/// Retry policy for compensation hook execution.
+///
+/// Defaults to a single attempt (no retry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompensationRetryPolicy {
+    pub max_attempts: u32,
+    pub backoff_ms: u64,
+}
+
+impl Default for CompensationRetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 1,
+            backoff_ms: 0,
+        }
+    }
+}
+
 /// Compensation hook contract for irreversible side effects.
 #[async_trait]
 pub trait CompensationHook: Send + Sync {
@@ -145,6 +163,71 @@ impl CompensationHandle {
     /// Access the shared compensation hook.
     pub fn hook(&self) -> Arc<dyn CompensationHook> {
         self.inner.clone()
+    }
+}
+
+/// Idempotency store contract for compensation execution deduplication.
+#[async_trait]
+pub trait CompensationIdempotencyStore: Send + Sync {
+    async fn was_compensated(&self, key: &str) -> Result<bool>;
+    async fn mark_compensated(&self, key: &str) -> Result<()>;
+}
+
+/// Bus-insertable idempotency handle for compensation hooks.
+#[derive(Clone)]
+pub struct CompensationIdempotencyHandle {
+    inner: Arc<dyn CompensationIdempotencyStore>,
+}
+
+impl std::fmt::Debug for CompensationIdempotencyHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompensationIdempotencyHandle")
+            .finish_non_exhaustive()
+    }
+}
+
+impl CompensationIdempotencyHandle {
+    pub fn from_store<S>(store: S) -> Self
+    where
+        S: CompensationIdempotencyStore + 'static,
+    {
+        Self {
+            inner: Arc::new(store),
+        }
+    }
+
+    pub fn from_arc(store: Arc<dyn CompensationIdempotencyStore>) -> Self {
+        Self { inner: store }
+    }
+
+    pub fn store(&self) -> Arc<dyn CompensationIdempotencyStore> {
+        self.inner.clone()
+    }
+}
+
+/// In-memory idempotency store for compensation deduplication.
+#[derive(Debug, Default, Clone)]
+pub struct InMemoryCompensationIdempotencyStore {
+    keys: Arc<RwLock<HashSet<String>>>,
+}
+
+impl InMemoryCompensationIdempotencyStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl CompensationIdempotencyStore for InMemoryCompensationIdempotencyStore {
+    async fn was_compensated(&self, key: &str) -> Result<bool> {
+        let guard = self.keys.read().await;
+        Ok(guard.contains(key))
+    }
+
+    async fn mark_compensated(&self, key: &str) -> Result<()> {
+        let mut guard = self.keys.write().await;
+        guard.insert(key.to_string());
+        Ok(())
     }
 }
 
@@ -693,5 +776,15 @@ mod tests {
         assert!(err
             .to_string()
             .contains("already exists for circuit OrderCircuit"));
+    }
+
+    #[tokio::test]
+    async fn in_memory_compensation_idempotency_roundtrip() {
+        let store = InMemoryCompensationIdempotencyStore::new();
+        let key = "trace-a:OrderFlow:Fault";
+
+        assert!(!store.was_compensated(key).await.unwrap());
+        store.mark_compensated(key).await.unwrap();
+        assert!(store.was_compensated(key).await.unwrap());
     }
 }

@@ -6,8 +6,10 @@ pub mod prelude {
     pub use crate::axon::{Axon, SchematicExportRequest};
     pub use crate::persistence::{
         CompletionState, CompensationAutoTrigger, CompensationContext, CompensationHandle,
-        CompensationHook, InMemoryPersistenceStore, PersistedTrace, PersistenceAutoComplete,
-        PersistenceEnvelope, PersistenceHandle, PersistenceStore, PersistenceTraceId, ResumeCursor,
+        CompensationHook, CompensationIdempotencyHandle, CompensationIdempotencyStore,
+        CompensationRetryPolicy, InMemoryCompensationIdempotencyStore, InMemoryPersistenceStore,
+        PersistedTrace, PersistenceAutoComplete, PersistenceEnvelope, PersistenceHandle,
+        PersistenceStore, PersistenceTraceId, ResumeCursor,
     };
     pub use crate::replay::ReplayEngine;
 }
@@ -15,7 +17,9 @@ pub mod prelude {
 pub use axon::{Axon, SchematicExportRequest};
 pub use persistence::{
     CompletionState, CompensationAutoTrigger, CompensationContext, CompensationHandle,
-    CompensationHook, InMemoryPersistenceStore, PersistedTrace, PersistenceAutoComplete,
-    PersistenceEnvelope, PersistenceHandle, PersistenceStore, PersistenceTraceId, ResumeCursor,
+    CompensationHook, CompensationIdempotencyHandle, CompensationIdempotencyStore,
+    CompensationRetryPolicy, InMemoryCompensationIdempotencyStore, InMemoryPersistenceStore,
+    PersistedTrace, PersistenceAutoComplete, PersistenceEnvelope, PersistenceHandle,
+    PersistenceStore, PersistenceTraceId, ResumeCursor,
 };
 pub use replay::ReplayEngine;

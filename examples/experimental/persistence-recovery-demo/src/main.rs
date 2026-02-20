@@ -3,8 +3,10 @@ use ranvier_core::{Bus, Outcome, Transition};
 use ranvier_runtime::{
     Axon, CompensationContext, CompensationHandle, CompensationHook, InMemoryPersistenceStore,
     PersistenceAutoComplete, PersistenceHandle, PersistenceStore, PersistenceTraceId,
+    CompensationRetryPolicy,
 };
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[derive(Clone, Debug)]
 struct OrderFlowState {
@@ -95,11 +97,31 @@ fn print_trace_summary(label: &str, trace: &ranvier_runtime::PersistedTrace) {
 }
 
 #[derive(Clone)]
-struct RefundPaymentCompensation;
+struct RefundPaymentCompensation {
+    failures_remaining: Arc<Mutex<u32>>,
+}
+
+impl RefundPaymentCompensation {
+    fn new(failures_before_success: u32) -> Self {
+        Self {
+            failures_remaining: Arc::new(Mutex::new(failures_before_success)),
+        }
+    }
+}
 
 #[async_trait]
 impl CompensationHook for RefundPaymentCompensation {
     async fn compensate(&self, context: CompensationContext) -> anyhow::Result<()> {
+        let mut failures_remaining = self.failures_remaining.lock().await;
+        if *failures_remaining > 0 {
+            *failures_remaining -= 1;
+            println!(
+                "[compensate] trace={} transient failure, retry pending",
+                context.trace_id
+            );
+            return Err(anyhow::anyhow!("transient compensation failure"));
+        }
+
         println!(
             "[compensate] trace={} circuit={} reason={} step={}",
             context.trace_id, context.circuit, context.fault_kind, context.fault_step
@@ -169,7 +191,11 @@ async fn main() -> anyhow::Result<()> {
     let mut bus3 = Bus::new();
     bus3.insert(handle);
     bus3.insert(PersistenceTraceId::new(compensation_trace_id));
-    bus3.insert(CompensationHandle::from_hook(RefundPaymentCompensation));
+    bus3.insert(CompensationHandle::from_hook(RefundPaymentCompensation::new(1)));
+    bus3.insert(CompensationRetryPolicy {
+        max_attempts: 2,
+        backoff_ms: 0,
+    });
 
     let compensation_input = OrderFlowState {
         order_id: "2001".to_string(),
