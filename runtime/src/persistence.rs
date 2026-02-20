@@ -454,11 +454,11 @@ impl PersistenceStore for PostgresPersistenceStore {
         }
 
         let completion_query = format!("SELECT completion FROM {} WHERE trace_id = $1", self.state_table);
-        let completion: Option<String> = sqlx::query_scalar(&completion_query)
+        let completion: Option<Option<String>> = sqlx::query_scalar(&completion_query)
             .bind(&envelope.trace_id)
             .fetch_optional(&self.pool)
             .await?;
-        if completion.is_some() {
+        if completion.flatten().is_some() {
             return Err(anyhow!(
                 "trace_id {} is already completed and cannot accept new events",
                 envelope.trace_id
@@ -702,6 +702,8 @@ impl PersistenceStore for RedisPersistenceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(feature = "persistence-postgres", feature = "persistence-redis"))]
+    use uuid::Uuid;
 
     fn envelope(step: u64, outcome_kind: &str) -> PersistenceEnvelope {
         PersistenceEnvelope {
@@ -786,5 +788,102 @@ mod tests {
         assert!(!store.was_compensated(key).await.unwrap());
         store.mark_compensated(key).await.unwrap();
         assert!(store.was_compensated(key).await.unwrap());
+    }
+
+    #[cfg(feature = "persistence-postgres")]
+    #[tokio::test]
+    async fn postgres_store_roundtrip_when_configured() {
+        let url = match std::env::var("RANVIER_PERSISTENCE_POSTGRES_URL") {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&url)
+            .await
+            .unwrap();
+        let table_prefix = format!("ranvier_persistence_test_{}", Uuid::new_v4().simple());
+        let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), table_prefix.clone());
+        store.ensure_schema().await.unwrap();
+
+        let trace_id = format!("trace-{}", Uuid::new_v4().simple());
+        let circuit = "PgCircuit".to_string();
+
+        let mut first = envelope(1, "Next");
+        first.trace_id = trace_id.clone();
+        first.circuit = circuit.clone();
+        store.append(first).await.unwrap();
+
+        let mut second = envelope(2, "Branch");
+        second.trace_id = trace_id.clone();
+        second.circuit = circuit.clone();
+        store.append(second).await.unwrap();
+
+        let cursor = store.resume(&trace_id, 2).await.unwrap();
+        assert_eq!(cursor.next_step, 3);
+
+        store
+            .complete(&trace_id, CompletionState::Compensated)
+            .await
+            .unwrap();
+
+        let loaded = store.load(&trace_id).await.unwrap().unwrap();
+        assert_eq!(loaded.trace_id, trace_id);
+        assert_eq!(loaded.circuit, circuit);
+        assert_eq!(loaded.events.len(), 2);
+        assert_eq!(loaded.resumed_from_step, Some(2));
+        assert_eq!(loaded.completion, Some(CompletionState::Compensated));
+
+        let drop_events = format!("DROP TABLE IF EXISTS {}", store.events_table);
+        let drop_state = format!("DROP TABLE IF EXISTS {}", store.state_table);
+        sqlx::query(&drop_events).execute(&pool).await.unwrap();
+        sqlx::query(&drop_state).execute(&pool).await.unwrap();
+    }
+
+    #[cfg(feature = "persistence-redis")]
+    #[tokio::test]
+    async fn redis_store_roundtrip_when_configured() {
+        let url = match std::env::var("RANVIER_PERSISTENCE_REDIS_URL") {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        let base = RedisPersistenceStore::connect(&url).await.unwrap();
+        let prefix = format!("ranvier:persistence:test:{}", Uuid::new_v4().simple());
+        let store = RedisPersistenceStore::with_prefix(base.manager.clone(), prefix);
+
+        let trace_id = format!("trace-{}", Uuid::new_v4().simple());
+        let circuit = "RedisCircuit".to_string();
+
+        let mut first = envelope(1, "Next");
+        first.trace_id = trace_id.clone();
+        first.circuit = circuit.clone();
+        store.append(first).await.unwrap();
+
+        let mut second = envelope(2, "Fault");
+        second.trace_id = trace_id.clone();
+        second.circuit = circuit.clone();
+        store.append(second).await.unwrap();
+
+        let cursor = store.resume(&trace_id, 2).await.unwrap();
+        assert_eq!(cursor.next_step, 3);
+
+        store
+            .complete(&trace_id, CompletionState::Fault)
+            .await
+            .unwrap();
+
+        let loaded = store.load(&trace_id).await.unwrap().unwrap();
+        assert_eq!(loaded.trace_id, trace_id);
+        assert_eq!(loaded.circuit, circuit);
+        assert_eq!(loaded.events.len(), 2);
+        assert_eq!(loaded.resumed_from_step, Some(2));
+        assert_eq!(loaded.completion, Some(CompletionState::Fault));
+
+        use redis::AsyncCommands;
+        let key = store.key(&trace_id);
+        let mut conn = store.manager.clone();
+        let _: () = conn.del(key).await.unwrap();
     }
 }
