@@ -1,6 +1,7 @@
 param(
     [string]$ContainerName = "ranvier-otel-smoke",
-    [int]$StartupWaitSeconds = 4
+    [int]$StartupWaitSeconds = 4,
+    [string]$ConfigPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,7 +22,19 @@ if (-not (Get-Command podman -ErrorAction SilentlyContinue)) {
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ranvierRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $workspaceRoot = (Resolve-Path (Join-Path $ranvierRoot "..")).Path
-$configPath = (Resolve-Path (Join-Path $workspaceRoot "docs/03_guides/otel_collector_smoke_config.yaml")).Path
+
+if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+    $defaultConfig = Join-Path $workspaceRoot "docs/03_guides/otel_collector_smoke_config.yaml"
+    if (-not (Test-Path $defaultConfig)) {
+        throw "Collector config not found. Provide -ConfigPath or restore docs/03_guides/otel_collector_smoke_config.yaml."
+    }
+    $configPath = (Resolve-Path $defaultConfig).Path
+} else {
+    if (-not (Test-Path $ConfigPath)) {
+        throw "Provided -ConfigPath does not exist: $ConfigPath"
+    }
+    $configPath = (Resolve-Path $ConfigPath).Path
+}
 $evidenceDir = Join-Path $workspaceRoot "docs/05_dev_plans/evidence"
 New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
 
@@ -75,4 +88,3 @@ try {
 } finally {
     Stop-ContainerIfExists -Name $ContainerName
 }
-
