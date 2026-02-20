@@ -1,7 +1,9 @@
 param(
     [string]$ContainerName = "ranvier-otel-smoke",
     [int]$StartupWaitSeconds = 4,
-    [string]$ConfigPath = ""
+    [string]$ConfigPath = "",
+    [ValidateSet("grpc", "http/protobuf")]
+    [string]$Protocol = "grpc"
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,7 +57,14 @@ try {
 
     Push-Location $ranvierRoot
     try {
-        $env:RANVIER_OTLP_ENDPOINT = "http://localhost:4317"
+        $otlpEndpoint = if ($Protocol -eq "http/protobuf") {
+            "http://localhost:4318"
+        } else {
+            "http://localhost:4317"
+        }
+
+        $env:RANVIER_OTLP_ENDPOINT = $otlpEndpoint
+        $env:RANVIER_OTLP_PROTOCOL = $Protocol
         $env:RUST_LOG = "info"
 
         cargo run -p otel-demo *>&1 | Tee-Object -FilePath $appLog | Out-Null
