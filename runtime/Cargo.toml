@@ -8,6 +8,11 @@ version.workspace = true
 edition.workspace = true
 description = "Async Execution Engine for Ranvier"
 
+[features]
+default = []
+persistence-postgres = ["dep:sqlx"]
+persistence-redis = ["dep:redis"]
+
 [dependencies]
 ranvier-core = { path = "../core", version = "0.1.2" }
 ranvier-inspector = { workspace = true }
@@ -17,5 +22,8 @@ tokio = { workspace = true, features = ["sync", "time"] }
 uuid = { workspace = true }
 futures-core = { workspace = true }
 futures-util = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+sqlx = { workspace = true, optional = true }
+redis = { version = "0.29.5", optional = true, features = ["tokio-comp", "connection-manager"] }
