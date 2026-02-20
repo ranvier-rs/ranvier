@@ -1,22 +1,23 @@
 use axum::{
+    Json, Router,
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
     routing::get,
-    Json, Router,
 };
 use ranvier_core::schematic::{NodeKind, Schematic};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 use tracing::{Event, Id, Subscriber};
-use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
+use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
 static EVENT_CHANNEL: OnceLock<broadcast::Sender<String>> = OnceLock::new();
 const QUICK_VIEW_HTML: &str = include_str!("quick_view/index.html");
@@ -102,6 +103,95 @@ impl AuthPolicy {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProjectionSurface {
+    Public,
+    Internal,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RedactionMode {
+    Off,
+    Public,
+    Strict,
+}
+
+impl RedactionMode {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(Self::Off),
+            "public" => Some(Self::Public),
+            "strict" => Some(Self::Strict),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TelemetryRedactionPolicy {
+    mode_override: Option<RedactionMode>,
+    sensitive_patterns: Vec<String>,
+    allow_keys: HashSet<String>,
+}
+
+impl Default for TelemetryRedactionPolicy {
+    fn default() -> Self {
+        Self {
+            mode_override: None,
+            sensitive_patterns: default_sensitive_patterns(),
+            allow_keys: HashSet::new(),
+        }
+    }
+}
+
+impl TelemetryRedactionPolicy {
+    fn from_env() -> Self {
+        let mut policy = Self::default();
+
+        if let Ok(raw_mode) = std::env::var("RANVIER_TELEMETRY_REDACT_MODE") {
+            match RedactionMode::parse(&raw_mode) {
+                Some(mode) => policy.mode_override = Some(mode),
+                None => tracing::warn!(
+                    "Invalid RANVIER_TELEMETRY_REDACT_MODE='{}' (expected: off|public|strict)",
+                    raw_mode
+                ),
+            }
+        }
+
+        if let Ok(extra) = std::env::var("RANVIER_TELEMETRY_REDACT_KEYS") {
+            for key in parse_csv_lower(&extra) {
+                if !policy.sensitive_patterns.contains(&key) {
+                    policy.sensitive_patterns.push(key);
+                }
+            }
+        }
+
+        if let Ok(allow) = std::env::var("RANVIER_TELEMETRY_ALLOW_KEYS") {
+            policy.allow_keys.extend(parse_csv_lower(&allow));
+        }
+
+        policy
+    }
+
+    fn mode_for_surface(&self, surface: ProjectionSurface) -> RedactionMode {
+        if let Some(mode) = self.mode_override {
+            return mode;
+        }
+
+        match surface {
+            ProjectionSurface::Public => RedactionMode::Public,
+            ProjectionSurface::Internal => RedactionMode::Off,
+        }
+    }
+
+    fn is_sensitive_key(&self, key: &str) -> bool {
+        let lowered = key.to_ascii_lowercase();
+        self.sensitive_patterns
+            .iter()
+            .any(|pattern| lowered.contains(pattern))
+    }
+}
+
 fn get_sender() -> &'static broadcast::Sender<String> {
     EVENT_CHANNEL.get_or_init(|| {
         let (tx, _rx) = broadcast::channel(100);
@@ -119,6 +209,7 @@ pub struct Inspector {
     internal_projection_path: Option<String>,
     surface_policy: SurfacePolicy,
     auth_policy: AuthPolicy,
+    redaction_policy: TelemetryRedactionPolicy,
 }
 
 impl Inspector {
@@ -137,6 +228,7 @@ impl Inspector {
             internal_projection_path: None,
             surface_policy: SurfacePolicy::for_mode(InspectorMode::Dev),
             auth_policy: AuthPolicy::default(),
+            redaction_policy: TelemetryRedactionPolicy::from_env(),
         }
     }
 
@@ -225,6 +317,17 @@ impl Inspector {
         self
     }
 
+    /// Reload telemetry redaction policy from environment variables.
+    ///
+    /// Variables:
+    /// - `RANVIER_TELEMETRY_REDACT_MODE=off|public|strict`
+    /// - `RANVIER_TELEMETRY_REDACT_KEYS=comma,separated,patterns`
+    /// - `RANVIER_TELEMETRY_ALLOW_KEYS=comma,separated,keys`
+    pub fn with_redaction_policy_from_env(mut self) -> Self {
+        self.redaction_policy = TelemetryRedactionPolicy::from_env();
+        self
+    }
+
     pub async fn serve(self) -> Result<(), std::io::Error> {
         let state = InspectorState {
             schematic: self.schematic.clone(),
@@ -233,6 +336,7 @@ impl Inspector {
             public_projection_path: self.public_projection_path.clone(),
             internal_projection_path: self.internal_projection_path.clone(),
             auth_policy: self.auth_policy,
+            redaction_policy: self.redaction_policy.clone(),
         };
 
         let mut app = Router::new()
@@ -332,6 +436,91 @@ fn read_projection_file(path: &str) -> Result<Value, String> {
     serde_json::from_str::<Value>(&content).map_err(|e| e.to_string())
 }
 
+fn default_sensitive_patterns() -> Vec<String> {
+    vec![
+        "password".to_string(),
+        "secret".to_string(),
+        "token".to_string(),
+        "authorization".to_string(),
+        "cookie".to_string(),
+        "session".to_string(),
+        "api_key".to_string(),
+        "credit_card".to_string(),
+        "ssn".to_string(),
+        "email".to_string(),
+        "phone".to_string(),
+    ]
+}
+
+fn parse_csv_lower(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn apply_projection_redaction(
+    projection: Value,
+    surface: ProjectionSurface,
+    policy: &TelemetryRedactionPolicy,
+) -> Value {
+    let mode = policy.mode_for_surface(surface);
+    redact_json_value(projection, mode, policy, None)
+}
+
+fn redact_json_value(
+    value: Value,
+    mode: RedactionMode,
+    policy: &TelemetryRedactionPolicy,
+    parent_key: Option<&str>,
+) -> Value {
+    if mode == RedactionMode::Off {
+        return value;
+    }
+
+    match value {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::with_capacity(map.len());
+            let strict_attribute_bag =
+                mode == RedactionMode::Strict && parent_key.is_some_and(is_attribute_bag_key);
+
+            for (key, child) in map {
+                let lowered = key.to_ascii_lowercase();
+
+                if strict_attribute_bag && !policy.allow_keys.contains(&lowered) {
+                    if policy.is_sensitive_key(&lowered) {
+                        out.insert(key, Value::String("[REDACTED]".to_string()));
+                    }
+                    continue;
+                }
+
+                if policy.is_sensitive_key(&lowered) {
+                    out.insert(key, Value::String("[REDACTED]".to_string()));
+                    continue;
+                }
+
+                out.insert(
+                    key.clone(),
+                    redact_json_value(child, mode, policy, Some(&key)),
+                );
+            }
+            Value::Object(out)
+        }
+        Value::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .map(|v| redact_json_value(v, mode, policy, parent_key))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn is_attribute_bag_key(key: &str) -> bool {
+    let lowered = key.to_ascii_lowercase();
+    lowered == "attributes" || lowered.ends_with("_attributes")
+}
+
 #[derive(Clone)]
 struct InspectorState {
     schematic: Arc<Mutex<Schematic>>,
@@ -340,6 +529,7 @@ struct InspectorState {
     public_projection_path: Option<String>,
     internal_projection_path: Option<String>,
     auth_policy: AuthPolicy,
+    redaction_policy: TelemetryRedactionPolicy,
 }
 
 pub fn layer() -> InspectorLayer {
@@ -398,7 +588,11 @@ async fn get_public_projection(
     ensure_public_access(&headers, &state.auth_policy)?;
     if let Some(path) = &state.public_projection_path {
         if let Ok(v) = read_projection_file(path) {
-            return Ok(Json(v));
+            return Ok(Json(apply_projection_redaction(
+                v,
+                ProjectionSurface::Public,
+                &state.redaction_policy,
+            )));
         }
     }
 
@@ -408,7 +602,11 @@ async fn get_public_projection(
         .ok()
         .and_then(|v| v.clone())
         .unwrap_or(Value::Null);
-    Ok(Json(projection))
+    Ok(Json(apply_projection_redaction(
+        projection,
+        ProjectionSurface::Public,
+        &state.redaction_policy,
+    )))
 }
 
 async fn get_internal_projection(
@@ -418,7 +616,11 @@ async fn get_internal_projection(
     ensure_internal_access(&headers, &state.auth_policy)?;
     if let Some(path) = &state.internal_projection_path {
         if let Ok(v) = read_projection_file(path) {
-            return Ok(Json(v));
+            return Ok(Json(apply_projection_redaction(
+                v,
+                ProjectionSurface::Internal,
+                &state.redaction_policy,
+            )));
         }
     }
 
@@ -428,7 +630,11 @@ async fn get_internal_projection(
         .ok()
         .and_then(|v| v.clone())
         .unwrap_or(Value::Null);
-    Ok(Json(projection))
+    Ok(Json(apply_projection_redaction(
+        projection,
+        ProjectionSurface::Internal,
+        &state.redaction_policy,
+    )))
 }
 
 async fn ws_handler(
@@ -443,18 +649,27 @@ async fn ws_handler(
 }
 
 async fn get_quick_view_html() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], QUICK_VIEW_HTML)
+    (
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        QUICK_VIEW_HTML,
+    )
 }
 
 async fn get_quick_view_js() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
         QUICK_VIEW_JS,
     )
 }
 
 async fn get_quick_view_css() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], QUICK_VIEW_CSS)
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        QUICK_VIEW_CSS,
+    )
 }
 
 async fn handle_socket(mut socket: WebSocket) {
@@ -573,6 +788,57 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         panic!("inspector server did not become ready");
+    }
+
+    #[test]
+    fn redaction_defaults_public_and_internal_surfaces() {
+        let policy = TelemetryRedactionPolicy::default();
+        let src = serde_json::json!({
+            "email": "user@example.com",
+            "summary": { "ok": true }
+        });
+
+        let public = apply_projection_redaction(src.clone(), ProjectionSurface::Public, &policy);
+        let internal = apply_projection_redaction(src, ProjectionSurface::Internal, &policy);
+
+        assert_eq!(public["email"], "[REDACTED]");
+        assert_eq!(public["summary"]["ok"], true);
+        assert_eq!(internal["email"], "user@example.com");
+    }
+
+    #[test]
+    fn strict_mode_filters_attribute_bag_by_allowlist() {
+        let mut policy = TelemetryRedactionPolicy::default();
+        policy.mode_override = Some(RedactionMode::Strict);
+        policy.allow_keys.insert("ranvier.circuit".to_string());
+
+        let src = serde_json::json!({
+            "attributes": {
+                "ranvier.circuit": "CheckoutCircuit",
+                "customer_id": "u-123",
+                "api_key": "secret-key"
+            }
+        });
+
+        let out = apply_projection_redaction(src, ProjectionSurface::Internal, &policy);
+        assert_eq!(out["attributes"]["ranvier.circuit"], "CheckoutCircuit");
+        assert_eq!(out["attributes"]["api_key"], "[REDACTED]");
+        assert!(out["attributes"].get("customer_id").is_none());
+    }
+
+    #[test]
+    fn custom_sensitive_patterns_are_applied() {
+        let mut policy = TelemetryRedactionPolicy::default();
+        policy.sensitive_patterns.push("tenant_id".to_string());
+
+        let src = serde_json::json!({
+            "tenant_id": "team-a",
+            "trace_id": "abc123"
+        });
+
+        let out = apply_projection_redaction(src, ProjectionSurface::Public, &policy);
+        assert_eq!(out["tenant_id"], "[REDACTED]");
+        assert_eq!(out["trace_id"], "abc123");
     }
 
     #[tokio::test]
