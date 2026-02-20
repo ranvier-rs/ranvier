@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
-use ranvier_observe::init_stdout_tracing;
+use ranvier_observe::{init_otlp_tracing, init_stdout_tracing};
 use ranvier_runtime::Axon;
 use tracing::instrument;
 
@@ -29,9 +29,26 @@ impl Transition<i32, i32> for AddOne {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // 1. Initialize Tracing
-    init_stdout_tracing();
-    tracing::info!("Tracing initialized. Starting Axon...");
+    // 1. Initialize tracing:
+    // - default: stdout tracing
+    // - optional OTLP mode when endpoint env is provided
+    //
+    // OTLP endpoint lookup order:
+    // 1) RANVIER_OTLP_ENDPOINT
+    // 2) OTEL_EXPORTER_OTLP_ENDPOINT
+    let otlp_endpoint = std::env::var("RANVIER_OTLP_ENDPOINT")
+        .ok()
+        .or_else(|| std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok());
+
+    if let Some(endpoint) = otlp_endpoint {
+        init_otlp_tracing("otel-demo", &endpoint)?;
+        tracing::info!("OTLP tracing initialized. endpoint={}", endpoint);
+    } else {
+        init_stdout_tracing();
+        tracing::info!("Stdout tracing initialized (set RANVIER_OTLP_ENDPOINT for OTLP mode)");
+    }
+
+    tracing::info!("Starting Axon...");
 
     // 2. Define Axon
     let axon = Axon::<i32, i32, std::convert::Infallible>::start("CalculationCircuit")
@@ -43,6 +60,9 @@ async fn main() -> anyhow::Result<()> {
     let result = axon.execute(10, &(), &mut bus).await;
 
     tracing::info!("Execution Result: {:?}", result);
+
+    // Flush trace pipeline on process exit.
+    opentelemetry::global::shutdown_tracer_provider();
 
     Ok(())
 }
