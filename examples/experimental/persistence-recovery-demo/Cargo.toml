@@ -1,0 +1,11 @@
+[package]
+name = "persistence-recovery-demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ranvier-core = { path = "../../../core" }
+ranvier-runtime = { path = "../../../runtime" }
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+anyhow = "1.0"

@@ -16,6 +16,10 @@ use ranvier_core::outcome::Outcome;
 use ranvier_core::schematic::{Edge, EdgeType, Node, NodeKind, Schematic, SourceLocation};
 use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_core::transition::Transition;
+use crate::persistence::{
+    CompletionState, PersistenceAutoComplete, PersistenceEnvelope, PersistenceHandle,
+    PersistenceTraceId,
+};
 use std::any::type_name;
 use std::ffi::OsString;
 use std::fs;
@@ -304,6 +308,17 @@ where
 
     /// Execute the Axon with the given input and resources.
     pub async fn execute(&self, input: In, resources: &Res, bus: &mut Bus) -> Outcome<Out, E> {
+        let trace_id = persistence_trace_id(bus);
+        let label = self.schematic.name.clone();
+        let persistence_handle = bus.read::<PersistenceHandle>().cloned();
+        let persistence_start_step = if let Some(handle) = persistence_handle.as_ref() {
+            let start_step = next_persistence_step(handle, &trace_id).await;
+            persist_execution_event(handle, &trace_id, &label, start_step, "Enter").await;
+            Some(start_step)
+        } else {
+            None
+        };
+
         let should_capture = should_attach_timeline(bus);
         let inserted_timeline = if should_capture {
             ensure_timeline(bus)
@@ -323,7 +338,6 @@ where
             });
         }
 
-        let label = self.schematic.name.clone();
         let circuit_span = tracing::info_span!(
             "Circuit",
             ranvier.circuit = %label,
@@ -349,6 +363,22 @@ where
                 duration_ms: ingress_started.elapsed().as_millis() as u64,
                 timestamp: ingress_exit_ts,
             });
+        }
+
+        if let Some(handle) = persistence_handle.as_ref() {
+            let finish_step = persistence_start_step.map(|s| s + 1).unwrap_or(1);
+            persist_execution_event(
+                handle,
+                &trace_id,
+                &label,
+                finish_step,
+                outcome_kind_name(&outcome),
+            )
+            .await;
+
+            if persistence_auto_complete(bus) {
+                persist_completion(handle, &trace_id, completion_from_outcome(&outcome)).await;
+            }
         }
 
         if should_capture {
@@ -569,6 +599,87 @@ fn outcome_target<Out, E>(outcome: &Outcome<Out, E>) -> Option<String> {
         Outcome::Jump(node_id, _) => Some(node_id.to_string()),
         Outcome::Emit(event_type, _) => Some(event_type.clone()),
         Outcome::Next(_) | Outcome::Fault(_) => None,
+    }
+}
+
+fn completion_from_outcome<Out, E>(outcome: &Outcome<Out, E>) -> CompletionState {
+    match outcome {
+        Outcome::Fault(_) => CompletionState::Fault,
+        _ => CompletionState::Success,
+    }
+}
+
+fn persistence_trace_id(bus: &Bus) -> String {
+    if let Some(explicit) = bus.read::<PersistenceTraceId>() {
+        explicit.0.clone()
+    } else {
+        format!("{}:{}", bus.id, now_ms())
+    }
+}
+
+fn persistence_auto_complete(bus: &Bus) -> bool {
+    bus.read::<PersistenceAutoComplete>()
+        .map(|v| v.0)
+        .unwrap_or(true)
+}
+
+async fn next_persistence_step(handle: &PersistenceHandle, trace_id: &str) -> u64 {
+    let store = handle.store();
+    match store.load(trace_id).await {
+        Ok(Some(trace)) => trace
+            .events
+            .last()
+            .map(|event| event.step.saturating_add(1))
+            .unwrap_or(0),
+        Ok(None) => 0,
+        Err(err) => {
+            tracing::warn!(
+                trace_id = %trace_id,
+                error = %err,
+                "Failed to load persistence trace; falling back to step=0"
+            );
+            0
+        }
+    }
+}
+
+async fn persist_execution_event(
+    handle: &PersistenceHandle,
+    trace_id: &str,
+    circuit: &str,
+    step: u64,
+    outcome_kind: &str,
+) {
+    let store = handle.store();
+    let envelope = PersistenceEnvelope {
+        trace_id: trace_id.to_string(),
+        circuit: circuit.to_string(),
+        step,
+        outcome_kind: outcome_kind.to_string(),
+        timestamp_ms: now_ms(),
+        payload_hash: None,
+    };
+
+    if let Err(err) = store.append(envelope).await {
+        tracing::warn!(
+            trace_id = %trace_id,
+            circuit = %circuit,
+            step,
+            outcome_kind = %outcome_kind,
+            error = %err,
+            "Failed to append persistence envelope"
+        );
+    }
+}
+
+async fn persist_completion(handle: &PersistenceHandle, trace_id: &str, completion: CompletionState) {
+    let store = handle.store();
+    if let Err(err) = store.complete(trace_id, completion).await {
+        tracing::warn!(
+            trace_id = %trace_id,
+            error = %err,
+            "Failed to complete persistence trace"
+        );
     }
 }
 
@@ -844,8 +955,14 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{sampled_by_bus_id, should_force_export};
-    use ranvier_core::Outcome;
+    use super::{sampled_by_bus_id, should_force_export, Axon};
+    use crate::persistence::{
+        CompletionState, InMemoryPersistenceStore, PersistenceAutoComplete, PersistenceHandle,
+        PersistenceStore, PersistenceTraceId,
+    };
+    use async_trait::async_trait;
+    use ranvier_core::{Bus, Outcome, Transition};
+    use std::sync::Arc;
     use uuid::Uuid;
 
     #[test]
@@ -885,5 +1002,101 @@ mod tests {
         assert!(sampled_always);
         assert!(sampled_always || should_force_export(&next, "off"));
         assert!(sampled_always || should_force_export(&fault, "off"));
+    }
+
+    #[derive(Clone)]
+    struct AddOne;
+
+    #[async_trait]
+    impl Transition<i32, i32> for AddOne {
+        type Error = std::convert::Infallible;
+        type Resources = ();
+
+        async fn run(
+            &self,
+            state: i32,
+            _resources: &Self::Resources,
+            _bus: &mut Bus,
+        ) -> Outcome<i32, Self::Error> {
+            Outcome::Next(state + 1)
+        }
+    }
+
+    #[derive(Clone)]
+    struct AlwaysFault;
+
+    #[async_trait]
+    impl Transition<i32, i32> for AlwaysFault {
+        type Error = &'static str;
+        type Resources = ();
+
+        async fn run(
+            &self,
+            _state: i32,
+            _resources: &Self::Resources,
+            _bus: &mut Bus,
+        ) -> Outcome<i32, Self::Error> {
+            Outcome::Fault("boom")
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_persists_success_trace_when_handle_exists() {
+        let store_impl = Arc::new(InMemoryPersistenceStore::new());
+        let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
+
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(store_dyn));
+        bus.insert(PersistenceTraceId::new("trace-success"));
+
+        let axon =
+            Axon::<i32, i32, std::convert::Infallible>::start("PersistSuccess").then(AddOne);
+        let outcome = axon.execute(41, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Next(42)));
+
+        let persisted = store_impl.load("trace-success").await.unwrap().unwrap();
+        assert_eq!(persisted.events.len(), 2);
+        assert_eq!(persisted.events[0].outcome_kind, "Enter");
+        assert_eq!(persisted.events[1].outcome_kind, "Next");
+        assert_eq!(persisted.completion, Some(CompletionState::Success));
+    }
+
+    #[tokio::test]
+    async fn execute_persists_fault_completion_state() {
+        let store_impl = Arc::new(InMemoryPersistenceStore::new());
+        let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
+
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(store_dyn));
+        bus.insert(PersistenceTraceId::new("trace-fault"));
+
+        let axon = Axon::<i32, i32, &'static str>::start("PersistFault").then(AlwaysFault);
+        let outcome = axon.execute(41, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Fault("boom")));
+
+        let persisted = store_impl.load("trace-fault").await.unwrap().unwrap();
+        assert_eq!(persisted.events.len(), 2);
+        assert_eq!(persisted.events[1].outcome_kind, "Fault");
+        assert_eq!(persisted.completion, Some(CompletionState::Fault));
+    }
+
+    #[tokio::test]
+    async fn execute_respects_persistence_auto_complete_off() {
+        let store_impl = Arc::new(InMemoryPersistenceStore::new());
+        let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
+
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(store_dyn));
+        bus.insert(PersistenceTraceId::new("trace-no-complete"));
+        bus.insert(PersistenceAutoComplete(false));
+
+        let axon =
+            Axon::<i32, i32, std::convert::Infallible>::start("PersistNoComplete").then(AddOne);
+        let outcome = axon.execute(1, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Next(2)));
+
+        let persisted = store_impl.load("trace-no-complete").await.unwrap().unwrap();
+        assert_eq!(persisted.events.len(), 2);
+        assert_eq!(persisted.completion, None);
     }
 }

@@ -49,6 +49,24 @@ pub struct ResumeCursor {
     pub next_step: u64,
 }
 
+/// Optional trace identifier override for persistence hooks.
+///
+/// Insert into `Bus` when a stable trace identity is required across process restarts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistenceTraceId(pub String);
+
+impl PersistenceTraceId {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+}
+
+/// Controls whether runtime execution should call `complete` automatically.
+///
+/// Default runtime behavior when this resource is absent: `true`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PersistenceAutoComplete(pub bool);
+
 /// Persistence abstraction draft for long-running workflow recovery.
 ///
 /// This is intentionally minimal and marked experimental while M148 is active.
@@ -58,6 +76,40 @@ pub trait PersistenceStore: Send + Sync {
     async fn load(&self, trace_id: &str) -> Result<Option<PersistedTrace>>;
     async fn resume(&self, trace_id: &str, resume_from_step: u64) -> Result<ResumeCursor>;
     async fn complete(&self, trace_id: &str, completion: CompletionState) -> Result<()>;
+}
+
+/// Bus-insertable persistence handle used by runtime execution hooks.
+#[derive(Clone)]
+pub struct PersistenceHandle {
+    inner: Arc<dyn PersistenceStore>,
+}
+
+impl std::fmt::Debug for PersistenceHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PersistenceHandle").finish_non_exhaustive()
+    }
+}
+
+impl PersistenceHandle {
+    /// Create a handle from a concrete store implementation.
+    pub fn from_store<S>(store: S) -> Self
+    where
+        S: PersistenceStore + 'static,
+    {
+        Self {
+            inner: Arc::new(store),
+        }
+    }
+
+    /// Create a handle from an existing trait-object Arc.
+    pub fn from_arc(store: Arc<dyn PersistenceStore>) -> Self {
+        Self { inner: store }
+    }
+
+    /// Access the shared persistence store.
+    pub fn store(&self) -> Arc<dyn PersistenceStore> {
+        self.inner.clone()
+    }
 }
 
 /// In-memory reference adapter for local testing and contract validation.

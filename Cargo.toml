@@ -23,6 +23,7 @@ members = [
     "examples/db-example",
     "examples/otel-demo",
     "examples/experimental/replay-demo",
+    "examples/experimental/persistence-recovery-demo",
     "examples/std-lib-demo",
     "examples/typed-state-tree",
     "extensions/synapse",
