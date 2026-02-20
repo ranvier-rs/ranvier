@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use ranvier_core::{Bus, Outcome, Transition};
 use ranvier_runtime::{
-    Axon, InMemoryPersistenceStore, PersistenceAutoComplete, PersistenceHandle, PersistenceStore,
-    PersistenceTraceId,
+    Axon, CompensationContext, CompensationHandle, CompensationHook, InMemoryPersistenceStore,
+    PersistenceAutoComplete, PersistenceHandle, PersistenceStore, PersistenceTraceId,
 };
 use std::sync::Arc;
 
@@ -94,6 +94,21 @@ fn print_trace_summary(label: &str, trace: &ranvier_runtime::PersistedTrace) {
     println!("completion: {:?}", trace.completion);
 }
 
+#[derive(Clone)]
+struct RefundPaymentCompensation;
+
+#[async_trait]
+impl CompensationHook for RefundPaymentCompensation {
+    async fn compensate(&self, context: CompensationContext) -> anyhow::Result<()> {
+        println!(
+            "[compensate] trace={} circuit={} reason={} step={}",
+            context.trace_id, context.circuit, context.fault_kind, context.fault_step
+        );
+        // In a real service this would call an idempotent refund/reversal API.
+        Ok(())
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let store_impl = Arc::new(InMemoryPersistenceStore::new());
@@ -131,7 +146,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Second run (simulated process after restart): fix condition and complete.
     let mut bus2 = Bus::new();
-    bus2.insert(handle);
+    bus2.insert(handle.clone());
     bus2.insert(PersistenceTraceId::new(trace_id));
     bus2.insert(PersistenceAutoComplete(true));
 
@@ -148,6 +163,27 @@ async fn main() -> anyhow::Result<()> {
         .await?
         .ok_or_else(|| anyhow::anyhow!("missing trace after second run"))?;
     print_trace_summary("after second run", &final_trace);
+
+    // Third run (compensation demo): fault with irreversible side-effect compensation hook.
+    let compensation_trace_id = "order-2001";
+    let mut bus3 = Bus::new();
+    bus3.insert(handle);
+    bus3.insert(PersistenceTraceId::new(compensation_trace_id));
+    bus3.insert(CompensationHandle::from_hook(RefundPaymentCompensation));
+
+    let compensation_input = OrderFlowState {
+        order_id: "2001".to_string(),
+        validated: false,
+        should_fail_payment: true,
+    };
+    let compensation_outcome = axon.execute(compensation_input, &(), &mut bus3).await;
+    println!("third run (compensation) outcome: {:?}", compensation_outcome);
+
+    let compensation_trace = store_impl
+        .load(compensation_trace_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("missing trace after compensation run"))?;
+    print_trace_summary("after compensation run", &compensation_trace);
 
     Ok(())
 }

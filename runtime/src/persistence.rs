@@ -89,6 +89,65 @@ impl PersistenceTraceId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PersistenceAutoComplete(pub bool);
 
+/// Runtime context delivered to compensation hooks.
+///
+/// The context is intentionally compact so hooks can map it to idempotent
+/// compensating actions in domain/infrastructure layers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompensationContext {
+    pub trace_id: String,
+    pub circuit: String,
+    pub fault_kind: String,
+    pub fault_step: u64,
+    pub timestamp_ms: u64,
+}
+
+/// Controls whether compensation hooks should run automatically on `Fault`.
+///
+/// Default runtime behavior when this resource is absent: `true`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompensationAutoTrigger(pub bool);
+
+/// Compensation hook contract for irreversible side effects.
+#[async_trait]
+pub trait CompensationHook: Send + Sync {
+    async fn compensate(&self, context: CompensationContext) -> Result<()>;
+}
+
+/// Bus-insertable compensation hook handle used by runtime execution hooks.
+#[derive(Clone)]
+pub struct CompensationHandle {
+    inner: Arc<dyn CompensationHook>,
+}
+
+impl std::fmt::Debug for CompensationHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompensationHandle").finish_non_exhaustive()
+    }
+}
+
+impl CompensationHandle {
+    /// Create a handle from a concrete compensation hook implementation.
+    pub fn from_hook<H>(hook: H) -> Self
+    where
+        H: CompensationHook + 'static,
+    {
+        Self {
+            inner: Arc::new(hook),
+        }
+    }
+
+    /// Create a handle from an existing trait-object Arc.
+    pub fn from_arc(hook: Arc<dyn CompensationHook>) -> Self {
+        Self { inner: hook }
+    }
+
+    /// Access the shared compensation hook.
+    pub fn hook(&self) -> Arc<dyn CompensationHook> {
+        self.inner.clone()
+    }
+}
+
 /// Persistence abstraction draft for long-running workflow recovery.
 ///
 /// This is intentionally minimal and marked experimental while M148 is active.

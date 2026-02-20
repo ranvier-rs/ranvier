@@ -17,8 +17,8 @@ use ranvier_core::schematic::{Edge, EdgeType, Node, NodeKind, Schematic, SourceL
 use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_core::transition::Transition;
 use crate::persistence::{
-    CompletionState, PersistenceAutoComplete, PersistenceEnvelope, PersistenceHandle,
-    PersistenceTraceId,
+    CompletionState, CompensationAutoTrigger, CompensationContext, CompensationHandle,
+    PersistenceAutoComplete, PersistenceEnvelope, PersistenceHandle, PersistenceTraceId,
 };
 use std::any::type_name;
 use std::ffi::OsString;
@@ -311,6 +311,7 @@ where
         let trace_id = persistence_trace_id(bus);
         let label = self.schematic.name.clone();
         let persistence_handle = bus.read::<PersistenceHandle>().cloned();
+        let compensation_handle = bus.read::<CompensationHandle>().cloned();
         let persistence_start_step = if let Some(handle) = persistence_handle.as_ref() {
             let start_step = next_persistence_step(handle, &trace_id).await;
             persist_execution_event(handle, &trace_id, &label, start_step, "Enter").await;
@@ -366,18 +367,44 @@ where
         }
 
         if let Some(handle) = persistence_handle.as_ref() {
-            let finish_step = persistence_start_step.map(|s| s + 1).unwrap_or(1);
+            let fault_step = persistence_start_step.map(|s| s + 1).unwrap_or(1);
             persist_execution_event(
                 handle,
                 &trace_id,
                 &label,
-                finish_step,
+                fault_step,
                 outcome_kind_name(&outcome),
             )
             .await;
 
+            let mut completion = completion_from_outcome(&outcome);
+            if matches!(outcome, Outcome::Fault(_))
+                && let Some(compensation) = compensation_handle.as_ref()
+                && compensation_auto_trigger(bus)
+            {
+                let context = CompensationContext {
+                    trace_id: trace_id.clone(),
+                    circuit: label.clone(),
+                    fault_kind: outcome_kind_name(&outcome).to_string(),
+                    fault_step,
+                    timestamp_ms: now_ms(),
+                };
+
+                if run_compensation(compensation, context).await {
+                    persist_execution_event(
+                        handle,
+                        &trace_id,
+                        &label,
+                        fault_step.saturating_add(1),
+                        "Compensated",
+                    )
+                    .await;
+                    completion = CompletionState::Compensated;
+                }
+            }
+
             if persistence_auto_complete(bus) {
-                persist_completion(handle, &trace_id, completion_from_outcome(&outcome)).await;
+                persist_completion(handle, &trace_id, completion).await;
             }
         }
 
@@ -623,6 +650,12 @@ fn persistence_auto_complete(bus: &Bus) -> bool {
         .unwrap_or(true)
 }
 
+fn compensation_auto_trigger(bus: &Bus) -> bool {
+    bus.read::<CompensationAutoTrigger>()
+        .map(|v| v.0)
+        .unwrap_or(true)
+}
+
 async fn next_persistence_step(handle: &PersistenceHandle, trace_id: &str) -> u64 {
     let store = handle.store();
     match store.load(trace_id).await {
@@ -680,6 +713,24 @@ async fn persist_completion(handle: &PersistenceHandle, trace_id: &str, completi
             error = %err,
             "Failed to complete persistence trace"
         );
+    }
+}
+
+async fn run_compensation(handle: &CompensationHandle, context: CompensationContext) -> bool {
+    let hook = handle.hook();
+    match hook.compensate(context.clone()).await {
+        Ok(()) => true,
+        Err(err) => {
+            tracing::warn!(
+                trace_id = %context.trace_id,
+                circuit = %context.circuit,
+                fault_kind = %context.fault_kind,
+                fault_step = context.fault_step,
+                error = %err,
+                "Compensation hook failed"
+            );
+            false
+        }
     }
 }
 
@@ -957,12 +1008,15 @@ fn now_ms() -> u64 {
 mod tests {
     use super::{sampled_by_bus_id, should_force_export, Axon};
     use crate::persistence::{
-        CompletionState, InMemoryPersistenceStore, PersistenceAutoComplete, PersistenceHandle,
-        PersistenceStore, PersistenceTraceId,
+        CompletionState, CompensationContext, CompensationHandle, CompensationHook,
+        InMemoryPersistenceStore, PersistenceAutoComplete, PersistenceHandle, PersistenceStore,
+        PersistenceTraceId,
     };
+    use anyhow::Result;
     use async_trait::async_trait;
     use ranvier_core::{Bus, Outcome, Transition};
     use std::sync::Arc;
+    use tokio::sync::Mutex;
     use uuid::Uuid;
 
     #[test]
@@ -1040,6 +1094,23 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct RecordingCompensationHook {
+        calls: Arc<Mutex<Vec<CompensationContext>>>,
+        should_fail: bool,
+    }
+
+    #[async_trait]
+    impl CompensationHook for RecordingCompensationHook {
+        async fn compensate(&self, context: CompensationContext) -> Result<()> {
+            self.calls.lock().await.push(context);
+            if self.should_fail {
+                return Err(anyhow::anyhow!("compensation failed"));
+            }
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn execute_persists_success_trace_when_handle_exists() {
         let store_impl = Arc::new(InMemoryPersistenceStore::new());
@@ -1098,5 +1169,69 @@ mod tests {
         let persisted = store_impl.load("trace-no-complete").await.unwrap().unwrap();
         assert_eq!(persisted.events.len(), 2);
         assert_eq!(persisted.completion, None);
+    }
+
+    #[tokio::test]
+    async fn fault_triggers_compensation_and_marks_compensated() {
+        let store_impl = Arc::new(InMemoryPersistenceStore::new());
+        let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let compensation = RecordingCompensationHook {
+            calls: calls.clone(),
+            should_fail: false,
+        };
+
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(store_dyn));
+        bus.insert(PersistenceTraceId::new("trace-compensated"));
+        bus.insert(CompensationHandle::from_hook(compensation));
+
+        let axon = Axon::<i32, i32, &'static str>::start("CompensatedFault").then(AlwaysFault);
+        let outcome = axon.execute(7, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Fault("boom")));
+
+        let persisted = store_impl.load("trace-compensated").await.unwrap().unwrap();
+        assert_eq!(persisted.events.len(), 3);
+        assert_eq!(persisted.events[0].outcome_kind, "Enter");
+        assert_eq!(persisted.events[1].outcome_kind, "Fault");
+        assert_eq!(persisted.events[2].outcome_kind, "Compensated");
+        assert_eq!(persisted.completion, Some(CompletionState::Compensated));
+
+        let recorded = calls.lock().await;
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].trace_id, "trace-compensated");
+        assert_eq!(recorded[0].fault_kind, "Fault");
+    }
+
+    #[tokio::test]
+    async fn failed_compensation_keeps_fault_completion() {
+        let store_impl = Arc::new(InMemoryPersistenceStore::new());
+        let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let compensation = RecordingCompensationHook {
+            calls: calls.clone(),
+            should_fail: true,
+        };
+
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(store_dyn));
+        bus.insert(PersistenceTraceId::new("trace-compensation-failed"));
+        bus.insert(CompensationHandle::from_hook(compensation));
+
+        let axon = Axon::<i32, i32, &'static str>::start("CompensationFails").then(AlwaysFault);
+        let outcome = axon.execute(7, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Fault("boom")));
+
+        let persisted = store_impl
+            .load("trace-compensation-failed")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.events.len(), 2);
+        assert_eq!(persisted.events[1].outcome_kind, "Fault");
+        assert_eq!(persisted.completion, Some(CompletionState::Fault));
+
+        let recorded = calls.lock().await;
+        assert_eq!(recorded.len(), 1);
     }
 }
