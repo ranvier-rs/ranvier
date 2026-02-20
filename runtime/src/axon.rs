@@ -106,10 +106,7 @@ where
         Self::start_with_source(label, caller)
     }
 
-    fn start_with_source(
-        label: &str,
-        caller: &'static Location<'static>,
-    ) -> Self {
+    fn start_with_source(label: &str, caller: &'static Location<'static>) -> Self {
         let node_id = uuid::Uuid::new_v4().to_string();
         let node = Node {
             id: node_id,
@@ -223,15 +220,23 @@ where
                         });
                     }
 
+                    let node_span = tracing::info_span!(
+                        "Node",
+                        ranvier.node = %label,
+                        ranvier.resource_type = %res_type,
+                        ranvier.outcome_kind = tracing::field::Empty,
+                        ranvier.outcome_target = tracing::field::Empty
+                    );
                     let started = std::time::Instant::now();
                     let result = trans
                         .run(state, res, bus)
-                        .instrument(tracing::info_span!(
-                            "Node",
-                            ranvier.node = %label,
-                            ranvier.resource_type = %res_type
-                        ))
+                        .instrument(node_span.clone())
                         .await;
+                    node_span.record("ranvier.outcome_kind", outcome_kind_name(&result));
+                    if let Some(target) = outcome_target(&result) {
+                        node_span
+                            .record("ranvier.outcome_target", tracing::field::display(&target));
+                    }
                     let duration_ms = started.elapsed().as_millis() as u64;
                     let exit_ts = now_ms();
 
@@ -309,7 +314,7 @@ where
         let ingress_enter_ts = now_ms();
         if should_capture
             && let (Some(timeline), Some(ingress)) =
-            (bus.read_mut::<Timeline>(), self.schematic.nodes.first())
+                (bus.read_mut::<Timeline>(), self.schematic.nodes.first())
         {
             timeline.push(TimelineEvent::NodeEnter {
                 node_id: ingress.id.clone(),
@@ -319,14 +324,24 @@ where
         }
 
         let label = self.schematic.name.clone();
+        let circuit_span = tracing::info_span!(
+            "Circuit",
+            ranvier.circuit = %label,
+            ranvier.outcome_kind = tracing::field::Empty,
+            ranvier.outcome_target = tracing::field::Empty
+        );
         let outcome = (self.executor)(input, resources, bus)
-            .instrument(tracing::info_span!("Circuit", ranvier.circuit = %label))
+            .instrument(circuit_span.clone())
             .await;
+        circuit_span.record("ranvier.outcome_kind", outcome_kind_name(&outcome));
+        if let Some(target) = outcome_target(&outcome) {
+            circuit_span.record("ranvier.outcome_target", tracing::field::display(&target));
+        }
 
         let ingress_exit_ts = now_ms();
         if should_capture
             && let (Some(timeline), Some(ingress)) =
-            (bus.read_mut::<Timeline>(), self.schematic.nodes.first())
+                (bus.read_mut::<Timeline>(), self.schematic.nodes.first())
         {
             timeline.push(TimelineEvent::NodeExit {
                 node_id: ingress.id.clone(),
@@ -404,9 +419,7 @@ where
     /// }
     /// // Normal runtime path...
     /// ```
-    pub fn maybe_export_and_exit(
-        &self,
-    ) -> anyhow::Result<bool> {
+    pub fn maybe_export_and_exit(&self) -> anyhow::Result<bool> {
         self.maybe_export_and_exit_with(|_| ())
     }
 
@@ -414,10 +427,7 @@ where
     ///
     /// This is useful when your app has custom loop/bootstrap behavior and you want
     /// to skip or cleanup that logic in schematic mode.
-    pub fn maybe_export_and_exit_with<F>(
-        &self,
-        on_before_exit: F,
-    ) -> anyhow::Result<bool>
+    pub fn maybe_export_and_exit_with<F>(&self, on_before_exit: F) -> anyhow::Result<bool>
     where
         F: FnOnce(&SchematicExportRequest),
     {
@@ -430,10 +440,7 @@ where
     }
 
     /// Export schematic according to the provided request.
-    pub fn export_schematic(
-        &self,
-        request: &SchematicExportRequest,
-    ) -> anyhow::Result<()> {
+    pub fn export_schematic(&self, request: &SchematicExportRequest) -> anyhow::Result<()> {
         let json = serde_json::to_string_pretty(self.schematic())?;
         if let Some(path) = &request.output {
             if let Some(parent) = path.parent() {
@@ -542,6 +549,25 @@ fn outcome_type_name<Out, E>(outcome: &Outcome<Out, E>) -> String {
         Outcome::Jump(id, _) => format!("Jump:{}", id),
         Outcome::Emit(event_type, _) => format!("Emit:{}", event_type),
         Outcome::Fault(_) => "Fault".to_string(),
+    }
+}
+
+fn outcome_kind_name<Out, E>(outcome: &Outcome<Out, E>) -> &'static str {
+    match outcome {
+        Outcome::Next(_) => "Next",
+        Outcome::Branch(_, _) => "Branch",
+        Outcome::Jump(_, _) => "Jump",
+        Outcome::Emit(_, _) => "Emit",
+        Outcome::Fault(_) => "Fault",
+    }
+}
+
+fn outcome_target<Out, E>(outcome: &Outcome<Out, E>) -> Option<String> {
+    match outcome {
+        Outcome::Branch(branch_id, _) => Some(branch_id.clone()),
+        Outcome::Jump(node_id, _) => Some(node_id.to_string()),
+        Outcome::Emit(event_type, _) => Some(event_type.clone()),
+        Outcome::Next(_) | Outcome::Fault(_) => None,
     }
 }
 
@@ -690,7 +716,11 @@ fn timeline_stats_output_path() -> Option<String> {
         .filter(|v| !v.trim().is_empty())
 }
 
-fn write_timeline_with_policy(path: &str, mode: &str, mut timeline: Timeline) -> Result<(), String> {
+fn write_timeline_with_policy(
+    path: &str,
+    mode: &str,
+    mut timeline: Timeline,
+) -> Result<(), String> {
     match mode {
         "append" => {
             if Path::new(path).exists() {
@@ -744,10 +774,7 @@ fn write_timeline_json(path: &str, timeline: &Timeline) -> Result<(), String> {
 fn rotated_path(path: &str, suffix: u64) -> PathBuf {
     let p = Path::new(path);
     let parent = p.parent().unwrap_or_else(|| Path::new(""));
-    let stem = p
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("timeline");
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("timeline");
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("json");
     parent.join(format!("{}_{}.{}", stem, suffix, ext))
 }
@@ -777,10 +804,7 @@ fn truncate_timeline_events(timeline: &mut Timeline, max_events: usize) {
 fn cleanup_rotated_files(base_path: &str, keep: usize) -> Result<(), String> {
     let p = Path::new(base_path);
     let parent = p.parent().unwrap_or_else(|| Path::new("."));
-    let stem = p
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("timeline");
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("timeline");
     let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("json");
     let prefix = format!("{}_", stem);
     let suffix = format!(".{}", ext);
