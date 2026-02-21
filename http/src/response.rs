@@ -10,6 +10,15 @@ pub trait IntoResponse {
     fn into_response(self) -> HttpResponse;
 }
 
+pub fn json_error_response(status: StatusCode, message: impl Into<String>) -> HttpResponse {
+    let payload = serde_json::json!({ "error": message.into() });
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "application/json")
+        .body(Full::new(Bytes::from(payload.to_string())))
+        .expect("response builder should be infallible")
+}
+
 impl IntoResponse for HttpResponse {
     fn into_response(self) -> HttpResponse {
         self
@@ -100,13 +109,26 @@ where
     Out: IntoResponse,
     E: std::fmt::Debug,
 {
-    match outcome {
-        Outcome::Next(output) => output.into_response(),
-        Outcome::Fault(error) => (
+    outcome_to_response_with_error(outcome, |error| {
+        (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Error: {:?}", error),
         )
-            .into_response(),
+            .into_response()
+    })
+}
+
+pub fn outcome_to_response_with_error<Out, E, F>(
+    outcome: Outcome<Out, E>,
+    on_fault: F,
+) -> HttpResponse
+where
+    Out: IntoResponse,
+    F: FnOnce(&E) -> HttpResponse,
+{
+    match outcome {
+        Outcome::Next(output) => output.into_response(),
+        Outcome::Fault(error) => on_fault(&error),
         _ => "OK".into_response(),
     }
 }
@@ -132,5 +154,18 @@ mod tests {
     fn outcome_fault_maps_to_internal_server_error() {
         let response = outcome_to_response::<String, &str>(Outcome::Fault("boom"));
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn json_error_response_sets_json_content_type() {
+        let response = json_error_response(StatusCode::UNAUTHORIZED, "forbidden");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
     }
 }

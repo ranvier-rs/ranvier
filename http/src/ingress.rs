@@ -32,7 +32,7 @@ use tokio::net::TcpListener;
 use tower::Service;
 use tracing::Instrument;
 
-use crate::response::{IntoResponse, outcome_to_response};
+use crate::response::{IntoResponse, outcome_to_response_with_error};
 
 /// The Ranvier Framework entry point.
 ///
@@ -244,7 +244,7 @@ where
     ///     .route_method(Method::POST, "/users", create_user_circuit)
     /// ```
     pub fn route_method<Out, E>(
-        mut self,
+        self,
         method: Method,
         path: impl Into<String>,
         circuit: Axon<(), Out, E, R>,
@@ -253,8 +253,30 @@ where
         Out: IntoResponse + Send + Sync + 'static,
         E: Send + 'static + std::fmt::Debug,
     {
+        self.route_method_with_error(method, path, circuit, |error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Error: {:?}", error),
+            )
+                .into_response()
+        })
+    }
+
+    pub fn route_method_with_error<Out, E, H>(
+        mut self,
+        method: Method,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        error_handler: H,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+        H: Fn(&E) -> Response<Full<Bytes>> + Send + Sync + 'static,
+    {
         let path_str: String = path.into();
         let circuit = Arc::new(circuit);
+        let error_handler = Arc::new(error_handler);
         let path_for_pattern = path_str.clone();
         let path_for_handler = path_str;
         let method_for_pattern = method.clone();
@@ -262,6 +284,7 @@ where
 
         let handler: RouteHandler<R> = Arc::new(move |_req: Request<Incoming>, res: &R| {
             let circuit = circuit.clone();
+            let error_handler = error_handler.clone();
             let res = res.clone();
             let path = path_for_handler.clone();
             let method = method_for_handler.clone();
@@ -278,7 +301,7 @@ where
                 async move {
                     let mut bus = Bus::new();
                     let result = circuit.execute((), &res, &mut bus).await;
-                    outcome_to_response(result)
+                    outcome_to_response_with_error(result, |error| error_handler(error))
                 }
                 .instrument(span)
                 .await
@@ -299,6 +322,20 @@ where
         E: Send + 'static + std::fmt::Debug,
     {
         self.route_method(Method::GET, path, circuit)
+    }
+
+    pub fn get_with_error<Out, E, H>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        error_handler: H,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+        H: Fn(&E) -> Response<Full<Bytes>> + Send + Sync + 'static,
+    {
+        self.route_method_with_error(Method::GET, path, circuit, error_handler)
     }
 
     pub fn post<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self

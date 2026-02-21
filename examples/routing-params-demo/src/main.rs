@@ -30,6 +30,13 @@ struct CreateOrder {
     qty: u32,
 }
 
+#[derive(Debug)]
+enum DemoRouteError {
+    Unauthorized,
+    Missing,
+    Internal,
+}
+
 #[transition]
 async fn order_route(
     _state: (),
@@ -67,6 +74,57 @@ fn asset_circuit() -> Axon<(), String, anyhow::Error> {
 
 fn fallback_circuit() -> Axon<(), String, anyhow::Error> {
     Axon::<(), (), anyhow::Error>::new("FallbackRoute").then(not_found_route)
+}
+
+#[transition]
+async fn unauthorized_route(
+    _state: (),
+    _resources: &(),
+    _bus: &mut Bus,
+) -> Outcome<String, DemoRouteError> {
+    Outcome::Fault(DemoRouteError::Unauthorized)
+}
+
+#[transition]
+async fn missing_route(
+    _state: (),
+    _resources: &(),
+    _bus: &mut Bus,
+) -> Outcome<String, DemoRouteError> {
+    Outcome::Fault(DemoRouteError::Missing)
+}
+
+#[transition]
+async fn internal_route(
+    _state: (),
+    _resources: &(),
+    _bus: &mut Bus,
+) -> Outcome<String, DemoRouteError> {
+    Outcome::Fault(DemoRouteError::Internal)
+}
+
+fn unauthorized_circuit() -> Axon<(), String, DemoRouteError> {
+    Axon::<(), (), DemoRouteError>::new("UnauthorizedRoute").then(unauthorized_route)
+}
+
+fn missing_circuit() -> Axon<(), String, DemoRouteError> {
+    Axon::<(), (), DemoRouteError>::new("MissingRoute").then(missing_route)
+}
+
+fn internal_circuit() -> Axon<(), String, DemoRouteError> {
+    Axon::<(), (), DemoRouteError>::new("InternalRoute").then(internal_route)
+}
+
+fn custom_error_response(error: &DemoRouteError) -> HttpResponse {
+    match error {
+        DemoRouteError::Unauthorized => {
+            json_error_response(http::StatusCode::UNAUTHORIZED, "unauthorized")
+        }
+        DemoRouteError::Missing => json_error_response(http::StatusCode::NOT_FOUND, "not_found"),
+        DemoRouteError::Internal => {
+            json_error_response(http::StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+        }
+    }
 }
 
 async fn wait_for_server(addr: &str) -> Result<()> {
@@ -175,10 +233,47 @@ async fn demo_extractors() -> Result<()> {
     Ok(())
 }
 
+async fn demo_custom_error_mapping() -> Result<()> {
+    let probe = StdTcpListener::bind("127.0.0.1:0").context("bind probe listener")?;
+    let addr = probe.local_addr().context("resolve probe local addr")?;
+    drop(probe);
+    let addr_text = addr.to_string();
+
+    let ingress = Ranvier::http()
+        .bind(addr_text.clone())
+        .get_with_error("/secure", unauthorized_circuit(), custom_error_response)
+        .get_with_error("/missing", missing_circuit(), custom_error_response)
+        .get_with_error("/explode", internal_circuit(), custom_error_response);
+
+    let server = tokio::spawn(async move {
+        let _ = ingress.run(()).await;
+    });
+
+    wait_for_server(&addr_text).await?;
+
+    let (unauthorized_status, unauthorized_body) = send_http_get(&addr_text, "/secure").await?;
+    let (missing_status, missing_body) = send_http_get(&addr_text, "/missing").await?;
+    let (internal_status, internal_body) = send_http_get(&addr_text, "/explode").await?;
+
+    assert_eq!(unauthorized_status, 401);
+    assert!(unauthorized_body.contains("\"error\":\"unauthorized\""));
+    assert_eq!(missing_status, 404);
+    assert!(missing_body.contains("\"error\":\"not_found\""));
+    assert_eq!(internal_status, 500);
+    assert!(internal_body.contains("\"error\":\"internal_error\""));
+
+    server.abort();
+    let _ = server.await;
+
+    println!("Custom error mapping OK: 401/404/500 JSON responses");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     demo_dynamic_routes().await?;
     demo_extractors().await?;
+    demo_custom_error_mapping().await?;
     println!("routing-params-demo complete.");
     Ok(())
 }
