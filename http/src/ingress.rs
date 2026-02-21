@@ -22,6 +22,7 @@ use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
@@ -62,7 +63,49 @@ type RouteHandler<R> = Arc<
 type BoxHttpService = BoxCloneService<Request<Incoming>, Response<Full<Bytes>>, Infallible>;
 type ServiceLayer = Arc<dyn Fn(BoxHttpService) -> BoxHttpService + Send + Sync>;
 type LifecycleHook = Arc<dyn Fn() + Send + Sync>;
+type HealthCheckFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
+type HealthCheckFn<R> = Arc<dyn Fn(Arc<R>) -> HealthCheckFuture + Send + Sync>;
 const REQUEST_ID_HEADER: &str = "x-request-id";
+
+#[derive(Clone)]
+struct NamedHealthCheck<R> {
+    name: String,
+    check: HealthCheckFn<R>,
+}
+
+#[derive(Clone)]
+struct HealthConfig<R> {
+    health_path: Option<String>,
+    readiness_path: Option<String>,
+    liveness_path: Option<String>,
+    checks: Vec<NamedHealthCheck<R>>,
+}
+
+impl<R> Default for HealthConfig<R> {
+    fn default() -> Self {
+        Self {
+            health_path: None,
+            readiness_path: None,
+            liveness_path: None,
+            checks: Vec::new(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct HealthReport {
+    status: &'static str,
+    probe: &'static str,
+    checks: Vec<HealthCheckReport>,
+}
+
+#[derive(Serialize)]
+struct HealthCheckReport {
+    name: String,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
 
 #[derive(Clone)]
 struct TimeoutService {
@@ -131,9 +174,7 @@ impl Service<Request<Incoming>> for RequestIdService {
         let fut = self.inner.call(req);
         Box::pin(async move {
             let mut response = fut.await?;
-            response
-                .headers_mut()
-                .insert(REQUEST_ID_HEADER, request_id);
+            response.headers_mut().insert(REQUEST_ID_HEADER, request_id);
             Ok(response)
         })
     }
@@ -142,11 +183,10 @@ impl Service<Request<Incoming>> for RequestIdService {
 fn to_service_layer<L>(layer: L) -> ServiceLayer
 where
     L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-    L::Service:
-        Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
-            + Clone
-            + Send
-            + 'static,
+    L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
     <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
 {
     Arc::new(move |service: BoxHttpService| BoxCloneService::new(layer.clone().layer(service)))
@@ -273,6 +313,17 @@ fn path_segments(path: &str) -> Vec<&str> {
         .collect()
 }
 
+fn normalize_route_path(path: String) -> String {
+    if path.is_empty() {
+        return "/".to_string();
+    }
+    if path.starts_with('/') {
+        path
+    } else {
+        format!("/{path}")
+    }
+}
+
 fn find_matching_route<'a, R>(
     routes: &'a [RouteEntry<R>],
     method: &Method,
@@ -309,6 +360,8 @@ pub struct HttpIngress<R = ()> {
     on_shutdown: Option<LifecycleHook>,
     /// Maximum time to wait for in-flight requests to drain.
     graceful_shutdown_timeout: Duration,
+    /// Built-in health endpoint configuration.
+    health: HealthConfig<R>,
     _phantom: std::marker::PhantomData<R>,
 }
 
@@ -326,6 +379,7 @@ where
             on_start: None,
             on_shutdown: None,
             graceful_shutdown_timeout: Duration::from_secs(30),
+            health: HealthConfig::default(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -367,11 +421,10 @@ where
     pub fn layer<L>(mut self, layer: L) -> Self
     where
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-        L::Service:
-            Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
-                + Clone
-                + Send
-                + 'static,
+        L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+            + Clone
+            + Send
+            + 'static,
         <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
     {
         self.layers.push(to_service_layer(layer));
@@ -398,6 +451,56 @@ where
             BoxCloneService::new(RequestIdService { inner: service })
         }));
         self
+    }
+
+    /// Enable built-in health endpoint at the given path.
+    ///
+    /// The endpoint returns JSON with status and check results.
+    /// If no checks are registered, status is always `ok`.
+    pub fn health_endpoint(mut self, path: impl Into<String>) -> Self {
+        self.health.health_path = Some(normalize_route_path(path.into()));
+        self
+    }
+
+    /// Register an async health check used by `/health` and `/ready` probes.
+    ///
+    /// `Err` values are converted to strings and surfaced in the JSON response.
+    pub fn health_check<F, Fut, Err>(mut self, name: impl Into<String>, check: F) -> Self
+    where
+        F: Fn(Arc<R>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), Err>> + Send + 'static,
+        Err: ToString + Send + 'static,
+    {
+        if self.health.health_path.is_none() {
+            self.health.health_path = Some("/health".to_string());
+        }
+
+        let check_fn: HealthCheckFn<R> = Arc::new(move |resources: Arc<R>| {
+            let fut = check(resources);
+            Box::pin(async move { fut.await.map_err(|error| error.to_string()) })
+        });
+
+        self.health.checks.push(NamedHealthCheck {
+            name: name.into(),
+            check: check_fn,
+        });
+        self
+    }
+
+    /// Enable readiness/liveness probe separation with explicit paths.
+    pub fn readiness_liveness(
+        mut self,
+        readiness_path: impl Into<String>,
+        liveness_path: impl Into<String>,
+    ) -> Self {
+        self.health.readiness_path = Some(normalize_route_path(readiness_path.into()));
+        self.health.liveness_path = Some(normalize_route_path(liveness_path.into()));
+        self
+    }
+
+    /// Enable readiness/liveness probes at `/ready` and `/live`.
+    pub fn readiness_liveness_default(self) -> Self {
+        self.readiness_liveness("/ready", "/live")
     }
 
     /// Register a route with GET method.
@@ -468,11 +571,10 @@ where
         Out: IntoResponse + Send + Sync + 'static,
         E: Send + 'static + std::fmt::Debug,
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-        L::Service:
-            Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
-                + Clone
-                + Send
-                + 'static,
+        L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+            + Clone
+            + Send
+            + 'static,
         <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
     {
         self.route_method_with_error_and_layers(
@@ -502,11 +604,10 @@ where
         Out: IntoResponse + Send + Sync + 'static,
         E: Send + 'static + std::fmt::Debug,
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-        L::Service:
-            Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
-                + Clone
-                + Send
-                + 'static,
+        L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+            + Clone
+            + Send
+            + 'static,
         <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
     {
         self.route_method_with_error_and_layers(
@@ -615,11 +716,10 @@ where
         Out: IntoResponse + Send + Sync + 'static,
         E: Send + 'static + std::fmt::Debug,
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-        L::Service:
-            Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
-                + Clone
-                + Send
-                + 'static,
+        L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+            + Clone
+            + Send
+            + 'static,
         <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
     {
         self.route_method_with_layer(Method::GET, path, circuit, layer)
@@ -635,11 +735,10 @@ where
         Out: IntoResponse + Send + Sync + 'static,
         E: Send + 'static + std::fmt::Debug,
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-        L::Service:
-            Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
-                + Clone
-                + Send
-                + 'static,
+        L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+            + Clone
+            + Send
+            + 'static,
         <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
     {
         self.route_method_with_layer_override(Method::GET, path, circuit, layer)
@@ -732,7 +831,8 @@ where
 
     /// Run the HTTP server with required resources.
     pub async fn run(self, resources: R) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.run_with_shutdown_signal(resources, shutdown_signal()).await
+        self.run_with_shutdown_signal(resources, shutdown_signal())
+            .await
     }
 
     async fn run_with_shutdown_signal<S>(
@@ -749,6 +849,7 @@ where
         let routes = Arc::new(self.routes);
         let fallback = self.fallback;
         let layers = Arc::new(self.layers);
+        let health = Arc::new(self.health);
         let on_start = self.on_start;
         let on_shutdown = self.on_shutdown;
         let graceful_shutdown_timeout = self.graceful_shutdown_timeout;
@@ -777,9 +878,11 @@ where
                     let fallback = fallback.clone();
                     let resources = resources.clone();
                     let layers = layers.clone();
+                    let health = health.clone();
 
                     connections.spawn(async move {
-                        let service = build_http_service(routes, fallback, resources, layers);
+                        let service =
+                            build_http_service(routes, fallback, resources, layers, health);
                         let hyper_service = TowerToHyperService::new(service);
                         if let Err(err) = http1::Builder::new()
                             .serve_connection(io, hyper_service)
@@ -826,12 +929,14 @@ where
         let routes = Arc::new(self.routes);
         let fallback = self.fallback;
         let layers = Arc::new(self.layers);
+        let health = Arc::new(self.health);
         let resources = Arc::new(resources);
 
         RawIngressService {
             routes,
             fallback,
             layers,
+            health,
             resources,
         }
     }
@@ -842,6 +947,7 @@ fn build_http_service<R>(
     fallback: Option<RouteHandler<R>>,
     resources: Arc<R>,
     layers: Arc<Vec<ServiceLayer>>,
+    health: Arc<HealthConfig<R>>,
 ) -> BoxHttpService
 where
     R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
@@ -851,11 +957,18 @@ where
         let fallback = fallback.clone();
         let resources = resources.clone();
         let layers = layers.clone();
+        let health = health.clone();
 
         async move {
             let mut req = req;
             let method = req.method().clone();
             let path = req.uri().path().to_string();
+
+            if let Some(response) =
+                maybe_handle_health_request(&method, &path, &health, resources.clone()).await
+            {
+                return Ok::<_, Infallible>(response);
+            }
 
             if let Some((entry, params)) = find_matching_route(routes.as_slice(), &method, &path) {
                 req.extensions_mut().insert(params);
@@ -931,6 +1044,100 @@ fn merge_layers(
     combined.extend(global_layers.iter().cloned());
     combined.extend(route_layers.iter().cloned());
     Arc::new(combined)
+}
+
+async fn maybe_handle_health_request<R>(
+    method: &Method,
+    path: &str,
+    health: &HealthConfig<R>,
+    resources: Arc<R>,
+) -> Option<Response<Full<Bytes>>>
+where
+    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+{
+    if method != Method::GET {
+        return None;
+    }
+
+    if let Some(liveness_path) = health.liveness_path.as_ref() {
+        if path == liveness_path {
+            return Some(health_json_response("liveness", true, Vec::new()));
+        }
+    }
+
+    if let Some(readiness_path) = health.readiness_path.as_ref() {
+        if path == readiness_path {
+            let (healthy, checks) = run_named_health_checks(&health.checks, resources).await;
+            return Some(health_json_response("readiness", healthy, checks));
+        }
+    }
+
+    if let Some(health_path) = health.health_path.as_ref() {
+        if path == health_path {
+            let (healthy, checks) = run_named_health_checks(&health.checks, resources).await;
+            return Some(health_json_response("health", healthy, checks));
+        }
+    }
+
+    None
+}
+
+async fn run_named_health_checks<R>(
+    checks: &[NamedHealthCheck<R>],
+    resources: Arc<R>,
+) -> (bool, Vec<HealthCheckReport>)
+where
+    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+{
+    let mut reports = Vec::with_capacity(checks.len());
+    let mut healthy = true;
+
+    for check in checks {
+        match (check.check)(resources.clone()).await {
+            Ok(()) => reports.push(HealthCheckReport {
+                name: check.name.clone(),
+                status: "ok",
+                error: None,
+            }),
+            Err(error) => {
+                healthy = false;
+                reports.push(HealthCheckReport {
+                    name: check.name.clone(),
+                    status: "error",
+                    error: Some(error),
+                });
+            }
+        }
+    }
+
+    (healthy, reports)
+}
+
+fn health_json_response(
+    probe: &'static str,
+    healthy: bool,
+    checks: Vec<HealthCheckReport>,
+) -> Response<Full<Bytes>> {
+    let status_code = if healthy {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    let status = if healthy { "ok" } else { "degraded" };
+    let payload = HealthReport {
+        status,
+        probe,
+        checks,
+    };
+
+    let body = serde_json::to_vec(&payload)
+        .unwrap_or_else(|_| br#"{"status":"error","probe":"health"}"#.to_vec());
+
+    Response::builder()
+        .status(status_code)
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body(Full::new(Bytes::from(body)))
+        .unwrap()
 }
 
 async fn shutdown_signal() {
@@ -1011,6 +1218,7 @@ pub struct RawIngressService<R> {
     routes: Arc<Vec<RouteEntry<R>>>,
     fallback: Option<RouteHandler<R>>,
     layers: Arc<Vec<ServiceLayer>>,
+    health: Arc<HealthConfig<R>>,
     resources: Arc<R>,
 }
 
@@ -1033,10 +1241,11 @@ where
         let routes = self.routes.clone();
         let fallback = self.fallback.clone();
         let layers = self.layers.clone();
+        let health = self.health.clone();
         let resources = self.resources.clone();
 
         Box::pin(async move {
-            let service = build_http_service(routes, fallback, resources, layers);
+            let service = build_http_service(routes, fallback, resources, layers, health);
             service.oneshot(req).await
         })
     }
@@ -1044,10 +1253,26 @@ where
 
 #[cfg(test)]
 mod tests {
-    use async_trait::async_trait;
     use super::*;
+    use async_trait::async_trait;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn connect_with_retry(addr: std::net::SocketAddr) -> tokio::net::TcpStream {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+
+        loop {
+            match tokio::net::TcpStream::connect(addr).await {
+                Ok(stream) => return stream,
+                Err(error) => {
+                    if tokio::time::Instant::now() >= deadline {
+                        panic!("connect server: {error}");
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            }
+        }
+    }
 
     #[test]
     fn route_pattern_matches_static_path() {
@@ -1106,7 +1331,8 @@ mod tests {
 
     #[test]
     fn route_without_layer_keeps_empty_route_middleware_stack() {
-        let ingress = HttpIngress::<()>::new().get("/ping", Axon::<(), (), Infallible, ()>::new("Ping"));
+        let ingress =
+            HttpIngress::<()>::new().get("/ping", Axon::<(), (), Infallible, ()>::new("Ping"));
         assert_eq!(ingress.routes.len(), 1);
         assert!(ingress.routes[0].layers.is_empty());
         assert!(ingress.routes[0].apply_global_layers);
@@ -1229,7 +1455,10 @@ mod tests {
         let ingress = HttpIngress::<()>::new()
             .bind(addr.to_string())
             .timeout_layer(Duration::from_millis(10))
-            .get("/slow", Axon::<(), (), Infallible, ()>::new("Slow").then(SlowRoute));
+            .get(
+                "/slow",
+                Axon::<(), (), Infallible, ()>::new("Slow").then(SlowRoute),
+            );
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(async move {
@@ -1240,10 +1469,7 @@ mod tests {
                 .await
         });
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let mut stream = tokio::net::TcpStream::connect(addr)
-            .await
-            .expect("connect server");
+        let mut stream = connect_with_retry(addr).await;
         stream
             .write_all(b"GET /slow HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
             .await
@@ -1304,10 +1530,7 @@ mod tests {
                 .await
         });
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let mut stream = tokio::net::TcpStream::connect(addr)
-            .await
-            .expect("connect server");
+        let mut stream = connect_with_retry(addr).await;
         stream
             .write_all(b"GET /slow HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
             .await
@@ -1325,5 +1548,4 @@ mod tests {
             .expect("server join")
             .expect("server shutdown should succeed");
     }
-
 }
