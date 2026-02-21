@@ -139,6 +139,19 @@ impl Service<Request<Incoming>> for RequestIdService {
     }
 }
 
+fn to_service_layer<L>(layer: L) -> ServiceLayer
+where
+    L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
+    L::Service:
+        Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+            + Clone
+            + Send
+            + 'static,
+    <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
+{
+    Arc::new(move |service: BoxHttpService| BoxCloneService::new(layer.clone().layer(service)))
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PathParams {
     values: HashMap<String, String>,
@@ -245,6 +258,7 @@ struct RouteEntry<R> {
     method: Method,
     pattern: RoutePattern,
     handler: RouteHandler<R>,
+    layers: Arc<Vec<ServiceLayer>>,
 }
 
 fn path_segments(path: &str) -> Vec<&str> {
@@ -262,13 +276,13 @@ fn find_matching_route<'a, R>(
     routes: &'a [RouteEntry<R>],
     method: &Method,
     path: &str,
-) -> Option<(&'a RouteHandler<R>, PathParams)> {
+) -> Option<(&'a RouteEntry<R>, PathParams)> {
     for entry in routes {
         if &entry.method != method {
             continue;
         }
         if let Some(params) = entry.pattern.match_path(path) {
-            return Some((&entry.handler, params));
+            return Some((entry, params));
         }
     }
     None
@@ -359,10 +373,7 @@ where
                 + 'static,
         <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
     {
-        self.layers
-            .push(Arc::new(move |service: BoxHttpService| {
-                BoxCloneService::new(layer.clone().layer(service))
-            }));
+        self.layers.push(to_service_layer(layer));
         self
     }
 
@@ -424,11 +435,66 @@ where
     }
 
     pub fn route_method_with_error<Out, E, H>(
+        self,
+        method: Method,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        error_handler: H,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+        H: Fn(&E) -> Response<Full<Bytes>> + Send + Sync + 'static,
+    {
+        self.route_method_with_error_and_layers(
+            method,
+            path,
+            circuit,
+            error_handler,
+            Arc::new(Vec::new()),
+        )
+    }
+
+    pub fn route_method_with_layer<Out, E, L>(
+        self,
+        method: Method,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        layer: L,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+        L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
+        L::Service:
+            Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+                + Clone
+                + Send
+                + 'static,
+        <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
+    {
+        self.route_method_with_error_and_layers(
+            method,
+            path,
+            circuit,
+            |error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Error: {:?}", error),
+                )
+                    .into_response()
+            },
+            Arc::new(vec![to_service_layer(layer)]),
+        )
+    }
+
+    fn route_method_with_error_and_layers<Out, E, H>(
         mut self,
         method: Method,
         path: impl Into<String>,
         circuit: Axon<(), Out, E, R>,
         error_handler: H,
+        route_layers: Arc<Vec<ServiceLayer>>,
     ) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
@@ -473,6 +539,7 @@ where
             method: method_for_pattern,
             pattern: RoutePattern::parse(&path_for_pattern),
             handler,
+            layers: route_layers,
         });
         self
     }
@@ -497,6 +564,26 @@ where
         H: Fn(&E) -> Response<Full<Bytes>> + Send + Sync + 'static,
     {
         self.route_method_with_error(Method::GET, path, circuit, error_handler)
+    }
+
+    pub fn get_with_layer<Out, E, L>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        layer: L,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+        L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
+        L::Service:
+            Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+                + Clone
+                + Send
+                + 'static,
+        <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
+    {
+        self.route_method_with_layer(Method::GET, path, circuit, layer)
     }
 
     pub fn post<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
@@ -710,10 +797,18 @@ where
             let method = req.method().clone();
             let path = req.uri().path().to_string();
 
-            if let Some((handler, params)) = find_matching_route(routes.as_slice(), &method, &path)
-            {
+            if let Some((entry, params)) = find_matching_route(routes.as_slice(), &method, &path) {
                 req.extensions_mut().insert(params);
-                Ok::<_, Infallible>(handler(req, &resources).await)
+                if entry.layers.is_empty() {
+                    Ok::<_, Infallible>((entry.handler)(req, &resources).await)
+                } else {
+                    let route_service = build_route_service(
+                        entry.handler.clone(),
+                        resources.clone(),
+                        entry.layers.clone(),
+                    );
+                    route_service.oneshot(req).await
+                }
             } else if let Some(ref fb) = fallback {
                 Ok(fb(req, &resources).await)
             } else {
@@ -723,6 +818,27 @@ where
                     .unwrap())
             }
         }
+    });
+
+    let mut service = BoxCloneService::new(base_service);
+    for layer in layers.iter() {
+        service = layer(service);
+    }
+    service
+}
+
+fn build_route_service<R>(
+    handler: RouteHandler<R>,
+    resources: Arc<R>,
+    layers: Arc<Vec<ServiceLayer>>,
+) -> BoxHttpService
+where
+    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+{
+    let base_service = service_fn(move |req: Request<Incoming>| {
+        let handler = handler.clone();
+        let resources = resources.clone();
+        async move { Ok::<_, Infallible>(handler(req, &resources).await) }
     });
 
     let mut service = BoxCloneService::new(base_service);
@@ -899,6 +1015,24 @@ mod tests {
     fn layer_accepts_tower_http_cors_layer() {
         let ingress = HttpIngress::<()>::new().layer(tower_http::cors::CorsLayer::permissive());
         assert_eq!(ingress.layers.len(), 1);
+    }
+
+    #[test]
+    fn route_without_layer_keeps_empty_route_middleware_stack() {
+        let ingress = HttpIngress::<()>::new().get("/ping", Axon::<(), (), Infallible, ()>::new("Ping"));
+        assert_eq!(ingress.routes.len(), 1);
+        assert!(ingress.routes[0].layers.is_empty());
+    }
+
+    #[test]
+    fn route_with_layer_registers_route_middleware_stack() {
+        let ingress = HttpIngress::<()>::new().get_with_layer(
+            "/ping",
+            Axon::<(), (), Infallible, ()>::new("Ping"),
+            tower::layer::util::Identity::new(),
+        );
+        assert_eq!(ingress.routes.len(), 1);
+        assert_eq!(ingress.routes[0].layers.len(), 1);
     }
 
     #[test]
