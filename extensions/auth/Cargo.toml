@@ -1,0 +1,23 @@
+[package]
+name = "ranvier-auth"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+version.workspace = true
+edition.workspace = true
+description = "Authentication and authorization layers for Ranvier HTTP ingress"
+
+[dependencies]
+ranvier-core = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+tower = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+jsonwebtoken = "9"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -19,6 +19,7 @@ members = [
     "examples/synapse-demo",
     "examples/websocket-loop",
     "examples/order-processing-demo",
+    "examples/auth-jwt-role-demo",
     "examples/experimental/fullstack-demo",
     "examples/static-build-demo",
     "examples/db-example",
@@ -30,6 +31,7 @@ members = [
     "extensions/synapse",
     "extensions/db",
     "extensions/status",
+    "extensions/auth",
     "extensions/observe",
     "extensions/inspector",
     "examples/flat-api-demo",
@@ -53,6 +55,7 @@ ranvier-runtime = { path = "runtime", version = "0.1.2" }
 ranvier-http = { path = "http", version = "0.1.2" }
 ranvier-db = { path = "extensions/db", version = "0.1.0" }
 ranvier-status = { path = "extensions/status", version = "0.1.1" }
+ranvier-auth = { path = "extensions/auth", version = "0.1.2" }
 ranvier-observe = { path = "extensions/observe", version = "0.1.0" }
 ranvier-inspector = { path = "extensions/inspector", version = "0.1.2" }
 ranvier-std = { path = "std", version = "0.1.0" }

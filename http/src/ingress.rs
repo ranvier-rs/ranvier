@@ -63,6 +63,7 @@ type RouteHandler<R> = Arc<
 type BoxHttpService = BoxCloneService<Request<Incoming>, Response<Full<Bytes>>, Infallible>;
 type ServiceLayer = Arc<dyn Fn(BoxHttpService) -> BoxHttpService + Send + Sync>;
 type LifecycleHook = Arc<dyn Fn() + Send + Sync>;
+type BusInjector = Arc<dyn Fn(&Request<Incoming>, &mut Bus) + Send + Sync>;
 type HealthCheckFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 type HealthCheckFn<R> = Arc<dyn Fn(Arc<R>) -> HealthCheckFuture + Send + Sync>;
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -360,6 +361,8 @@ pub struct HttpIngress<R = ()> {
     on_shutdown: Option<LifecycleHook>,
     /// Maximum time to wait for in-flight requests to drain.
     graceful_shutdown_timeout: Duration,
+    /// Request-context to Bus injection hooks executed before each circuit run.
+    bus_injectors: Vec<BusInjector>,
     /// Built-in health endpoint configuration.
     health: HealthConfig<R>,
     _phantom: std::marker::PhantomData<R>,
@@ -379,6 +382,7 @@ where
             on_start: None,
             on_shutdown: None,
             graceful_shutdown_timeout: Duration::from_secs(30),
+            bus_injectors: Vec::new(),
             health: HealthConfig::default(),
             _phantom: std::marker::PhantomData,
         }
@@ -450,6 +454,18 @@ where
         self.layers.push(Arc::new(move |service: BoxHttpService| {
             BoxCloneService::new(RequestIdService { inner: service })
         }));
+        self
+    }
+
+    /// Register a request-context injector executed before each circuit run.
+    ///
+    /// Use this to bridge adapter-layer context (request extensions/headers)
+    /// into explicit Bus resources consumed by Transitions.
+    pub fn bus_injector<F>(mut self, injector: F) -> Self
+    where
+        F: Fn(&Request<Incoming>, &mut Bus) + Send + Sync + 'static,
+    {
+        self.bus_injectors.push(Arc::new(injector));
         self
     }
 
@@ -643,14 +659,16 @@ where
         let path_str: String = path.into();
         let circuit = Arc::new(circuit);
         let error_handler = Arc::new(error_handler);
+        let route_bus_injectors = Arc::new(self.bus_injectors.clone());
         let path_for_pattern = path_str.clone();
         let path_for_handler = path_str;
         let method_for_pattern = method.clone();
         let method_for_handler = method;
 
-        let handler: RouteHandler<R> = Arc::new(move |_req: Request<Incoming>, res: &R| {
+        let handler: RouteHandler<R> = Arc::new(move |req: Request<Incoming>, res: &R| {
             let circuit = circuit.clone();
             let error_handler = error_handler.clone();
+            let route_bus_injectors = route_bus_injectors.clone();
             let res = res.clone();
             let path = path_for_handler.clone();
             let method = method_for_handler.clone();
@@ -666,6 +684,9 @@ where
 
                 async move {
                     let mut bus = Bus::new();
+                    for injector in route_bus_injectors.iter() {
+                        injector(&req, &mut bus);
+                    }
                     let result = circuit.execute((), &res, &mut bus).await;
                     outcome_to_response_with_error(result, |error| error_handler(error))
                 }
@@ -792,9 +813,11 @@ where
         E: Send + 'static + std::fmt::Debug,
     {
         let circuit = Arc::new(circuit);
+        let fallback_bus_injectors = Arc::new(self.bus_injectors.clone());
 
-        let handler: RouteHandler<R> = Arc::new(move |_req: Request<Incoming>, res: &R| {
+        let handler: RouteHandler<R> = Arc::new(move |req: Request<Incoming>, res: &R| {
             let circuit = circuit.clone();
+            let fallback_bus_injectors = fallback_bus_injectors.clone();
             let res = res.clone();
             Box::pin(async move {
                 let request_id = uuid::Uuid::new_v4().to_string();
@@ -806,6 +829,9 @@ where
 
                 async move {
                     let mut bus = Bus::new();
+                    for injector in fallback_bus_injectors.iter() {
+                        injector(&req, &mut bus);
+                    }
                     let result = circuit.execute((), &res, &mut bus).await;
 
                     match result {
@@ -1311,6 +1337,7 @@ mod tests {
         let ingress = HttpIngress::<()>::new();
         assert_eq!(ingress.graceful_shutdown_timeout, Duration::from_secs(30));
         assert!(ingress.layers.is_empty());
+        assert!(ingress.bus_injectors.is_empty());
         assert!(ingress.on_start.is_none());
         assert!(ingress.on_shutdown.is_none());
     }
@@ -1372,6 +1399,14 @@ mod tests {
     fn request_id_layer_registers_builtin_middleware() {
         let ingress = HttpIngress::<()>::new().request_id_layer();
         assert_eq!(ingress.layers.len(), 1);
+    }
+
+    #[test]
+    fn bus_injector_registration_adds_hook() {
+        let ingress = HttpIngress::<()>::new().bus_injector(|_req, bus| {
+            bus.insert("ok".to_string());
+        });
+        assert_eq!(ingress.bus_injectors.len(), 1);
     }
 
     #[tokio::test]
