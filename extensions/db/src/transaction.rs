@@ -21,6 +21,18 @@ pub enum IsolationLevel {
     Serializable,
 }
 
+impl IsolationLevel {
+    /// SQL statement used to set PostgreSQL transaction isolation level.
+    pub fn postgres_set_transaction_sql(self) -> &'static str {
+        match self {
+            Self::ReadUncommitted => "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED",
+            Self::ReadCommitted => "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+            Self::RepeatableRead => "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
+            Self::Serializable => "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+        }
+    }
+}
+
 /// Transaction-related errors.
 #[derive(Debug, thiserror::Error)]
 pub enum TransactionError {

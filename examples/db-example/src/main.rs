@@ -135,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
     let result = Axon::<CreateUserRequest, CreateUserRequest, anyhow::Error, AppResources>::start(
         "create_user",
     )
-    .then(PgNode::new(CreateUser))
+    .then(TxPgNode::new(CreateUser).with_isolation_level(IsolationLevel::ReadCommitted))
     .execute(create_request, &resources, &mut bus)
     .await;
 

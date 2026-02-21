@@ -1983,6 +1983,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures_util::{SinkExt, StreamExt};
+    use ranvier_observe::{HttpMetrics, HttpMetricsLayer, IncomingTraceContext, TraceContextLayer};
     use serde::Deserialize;
     use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -2252,6 +2253,64 @@ mod tests {
             .await
             .expect("server join")
             .expect("server shutdown should succeed");
+    }
+
+    #[derive(Clone)]
+    struct EchoTrace;
+
+    #[async_trait]
+    impl Transition<(), String> for EchoTrace {
+        type Error = Infallible;
+        type Resources = ();
+
+        async fn run(
+            &self,
+            _state: (),
+            _resources: &Self::Resources,
+            bus: &mut Bus,
+        ) -> Outcome<String, Self::Error> {
+            let trace_id = bus
+                .read::<String>()
+                .cloned()
+                .unwrap_or_else(|| "missing-trace".to_string());
+            Outcome::next(trace_id)
+        }
+    }
+
+    #[tokio::test]
+    async fn observe_trace_context_and_metrics_layers_work_with_ingress() {
+        let metrics = HttpMetrics::default();
+        let ingress = HttpIngress::<()>::new()
+            .layer(TraceContextLayer::new())
+            .layer(HttpMetricsLayer::new(metrics.clone()))
+            .bus_injector(|req, bus| {
+                if let Some(trace) = req.extensions().get::<IncomingTraceContext>() {
+                    bus.insert(trace.trace_id().to_string());
+                }
+            })
+            .get(
+                "/trace",
+                Axon::<(), (), Infallible, ()>::new("EchoTrace").then(EchoTrace),
+            );
+
+        let app = crate::test_harness::TestApp::new(ingress, ());
+        let response = app
+            .send(crate::test_harness::TestRequest::get("/trace").header(
+                "traceparent",
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            ))
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.text().expect("utf8 response"),
+            "4bf92f3577b34da6a3ce929d0e0e4736"
+        );
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.requests_total, 1);
+        assert_eq!(snapshot.requests_error, 0);
     }
 
     #[test]

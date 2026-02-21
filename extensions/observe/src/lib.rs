@@ -5,14 +5,22 @@ use std::str::FromStr;
 
 use anyhow::anyhow;
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry::{global, KeyValue, Value};
+use opentelemetry::{KeyValue, Value, global};
 use opentelemetry_otlp::{Protocol, WithExportConfig};
 use opentelemetry_sdk::export::trace::{ExportResult, SpanData, SpanExporter};
 use opentelemetry_sdk::trace::BatchSpanProcessor;
-use opentelemetry_sdk::{runtime, Resource};
+use opentelemetry_sdk::{Resource, runtime};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
+
+pub mod http_metrics;
+pub mod http_trace;
+
+pub use http_metrics::{HttpMetrics, HttpMetricsLayer, HttpMetricsSnapshot, ResponseStatus};
+pub use http_trace::{
+    IncomingTraceContext, TraceContextLayer, extract_trace_context, extract_trace_context_snapshot,
+};
 
 /// OTLP transport preset for trace export.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -231,6 +239,7 @@ where
 
 /// Initialize a simple stdout tracing subscriber for development
 pub fn init_stdout_tracing() {
+    ensure_trace_context_propagator();
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,ranvier_core=debug"));
 
@@ -252,6 +261,8 @@ pub fn init_otlp_tracing_with_protocol(
     endpoint: &str,
     protocol: OtlpProtocolPreset,
 ) -> Result<(), anyhow::Error> {
+    ensure_trace_context_propagator();
+
     let exporter = match protocol {
         OtlpProtocolPreset::Grpc => opentelemetry_otlp::new_exporter()
             .tonic()
@@ -306,6 +317,10 @@ fn build_tracer(
     let tracer = provider.tracer("ranvier-observe");
     let _ = global::set_tracer_provider(provider);
     tracer
+}
+
+fn ensure_trace_context_propagator() {
+    global::set_text_map_propagator(opentelemetry_sdk::propagation::TraceContextPropagator::new());
 }
 
 fn env_first(keys: &[&str]) -> Option<String> {
@@ -374,13 +389,13 @@ fn has_semantic_prefix(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{TelemetryRedactionMode, TelemetryRedactionPolicy};
+    use opentelemetry::KeyValue;
     use opentelemetry::trace::{
         Event, SpanContext, SpanId, SpanKind, Status, TraceFlags, TraceId, TraceState,
     };
-    use opentelemetry::KeyValue;
+    use opentelemetry_sdk::Resource;
     use opentelemetry_sdk::export::trace::SpanData;
     use opentelemetry_sdk::trace::{SpanEvents, SpanLinks};
-    use opentelemetry_sdk::Resource;
     use std::borrow::Cow;
     use std::time::SystemTime;
 

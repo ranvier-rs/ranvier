@@ -3,6 +3,7 @@
 //! Provides `DbNode` and `DbTransition` traits for database operations
 //! that integrate with the Axon execution model.
 
+use crate::transaction::IsolationLevel;
 use async_trait::async_trait;
 use ranvier_core::bus::Bus;
 use ranvier_core::outcome::Outcome;
@@ -202,6 +203,7 @@ where
     R: DbResources,
 {
     inner: T,
+    isolation_level: Option<IsolationLevel>,
     _phantom: std::marker::PhantomData<(From, To, R)>,
 }
 
@@ -216,8 +218,20 @@ where
     pub fn new(inner: T) -> Self {
         Self {
             inner,
+            isolation_level: None,
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    /// Configure the transaction isolation level for this node execution.
+    pub fn with_isolation_level(mut self, isolation_level: IsolationLevel) -> Self {
+        self.isolation_level = Some(isolation_level);
+        self
+    }
+
+    /// Returns currently configured transaction isolation level.
+    pub fn isolation_level(&self) -> Option<IsolationLevel> {
+        self.isolation_level
     }
 }
 
@@ -231,6 +245,7 @@ where
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            isolation_level: self.isolation_level,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -262,6 +277,16 @@ where
                 return Outcome::Fault(anyhow::anyhow!("Failed to begin transaction: {}", e));
             }
         };
+        let mut tx = tx;
+
+        if let Some(level) = self.isolation_level {
+            if let Err(e) = apply_postgres_isolation_level(&mut tx, level).await {
+                return Outcome::Fault(anyhow::anyhow!(
+                    "Failed to set transaction isolation level: {}",
+                    e
+                ));
+            }
+        }
 
         // Execute the transition with the transaction
         if let Some(sql) = self.inner.sql_info() {
@@ -290,5 +315,70 @@ where
         }
 
         result
+    }
+}
+
+async fn apply_postgres_isolation_level(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    level: IsolationLevel,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(level.postgres_set_transaction_sql())
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone)]
+    struct DummyDbTransition;
+
+    #[async_trait]
+    impl DbTransition<(), ()> for DummyDbTransition {
+        type Error = anyhow::Error;
+
+        async fn run(&self, _input: (), _pool: &sqlx::PgPool) -> QueryResult<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct DummyResources;
+
+    impl ranvier_core::transition::ResourceRequirement for DummyResources {}
+
+    impl DbResources for DummyResources {
+        fn pg_pool(&self) -> &sqlx::PgPool {
+            panic!("test-only resources should not call pg_pool")
+        }
+    }
+
+    #[test]
+    fn tx_node_accepts_isolation_level_configuration() {
+        let node = TxPgNode::<DummyDbTransition, (), (), DummyResources>::new(DummyDbTransition)
+            .with_isolation_level(IsolationLevel::Serializable);
+        assert_eq!(node.isolation_level(), Some(IsolationLevel::Serializable));
+    }
+
+    #[test]
+    fn isolation_level_generates_expected_postgres_sql() {
+        assert_eq!(
+            IsolationLevel::ReadUncommitted.postgres_set_transaction_sql(),
+            "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED"
+        );
+        assert_eq!(
+            IsolationLevel::ReadCommitted.postgres_set_transaction_sql(),
+            "SET TRANSACTION ISOLATION LEVEL READ COMMITTED"
+        );
+        assert_eq!(
+            IsolationLevel::RepeatableRead.postgres_set_transaction_sql(),
+            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+        );
+        assert_eq!(
+            IsolationLevel::Serializable.postgres_set_transaction_sql(),
+            "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"
+        );
     }
 }

@@ -19,5 +19,5 @@ pub use transaction::{
 pub mod prelude {
     pub use crate::node::{DbError, DbTransition, PgNode, QueryResult, TxPgNode};
     pub use crate::pool::{DbPool, MySqlPool, PoolSize, PostgresPool, SqlitePool};
-    pub use crate::transaction::{Transaction, TransactionError, TxBus};
+    pub use crate::transaction::{IsolationLevel, Transaction, TransactionError, TxBus};
 }

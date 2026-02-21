@@ -28,6 +28,7 @@ members = [
     "examples/static-build-demo",
     "examples/db-example",
     "examples/otel-demo",
+    "examples/observe-http-demo",
     "examples/experimental/replay-demo",
     "examples/experimental/persistence-recovery-demo",
     "examples/std-lib-demo",
