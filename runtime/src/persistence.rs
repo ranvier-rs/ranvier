@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -351,7 +351,10 @@ impl RedisCompensationIdempotencyStore {
         })
     }
 
-    pub fn with_prefix(manager: redis::aio::ConnectionManager, key_prefix: impl Into<String>) -> Self {
+    pub fn with_prefix(
+        manager: redis::aio::ConnectionManager,
+        key_prefix: impl Into<String>,
+    ) -> Self {
         Self {
             manager,
             key_prefix: key_prefix.into(),
@@ -611,7 +614,10 @@ impl PersistenceStore for PostgresPersistenceStore {
             .execute(&self.pool)
             .await?;
 
-        let read_state = format!("SELECT circuit FROM {} WHERE trace_id = $1", self.state_table);
+        let read_state = format!(
+            "SELECT circuit FROM {} WHERE trace_id = $1",
+            self.state_table
+        );
         let existing_circuit: Option<String> = sqlx::query_scalar(&read_state)
             .bind(&envelope.trace_id)
             .fetch_optional(&self.pool)
@@ -623,7 +629,10 @@ impl PersistenceStore for PostgresPersistenceStore {
             ));
         }
 
-        let completion_query = format!("SELECT completion FROM {} WHERE trace_id = $1", self.state_table);
+        let completion_query = format!(
+            "SELECT completion FROM {} WHERE trace_id = $1",
+            self.state_table
+        );
         let completion: Option<Option<String>> = sqlx::query_scalar(&completion_query)
             .bind(&envelope.trace_id)
             .fetch_optional(&self.pool)
@@ -779,7 +788,10 @@ impl RedisPersistenceStore {
         })
     }
 
-    pub fn with_prefix(manager: redis::aio::ConnectionManager, key_prefix: impl Into<String>) -> Self {
+    pub fn with_prefix(
+        manager: redis::aio::ConnectionManager,
+        key_prefix: impl Into<String>,
+    ) -> Self {
         Self {
             manager,
             key_prefix: key_prefix.into(),
@@ -841,7 +853,9 @@ impl PersistenceStore for RedisPersistenceStore {
         let key = self.key(trace_id);
         let mut conn = self.manager.clone();
         let payload: Option<String> = conn.get(key).await?;
-        let trace = payload.map(|raw| serde_json::from_str::<PersistedTrace>(&raw)).transpose()?;
+        let trace = payload
+            .map(|raw| serde_json::from_str::<PersistedTrace>(&raw))
+            .transpose()?;
         Ok(trace)
     }
 
@@ -932,9 +946,10 @@ mod tests {
         assert_eq!(loaded.completion, Some(CompletionState::Success));
 
         let err = store.append(envelope(2, "Next")).await.unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("is already completed and cannot accept new events"));
+        assert!(
+            err.to_string()
+                .contains("is already completed and cannot accept new events")
+        );
     }
 
     #[tokio::test]
@@ -945,9 +960,10 @@ mod tests {
         let mut invalid = envelope(2, "Next");
         invalid.circuit = "AnotherCircuit".to_string();
         let err = store.append(invalid).await.unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("already exists for circuit OrderCircuit"));
+        assert!(
+            err.to_string()
+                .contains("already exists for circuit OrderCircuit")
+        );
     }
 
     #[tokio::test]
@@ -1144,7 +1160,9 @@ mod tests {
             Err(_) => return,
         };
 
-        let base = RedisCompensationIdempotencyStore::connect(&url).await.unwrap();
+        let base = RedisCompensationIdempotencyStore::connect(&url)
+            .await
+            .unwrap();
         let prefix = format!(
             "ranvier:compensation:idempotency:test:{}",
             Uuid::new_v4().simple()
@@ -1171,7 +1189,9 @@ mod tests {
             Err(_) => return,
         };
 
-        let base = RedisCompensationIdempotencyStore::connect(&url).await.unwrap();
+        let base = RedisCompensationIdempotencyStore::connect(&url)
+            .await
+            .unwrap();
         let prefix = format!(
             "ranvier:compensation:idempotency:ttl:test:{}",
             Uuid::new_v4().simple()

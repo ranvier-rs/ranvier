@@ -19,4 +19,7 @@ pub use data::{
     ServiceStatus, StatusData,
 };
 pub use generator::StatusPageGenerator;
-pub use projection::{projections_from_timeline, write_projection_files, ProjectionArtifacts, TimelineProjectionOptions};
+pub use projection::{
+    ProjectionArtifacts, TimelineProjectionOptions, projections_from_timeline,
+    write_projection_files,
+};

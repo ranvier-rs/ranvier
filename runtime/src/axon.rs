@@ -11,16 +11,16 @@
 //!
 //! "Axon is the flowing thing, Schematic is the visible thing."
 
+use crate::persistence::{
+    CompensationAutoTrigger, CompensationContext, CompensationHandle,
+    CompensationIdempotencyHandle, CompensationRetryPolicy, CompletionState,
+    PersistenceAutoComplete, PersistenceEnvelope, PersistenceHandle, PersistenceTraceId,
+};
 use ranvier_core::bus::Bus;
 use ranvier_core::outcome::Outcome;
 use ranvier_core::schematic::{Edge, EdgeType, Node, NodeKind, Schematic, SourceLocation};
 use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_core::transition::Transition;
-use crate::persistence::{
-    CompletionState, CompensationAutoTrigger, CompensationContext, CompensationHandle,
-    CompensationIdempotencyHandle, CompensationRetryPolicy, PersistenceAutoComplete,
-    PersistenceEnvelope, PersistenceHandle, PersistenceTraceId,
-};
 use std::any::type_name;
 use std::ffi::OsString;
 use std::fs;
@@ -721,7 +721,11 @@ async fn persist_execution_event(
     }
 }
 
-async fn persist_completion(handle: &PersistenceHandle, trace_id: &str, completion: CompletionState) {
+async fn persist_completion(
+    handle: &PersistenceHandle,
+    trace_id: &str,
+    completion: CompletionState,
+) {
     let store = handle.store();
     if let Err(err) = store.complete(trace_id, completion).await {
         tracing::warn!(
@@ -733,7 +737,10 @@ async fn persist_completion(handle: &PersistenceHandle, trace_id: &str, completi
 }
 
 fn compensation_idempotency_key(context: &CompensationContext) -> String {
-    format!("{}:{}:{}", context.trace_id, context.circuit, context.fault_kind)
+    format!(
+        "{}:{}:{}",
+        context.trace_id, context.circuit, context.fault_kind
+    )
 }
 
 async fn run_compensation(
@@ -1080,10 +1087,10 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{sampled_by_bus_id, should_force_export, Axon};
+    use super::{Axon, sampled_by_bus_id, should_force_export};
     use crate::persistence::{
-        CompletionState, CompensationContext, CompensationHandle, CompensationHook,
-        CompensationIdempotencyHandle, CompensationIdempotencyStore, CompensationRetryPolicy,
+        CompensationContext, CompensationHandle, CompensationHook, CompensationIdempotencyHandle,
+        CompensationIdempotencyStore, CompensationRetryPolicy, CompletionState,
         InMemoryCompensationIdempotencyStore, InMemoryPersistenceStore, PersistenceAutoComplete,
         PersistenceHandle, PersistenceStore, PersistenceTraceId,
     };
@@ -1238,8 +1245,7 @@ mod tests {
         bus.insert(PersistenceHandle::from_arc(store_dyn));
         bus.insert(PersistenceTraceId::new("trace-success"));
 
-        let axon =
-            Axon::<i32, i32, std::convert::Infallible>::start("PersistSuccess").then(AddOne);
+        let axon = Axon::<i32, i32, std::convert::Infallible>::start("PersistSuccess").then(AddOne);
         let outcome = axon.execute(41, &(), &mut bus).await;
         assert!(matches!(outcome, Outcome::Next(42)));
 
@@ -1383,7 +1389,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(persisted.completion, Some(CompletionState::Compensated));
-        assert_eq!(persisted.events.last().map(|e| e.outcome_kind.as_str()), Some("Compensated"));
+        assert_eq!(
+            persisted.events.last().map(|e| e.outcome_kind.as_str()),
+            Some("Compensated")
+        );
 
         let attempt_count = calls.lock().await;
         assert_eq!(*attempt_count, 3);
@@ -1447,8 +1456,8 @@ mod tests {
         bus.insert(CompensationHandle::from_hook(compensation));
         bus.insert(CompensationIdempotencyHandle::from_store(idempotency));
 
-        let axon = Axon::<i32, i32, &'static str>::start("IdempotencyStoreFailure")
-            .then(AlwaysFault);
+        let axon =
+            Axon::<i32, i32, &'static str>::start("IdempotencyStoreFailure").then(AlwaysFault);
         let outcome = axon.execute(9, &(), &mut bus).await;
         assert!(matches!(outcome, Outcome::Fault("boom")));
 
@@ -1458,7 +1467,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(persisted.completion, Some(CompletionState::Compensated));
-        assert_eq!(persisted.events.last().map(|e| e.outcome_kind.as_str()), Some("Compensated"));
+        assert_eq!(
+            persisted.events.last().map(|e| e.outcome_kind.as_str()),
+            Some("Compensated")
+        );
 
         let recorded = calls.lock().await;
         assert_eq!(recorded.len(), 1);

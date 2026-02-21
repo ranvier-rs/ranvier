@@ -121,13 +121,14 @@ impl OperationPatch {
             let mut content = BTreeMap::new();
             content.insert("application/json".to_string(), OpenApiMediaType { schema });
 
-            let response = operation
-                .responses
-                .entry("200".to_string())
-                .or_insert(OpenApiResponse {
-                    description: "Successful response".to_string(),
-                    content: None,
-                });
+            let response =
+                operation
+                    .responses
+                    .entry("200".to_string())
+                    .or_insert(OpenApiResponse {
+                        description: "Successful response".to_string(),
+                        content: None,
+                    });
             response.content = Some(content);
         }
     }
@@ -202,7 +203,12 @@ impl OpenApiGenerator {
         self
     }
 
-    pub fn summary(mut self, method: Method, path_pattern: impl AsRef<str>, summary: impl Into<String>) -> Self {
+    pub fn summary(
+        mut self,
+        method: Method,
+        path_pattern: impl AsRef<str>,
+        summary: impl Into<String>,
+    ) -> Self {
         let key = operation_key(&method, path_pattern.as_ref());
         let patch = self.patches.entry(key).or_insert(OperationPatch {
             summary: None,
@@ -308,11 +314,15 @@ impl OpenApiGenerator {
                 }),
             };
 
-            if let Some(patch) = self.patches.get(&operation_key(route.method(), route.path_pattern())) {
+            if let Some(patch) = self
+                .patches
+                .get(&operation_key(route.method(), route.path_pattern()))
+            {
                 patch.clone().apply(&mut operation);
             }
 
-            paths.entry(openapi_path)
+            paths
+                .entry(openapi_path)
                 .or_insert_with(OpenApiPathItem::default)
                 .set_operation(route.method(), operation);
         }
@@ -380,7 +390,10 @@ fn normalize_path(path_pattern: &str) -> (String, Vec<OpenApiParameter>) {
         .split('/')
         .filter(|segment| !segment.is_empty())
     {
-        if let Some(name) = segment.strip_prefix(':').or_else(|| segment.strip_prefix('*')) {
+        if let Some(name) = segment
+            .strip_prefix(':')
+            .or_else(|| segment.strip_prefix('*'))
+        {
             let normalized_name = if name.is_empty() { "path" } else { name };
             segments.push(format!("{{{normalized_name}}}"));
             params.push(OpenApiParameter {

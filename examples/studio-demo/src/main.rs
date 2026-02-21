@@ -2,7 +2,9 @@ use ranvier_core::prelude::*;
 use ranvier_core::schematic::Schematic;
 use ranvier_macros::transition;
 use ranvier_runtime::Axon;
-use ranvier_status::{projections_from_timeline, write_projection_files, TimelineProjectionOptions};
+use ranvier_status::{
+    projections_from_timeline, write_projection_files, TimelineProjectionOptions,
+};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -52,7 +54,10 @@ async fn main() -> anyhow::Result<()> {
     let public_path = dist_dir.join("trace.public.json");
     let internal_path = dist_dir.join("trace.internal.json");
 
-    set_env_if_missing("RANVIER_TIMELINE_OUTPUT", timeline_path.display().to_string());
+    set_env_if_missing(
+        "RANVIER_TIMELINE_OUTPUT",
+        timeline_path.display().to_string(),
+    );
     set_env_if_missing("RANVIER_TIMELINE_MODE", "overwrite".to_string());
     set_env_if_missing(
         "RANVIER_TRACE_PUBLIC_PATH",
@@ -77,11 +82,9 @@ async fn main() -> anyhow::Result<()> {
     loop {
         tracing::info!("Executing Axon...");
         let _ = axon.execute(50, &(), &mut Bus::new()).await;
-        if let Err(err) = regenerate_projection_from_timeline(
-            &timeline_path,
-            &public_path,
-            axon.schematic(),
-        ) {
+        if let Err(err) =
+            regenerate_projection_from_timeline(&timeline_path, &public_path, axon.schematic())
+        {
             tracing::warn!("Projection refresh failed: {}", err);
         }
         tokio::time::sleep(Duration::from_secs(5)).await;

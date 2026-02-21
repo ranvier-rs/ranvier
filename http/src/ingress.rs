@@ -1989,8 +1989,8 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::tungstenite::Message as WsClientMessage;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
     async fn connect_with_retry(addr: std::net::SocketAddr) -> tokio::net::TcpStream {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);

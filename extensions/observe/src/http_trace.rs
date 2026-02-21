@@ -4,10 +4,10 @@ use std::sync::Once;
 use std::task::{Context as TaskContext, Poll};
 
 use http::{HeaderMap, Request};
-use opentelemetry::Context;
 use opentelemetry::global;
 use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::TraceContextExt;
+use opentelemetry::Context;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use tower::{Layer, Service};
 use tracing::Instrument;
@@ -147,7 +147,7 @@ mod tests {
     use super::*;
     use http::Response;
     use std::convert::Infallible;
-    use tower::{Service, service_fn};
+    use tower::{service_fn, Service};
 
     #[test]
     fn extract_trace_context_snapshot_parses_traceparent_header() {

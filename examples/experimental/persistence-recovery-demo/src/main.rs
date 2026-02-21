@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use ranvier_core::{Bus, Outcome, Transition};
 use ranvier_runtime::{
-    Axon, CompensationContext, CompensationHandle, CompensationHook, InMemoryPersistenceStore,
-    PersistenceAutoComplete, PersistenceHandle, PersistenceStore, PersistenceTraceId,
-    CompensationRetryPolicy,
+    Axon, CompensationContext, CompensationHandle, CompensationHook, CompensationRetryPolicy,
+    InMemoryPersistenceStore, PersistenceAutoComplete, PersistenceHandle, PersistenceStore,
+    PersistenceTraceId,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -160,7 +160,11 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("missing trace after first run"))?;
     print_trace_summary("after first run", &first_trace);
 
-    let resume_from = first_trace.events.last().map(|event| event.step).unwrap_or(0);
+    let resume_from = first_trace
+        .events
+        .last()
+        .map(|event| event.step)
+        .unwrap_or(0);
     let cursor = store_impl.resume(trace_id, resume_from).await?;
     println!(
         "\nresume cursor: trace_id={} next_step={}",
@@ -206,7 +210,10 @@ async fn main() -> anyhow::Result<()> {
         should_fail_payment: true,
     };
     let compensation_outcome = axon.execute(compensation_input, &(), &mut bus3).await;
-    println!("third run (compensation) outcome: {:?}", compensation_outcome);
+    println!(
+        "third run (compensation) outcome: {:?}",
+        compensation_outcome
+    );
 
     let compensation_trace = store_impl
         .load(compensation_trace_id)

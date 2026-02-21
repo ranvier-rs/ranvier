@@ -5,11 +5,11 @@ use std::str::FromStr;
 
 use anyhow::anyhow;
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry::{KeyValue, Value, global};
+use opentelemetry::{global, KeyValue, Value};
 use opentelemetry_otlp::{Protocol, WithExportConfig};
 use opentelemetry_sdk::export::trace::{ExportResult, SpanData, SpanExporter};
 use opentelemetry_sdk::trace::BatchSpanProcessor;
-use opentelemetry_sdk::{Resource, runtime};
+use opentelemetry_sdk::{runtime, Resource};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
@@ -19,7 +19,7 @@ pub mod http_trace;
 
 pub use http_metrics::{HttpMetrics, HttpMetricsLayer, HttpMetricsSnapshot, ResponseStatus};
 pub use http_trace::{
-    IncomingTraceContext, TraceContextLayer, extract_trace_context, extract_trace_context_snapshot,
+    extract_trace_context, extract_trace_context_snapshot, IncomingTraceContext, TraceContextLayer,
 };
 
 /// OTLP transport preset for trace export.
@@ -389,13 +389,13 @@ fn has_semantic_prefix(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{TelemetryRedactionMode, TelemetryRedactionPolicy};
-    use opentelemetry::KeyValue;
     use opentelemetry::trace::{
         Event, SpanContext, SpanId, SpanKind, Status, TraceFlags, TraceId, TraceState,
     };
-    use opentelemetry_sdk::Resource;
+    use opentelemetry::KeyValue;
     use opentelemetry_sdk::export::trace::SpanData;
     use opentelemetry_sdk::trace::{SpanEvents, SpanLinks};
+    use opentelemetry_sdk::Resource;
     use std::borrow::Cow;
     use std::time::SystemTime;
 

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, TimeZone, Utc};
 use ranvier_core::timeline::{Timeline, TimelineEvent};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -153,7 +153,10 @@ pub fn projections_from_timeline(
     })
 }
 
-pub fn write_projection_files(output_dir: &Path, artifacts: &ProjectionArtifacts) -> Result<(PathBuf, PathBuf)> {
+pub fn write_projection_files(
+    output_dir: &Path,
+    artifacts: &ProjectionArtifacts,
+) -> Result<(PathBuf, PathBuf)> {
     std::fs::create_dir_all(output_dir)?;
     let public_path = output_dir.join("trace.public.json");
     let internal_path = output_dir.join("trace.internal.json");

@@ -69,7 +69,13 @@ async fn main() -> Result<()> {
         items: vec!["p1".into()],
         total_amount: 1250,
     };
-    run_order_flow("Payment Declined Case", payment_declined_case, &axon, &resources).await?;
+    run_order_flow(
+        "Payment Declined Case",
+        payment_declined_case,
+        &axon,
+        &resources,
+    )
+    .await?;
 
     let out_of_stock_case = OrderRequest {
         order_id: "ORD-125".into(),

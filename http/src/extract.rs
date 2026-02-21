@@ -452,14 +452,18 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_slice(&body.to_bytes()).expect("validation json body");
         assert_eq!(json["error"], "validation_failed");
-        assert!(json["fields"]["name"][0]
-            .as_str()
-            .expect("name message")
-            .contains("name too short"));
-        assert!(json["fields"]["age"][0]
-            .as_str()
-            .expect("age message")
-            .contains("age must be >= 1"));
+        assert!(
+            json["fields"]["name"][0]
+                .as_str()
+                .expect("name message")
+                .contains("name too short")
+        );
+        assert!(
+            json["fields"]["age"][0]
+                .as_str()
+                .expect("age message")
+                .contains("age must be >= 1")
+        );
     }
 
     #[cfg(feature = "validation")]
@@ -521,6 +525,9 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_slice(&body.to_bytes()).expect("validation json body");
 
-        assert_eq!(json["fields"]["token"][0], "token_prefix: token must start with tok_");
+        assert_eq!(
+            json["fields"]["token"][0],
+            "token_prefix: token must start with tok_"
+        );
     }
 }
