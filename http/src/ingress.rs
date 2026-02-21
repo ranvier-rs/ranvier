@@ -28,6 +28,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tower::Service;
 use tracing::Instrument;
@@ -56,6 +57,8 @@ type RouteHandler<R> = Arc<
         + Send
         + Sync,
 >;
+
+type LifecycleHook = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PathParams {
@@ -204,6 +207,12 @@ pub struct HttpIngress<R = ()> {
     routes: Vec<RouteEntry<R>>,
     /// Fallback circuit for unmatched routes
     fallback: Option<RouteHandler<R>>,
+    /// Lifecycle callback invoked after listener bind succeeds.
+    on_start: Option<LifecycleHook>,
+    /// Lifecycle callback invoked when graceful shutdown finishes.
+    on_shutdown: Option<LifecycleHook>,
+    /// Maximum time to wait for in-flight requests to drain.
+    graceful_shutdown_timeout: Duration,
     _phantom: std::marker::PhantomData<R>,
 }
 
@@ -217,6 +226,9 @@ where
             addr: None,
             routes: Vec::new(),
             fallback: None,
+            on_start: None,
+            on_shutdown: None,
+            graceful_shutdown_timeout: Duration::from_secs(30),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -224,6 +236,30 @@ where
     /// Set the bind address for the server.
     pub fn bind(mut self, addr: impl Into<String>) -> Self {
         self.addr = Some(addr.into());
+        self
+    }
+
+    /// Register a lifecycle callback invoked when the server starts listening.
+    pub fn on_start<F>(mut self, callback: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.on_start = Some(Arc::new(callback));
+        self
+    }
+
+    /// Register a lifecycle callback invoked after graceful shutdown completes.
+    pub fn on_shutdown<F>(mut self, callback: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.on_shutdown = Some(Arc::new(callback));
+        self
+    }
+
+    /// Configure graceful shutdown timeout for in-flight request draining.
+    pub fn graceful_shutdown(mut self, timeout: Duration) -> Self {
+        self.graceful_shutdown_timeout = timeout;
         self
     }
 
@@ -425,58 +461,121 @@ where
 
     /// Run the HTTP server with required resources.
     pub async fn run(self, resources: R) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.run_with_shutdown_signal(resources, shutdown_signal()).await
+    }
+
+    async fn run_with_shutdown_signal<S>(
+        self,
+        resources: R,
+        shutdown_signal: S,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+    where
+        S: Future<Output = ()> + Send,
+    {
         let addr_str = self.addr.as_deref().unwrap_or("127.0.0.1:3000");
         let addr: SocketAddr = addr_str.parse()?;
 
         let routes = Arc::new(self.routes);
         let fallback = self.fallback;
+        let on_start = self.on_start;
+        let on_shutdown = self.on_shutdown;
+        let graceful_shutdown_timeout = self.graceful_shutdown_timeout;
         let resources = Arc::new(resources);
 
         let listener = TcpListener::bind(addr).await?;
         tracing::info!("Ranvier HTTP Ingress listening on http://{}", addr);
+        if let Some(callback) = on_start.as_ref() {
+            callback();
+        }
+
+        tokio::pin!(shutdown_signal);
+        let mut connections = tokio::task::JoinSet::new();
 
         loop {
-            let (stream, _) = listener.accept().await?;
-            let io = TokioIo::new(stream);
+            tokio::select! {
+                _ = &mut shutdown_signal => {
+                    tracing::info!("Shutdown signal received. Draining in-flight connections.");
+                    break;
+                }
+                accept_result = listener.accept() => {
+                    let (stream, _) = accept_result?;
+                    let io = TokioIo::new(stream);
 
-            let routes = routes.clone();
-            let fallback = fallback.clone();
-            let resources = resources.clone();
-
-            tokio::task::spawn(async move {
-                let resources = resources.clone();
-                let service = service_fn(move |req: Request<Incoming>| {
                     let routes = routes.clone();
                     let fallback = fallback.clone();
                     let resources = resources.clone();
 
-                    async move {
-                        let mut req = req;
-                        let method = req.method().clone();
-                        let path = req.uri().path().to_string();
+                    connections.spawn(async move {
+                        let resources = resources.clone();
+                        let service = service_fn(move |req: Request<Incoming>| {
+                            let routes = routes.clone();
+                            let fallback = fallback.clone();
+                            let resources = resources.clone();
 
-                        if let Some((handler, params)) =
-                            find_matching_route(routes.as_slice(), &method, &path)
-                        {
-                            req.extensions_mut().insert(params);
-                            Ok::<_, Infallible>(handler(req, &resources).await)
-                        } else if let Some(ref fb) = fallback {
-                            Ok(fb(req, &resources).await)
-                        } else {
-                            // Default 404
-                            Ok(Response::builder()
-                                .status(StatusCode::NOT_FOUND)
-                                .body(Full::new(Bytes::from("Not Found")))
-                                .unwrap())
+                            async move {
+                                let mut req = req;
+                                let method = req.method().clone();
+                                let path = req.uri().path().to_string();
+
+                                if let Some((handler, params)) =
+                                    find_matching_route(routes.as_slice(), &method, &path)
+                                {
+                                    req.extensions_mut().insert(params);
+                                    Ok::<_, Infallible>(handler(req, &resources).await)
+                                } else if let Some(ref fb) = fallback {
+                                    Ok(fb(req, &resources).await)
+                                } else {
+                                    Ok(Response::builder()
+                                        .status(StatusCode::NOT_FOUND)
+                                        .body(Full::new(Bytes::from("Not Found")))
+                                        .unwrap())
+                                }
+                            }
+                        });
+
+                        if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+                            tracing::error!("Error serving connection: {:?}", err);
                         }
-                    }
-                });
-
-                if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
-                    tracing::error!("Error serving connection: {:?}", err);
+                    });
                 }
-            });
+                Some(join_result) = connections.join_next(), if !connections.is_empty() => {
+                    if let Err(err) = join_result {
+                        tracing::warn!("Connection task join error: {:?}", err);
+                    }
+                }
+            }
         }
+
+        if !connections.is_empty() {
+            let drain_result = tokio::time::timeout(graceful_shutdown_timeout, async {
+                while let Some(join_result) = connections.join_next().await {
+                    if let Err(err) = join_result {
+                        tracing::warn!("Connection task join error during shutdown: {:?}", err);
+                    }
+                }
+            })
+            .await;
+
+            if drain_result.is_err() {
+                tracing::warn!(
+                    "Graceful shutdown timeout reached ({:?}). Aborting remaining connections.",
+                    graceful_shutdown_timeout
+                );
+                connections.abort_all();
+                while let Some(join_result) = connections.join_next().await {
+                    if let Err(err) = join_result {
+                        tracing::warn!("Connection task abort join error: {:?}", err);
+                    }
+                }
+            }
+        }
+
+        drop(resources);
+        if let Some(callback) = on_shutdown.as_ref() {
+            callback();
+        }
+
+        Ok(())
     }
 
     /// Convert to a raw Tower Service for integration with existing Tower stacks.
@@ -503,6 +602,35 @@ where
             routes,
             fallback,
             resources,
+        }
+    }
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = terminate.recv() => {}
+                }
+            }
+            Err(err) => {
+                tracing::warn!("Failed to install SIGTERM handler: {:?}", err);
+                if let Err(ctrl_c_err) = tokio::signal::ctrl_c().await {
+                    tracing::warn!("Failed to listen for Ctrl+C: {:?}", ctrl_c_err);
+                }
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        if let Err(err) = tokio::signal::ctrl_c().await {
+            tracing::warn!("Failed to listen for Ctrl+C: {:?}", err);
         }
     }
 }
@@ -568,6 +696,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn route_pattern_matches_static_path() {
@@ -600,4 +729,42 @@ mod tests {
         let pattern = RoutePattern::parse("/orders/:id");
         assert!(pattern.match_path("/users/42").is_none());
     }
+
+    #[test]
+    fn graceful_shutdown_timeout_defaults_to_30_seconds() {
+        let ingress = HttpIngress::<()>::new();
+        assert_eq!(ingress.graceful_shutdown_timeout, Duration::from_secs(30));
+        assert!(ingress.on_start.is_none());
+        assert!(ingress.on_shutdown.is_none());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_hooks_fire_on_start_and_shutdown() {
+        let started = Arc::new(AtomicBool::new(false));
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        let started_flag = started.clone();
+        let shutdown_flag = shutdown.clone();
+
+        let ingress = HttpIngress::<()>::new()
+            .bind("127.0.0.1:0")
+            .on_start(move || {
+                started_flag.store(true, Ordering::SeqCst);
+            })
+            .on_shutdown(move || {
+                shutdown_flag.store(true, Ordering::SeqCst);
+            })
+            .graceful_shutdown(Duration::from_millis(50));
+
+        ingress
+            .run_with_shutdown_signal((), async {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            })
+            .await
+            .expect("server should exit gracefully");
+
+        assert!(started.load(Ordering::SeqCst));
+        assert!(shutdown.load(Ordering::SeqCst));
+    }
+
 }
