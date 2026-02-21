@@ -62,6 +62,82 @@ type RouteHandler<R> = Arc<
 type BoxHttpService = BoxCloneService<Request<Incoming>, Response<Full<Bytes>>, Infallible>;
 type ServiceLayer = Arc<dyn Fn(BoxHttpService) -> BoxHttpService + Send + Sync>;
 type LifecycleHook = Arc<dyn Fn() + Send + Sync>;
+const REQUEST_ID_HEADER: &str = "x-request-id";
+
+#[derive(Clone)]
+struct TimeoutService {
+    inner: BoxHttpService,
+    timeout: Duration,
+}
+
+impl Service<Request<Incoming>> for TimeoutService {
+    type Response = Response<Full<Bytes>>;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Request<Incoming>) -> Self::Future {
+        let timeout = self.timeout;
+        let fut = self.inner.call(req);
+        Box::pin(async move {
+            match tokio::time::timeout(timeout, fut).await {
+                Ok(response) => response,
+                Err(_) => Ok(Response::builder()
+                    .status(StatusCode::REQUEST_TIMEOUT)
+                    .body(Full::new(Bytes::from("Request Timeout")))
+                    .unwrap()),
+            }
+        })
+    }
+}
+
+#[derive(Clone)]
+struct RequestIdService {
+    inner: BoxHttpService,
+}
+
+impl Service<Request<Incoming>> for RequestIdService {
+    type Response = Response<Full<Bytes>>;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Request<Incoming>) -> Self::Future {
+        let mut req = req;
+        let request_id = req
+            .headers()
+            .get(REQUEST_ID_HEADER)
+            .cloned()
+            .unwrap_or_else(|| {
+                http::HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())
+                    .unwrap_or_else(|_| http::HeaderValue::from_static("request-id-unavailable"))
+            });
+
+        req.headers_mut()
+            .insert(REQUEST_ID_HEADER, request_id.clone());
+
+        let fut = self.inner.call(req);
+        Box::pin(async move {
+            let mut response = fut.await?;
+            response
+                .headers_mut()
+                .insert(REQUEST_ID_HEADER, request_id);
+            Ok(response)
+        })
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PathParams {
@@ -287,6 +363,28 @@ where
             .push(Arc::new(move |service: BoxHttpService| {
                 BoxCloneService::new(layer.clone().layer(service))
             }));
+        self
+    }
+
+    /// Add built-in timeout middleware that returns `408 Request Timeout`
+    /// when the inner service call exceeds `timeout`.
+    pub fn timeout_layer(mut self, timeout: Duration) -> Self {
+        self.layers.push(Arc::new(move |service: BoxHttpService| {
+            BoxCloneService::new(TimeoutService {
+                inner: service,
+                timeout,
+            })
+        }));
+        self
+    }
+
+    /// Add built-in request-id middleware.
+    ///
+    /// Ensures `x-request-id` exists on request and response headers.
+    pub fn request_id_layer(mut self) -> Self {
+        self.layers.push(Arc::new(move |service: BoxHttpService| {
+            BoxCloneService::new(RequestIdService { inner: service })
+        }));
         self
     }
 
@@ -800,6 +898,18 @@ mod tests {
     #[test]
     fn layer_accepts_tower_http_cors_layer() {
         let ingress = HttpIngress::<()>::new().layer(tower_http::cors::CorsLayer::permissive());
+        assert_eq!(ingress.layers.len(), 1);
+    }
+
+    #[test]
+    fn timeout_layer_registers_builtin_middleware() {
+        let ingress = HttpIngress::<()>::new().timeout_layer(Duration::from_secs(1));
+        assert_eq!(ingress.layers.len(), 1);
+    }
+
+    #[test]
+    fn request_id_layer_registers_builtin_middleware() {
+        let ingress = HttpIngress::<()>::new().request_id_layer();
         assert_eq!(ingress.layers.len(), 1);
     }
 
