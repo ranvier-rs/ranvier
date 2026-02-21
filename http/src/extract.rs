@@ -7,6 +7,11 @@ use hyper::body::Incoming;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 
+#[cfg(feature = "validation")]
+use std::collections::BTreeMap;
+#[cfg(feature = "validation")]
+use validator::{Validate, ValidationErrors, ValidationErrorsKind};
+
 use crate::ingress::PathParams;
 
 pub const DEFAULT_BODY_LIMIT: usize = 1024 * 1024;
@@ -27,14 +32,44 @@ pub enum ExtractError {
     InvalidPath(String),
     #[error("failed to encode path params: {0}")]
     PathEncode(String),
+    #[cfg(feature = "validation")]
+    #[error("validation failed")]
+    ValidationFailed(ValidationErrorBody),
+}
+
+#[cfg(feature = "validation")]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ValidationErrorBody {
+    pub error: &'static str,
+    pub message: &'static str,
+    pub fields: BTreeMap<String, Vec<String>>,
 }
 
 impl ExtractError {
     pub fn status_code(&self) -> StatusCode {
+        #[cfg(feature = "validation")]
+        {
+            if matches!(self, Self::ValidationFailed(_)) {
+                return StatusCode::UNPROCESSABLE_ENTITY;
+            }
+        }
+
         StatusCode::BAD_REQUEST
     }
 
     pub fn into_http_response(&self) -> Response<Full<Bytes>> {
+        #[cfg(feature = "validation")]
+        if let Self::ValidationFailed(body) = self {
+            let payload = serde_json::to_vec(body).unwrap_or_else(|_| {
+                br#"{"error":"validation_failed","message":"request validation failed"}"#.to_vec()
+            });
+            return Response::builder()
+                .status(self.status_code())
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(payload)))
+                .expect("validation response builder should be infallible");
+        }
+
         Response::builder()
             .status(self.status_code())
             .body(Full::new(Bytes::from(self.to_string())))
@@ -79,6 +114,7 @@ impl<T> Path<T> {
 }
 
 #[async_trait]
+#[cfg(not(feature = "validation"))]
 impl<T, B> FromRequest<B> for Json<T>
 where
     T: DeserializeOwned + Send + 'static,
@@ -88,6 +124,23 @@ where
     async fn from_request(req: &mut Request<B>) -> Result<Self, ExtractError> {
         let bytes = read_body_limited(req, DEFAULT_BODY_LIMIT).await?;
         let value = parse_json_bytes(&bytes)?;
+        Ok(Json(value))
+    }
+}
+
+#[async_trait]
+#[cfg(feature = "validation")]
+impl<T, B> FromRequest<B> for Json<T>
+where
+    T: DeserializeOwned + Send + Validate + 'static,
+    B: Body<Data = Bytes> + Send + Unpin + 'static,
+    B::Error: std::fmt::Display + Send + Sync + 'static,
+{
+    async fn from_request(req: &mut Request<B>) -> Result<Self, ExtractError> {
+        let bytes = read_body_limited(req, DEFAULT_BODY_LIMIT).await?;
+        let value = parse_json_bytes::<T>(&bytes)?;
+
+        validate_payload(&value)?;
         Ok(Json(value))
     }
 }
@@ -168,10 +221,72 @@ where
         .map_err(|error| ExtractError::InvalidPath(error.to_string()))
 }
 
+#[cfg(feature = "validation")]
+fn validate_payload<T>(value: &T) -> Result<(), ExtractError>
+where
+    T: Validate,
+{
+    value
+        .validate()
+        .map_err(|errors| ExtractError::ValidationFailed(validation_error_body(&errors)))
+}
+
+#[cfg(feature = "validation")]
+fn validation_error_body(errors: &ValidationErrors) -> ValidationErrorBody {
+    let mut fields = BTreeMap::new();
+    collect_validation_errors("", errors, &mut fields);
+
+    ValidationErrorBody {
+        error: "validation_failed",
+        message: "request validation failed",
+        fields,
+    }
+}
+
+#[cfg(feature = "validation")]
+fn collect_validation_errors(
+    prefix: &str,
+    errors: &ValidationErrors,
+    fields: &mut BTreeMap<String, Vec<String>>,
+) {
+    for (field, kind) in errors.errors() {
+        let field_path = if prefix.is_empty() {
+            field.to_string()
+        } else {
+            format!("{prefix}.{field}")
+        };
+
+        match kind {
+            ValidationErrorsKind::Field(failures) => {
+                let entry = fields.entry(field_path).or_default();
+                for failure in failures {
+                    let detail = if let Some(message) = failure.message.as_ref() {
+                        format!("{}: {}", failure.code, message)
+                    } else {
+                        failure.code.to_string()
+                    };
+                    entry.push(detail);
+                }
+            }
+            ValidationErrorsKind::Struct(nested) => {
+                collect_validation_errors(&field_path, nested, fields);
+            }
+            ValidationErrorsKind::List(items) => {
+                for (index, nested) in items {
+                    let list_path = format!("{field_path}[{index}]");
+                    collect_validation_errors(&list_path, nested, fields);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde::Deserialize;
+    #[cfg(feature = "validation")]
+    use validator::{Validate, ValidationErrors};
 
     #[derive(Debug, Deserialize, PartialEq, Eq)]
     struct QueryPayload {
@@ -186,9 +301,63 @@ mod tests {
     }
 
     #[derive(Debug, Deserialize, PartialEq, Eq)]
+    #[cfg_attr(feature = "validation", derive(Validate))]
     struct JsonPayload {
         id: u32,
         name: String,
+    }
+
+    #[cfg(feature = "validation")]
+    #[derive(Debug, Deserialize, Validate)]
+    struct ValidatedPayload {
+        #[validate(length(min = 3, message = "name too short"))]
+        name: String,
+        #[validate(range(min = 1, message = "age must be >= 1"))]
+        age: u8,
+    }
+
+    #[cfg(feature = "validation")]
+    #[derive(Debug, Deserialize, Validate)]
+    #[validate(schema(function = "validate_password_confirmation"))]
+    struct SignupPayload {
+        #[validate(email(message = "email format invalid"))]
+        email: String,
+        password: String,
+        confirm_password: String,
+    }
+
+    #[cfg(feature = "validation")]
+    #[derive(Debug, Deserialize)]
+    struct ManualValidatedPayload {
+        token: String,
+    }
+
+    #[cfg(feature = "validation")]
+    fn validate_password_confirmation(
+        payload: &SignupPayload,
+    ) -> Result<(), validator::ValidationError> {
+        if payload.password != payload.confirm_password {
+            return Err(validator::ValidationError::new("password_mismatch"));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "validation")]
+    impl Validate for ManualValidatedPayload {
+        fn validate(&self) -> Result<(), ValidationErrors> {
+            let mut errors = ValidationErrors::new();
+            if !self.token.starts_with("tok_") {
+                let mut error = validator::ValidationError::new("token_prefix");
+                error.message = Some("token must start with tok_".into());
+                errors.add("token", error);
+            }
+
+            if errors.errors().is_empty() {
+                Ok(())
+            } else {
+                Err(errors)
+            }
+        }
     }
 
     #[test]
@@ -255,5 +424,103 @@ mod tests {
         assert_eq!(query.size, 10);
         assert_eq!(path.id, 42);
         assert_eq!(path.slug, "created");
+    }
+
+    #[cfg(feature = "validation")]
+    #[tokio::test]
+    async fn json_validation_rejects_invalid_payload_with_422() {
+        let body = Full::new(Bytes::from_static(br#"{"name":"ab","age":0}"#));
+        let mut req = Request::builder()
+            .uri("/users")
+            .body(body)
+            .expect("request build");
+
+        let error = Json::<ValidatedPayload>::from_request(&mut req)
+            .await
+            .expect_err("payload should fail validation");
+
+        assert_eq!(error.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let response = error.into_http_response();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            response.headers().get(http::header::CONTENT_TYPE),
+            Some(&http::HeaderValue::from_static("application/json"))
+        );
+
+        let body = response.into_body().collect().await.expect("collect body");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body.to_bytes()).expect("validation json body");
+        assert_eq!(json["error"], "validation_failed");
+        assert!(json["fields"]["name"][0]
+            .as_str()
+            .expect("name message")
+            .contains("name too short"));
+        assert!(json["fields"]["age"][0]
+            .as_str()
+            .expect("age message")
+            .contains("age must be >= 1"));
+    }
+
+    #[cfg(feature = "validation")]
+    #[tokio::test]
+    async fn json_validation_supports_schema_level_rules() {
+        let body = Full::new(Bytes::from_static(
+            br#"{"email":"user@example.com","password":"secret123","confirm_password":"different"}"#,
+        ));
+        let mut req = Request::builder()
+            .uri("/signup")
+            .body(body)
+            .expect("request build");
+
+        let error = Json::<SignupPayload>::from_request(&mut req)
+            .await
+            .expect_err("schema validation should fail");
+        assert_eq!(error.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let response = error.into_http_response();
+        let body = response.into_body().collect().await.expect("collect body");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body.to_bytes()).expect("validation json body");
+
+        assert_eq!(json["fields"]["__all__"][0], "password_mismatch");
+    }
+
+    #[cfg(feature = "validation")]
+    #[tokio::test]
+    async fn json_validation_accepts_valid_payload() {
+        let body = Full::new(Bytes::from_static(br#"{"name":"valid-name","age":20}"#));
+        let mut req = Request::builder()
+            .uri("/users")
+            .body(body)
+            .expect("request build");
+
+        let Json(payload): Json<ValidatedPayload> = Json::from_request(&mut req)
+            .await
+            .expect("validation should pass");
+        assert_eq!(payload.name, "valid-name");
+        assert_eq!(payload.age, 20);
+    }
+
+    #[cfg(feature = "validation")]
+    #[tokio::test]
+    async fn json_validation_supports_manual_validate_impl_hooks() {
+        let body = Full::new(Bytes::from_static(br#"{"token":"invalid"}"#));
+        let mut req = Request::builder()
+            .uri("/tokens")
+            .body(body)
+            .expect("request build");
+
+        let error = Json::<ManualValidatedPayload>::from_request(&mut req)
+            .await
+            .expect_err("manual validation should fail");
+        assert_eq!(error.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let response = error.into_http_response();
+        let body = response.into_body().collect().await.expect("collect body");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body.to_bytes()).expect("validation json body");
+
+        assert_eq!(json["fields"]["token"][0], "token_prefix: token must start with tok_");
     }
 }

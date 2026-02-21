@@ -8,6 +8,10 @@ version.workspace = true
 edition.workspace = true
 description = "HTTP Ingress adapter for Ranvier - Tower-native Service implementation"
 
+[features]
+default = []
+validation = ["dep:validator"]
+
 [dependencies]
 # Internal
 ranvier-core = { workspace = true }
@@ -34,6 +38,7 @@ uuid = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_urlencoded = "0.7"
+validator = { version = "0.20", features = ["derive"], optional = true }
 
 [dev-dependencies]
 tower-http = { version = "0.5", features = ["cors"] }
