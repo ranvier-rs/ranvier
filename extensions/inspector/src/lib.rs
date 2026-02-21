@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     extract::{
-        State,
+        Path as AxPath, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, StatusCode, header},
@@ -23,6 +23,7 @@ static EVENT_CHANNEL: OnceLock<broadcast::Sender<String>> = OnceLock::new();
 const QUICK_VIEW_HTML: &str = include_str!("quick_view/index.html");
 const QUICK_VIEW_JS: &str = include_str!("quick_view/app.js");
 const QUICK_VIEW_CSS: &str = include_str!("quick_view/styles.css");
+const INSPECTOR_API_VERSION: &str = "1.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InspectorMode {
@@ -345,7 +346,18 @@ impl Inspector {
             .layer(CorsLayer::permissive());
 
         if self.surface_policy.expose_internal {
-            app = app.route("/trace/internal", get(get_internal_projection));
+            app = app
+                .route("/trace/internal", get(get_internal_projection))
+                .route("/inspector/circuits", get(get_inspector_circuits))
+                .route(
+                    "/inspector/circuits/:name",
+                    get(get_inspector_circuit_by_name),
+                )
+                .route("/inspector/bus", get(get_inspector_bus))
+                .route(
+                    "/inspector/timeline/:request_id",
+                    get(get_inspector_timeline_by_request_id),
+                );
         }
 
         if self.surface_policy.expose_events {
@@ -637,6 +649,228 @@ async fn get_internal_projection(
     )))
 }
 
+fn inspector_envelope(kind: &'static str, data: Value) -> Json<Value> {
+    Json(serde_json::json!({
+        "api_version": INSPECTOR_API_VERSION,
+        "kind": kind,
+        "data": data
+    }))
+}
+
+fn load_internal_projection_value(state: &InspectorState) -> Value {
+    if let Some(path) = &state.internal_projection_path {
+        if let Ok(v) = read_projection_file(path) {
+            return v;
+        }
+    }
+    state
+        .internal_projection
+        .lock()
+        .ok()
+        .and_then(|v| v.clone())
+        .unwrap_or(Value::Null)
+}
+
+fn latest_trace_from_projection(projection: &Value) -> Option<Value> {
+    match projection {
+        Value::Object(map) => {
+            if let Some(Value::Array(traces)) = map.get("traces") {
+                return traces.last().cloned();
+            }
+            if map.get("trace_id").is_some() {
+                return Some(projection.clone());
+            }
+            None
+        }
+        Value::Array(traces) => traces.last().cloned(),
+        _ => None,
+    }
+}
+
+fn find_trace_by_request_id(projection: &Value, request_id: &str) -> Option<Value> {
+    if request_id.eq_ignore_ascii_case("latest") {
+        return latest_trace_from_projection(projection);
+    }
+
+    match projection {
+        Value::Object(map) => {
+            if map.get("trace_id").and_then(Value::as_str) == Some(request_id) {
+                return Some(projection.clone());
+            }
+            if let Some(Value::Array(traces)) = map.get("traces") {
+                return traces
+                    .iter()
+                    .find(|trace| trace.get("trace_id").and_then(Value::as_str) == Some(request_id))
+                    .cloned();
+            }
+            None
+        }
+        Value::Array(traces) => traces
+            .iter()
+            .find(|trace| trace.get("trace_id").and_then(Value::as_str) == Some(request_id))
+            .cloned(),
+        _ => None,
+    }
+}
+
+async fn get_inspector_circuits(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    let schematic = state.schematic.lock().unwrap();
+    let transition_count = schematic
+        .nodes
+        .iter()
+        .filter(|node| matches!(&node.kind, NodeKind::Atom))
+        .count();
+    let has_capability_rules = schematic.nodes.iter().any(|node| {
+        node.bus_capability
+            .as_ref()
+            .map(|policy| !policy.allow.is_empty() || !policy.deny.is_empty())
+            .unwrap_or(false)
+    });
+
+    Ok(inspector_envelope(
+        "inspector.circuits.v1",
+        serde_json::json!({
+            "count": 1,
+            "items": [
+                {
+                    "id": schematic.id,
+                    "name": schematic.name,
+                    "schema_version": schematic.schema_version,
+                    "node_count": schematic.nodes.len(),
+                    "edge_count": schematic.edges.len(),
+                    "transition_count": transition_count,
+                    "has_bus_capability_rules": has_capability_rules
+                }
+            ]
+        }),
+    ))
+}
+
+async fn get_inspector_circuit_by_name(
+    headers: HeaderMap,
+    AxPath(name): AxPath<String>,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    let schematic = state.schematic.lock().unwrap().clone();
+    if name != schematic.name && name != schematic.id {
+        return Err(policy_error(StatusCode::NOT_FOUND, "circuit_not_found"));
+    }
+
+    let public_projection_loaded = state
+        .public_projection
+        .lock()
+        .ok()
+        .map(|slot| slot.is_some())
+        .unwrap_or(false);
+    let internal_projection_loaded = state
+        .internal_projection
+        .lock()
+        .ok()
+        .map(|slot| slot.is_some())
+        .unwrap_or(false);
+
+    Ok(inspector_envelope(
+        "inspector.circuit.v1",
+        serde_json::json!({
+            "circuit": {
+                "id": schematic.id,
+                "name": schematic.name,
+                "schema_version": schematic.schema_version,
+                "node_count": schematic.nodes.len(),
+                "edge_count": schematic.edges.len(),
+            },
+            "runtime_state": {
+                "public_projection_loaded": public_projection_loaded,
+                "internal_projection_loaded": internal_projection_loaded,
+                "public_projection_path": state.public_projection_path,
+                "internal_projection_path": state.internal_projection_path,
+            },
+            "schematic": schematic
+        }),
+    ))
+}
+
+async fn get_inspector_bus(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    let schematic = state.schematic.lock().unwrap();
+
+    let mut resource_types = HashSet::new();
+    let mut transition_capabilities = Vec::new();
+
+    for node in &schematic.nodes {
+        if !node.resource_type.trim().is_empty() && node.resource_type != "()" {
+            resource_types.insert(node.resource_type.clone());
+        }
+        if !matches!(&node.kind, NodeKind::Atom) {
+            continue;
+        }
+
+        let mut allow = node
+            .bus_capability
+            .as_ref()
+            .map(|policy| policy.allow.clone())
+            .unwrap_or_default();
+        let mut deny = node
+            .bus_capability
+            .as_ref()
+            .map(|policy| policy.deny.clone())
+            .unwrap_or_default();
+        allow.sort();
+        deny.sort();
+        let access = if allow.is_empty() && deny.is_empty() {
+            "unrestricted"
+        } else {
+            "restricted"
+        };
+
+        transition_capabilities.push(serde_json::json!({
+            "transition": node.label,
+            "resource_type": node.resource_type,
+            "access": access,
+            "allow": allow,
+            "deny": deny
+        }));
+    }
+
+    let mut resources = resource_types.into_iter().collect::<Vec<_>>();
+    resources.sort();
+
+    Ok(inspector_envelope(
+        "inspector.bus.v1",
+        serde_json::json!({
+            "resource_types": resources,
+            "transition_capabilities": transition_capabilities
+        }),
+    ))
+}
+
+async fn get_inspector_timeline_by_request_id(
+    headers: HeaderMap,
+    AxPath(request_id): AxPath<String>,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    let projection = load_internal_projection_value(&state);
+    let trace = find_trace_by_request_id(&projection, &request_id)
+        .ok_or_else(|| policy_error(StatusCode::NOT_FOUND, "timeline_request_not_found"))?;
+
+    Ok(inspector_envelope(
+        "inspector.timeline.v1",
+        serde_json::json!({
+            "request_id": request_id,
+            "trace": trace
+        }),
+    ))
+}
+
 async fn ws_handler(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
@@ -866,10 +1100,41 @@ mod tests {
             .send()
             .await
             .expect("events request");
+        let circuits = client
+            .get(format!("http://127.0.0.1:{port}/inspector/circuits"))
+            .send()
+            .await
+            .expect("circuits request");
+        let bus = client
+            .get(format!("http://127.0.0.1:{port}/inspector/bus"))
+            .send()
+            .await
+            .expect("bus request");
+        let timeline = client
+            .get(format!(
+                "http://127.0.0.1:{port}/inspector/timeline/bootstrap"
+            ))
+            .send()
+            .await
+            .expect("timeline request");
 
         assert_eq!(quick.status(), reqwest::StatusCode::OK);
         assert_eq!(internal.status(), reqwest::StatusCode::OK);
         assert_ne!(events.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(circuits.status(), reqwest::StatusCode::OK);
+        assert_eq!(bus.status(), reqwest::StatusCode::OK);
+        assert_eq!(timeline.status(), reqwest::StatusCode::OK);
+        let circuits_json: Value =
+            serde_json::from_str(&circuits.text().await.expect("circuits text"))
+                .expect("circuits json");
+        let bus_json: Value =
+            serde_json::from_str(&bus.text().await.expect("bus text")).expect("bus json");
+        let timeline_json: Value =
+            serde_json::from_str(&timeline.text().await.expect("timeline text"))
+                .expect("timeline json");
+        assert_eq!(circuits_json["kind"], "inspector.circuits.v1");
+        assert_eq!(bus_json["kind"], "inspector.bus.v1");
+        assert_eq!(timeline_json["kind"], "inspector.timeline.v1");
 
         handle.abort();
     }
@@ -899,6 +1164,11 @@ mod tests {
             .send()
             .await
             .expect("events request");
+        let circuits = client
+            .get(format!("http://127.0.0.1:{port}/inspector/circuits"))
+            .send()
+            .await
+            .expect("circuits request");
         let public = client
             .get(format!("http://127.0.0.1:{port}/trace/public"))
             .send()
@@ -908,7 +1178,30 @@ mod tests {
         assert_eq!(quick.status(), reqwest::StatusCode::NOT_FOUND);
         assert_eq!(internal.status(), reqwest::StatusCode::NOT_FOUND);
         assert_eq!(events.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(circuits.status(), reqwest::StatusCode::NOT_FOUND);
         assert_eq!(public.status(), reqwest::StatusCode::OK);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn timeline_endpoint_returns_not_found_for_unknown_request() {
+        let port = free_port();
+        let inspector = Inspector::new(Schematic::new("timeline-test"), port).with_mode("dev");
+        let handle = tokio::spawn(async move {
+            let _ = inspector.serve().await;
+        });
+        wait_ready(port).await;
+
+        let client = reqwest::Client::new();
+        let timeline = client
+            .get(format!(
+                "http://127.0.0.1:{port}/inspector/timeline/unknown-request"
+            ))
+            .send()
+            .await
+            .expect("timeline request");
+        assert_eq!(timeline.status(), reqwest::StatusCode::NOT_FOUND);
 
         handle.abort();
     }
