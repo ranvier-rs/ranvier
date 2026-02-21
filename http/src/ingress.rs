@@ -18,8 +18,8 @@ use http::{Method, Request, Response, StatusCode};
 use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
-use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
+use hyper_util::service::TowerToHyperService;
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
 use std::collections::HashMap;
@@ -30,7 +30,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tower::Service;
+use tower::util::BoxCloneService;
+use tower::{Layer, Service, ServiceExt, service_fn};
 use tracing::Instrument;
 
 use crate::response::{IntoResponse, outcome_to_response_with_error};
@@ -58,6 +59,8 @@ type RouteHandler<R> = Arc<
         + Sync,
 >;
 
+type BoxHttpService = BoxCloneService<Request<Incoming>, Response<Full<Bytes>>, Infallible>;
+type ServiceLayer = Arc<dyn Fn(BoxHttpService) -> BoxHttpService + Send + Sync>;
 type LifecycleHook = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -207,6 +210,8 @@ pub struct HttpIngress<R = ()> {
     routes: Vec<RouteEntry<R>>,
     /// Fallback circuit for unmatched routes
     fallback: Option<RouteHandler<R>>,
+    /// Global middleware layers (LIFO execution on request path).
+    layers: Vec<ServiceLayer>,
     /// Lifecycle callback invoked after listener bind succeeds.
     on_start: Option<LifecycleHook>,
     /// Lifecycle callback invoked when graceful shutdown finishes.
@@ -226,6 +231,7 @@ where
             addr: None,
             routes: Vec::new(),
             fallback: None,
+            layers: Vec::new(),
             on_start: None,
             on_shutdown: None,
             graceful_shutdown_timeout: Duration::from_secs(30),
@@ -260,6 +266,27 @@ where
     /// Configure graceful shutdown timeout for in-flight request draining.
     pub fn graceful_shutdown(mut self, timeout: Duration) -> Self {
         self.graceful_shutdown_timeout = timeout;
+        self
+    }
+
+    /// Add a global Tower layer to the ingress service stack.
+    ///
+    /// Layers execute in LIFO order on the request path:
+    /// the last layer added is the first to receive the request.
+    pub fn layer<L>(mut self, layer: L) -> Self
+    where
+        L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
+        L::Service:
+            Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+                + Clone
+                + Send
+                + 'static,
+        <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
+    {
+        self.layers
+            .push(Arc::new(move |service: BoxHttpService| {
+                BoxCloneService::new(layer.clone().layer(service))
+            }));
         self
     }
 
@@ -477,6 +504,7 @@ where
 
         let routes = Arc::new(self.routes);
         let fallback = self.fallback;
+        let layers = Arc::new(self.layers);
         let on_start = self.on_start;
         let on_shutdown = self.on_shutdown;
         let graceful_shutdown_timeout = self.graceful_shutdown_timeout;
@@ -504,36 +532,15 @@ where
                     let routes = routes.clone();
                     let fallback = fallback.clone();
                     let resources = resources.clone();
+                    let layers = layers.clone();
 
                     connections.spawn(async move {
-                        let resources = resources.clone();
-                        let service = service_fn(move |req: Request<Incoming>| {
-                            let routes = routes.clone();
-                            let fallback = fallback.clone();
-                            let resources = resources.clone();
-
-                            async move {
-                                let mut req = req;
-                                let method = req.method().clone();
-                                let path = req.uri().path().to_string();
-
-                                if let Some((handler, params)) =
-                                    find_matching_route(routes.as_slice(), &method, &path)
-                                {
-                                    req.extensions_mut().insert(params);
-                                    Ok::<_, Infallible>(handler(req, &resources).await)
-                                } else if let Some(ref fb) = fallback {
-                                    Ok(fb(req, &resources).await)
-                                } else {
-                                    Ok(Response::builder()
-                                        .status(StatusCode::NOT_FOUND)
-                                        .body(Full::new(Bytes::from("Not Found")))
-                                        .unwrap())
-                                }
-                            }
-                        });
-
-                        if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+                        let service = build_http_service(routes, fallback, resources, layers);
+                        let hyper_service = TowerToHyperService::new(service);
+                        if let Err(err) = http1::Builder::new()
+                            .serve_connection(io, hyper_service)
+                            .await
+                        {
                             tracing::error!("Error serving connection: {:?}", err);
                         }
                     });
@@ -574,14 +581,57 @@ where
     pub fn into_raw_service(self, resources: R) -> RawIngressService<R> {
         let routes = Arc::new(self.routes);
         let fallback = self.fallback;
+        let layers = Arc::new(self.layers);
         let resources = Arc::new(resources);
 
         RawIngressService {
             routes,
             fallback,
+            layers,
             resources,
         }
     }
+}
+
+fn build_http_service<R>(
+    routes: Arc<Vec<RouteEntry<R>>>,
+    fallback: Option<RouteHandler<R>>,
+    resources: Arc<R>,
+    layers: Arc<Vec<ServiceLayer>>,
+) -> BoxHttpService
+where
+    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+{
+    let base_service = service_fn(move |req: Request<Incoming>| {
+        let routes = routes.clone();
+        let fallback = fallback.clone();
+        let resources = resources.clone();
+
+        async move {
+            let mut req = req;
+            let method = req.method().clone();
+            let path = req.uri().path().to_string();
+
+            if let Some((handler, params)) = find_matching_route(routes.as_slice(), &method, &path)
+            {
+                req.extensions_mut().insert(params);
+                Ok::<_, Infallible>(handler(req, &resources).await)
+            } else if let Some(ref fb) = fallback {
+                Ok(fb(req, &resources).await)
+            } else {
+                Ok(Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Full::new(Bytes::from("Not Found")))
+                    .unwrap())
+            }
+        }
+    });
+
+    let mut service = BoxCloneService::new(base_service);
+    for layer in layers.iter() {
+        service = layer(service);
+    }
+    service
 }
 
 async fn shutdown_signal() {
@@ -661,6 +711,7 @@ where
 pub struct RawIngressService<R> {
     routes: Arc<Vec<RouteEntry<R>>>,
     fallback: Option<RouteHandler<R>>,
+    layers: Arc<Vec<ServiceLayer>>,
     resources: Arc<R>,
 }
 
@@ -682,25 +733,12 @@ where
     fn call(&mut self, req: Request<Incoming>) -> Self::Future {
         let routes = self.routes.clone();
         let fallback = self.fallback.clone();
+        let layers = self.layers.clone();
         let resources = self.resources.clone();
 
         Box::pin(async move {
-            let mut req = req;
-            let method = req.method().clone();
-            let path = req.uri().path().to_string();
-
-            if let Some((handler, params)) = find_matching_route(routes.as_slice(), &method, &path)
-            {
-                req.extensions_mut().insert(params);
-                Ok(handler(req, &resources).await)
-            } else if let Some(ref fb) = fallback {
-                Ok(fb(req, &resources).await)
-            } else {
-                Ok(Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .body(Full::new(Bytes::from("Not Found")))
-                    .unwrap())
-            }
+            let service = build_http_service(routes, fallback, resources, layers);
+            service.oneshot(req).await
         })
     }
 }
@@ -746,8 +784,23 @@ mod tests {
     fn graceful_shutdown_timeout_defaults_to_30_seconds() {
         let ingress = HttpIngress::<()>::new();
         assert_eq!(ingress.graceful_shutdown_timeout, Duration::from_secs(30));
+        assert!(ingress.layers.is_empty());
         assert!(ingress.on_start.is_none());
         assert!(ingress.on_shutdown.is_none());
+    }
+
+    #[test]
+    fn layer_registration_stacks_globally() {
+        let ingress = HttpIngress::<()>::new()
+            .layer(tower::layer::util::Identity::new())
+            .layer(tower::layer::util::Identity::new());
+        assert_eq!(ingress.layers.len(), 2);
+    }
+
+    #[test]
+    fn layer_accepts_tower_http_cors_layer() {
+        let ingress = HttpIngress::<()>::new().layer(tower_http::cors::CorsLayer::permissive());
+        assert_eq!(ingress.layers.len(), 1);
     }
 
     #[tokio::test]
