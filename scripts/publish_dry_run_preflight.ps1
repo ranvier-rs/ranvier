@@ -20,7 +20,7 @@ function Write-Log {
     param([string]$Message)
     $line = "[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $Message
     Write-Host $line
-    Add-Content -Path $evidencePath -Value $line
+    Add-Content -Path $evidencePath -Value $line -Encoding utf8
 }
 
 function Resolve-CrateSet {
@@ -63,6 +63,101 @@ function Resolve-CrateSet {
     }
 }
 
+function Resolve-PublishPlan {
+    param(
+        [string[]]$Crates,
+        [string]$WorkspaceRoot
+    )
+
+    $crateSet = New-Object "System.Collections.Generic.HashSet[string]"
+    foreach ($crate in $Crates) {
+        [void]$crateSet.Add($crate)
+    }
+
+    $manifestPath = Join-Path $WorkspaceRoot "Cargo.toml"
+    $metadataRaw = & cargo metadata --format-version 1 --no-deps --offline --manifest-path $manifestPath 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to resolve cargo metadata for publish plan."
+    }
+    $metadata = $metadataRaw | ConvertFrom-Json
+
+    $packagesByName = @{}
+    foreach ($pkg in $metadata.packages) {
+        $packagesByName[$pkg.name] = $pkg
+    }
+
+    $dependencyMap = @{}
+    $adjacency = @{}
+    $indegree = @{}
+
+    foreach ($crate in $Crates) {
+        $dependencyMap[$crate] = @()
+        $adjacency[$crate] = @()
+        $indegree[$crate] = 0
+    }
+
+    foreach ($crate in $Crates) {
+        if (-not $packagesByName.ContainsKey($crate)) {
+            continue
+        }
+
+        $deps = New-Object System.Collections.Generic.List[string]
+        foreach ($dep in $packagesByName[$crate].dependencies) {
+            if ($crateSet.Contains($dep.name)) {
+                $deps.Add($dep.name)
+            }
+        }
+        $uniqueDeps = @($deps | Sort-Object -Unique)
+        $dependencyMap[$crate] = $uniqueDeps
+
+        foreach ($depName in $uniqueDeps) {
+            $adjacency[$depName] = @($adjacency[$depName] + $crate)
+            $indegree[$crate] = [int]$indegree[$crate] + 1
+        }
+    }
+
+    $queue = New-Object "System.Collections.Generic.SortedSet[string]"
+    foreach ($crate in ($Crates | Sort-Object -Unique)) {
+        if ([int]$indegree[$crate] -eq 0) {
+            [void]$queue.Add($crate)
+        }
+    }
+
+    $order = New-Object System.Collections.Generic.List[string]
+    while ($queue.Count -gt 0) {
+        $next = $queue.Min
+        [void]$queue.Remove($next)
+        $order.Add($next)
+
+        foreach ($dependent in @($adjacency[$next] | Sort-Object -Unique)) {
+            $indegree[$dependent] = [int]$indegree[$dependent] - 1
+            if ([int]$indegree[$dependent] -eq 0) {
+                [void]$queue.Add($dependent)
+            }
+        }
+    }
+
+    if ($order.Count -ne $Crates.Count) {
+        $remaining = @($Crates | Where-Object { -not $order.Contains($_) } | Sort-Object -Unique)
+        foreach ($crate in $remaining) {
+            $order.Add($crate)
+        }
+    }
+
+    $edges = New-Object System.Collections.Generic.List[string]
+    foreach ($crate in $Crates) {
+        foreach ($depName in @($dependencyMap[$crate])) {
+            $edges.Add("$depName -> $crate")
+        }
+    }
+
+    return @{
+        publish_order = @($order)
+        dependency_map = $dependencyMap
+        dependency_edges = @($edges | Sort-Object -Unique)
+    }
+}
+
 function Invoke-PublishDryRun {
     param(
         [string]$Crate,
@@ -80,9 +175,21 @@ function Invoke-PublishDryRun {
         $args += "--allow-dirty"
     }
 
-    Write-Log "Running: cargo $($args -join ' ')"
-    & cargo @args 2>&1 | Tee-Object -FilePath $crateLogPath | Tee-Object -FilePath $evidencePath -Append | Out-Null
-    $exitCode = $LASTEXITCODE
+    $commandLine = "cargo $($args -join ' ')"
+    Write-Log "Running: $commandLine"
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $commandOutput = & cargo @args 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    $outputLines = @($commandOutput | ForEach-Object { $_.ToString() })
+    Set-Content -Path $crateLogPath -Value $outputLines -Encoding utf8
+    Add-Content -Path $evidencePath -Value $outputLines -Encoding utf8
 
     $tail = @()
     if (Test-Path $crateLogPath) {
@@ -93,7 +200,7 @@ function Invoke-PublishDryRun {
         crate = $Crate
         success = ($exitCode -eq 0)
         exit_code = $exitCode
-        command = "cargo $($args -join ' ')"
+        command = $commandLine
         log_path = $crateLogPath
         tail = $tail
     }
@@ -103,9 +210,21 @@ $crates = Resolve-CrateSet -Key $profileKey
 Write-Log "Publish dry-run preflight started (profile=$profileKey, allow_dirty=$allowDirty)"
 Write-Log "Workspace root: $workspaceRoot"
 Write-Log "Crates: $($crates -join ', ')"
+Write-Log "Resolving publish order plan from workspace metadata..."
+try {
+    $publishPlan = Resolve-PublishPlan -Crates $crates -WorkspaceRoot "$workspaceRoot"
+    Write-Log "Suggested publish order: $($publishPlan.publish_order -join ', ')"
+} catch {
+    Write-Log "WARN: publish order planning failed; using profile order. reason=$($_.Exception.Message)"
+    $publishPlan = @{
+        publish_order = @($crates)
+        dependency_map = @{}
+        dependency_edges = @()
+    }
+}
 
 $results = New-Object System.Collections.Generic.List[object]
-foreach ($crate in $crates) {
+foreach ($crate in @($publishPlan.publish_order)) {
     $result = Invoke-PublishDryRun -Crate $crate -AllowDirty:$allowDirty -WorkspaceRoot $workspaceRoot -EvidenceDir $EvidenceDir -Timestamp $timestamp
     $results.Add($result)
     if ($result.success) {
@@ -125,10 +244,12 @@ $summary = [ordered]@{
     passed = ($results.Count - $failed.Count)
     failed = $failed.Count
     failed_crates = @($failed | ForEach-Object { $_.crate })
+    suggested_publish_order = @($publishPlan.publish_order)
+    dependency_edges = @($publishPlan.dependency_edges)
     results = $results
 }
 
-$summary | ConvertTo-Json -Depth 8 | Set-Content -Path $summaryPath
+$summary | ConvertTo-Json -Depth 8 | Set-Content -Path $summaryPath -Encoding utf8
 Write-Log "Summary JSON: $summaryPath"
 
 if ($failed.Count -gt 0) {
