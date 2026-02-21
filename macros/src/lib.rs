@@ -1,5 +1,5 @@
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{ToTokens, quote};
 use syn::{FnArg, GenericArgument, ItemFn, PathArguments, ReturnType, Type, parse_macro_input};
 
 /// Attribute macro to transform an async function into a `Transition` implementation.
@@ -19,6 +19,10 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Parse attribute for explicit resource type override
     let mut res_override = None;
+    let mut bus_allow_types: Vec<Type> = Vec::new();
+    let mut bus_deny_types: Vec<Type> = Vec::new();
+    let mut bus_allow_specified = false;
+    let mut bus_deny_specified = false;
     if !attr.is_empty() {
         let parser = syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated;
         if let Ok(metas) = syn::parse::Parser::parse2(parser, attr.into()) {
@@ -26,6 +30,18 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
                 if let syn::Meta::NameValue(nv) = meta {
                     if nv.path.is_ident("res") {
                         res_override = Some(nv.value);
+                    } else if nv.path.is_ident("bus_allow") {
+                        bus_allow_specified = true;
+                        match parse_type_array_expr(&nv.value) {
+                            Ok(types) => bus_allow_types = types,
+                            Err(err) => return err.to_compile_error().into(),
+                        }
+                    } else if nv.path.is_ident("bus_deny") {
+                        bus_deny_specified = true;
+                        match parse_type_array_expr(&nv.value) {
+                            Ok(types) => bus_deny_types = types,
+                            Err(err) => return err.to_compile_error().into(),
+                        }
                     }
                 }
             }
@@ -112,6 +128,33 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
         _ => quote! { #block },
     };
 
+    let bus_policy_method = if bus_allow_specified || bus_deny_specified {
+        let allow_expr = if bus_allow_specified {
+            quote! {
+                Some(vec![#(ranvier_core::bus::BusTypeRef::of::<#bus_allow_types>()),*])
+            }
+        } else {
+            quote! { None }
+        };
+        let deny_expr = if bus_deny_specified {
+            quote! {
+                vec![#(ranvier_core::bus::BusTypeRef::of::<#bus_deny_types>()),*]
+            }
+        } else {
+            quote! { Vec::new() }
+        };
+        quote! {
+            fn bus_access_policy(&self) -> Option<ranvier_core::bus::BusAccessPolicy> {
+                Some(ranvier_core::bus::BusAccessPolicy {
+                    allow: #allow_expr,
+                    deny: #deny_expr,
+                })
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     let expanded = quote! {
         #[derive(Clone, Default)]
         #[allow(non_camel_case_types)]
@@ -121,6 +164,8 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
         impl ranvier_core::transition::Transition<#input_type, #output_type> for #original_ident {
             type Error = #error_type;
             type Resources = #res_type;
+
+            #bus_policy_method
 
             async fn run(
                 &self,
@@ -247,10 +292,25 @@ fn is_bus_argument(arg: &FnArg) -> bool {
         .unwrap_or(false)
 }
 
+fn parse_type_array_expr(expr: &syn::Expr) -> syn::Result<Vec<Type>> {
+    let syn::Expr::Array(array) = expr else {
+        return Err(syn::Error::new_spanned(
+            expr,
+            "expected array syntax: [TypeA, TypeB]",
+        ));
+    };
+
+    array
+        .elems
+        .iter()
+        .map(|elem| syn::parse2::<Type>(elem.to_token_stream()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_bus_argument;
-    use syn::{FnArg, parse_quote};
+    use super::{is_bus_argument, parse_type_array_expr};
+    use syn::{Expr, FnArg, parse_quote};
 
     #[test]
     fn detects_mut_bus_reference_argument() {
@@ -268,5 +328,12 @@ mod tests {
     fn rejects_non_bus_argument() {
         let arg: FnArg = parse_quote!(res: &MyResources);
         assert!(!is_bus_argument(&arg));
+    }
+
+    #[test]
+    fn parses_type_array_expr_for_bus_policy() {
+        let expr: Expr = parse_quote!([i32, alloc::string::String]);
+        let parsed = parse_type_array_expr(&expr).expect("type array should parse");
+        assert_eq!(parsed.len(), 2);
     }
 }

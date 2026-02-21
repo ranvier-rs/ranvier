@@ -20,7 +20,7 @@ pub use static_gen::{
 
 // Prelude module for convenient imports
 pub mod prelude {
-    pub use crate::bus::Bus;
+    pub use crate::bus::{Bus, BusAccessError, BusAccessPolicy, BusTypeRef};
     pub use crate::event::{EventSink, EventSource};
     pub use crate::metadata::StepMetadata;
     pub use crate::outcome::{BranchId, NodeId, Outcome};
@@ -33,7 +33,7 @@ pub mod prelude {
 // pub mod circuit;
 // pub mod service; // Moved to ranvier-http
 
-pub use bus::Bus;
+pub use bus::{Bus, BusAccessError, BusAccessPolicy, BusTypeRef};
 pub use outcome::Outcome;
 pub use schematic::Schematic;
 pub use transition::Transition;

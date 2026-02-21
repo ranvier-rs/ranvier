@@ -192,12 +192,14 @@ where
         // Compose Executor
         let node_id_for_exec = next_node_id.clone();
         let node_label_for_exec = transition.label();
+        let bus_policy_for_exec = transition.bus_access_policy();
         let next_executor: Executor<In, Next, E, Res> = Arc::new(
             move |input: In, res: &Res, bus: &mut Bus| -> BoxFuture<'_, Outcome<Next, E>> {
                 let prev = prev_executor.clone();
                 let trans = transition.clone();
                 let timeline_node_id = node_id_for_exec.clone();
                 let timeline_node_label = node_label_for_exec.clone();
+                let transition_bus_policy = bus_policy_for_exec.clone();
 
                 Box::pin(async move {
                     // Run previous step
@@ -233,10 +235,12 @@ where
                         ranvier.outcome_target = tracing::field::Empty
                     );
                     let started = std::time::Instant::now();
+                    bus.set_access_policy(label.clone(), transition_bus_policy.clone());
                     let result = trans
                         .run(state, res, bus)
                         .instrument(node_span.clone())
                         .await;
+                    bus.clear_access_policy();
                     node_span.record("ranvier.outcome_kind", outcome_kind_name(&result));
                     if let Some(target) = outcome_target(&result) {
                         node_span
@@ -442,7 +446,6 @@ where
                 .with_projection_files_from_env()
                 .with_mode_from_env()
                 .with_auth_policy_from_env()
-                .with_redaction_policy_from_env()
                 .serve()
                 .await
             {
@@ -1096,7 +1099,7 @@ mod tests {
     };
     use anyhow::Result;
     use async_trait::async_trait;
-    use ranvier_core::{Bus, Outcome, Transition};
+    use ranvier_core::{Bus, BusAccessPolicy, BusTypeRef, Outcome, Transition};
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use uuid::Uuid;
@@ -1173,6 +1176,31 @@ mod tests {
             _bus: &mut Bus,
         ) -> Outcome<i32, Self::Error> {
             Outcome::Fault("boom")
+        }
+    }
+
+    #[derive(Clone)]
+    struct CapabilityGuarded;
+
+    #[async_trait]
+    impl Transition<(), ()> for CapabilityGuarded {
+        type Error = String;
+        type Resources = ();
+
+        fn bus_access_policy(&self) -> Option<BusAccessPolicy> {
+            Some(BusAccessPolicy::allow_only(vec![BusTypeRef::of::<i32>()]))
+        }
+
+        async fn run(
+            &self,
+            _state: (),
+            _resources: &Self::Resources,
+            bus: &mut Bus,
+        ) -> Outcome<(), Self::Error> {
+            match bus.get::<String>() {
+                Ok(_) => Outcome::Next(()),
+                Err(err) => Outcome::Fault(err.to_string()),
+            }
         }
     }
 
@@ -1476,5 +1504,24 @@ mod tests {
         assert_eq!(recorded.len(), 1);
         assert_eq!(*read_calls.lock().await, 1);
         assert_eq!(*write_calls.lock().await, 1);
+    }
+
+    #[tokio::test]
+    async fn transition_bus_policy_blocks_unauthorized_resource_access() {
+        let mut bus = Bus::new();
+        bus.insert(1_i32);
+        bus.insert("secret".to_string());
+
+        let axon = Axon::<(), (), String>::start("BusPolicy").then(CapabilityGuarded);
+        let outcome = axon.execute((), &(), &mut bus).await;
+
+        match outcome {
+            Outcome::Fault(msg) => {
+                assert!(msg.contains("Bus access denied"), "{msg}");
+                assert!(msg.contains("CapabilityGuarded"), "{msg}");
+                assert!(msg.contains("alloc::string::String"), "{msg}");
+            }
+            other => panic!("expected fault, got {other:?}"),
+        }
     }
 }

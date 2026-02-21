@@ -2381,6 +2381,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn graceful_shutdown_drains_in_flight_requests_before_exit() {
+        #[derive(Clone)]
+        struct SlowDrainRoute;
+
+        #[async_trait]
+        impl Transition<(), &'static str> for SlowDrainRoute {
+            type Error = Infallible;
+            type Resources = ();
+
+            async fn run(
+                &self,
+                _state: (),
+                _resources: &Self::Resources,
+                _bus: &mut Bus,
+            ) -> Outcome<&'static str, Self::Error> {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                Outcome::next("drained-ok")
+            }
+        }
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
+        let addr = probe.local_addr().expect("local addr");
+        drop(probe);
+
+        let ingress = HttpIngress::<()>::new()
+            .bind(addr.to_string())
+            .graceful_shutdown(Duration::from_millis(500))
+            .get(
+                "/drain",
+                Axon::<(), (), Infallible, ()>::new("SlowDrain").then(SlowDrainRoute),
+            );
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            ingress
+                .run_with_shutdown_signal((), async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let mut stream = connect_with_retry(addr).await;
+        stream
+            .write_all(b"GET /drain HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("write request");
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let _ = shutdown_tx.send(());
+
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await.expect("read response");
+        let response = String::from_utf8_lossy(&buf);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains("drained-ok"), "{response}");
+
+        server
+            .await
+            .expect("server join")
+            .expect("server shutdown should succeed");
+    }
+
+    #[tokio::test]
     async fn serve_dir_serves_static_file_with_cache_and_metadata_headers() {
         let temp = tempdir().expect("tempdir");
         let root = temp.path().join("public");

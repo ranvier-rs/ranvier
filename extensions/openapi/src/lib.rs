@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use http::Method;
 use ranvier_core::Schematic;
-use ranvier_http::{HttpIngress, HttpRouteDescriptor};
+use ranvier_http::{FromRequest, HttpIngress, HttpRouteDescriptor, IntoResponse};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -240,7 +240,7 @@ impl OpenApiGenerator {
         path_pattern: impl AsRef<str>,
     ) -> Self
     where
-        T: ranvier_http::FromRequest + JsonSchema,
+        T: FromRequest + JsonSchema,
     {
         self.json_request_schema::<T>(method, path_pattern)
     }
@@ -266,7 +266,7 @@ impl OpenApiGenerator {
         path_pattern: impl AsRef<str>,
     ) -> Self
     where
-        T: ranvier_http::IntoResponse + JsonSchema,
+        T: IntoResponse + JsonSchema,
     {
         self.json_response_schema::<T>(method, path_pattern)
     }

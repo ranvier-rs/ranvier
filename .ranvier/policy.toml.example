@@ -1,0 +1,17 @@
+# Ranvier schematic policy baseline
+# Copy this file to `.ranvier/policy.toml` in your cargo workspace root
+# and tune thresholds per repository.
+
+[schematic]
+# Block accidental transition removal in PRs.
+deny_node_removal = true
+
+# Keep edge removal permissive while wiring is still evolving.
+deny_edge_removal = false
+
+# Soft growth controls for iterative PRs.
+max_added_nodes = 3
+max_removed_nodes = 0
+
+# Turn on when every Atom has an explicit Fault edge path.
+require_fault_handlers = false

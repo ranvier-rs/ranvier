@@ -8,7 +8,7 @@
 //! * **No Hidden Effects**: All effects must go through the `Bus`
 //! * **Outcome-Based Control Flow**: Returns `Outcome` not `Result`
 
-use crate::bus::Bus;
+use crate::bus::{Bus, BusAccessPolicy};
 use crate::outcome::Outcome;
 use async_trait::async_trait;
 use std::fmt::Debug;
@@ -100,6 +100,13 @@ where
         None
     }
 
+    /// Optional transition-scoped Bus access policy (M143).
+    ///
+    /// Default is unrestricted access for backward compatibility.
+    fn bus_access_policy(&self) -> Option<BusAccessPolicy> {
+        None
+    }
+
     /// Execute the transition.
     ///
     /// # Parameters
@@ -139,6 +146,10 @@ where
         bus: &mut Bus,
     ) -> Outcome<To, Self::Error> {
         self.as_ref().run(state, resources, bus).await
+    }
+
+    fn bus_access_policy(&self) -> Option<BusAccessPolicy> {
+        self.as_ref().bus_access_policy()
     }
 }
 

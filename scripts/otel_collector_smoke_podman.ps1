@@ -77,7 +77,9 @@ try {
 
     $serviceMatch = Select-String -Path $collectorLog -Pattern "service.name: Str(otel-demo)" -SimpleMatch
     $spansMatch = Select-String -Path $collectorLog -Pattern "ResourceSpans" -SimpleMatch
+    $metricsMatch = Select-String -Path $collectorLog -Pattern "ResourceMetrics" -SimpleMatch
     $appErrorMatch = Select-String -Path $appLog -Pattern "OpenTelemetry trace error" -SimpleMatch
+    $appMetricErrorMatch = Select-String -Path $appLog -Pattern "OpenTelemetry metrics error" -SimpleMatch
 
     if (-not $serviceMatch) {
         throw "Collector log does not contain service.name=otel-demo."
@@ -87,8 +89,16 @@ try {
         throw "Collector log does not contain ResourceSpans."
     }
 
+    if (-not $metricsMatch) {
+        throw "Collector log does not contain ResourceMetrics."
+    }
+
     if ($appErrorMatch) {
         throw "App log contains OpenTelemetry trace error."
+    }
+
+    if ($appMetricErrorMatch) {
+        throw "App log contains OpenTelemetry metrics error."
     }
 
     Write-Host "OTel smoke passed."

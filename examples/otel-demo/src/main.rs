@@ -1,8 +1,11 @@
 use async_trait::async_trait;
+use opentelemetry::KeyValue;
+use opentelemetry_otlp::{Protocol, WithExportConfig};
 use ranvier_core::prelude::*;
 use ranvier_observe::{init_otlp_tracing_with_protocol, init_stdout_tracing, OtlpProtocolPreset};
 use ranvier_runtime::Axon;
 use std::str::FromStr;
+use std::time::Duration;
 use tracing::instrument;
 
 // Define a simple Transition
@@ -31,6 +34,40 @@ impl Transition<i32, i32> for AddOne {
     }
 }
 
+fn init_otlp_metrics(
+    service_name: &str,
+    endpoint: &str,
+    protocol: OtlpProtocolPreset,
+) -> anyhow::Result<opentelemetry_sdk::metrics::SdkMeterProvider> {
+    let pipeline = opentelemetry_otlp::new_pipeline()
+        .metrics(opentelemetry_sdk::runtime::Tokio)
+        .with_resource(opentelemetry_sdk::Resource::new(vec![KeyValue::new(
+            "service.name",
+            service_name.to_string(),
+        )]))
+        .with_period(Duration::from_millis(300));
+
+    let provider = match protocol {
+        OtlpProtocolPreset::Grpc => pipeline
+            .with_exporter(
+                opentelemetry_otlp::new_exporter()
+                    .tonic()
+                    .with_endpoint(endpoint),
+            )
+            .build()?,
+        OtlpProtocolPreset::HttpProtobuf => pipeline
+            .with_exporter(
+                opentelemetry_otlp::new_exporter()
+                    .http()
+                    .with_endpoint(endpoint)
+                    .with_protocol(Protocol::HttpBinary),
+            )
+            .build()?,
+    };
+
+    Ok(provider)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // 1. Initialize tracing:
@@ -53,11 +90,14 @@ async fn main() -> anyhow::Result<()> {
         .or_else(|| std::env::var("OTEL_EXPORTER_OTLP_PROTOCOL").ok())
         .unwrap_or_else(|| "grpc".to_string());
 
+    let mut meter_provider = None;
+
     if let Some(endpoint) = otlp_endpoint {
         let protocol = OtlpProtocolPreset::from_str(&otlp_protocol_raw)?;
         init_otlp_tracing_with_protocol("otel-demo", &endpoint, protocol)?;
+        meter_provider = Some(init_otlp_metrics("otel-demo", &endpoint, protocol)?);
         tracing::info!(
-            "OTLP tracing initialized. endpoint={} protocol={}",
+            "OTLP tracing+metrics initialized. endpoint={} protocol={}",
             endpoint,
             protocol.as_str()
         );
@@ -79,7 +119,28 @@ async fn main() -> anyhow::Result<()> {
     let mut bus = Bus::new();
     let result = axon.execute(10, &(), &mut bus).await;
 
+    let meter = opentelemetry::global::meter("otel-demo");
+    let run_counter = meter
+        .u64_counter("ranvier_demo_runs_total")
+        .with_description("Number of otel-demo Axon execution runs")
+        .init();
+    let outcome_value = match &result {
+        Outcome::Next(_) => "next",
+        Outcome::Branch(_, _) => "branch",
+        Outcome::Fault(_) => "fault",
+        Outcome::Jump(_, _) => "jump",
+        Outcome::Emit(_, _) => "emit",
+    };
+    run_counter.add(1, &[KeyValue::new("outcome", outcome_value)]);
+
     tracing::info!("Execution Result: {:?}", result);
+
+    // Allow PeriodicReader to export a metrics cycle before shutdown in short-lived smoke runs.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    if let Some(provider) = meter_provider {
+        let _ = provider.shutdown();
+    }
 
     // Flush trace pipeline on process exit.
     opentelemetry::global::shutdown_tracer_provider();
