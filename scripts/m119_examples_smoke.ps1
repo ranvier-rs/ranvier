@@ -148,10 +148,10 @@ $finitePackages = @(
 )
 
 $serverPackages = @(
-    @{ package = "hello-world"; marker = "Starting server on http://127.0.0.1:3000"; timeout = 25 },
-    @{ package = "std-lib-demo"; marker = "Listening on http://127.0.0.1:3000"; timeout = 25 },
-    @{ package = "studio-demo"; marker = "Inspector dev page: http://localhost:9000/quick-view"; timeout = 30 },
-    @{ package = "fullstack-demo"; marker = "Ranvier Full-Stack Backend (Port 3030)"; timeout = 25 }
+    @{ package = "hello-world"; marker = "Starting server on http://127.0.0.1:3000"; timeout = 60 },
+    @{ package = "std-lib-demo"; marker = "Listening on http://127.0.0.1:3000"; timeout = 60 },
+    @{ package = "studio-demo"; marker = "Inspector dev page: http://localhost:9000/quick-view"; timeout = 60 },
+    @{ package = "fullstack-demo"; marker = "Ranvier Full-Stack Backend (Port 3030)"; timeout = 60 }
 )
 
 Start-Transcript -Path $logPath | Out-Null

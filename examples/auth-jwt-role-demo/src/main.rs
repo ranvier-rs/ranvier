@@ -68,8 +68,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ranvier::http::<()>()
         .bind("127.0.0.1:3107")
-        .layer(BearerAuthLayer::new_hs256(JWT_SECRET).required())
         .layer(RequireRoleLayer::new("admin"))
+        // Global layers execute in LIFO order on request path.
+        // Register role guard first so Bearer auth runs before role evaluation.
+        .layer(BearerAuthLayer::new_hs256(JWT_SECRET).required())
         .bus_injector(inject_auth_context)
         .get("/admin", secure_admin)
         .run(())
