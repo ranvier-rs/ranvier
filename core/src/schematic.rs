@@ -6,6 +6,35 @@ use uuid::Uuid;
 /// 스키마 버전 상수
 pub const SCHEMA_VERSION: &str = "1.0";
 
+fn default_schema_version() -> String {
+    SCHEMA_VERSION.to_string()
+}
+
+fn parse_schema_version(version: &str) -> Option<(u64, u64)> {
+    let trimmed = version.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut parts = trimmed.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor))
+}
+
+/// Returns true when the provided schematic schema version is supported by this crate.
+///
+/// Compatibility is evaluated at major-version level.
+pub fn is_supported_schema_version(version: &str) -> bool {
+    let Some((major, _)) = parse_schema_version(version) else {
+        return false;
+    };
+    let Some((supported_major, _)) = parse_schema_version(SCHEMA_VERSION) else {
+        return false;
+    };
+    major == supported_major
+}
+
 /// The Static Analysis View of a Circuit.
 ///
 /// `Schematic` is the graph representation extracted from the Axon Builder.
@@ -13,6 +42,7 @@ pub const SCHEMA_VERSION: &str = "1.0";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Schematic {
     /// 스키마 버전 (호환성 체크용)
+    #[serde(default = "default_schema_version")]
     pub schema_version: String,
     /// Circuit 고유 식별자
     pub id: String,
@@ -50,6 +80,10 @@ impl Schematic {
             name: name.into(),
             ..Default::default()
         }
+    }
+
+    pub fn is_supported_schema_version(&self) -> bool {
+        is_supported_schema_version(&self.schema_version)
     }
 
     /// 기존 ID를 유지하면서 새 Schematic 생성
@@ -152,6 +186,7 @@ mod tests {
     fn test_schematic_default_has_version_and_id() {
         let schematic = Schematic::new("Test Circuit");
         assert_eq!(schematic.schema_version, SCHEMA_VERSION);
+        assert!(schematic.is_supported_schema_version());
         assert!(!schematic.id.is_empty());
         assert!(schematic.generated_at.is_some());
     }
@@ -184,5 +219,29 @@ mod tests {
 
         let loc_with_col = SourceLocation::with_column("src/lib.rs", 10, 5);
         assert_eq!(loc_with_col.column, Some(5));
+    }
+
+    #[test]
+    fn test_schema_version_defaults_when_missing_in_json() {
+        let json = r#"{
+            "id": "test-id",
+            "name": "Legacy Schematic",
+            "nodes": [],
+            "edges": []
+        }"#;
+        let schematic: Schematic = serde_json::from_str(json).unwrap();
+        assert_eq!(schematic.schema_version, SCHEMA_VERSION);
+        assert!(schematic.is_supported_schema_version());
+    }
+
+    #[test]
+    fn test_supported_schema_version_major_compatibility() {
+        assert!(is_supported_schema_version("1"));
+        assert!(is_supported_schema_version("1.0"));
+        assert!(is_supported_schema_version("1.1"));
+        assert!(is_supported_schema_version("1.0.9"));
+        assert!(!is_supported_schema_version("2.0"));
+        assert!(!is_supported_schema_version(""));
+        assert!(!is_supported_schema_version("invalid"));
     }
 }
