@@ -2253,6 +2253,7 @@ name = "ranvier-http"
 version = "0.1.2"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bytes",
  "futures-util",
  "http 1.4.0",
@@ -2265,9 +2266,11 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "sha1",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-tungstenite",
  "tower 0.5.3",
  "tower-http 0.5.2",
  "tracing",
@@ -4040,6 +4043,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22cfaf3c063993ff62e73cb4311efde4db1efb31ab78a3e5c457939ad5cc0bed"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "websocket-ingress-demo"
+version = "0.1.0"
+dependencies = [
+ "ranvier-core",
+ "ranvier-http",
+ "serde",
+ "tokio",
 ]
 
 [[package]]

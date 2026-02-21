@@ -21,6 +21,7 @@ ranvier-runtime = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
+tokio-tungstenite = "0.24"
 
 # HTTP / Tower Stack
 hyper = { workspace = true }
@@ -40,6 +41,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_urlencoded = "0.7"
 validator = { version = "0.20", features = ["derive"], optional = true }
+base64 = "0.22"
+sha1 = "0.10"
 
 [dev-dependencies]
 tempfile = "3.14"

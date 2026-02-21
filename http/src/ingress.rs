@@ -13,17 +13,23 @@
 //!
 //! User code depth ≤ 2. Complexity is isolated, not hidden.
 
+use base64::Engine;
 use bytes::Bytes;
+use futures_util::{SinkExt, StreamExt};
 use http::{Method, Request, Response, StatusCode, Uri};
 use http_body::Body;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
+use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
+use ranvier_core::event::{EventSink, EventSource};
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
+use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
@@ -32,6 +38,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::{Error as WsWireError, Message as WsWireMessage};
 use tower::util::BoxCloneService;
 use tower::{Layer, Service, ServiceExt, service_fn};
 use tower_http::compression::CompressionLayer;
@@ -67,9 +76,14 @@ type BoxHttpService = BoxCloneService<Request<Incoming>, Response<Full<Bytes>>, 
 type ServiceLayer = Arc<dyn Fn(BoxHttpService) -> BoxHttpService + Send + Sync>;
 type LifecycleHook = Arc<dyn Fn() + Send + Sync>;
 type BusInjector = Arc<dyn Fn(&Request<Incoming>, &mut Bus) + Send + Sync>;
+type WsSessionFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+type WsSessionHandler<R> =
+    Arc<dyn Fn(WebSocketConnection, Arc<R>, Bus) -> WsSessionFuture + Send + Sync>;
 type HealthCheckFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 type HealthCheckFn<R> = Arc<dyn Fn(Arc<R>) -> HealthCheckFuture + Send + Sync>;
 const REQUEST_ID_HEADER: &str = "x-request-id";
+const WS_UPGRADE_TOKEN: &str = "websocket";
+const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 #[derive(Clone)]
 struct NamedHealthCheck<R> {
@@ -239,6 +253,200 @@ impl HttpRouteDescriptor {
     }
 }
 
+/// Connection metadata injected into Bus for each accepted WebSocket session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct WebSocketSessionContext {
+    connection_id: uuid::Uuid,
+    path: String,
+    query: Option<String>,
+}
+
+impl WebSocketSessionContext {
+    pub fn connection_id(&self) -> uuid::Uuid {
+        self.connection_id
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub fn query(&self) -> Option<&str> {
+        self.query.as_deref()
+    }
+}
+
+/// Logical WebSocket message model used by Ranvier EventSource/EventSink bridge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WebSocketEvent {
+    Text(String),
+    Binary(Vec<u8>),
+    Ping(Vec<u8>),
+    Pong(Vec<u8>),
+    Close,
+}
+
+impl WebSocketEvent {
+    pub fn text(value: impl Into<String>) -> Self {
+        Self::Text(value.into())
+    }
+
+    pub fn binary(value: impl Into<Vec<u8>>) -> Self {
+        Self::Binary(value.into())
+    }
+
+    pub fn json<T>(value: &T) -> Result<Self, serde_json::Error>
+    where
+        T: Serialize,
+    {
+        let text = serde_json::to_string(value)?;
+        Ok(Self::Text(text))
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WebSocketError {
+    #[error("websocket wire error: {0}")]
+    Wire(#[from] WsWireError),
+    #[error("json serialization failed: {0}")]
+    JsonSerialize(#[source] serde_json::Error),
+    #[error("json deserialization failed: {0}")]
+    JsonDeserialize(#[source] serde_json::Error),
+    #[error("expected text or binary frame for json payload")]
+    NonDataFrame,
+}
+
+type WsServerStream = WebSocketStream<TokioIo<Upgraded>>;
+type WsServerSink = futures_util::stream::SplitSink<WsServerStream, WsWireMessage>;
+type WsServerSource = futures_util::stream::SplitStream<WsServerStream>;
+
+/// WebSocket connection adapter bridging wire frames and EventSource/EventSink traits.
+pub struct WebSocketConnection {
+    sink: Mutex<WsServerSink>,
+    source: Mutex<WsServerSource>,
+    session: WebSocketSessionContext,
+}
+
+impl WebSocketConnection {
+    fn new(stream: WsServerStream, session: WebSocketSessionContext) -> Self {
+        let (sink, source) = stream.split();
+        Self {
+            sink: Mutex::new(sink),
+            source: Mutex::new(source),
+            session,
+        }
+    }
+
+    pub fn session(&self) -> &WebSocketSessionContext {
+        &self.session
+    }
+
+    pub async fn send(&self, event: WebSocketEvent) -> Result<(), WebSocketError> {
+        let mut sink = self.sink.lock().await;
+        sink.send(event.into_wire_message()).await?;
+        Ok(())
+    }
+
+    pub async fn send_json<T>(&self, value: &T) -> Result<(), WebSocketError>
+    where
+        T: Serialize,
+    {
+        let event = WebSocketEvent::json(value).map_err(WebSocketError::JsonSerialize)?;
+        self.send(event).await
+    }
+
+    pub async fn next_json<T>(&mut self) -> Result<Option<T>, WebSocketError>
+    where
+        T: DeserializeOwned,
+    {
+        let Some(event) = self.recv_event().await? else {
+            return Ok(None);
+        };
+        match event {
+            WebSocketEvent::Text(text) => serde_json::from_str(&text)
+                .map(Some)
+                .map_err(WebSocketError::JsonDeserialize),
+            WebSocketEvent::Binary(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(WebSocketError::JsonDeserialize),
+            _ => Err(WebSocketError::NonDataFrame),
+        }
+    }
+
+    async fn recv_event(&mut self) -> Result<Option<WebSocketEvent>, WsWireError> {
+        let mut source = self.source.lock().await;
+        while let Some(item) = source.next().await {
+            let message = item?;
+            if let Some(event) = WebSocketEvent::from_wire_message(message) {
+                return Ok(Some(event));
+            }
+        }
+        Ok(None)
+    }
+}
+
+impl WebSocketEvent {
+    fn from_wire_message(message: WsWireMessage) -> Option<Self> {
+        match message {
+            WsWireMessage::Text(value) => Some(Self::Text(value.to_string())),
+            WsWireMessage::Binary(value) => Some(Self::Binary(value.to_vec())),
+            WsWireMessage::Ping(value) => Some(Self::Ping(value.to_vec())),
+            WsWireMessage::Pong(value) => Some(Self::Pong(value.to_vec())),
+            WsWireMessage::Close(_) => Some(Self::Close),
+            WsWireMessage::Frame(_) => None,
+        }
+    }
+
+    fn into_wire_message(self) -> WsWireMessage {
+        match self {
+            Self::Text(value) => WsWireMessage::Text(value.into()),
+            Self::Binary(value) => WsWireMessage::Binary(value.into()),
+            Self::Ping(value) => WsWireMessage::Ping(value.into()),
+            Self::Pong(value) => WsWireMessage::Pong(value.into()),
+            Self::Close => WsWireMessage::Close(None),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl EventSource<WebSocketEvent> for WebSocketConnection {
+    async fn next_event(&mut self) -> Option<WebSocketEvent> {
+        match self.recv_event().await {
+            Ok(event) => event,
+            Err(error) => {
+                tracing::warn!(ranvier.ws.error = %error, "websocket source read failed");
+                None
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl EventSink<WebSocketEvent> for WebSocketConnection {
+    type Error = WebSocketError;
+
+    async fn send_event(&self, event: WebSocketEvent) -> Result<(), Self::Error> {
+        self.send(event).await
+    }
+}
+
+#[async_trait::async_trait]
+impl EventSink<String> for WebSocketConnection {
+    type Error = WebSocketError;
+
+    async fn send_event(&self, event: String) -> Result<(), Self::Error> {
+        self.send(WebSocketEvent::Text(event)).await
+    }
+}
+
+#[async_trait::async_trait]
+impl EventSink<Vec<u8>> for WebSocketConnection {
+    type Error = WebSocketError;
+
+    async fn send_event(&self, event: Vec<u8>) -> Result<(), Self::Error> {
+        self.send(WebSocketEvent::Binary(event)).await
+    }
+}
+
 impl PathParams {
     pub fn new(values: HashMap<String, String>) -> Self {
         Self { values }
@@ -380,6 +588,95 @@ fn find_matching_route<'a, R>(
         }
     }
     None
+}
+
+fn header_contains_token(
+    headers: &http::HeaderMap,
+    name: http::header::HeaderName,
+    token: &str,
+) -> bool {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(',')
+                .any(|part| part.trim().eq_ignore_ascii_case(token))
+        })
+        .unwrap_or(false)
+}
+
+fn websocket_session_from_request(req: &Request<Incoming>) -> WebSocketSessionContext {
+    WebSocketSessionContext {
+        connection_id: uuid::Uuid::new_v4(),
+        path: req.uri().path().to_string(),
+        query: req.uri().query().map(str::to_string),
+    }
+}
+
+fn websocket_accept_key(client_key: &str) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(client_key.as_bytes());
+    hasher.update(WS_GUID.as_bytes());
+    let digest = hasher.finalize();
+    base64::engine::general_purpose::STANDARD.encode(digest)
+}
+
+fn websocket_bad_request(message: &'static str) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::BAD_REQUEST)
+        .body(Full::new(Bytes::from(message)))
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+}
+
+fn websocket_upgrade_response(
+    req: &mut Request<Incoming>,
+) -> Result<(Response<Full<Bytes>>, hyper::upgrade::OnUpgrade), Response<Full<Bytes>>> {
+    if req.method() != Method::GET {
+        return Err(websocket_bad_request(
+            "WebSocket upgrade requires GET method",
+        ));
+    }
+
+    if !header_contains_token(req.headers(), http::header::CONNECTION, "upgrade") {
+        return Err(websocket_bad_request(
+            "Missing Connection: upgrade header for WebSocket",
+        ));
+    }
+
+    if !header_contains_token(req.headers(), http::header::UPGRADE, WS_UPGRADE_TOKEN) {
+        return Err(websocket_bad_request("Missing Upgrade: websocket header"));
+    }
+
+    if let Some(version) = req.headers().get("sec-websocket-version") {
+        if version != "13" {
+            return Err(websocket_bad_request(
+                "Unsupported Sec-WebSocket-Version (expected 13)",
+            ));
+        }
+    }
+
+    let Some(client_key) = req
+        .headers()
+        .get("sec-websocket-key")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return Err(websocket_bad_request(
+            "Missing Sec-WebSocket-Key header for WebSocket",
+        ));
+    };
+
+    let accept_key = websocket_accept_key(client_key);
+    let on_upgrade = hyper::upgrade::on(req);
+    let response = Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header(http::header::UPGRADE, WS_UPGRADE_TOKEN)
+        .header(http::header::CONNECTION, "Upgrade")
+        .header("sec-websocket-accept", accept_key)
+        .body(Full::new(Bytes::new()))
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())));
+
+    Ok((response, on_upgrade))
 }
 
 /// HTTP Ingress Circuit Builder.
@@ -569,6 +866,94 @@ where
     /// Add gzip/brotli response compression via `tower-http::CompressionLayer`.
     pub fn compression_layer(mut self) -> Self {
         self.static_assets.enable_compression = true;
+        self
+    }
+
+    /// Register a WebSocket upgrade endpoint and session handler.
+    ///
+    /// The handler receives:
+    /// 1) a `WebSocketConnection` implementing `EventSource`/`EventSink`,
+    /// 2) shared resources (`Arc<R>`),
+    /// 3) a connection-scoped `Bus` with request injectors + `WebSocketSessionContext`.
+    pub fn ws<H, Fut>(mut self, path: impl Into<String>, handler: H) -> Self
+    where
+        H: Fn(WebSocketConnection, Arc<R>, Bus) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let path_str: String = path.into();
+        let ws_handler: WsSessionHandler<R> = Arc::new(move |connection, resources, bus| {
+            Box::pin(handler(connection, resources, bus))
+        });
+        let bus_injectors = Arc::new(self.bus_injectors.clone());
+        let path_for_pattern = path_str.clone();
+        let path_for_handler = path_str;
+
+        let route_handler: RouteHandler<R> =
+            Arc::new(move |mut req: Request<Incoming>, res: &R| {
+                let ws_handler = ws_handler.clone();
+                let bus_injectors = bus_injectors.clone();
+                let resources = Arc::new(res.clone());
+                let path = path_for_handler.clone();
+
+                Box::pin(async move {
+                    let request_id = uuid::Uuid::new_v4().to_string();
+                    let span = tracing::info_span!(
+                        "WebSocketUpgrade",
+                        ranvier.ws.path = %path,
+                        ranvier.ws.request_id = %request_id
+                    );
+
+                    async move {
+                        let mut bus = Bus::new();
+                        for injector in bus_injectors.iter() {
+                            injector(&req, &mut bus);
+                        }
+
+                        let session = websocket_session_from_request(&req);
+                        bus.insert(session.clone());
+
+                        let (response, on_upgrade) = match websocket_upgrade_response(&mut req) {
+                            Ok(result) => result,
+                            Err(error_response) => return error_response,
+                        };
+
+                        tokio::spawn(async move {
+                            match on_upgrade.await {
+                                Ok(upgraded) => {
+                                    let stream = WebSocketStream::from_raw_socket(
+                                        TokioIo::new(upgraded),
+                                        tokio_tungstenite::tungstenite::protocol::Role::Server,
+                                        None,
+                                    )
+                                    .await;
+                                    let connection = WebSocketConnection::new(stream, session);
+                                    ws_handler(connection, resources, bus).await;
+                                }
+                                Err(error) => {
+                                    tracing::warn!(
+                                        ranvier.ws.path = %path,
+                                        ranvier.ws.error = %error,
+                                        "websocket upgrade failed"
+                                    );
+                                }
+                            }
+                        });
+
+                        response
+                    }
+                    .instrument(span)
+                    .await
+                }) as Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
+            });
+
+        self.routes.push(RouteEntry {
+            method: Method::GET,
+            pattern: RoutePattern::parse(&path_for_pattern),
+            handler: route_handler,
+            layers: Arc::new(Vec::new()),
+            apply_global_layers: true,
+        });
+
         self
     }
 
@@ -1023,6 +1408,7 @@ where
                         let hyper_service = TowerToHyperService::new(service);
                         if let Err(err) = http1::Builder::new()
                             .serve_connection(io, hyper_service)
+                            .with_upgrades()
                             .await
                         {
                             tracing::error!("Error serving connection: {:?}", err);
@@ -1130,19 +1516,22 @@ where
                     route_service.oneshot(req).await
                 }
             } else {
-                let req = match maybe_handle_static_request(req, &method, &path, static_assets.as_ref()).await {
-                    Ok(req) => req,
-                    Err(response) => return Ok(response),
-                };
+                let req =
+                    match maybe_handle_static_request(req, &method, &path, static_assets.as_ref())
+                        .await
+                    {
+                        Ok(req) => req,
+                        Err(response) => return Ok(response),
+                    };
 
                 if let Some(ref fb) = fallback {
-                if layers.is_empty() {
-                    Ok(fb(req, &resources).await)
-                } else {
-                    let fallback_service =
-                        build_route_service(fb.clone(), resources.clone(), layers.clone());
-                    fallback_service.oneshot(req).await
-                }
+                    if layers.is_empty() {
+                        Ok(fb(req, &resources).await)
+                    } else {
+                        let fallback_service =
+                            build_route_service(fb.clone(), resources.clone(), layers.clone());
+                        fallback_service.oneshot(req).await
+                    }
                 } else {
                     Ok(Response::builder()
                         .status(StatusCode::NOT_FOUND)
@@ -1254,19 +1643,20 @@ async fn maybe_handle_static_request(
         let response = match service.oneshot(rewritten).await {
             Ok(response) => response,
             Err(_) => {
-                return Err(
-                    Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Full::new(Bytes::from("Failed to serve static asset")))
-                        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))),
-                )
+                return Err(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Full::new(Bytes::from("Failed to serve static asset")))
+                    .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))));
             }
         };
-        let response = collect_static_response(response, static_assets.cache_control.as_deref()).await;
-        return Err(
-            maybe_compress_static_response(response, accept_encoding, static_assets.enable_compression)
-                .await,
-        );
+        let response =
+            collect_static_response(response, static_assets.cache_control.as_deref()).await;
+        return Err(maybe_compress_static_response(
+            response,
+            accept_encoding,
+            static_assets.enable_compression,
+        )
+        .await);
     }
 
     if let Some(spa_file) = static_assets.spa_fallback.as_ref() {
@@ -1276,19 +1666,20 @@ async fn maybe_handle_static_request(
             let response = match service.oneshot(req).await {
                 Ok(response) => response,
                 Err(_) => {
-                    return Err(
-                        Response::builder()
-                            .status(StatusCode::INTERNAL_SERVER_ERROR)
-                            .body(Full::new(Bytes::from("Failed to serve SPA fallback")))
-                            .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))),
-                    )
+                    return Err(Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Full::new(Bytes::from("Failed to serve SPA fallback")))
+                        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))));
                 }
             };
-            let response = collect_static_response(response, static_assets.cache_control.as_deref()).await;
-            return Err(
-                maybe_compress_static_response(response, accept_encoding, static_assets.enable_compression)
-                    .await,
-            );
+            let response =
+                collect_static_response(response, static_assets.cache_control.as_deref()).await;
+            return Err(maybe_compress_static_response(
+                response,
+                accept_encoding,
+                static_assets.enable_compression,
+            )
+            .await);
         }
     }
 
@@ -1580,7 +1971,8 @@ where
         let resources = self.resources.clone();
 
         Box::pin(async move {
-            let service = build_http_service(routes, fallback, resources, layers, health, static_assets);
+            let service =
+                build_http_service(routes, fallback, resources, layers, health, static_assets);
             service.oneshot(req).await
         })
     }
@@ -1590,10 +1982,14 @@ where
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use futures_util::{SinkExt, StreamExt};
+    use serde::Deserialize;
     use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::Message as WsClientMessage;
 
     async fn connect_with_retry(addr: std::net::SocketAddr) -> tokio::net::TcpStream {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
@@ -1728,9 +2124,143 @@ mod tests {
     }
 
     #[test]
+    fn ws_route_registers_get_route_pattern() {
+        let ingress =
+            HttpIngress::<()>::new().ws("/ws/events", |_socket, _resources, _bus| async {});
+        assert_eq!(ingress.routes.len(), 1);
+        assert_eq!(ingress.routes[0].method, Method::GET);
+        assert_eq!(ingress.routes[0].pattern.raw, "/ws/events");
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct WsWelcomeFrame {
+        connection_id: String,
+        path: String,
+        tenant: String,
+    }
+
+    #[tokio::test]
+    async fn ws_route_upgrades_and_bridges_event_source_sink_with_connection_bus() {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
+        let addr = probe.local_addr().expect("local addr");
+        drop(probe);
+
+        let ingress = HttpIngress::<()>::new()
+            .bind(addr.to_string())
+            .bus_injector(|req, bus| {
+                if let Some(value) = req
+                    .headers()
+                    .get("x-tenant-id")
+                    .and_then(|v| v.to_str().ok())
+                {
+                    bus.insert(value.to_string());
+                }
+            })
+            .ws("/ws/echo", |mut socket, _resources, bus| async move {
+                let tenant = bus
+                    .read::<String>()
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string());
+                if let Some(session) = bus.read::<WebSocketSessionContext>() {
+                    let welcome = serde_json::json!({
+                        "connection_id": session.connection_id().to_string(),
+                        "path": session.path(),
+                        "tenant": tenant,
+                    });
+                    let _ = socket.send_json(&welcome).await;
+                }
+
+                while let Some(event) = socket.next_event().await {
+                    match event {
+                        WebSocketEvent::Text(text) => {
+                            let _ = socket.send_event(format!("echo:{text}")).await;
+                        }
+                        WebSocketEvent::Binary(bytes) => {
+                            let _ = socket.send_event(bytes).await;
+                        }
+                        WebSocketEvent::Close => break,
+                        WebSocketEvent::Ping(_) | WebSocketEvent::Pong(_) => {}
+                    }
+                }
+            });
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            ingress
+                .run_with_shutdown_signal((), async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let ws_uri = format!("ws://{addr}/ws/echo?room=alpha");
+        let mut ws_request = ws_uri
+            .as_str()
+            .into_client_request()
+            .expect("ws client request");
+        ws_request
+            .headers_mut()
+            .insert("x-tenant-id", http::HeaderValue::from_static("acme"));
+        let (mut client, _response) = tokio_tungstenite::connect_async(ws_request)
+            .await
+            .expect("websocket connect");
+
+        let welcome = client
+            .next()
+            .await
+            .expect("welcome frame")
+            .expect("welcome frame ok");
+        let welcome_text = match welcome {
+            WsClientMessage::Text(text) => text.to_string(),
+            other => panic!("expected text welcome frame, got {other:?}"),
+        };
+        let welcome_payload: WsWelcomeFrame =
+            serde_json::from_str(&welcome_text).expect("welcome json");
+        assert_eq!(welcome_payload.path, "/ws/echo");
+        assert_eq!(welcome_payload.tenant, "acme");
+        assert!(!welcome_payload.connection_id.is_empty());
+
+        client
+            .send(WsClientMessage::Text("hello".into()))
+            .await
+            .expect("send text");
+        let echo_text = client
+            .next()
+            .await
+            .expect("echo text frame")
+            .expect("echo text frame ok");
+        assert_eq!(echo_text, WsClientMessage::Text("echo:hello".into()));
+
+        client
+            .send(WsClientMessage::Binary(vec![1, 2, 3, 4].into()))
+            .await
+            .expect("send binary");
+        let echo_binary = client
+            .next()
+            .await
+            .expect("echo binary frame")
+            .expect("echo binary frame ok");
+        assert_eq!(
+            echo_binary,
+            WsClientMessage::Binary(vec![1, 2, 3, 4].into())
+        );
+
+        client.close(None).await.expect("close websocket");
+
+        let _ = shutdown_tx.send(());
+        server
+            .await
+            .expect("server join")
+            .expect("server shutdown should succeed");
+    }
+
+    #[test]
     fn route_descriptors_export_http_and_health_paths() {
         let ingress = HttpIngress::<()>::new()
-            .get("/orders/:id", Axon::<(), (), Infallible, ()>::new("OrderById"))
+            .get(
+                "/orders/:id",
+                Axon::<(), (), Infallible, ()>::new("OrderById"),
+            )
             .health_endpoint("/healthz")
             .readiness_liveness("/readyz", "/livez");
 
@@ -1799,7 +2329,8 @@ mod tests {
         let file = root.join("hello.txt");
         fs::write(&file, "hello static").expect("write file");
 
-        let ingress = Ranvier::http::<()>().serve_dir("/static", root.to_string_lossy().to_string());
+        let ingress =
+            Ranvier::http::<()>().serve_dir("/static", root.to_string_lossy().to_string());
         let app = crate::test_harness::TestApp::new(ingress, ());
         let response = app
             .send(crate::test_harness::TestRequest::get("/static/hello.txt"))
@@ -1809,7 +2340,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.text().expect("utf8"), "hello static");
         assert!(response.header("cache-control").is_some());
-        let has_metadata_header = response.header("etag").is_some() || response.header("last-modified").is_some();
+        let has_metadata_header =
+            response.header("etag").is_some() || response.header("last-modified").is_some();
         assert!(has_metadata_header);
     }
 
@@ -1819,8 +2351,7 @@ mod tests {
         let index = temp.path().join("index.html");
         fs::write(&index, "<html><body>spa</body></html>").expect("write index");
 
-        let ingress =
-            Ranvier::http::<()>().spa_fallback(index.to_string_lossy().to_string());
+        let ingress = Ranvier::http::<()>().spa_fallback(index.to_string_lossy().to_string());
         let app = crate::test_harness::TestApp::new(ingress, ());
         let response = app
             .send(crate::test_harness::TestRequest::get("/dashboard/settings"))

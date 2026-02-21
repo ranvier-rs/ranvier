@@ -18,6 +18,7 @@ members = [
     "examples/experimental/state-tree-demo",
     "examples/synapse-demo",
     "examples/websocket-loop",
+    "examples/websocket-ingress-demo",
     "examples/order-processing-demo",
     "examples/auth-jwt-role-demo",
     "examples/guard-demo",
