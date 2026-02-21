@@ -1,5 +1,6 @@
 use proc_macro::TokenStream;
 use quote::{ToTokens, quote};
+use std::collections::HashSet;
 use syn::{FnArg, GenericArgument, ItemFn, PathArguments, ReturnType, Type, parse_macro_input};
 
 /// Attribute macro to transform an async function into a `Transition` implementation.
@@ -46,6 +47,10 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
         }
+    }
+
+    if let Err(err) = validate_bus_policy_types(&bus_allow_types, &bus_deny_types) {
+        return err.to_compile_error().into();
     }
 
     // 1. Extract Input Type (From)
@@ -307,9 +312,45 @@ fn parse_type_array_expr(expr: &syn::Expr) -> syn::Result<Vec<Type>> {
         .collect()
 }
 
+fn validate_bus_policy_types(allow: &[Type], deny: &[Type]) -> syn::Result<()> {
+    let mut allow_keys = HashSet::new();
+    for ty in allow {
+        let key = ty.to_token_stream().to_string();
+        if !allow_keys.insert(key) {
+            return Err(syn::Error::new_spanned(
+                ty,
+                "duplicate type in bus_allow list",
+            ));
+        }
+    }
+
+    let mut deny_keys = HashSet::new();
+    for ty in deny {
+        let key = ty.to_token_stream().to_string();
+        if !deny_keys.insert(key) {
+            return Err(syn::Error::new_spanned(
+                ty,
+                "duplicate type in bus_deny list",
+            ));
+        }
+    }
+
+    for ty in allow {
+        let key = ty.to_token_stream().to_string();
+        if deny_keys.contains(&key) {
+            return Err(syn::Error::new_spanned(
+                ty,
+                "same type cannot be present in both bus_allow and bus_deny",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{is_bus_argument, parse_type_array_expr};
+    use super::{is_bus_argument, parse_type_array_expr, validate_bus_policy_types};
     use syn::{Expr, FnArg, parse_quote};
 
     #[test]
@@ -335,5 +376,24 @@ mod tests {
         let expr: Expr = parse_quote!([i32, alloc::string::String]);
         let parsed = parse_type_array_expr(&expr).expect("type array should parse");
         assert_eq!(parsed.len(), 2);
+    }
+
+    #[test]
+    fn validates_bus_policy_rejects_duplicate_allow() {
+        let allow = vec![parse_quote!(i32), parse_quote!(i32)];
+        let deny = Vec::new();
+        let err = validate_bus_policy_types(&allow, &deny).expect_err("should fail");
+        assert!(err.to_string().contains("duplicate type in bus_allow"));
+    }
+
+    #[test]
+    fn validates_bus_policy_rejects_allow_deny_conflict() {
+        let allow = vec![parse_quote!(i32)];
+        let deny = vec![parse_quote!(i32)];
+        let err = validate_bus_policy_types(&allow, &deny).expect_err("should fail");
+        assert!(
+            err.to_string()
+                .contains("same type cannot be present in both bus_allow and bus_deny")
+        );
     }
 }
