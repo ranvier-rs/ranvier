@@ -69,6 +69,10 @@ impl PathParams {
         self.values.get(key).map(String::as_str)
     }
 
+    pub fn as_map(&self) -> &HashMap<String, String> {
+        &self.values
+    }
+
     pub fn into_inner(self) -> HashMap<String, String> {
         self.values
     }

@@ -27,12 +27,15 @@
 
 pub mod ingress;
 pub mod service;
+pub mod extract;
 
 pub use ingress::{HttpIngress, Ranvier};
+pub use extract::{ExtractError, FromRequest, Json, Path, Query, DEFAULT_BODY_LIMIT};
 pub use service::RanvierService;
 
 /// Prelude module for convenient imports
 pub mod prelude {
+    pub use crate::extract::{ExtractError, FromRequest, Json, Path, Query, DEFAULT_BODY_LIMIT};
     pub use crate::ingress::{HttpIngress, Ranvier};
     pub use crate::service::RanvierService;
 }
