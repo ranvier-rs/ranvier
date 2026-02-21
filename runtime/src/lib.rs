@@ -11,6 +11,10 @@ pub mod prelude {
         PersistedTrace, PersistenceAutoComplete, PersistenceEnvelope, PersistenceHandle,
         PersistenceStore, PersistenceTraceId, ResumeCursor,
     };
+    #[cfg(feature = "persistence-postgres")]
+    pub use crate::persistence::{PostgresCompensationIdempotencyStore, PostgresPersistenceStore};
+    #[cfg(feature = "persistence-redis")]
+    pub use crate::persistence::{RedisCompensationIdempotencyStore, RedisPersistenceStore};
     pub use crate::replay::ReplayEngine;
 }
 
@@ -22,4 +26,8 @@ pub use persistence::{
     PersistedTrace, PersistenceAutoComplete, PersistenceEnvelope, PersistenceHandle,
     PersistenceStore, PersistenceTraceId, ResumeCursor,
 };
+#[cfg(feature = "persistence-postgres")]
+pub use persistence::{PostgresCompensationIdempotencyStore, PostgresPersistenceStore};
+#[cfg(feature = "persistence-redis")]
+pub use persistence::{RedisCompensationIdempotencyStore, RedisPersistenceStore};
 pub use replay::ReplayEngine;

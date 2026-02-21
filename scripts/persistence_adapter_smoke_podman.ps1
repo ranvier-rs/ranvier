@@ -101,12 +101,20 @@ try {
 
     $postgresTestOk = Select-String -Path $testLog -Pattern "postgres_store_roundtrip_when_configured ... ok" -SimpleMatch
     $redisTestOk = Select-String -Path $testLog -Pattern "redis_store_roundtrip_when_configured ... ok" -SimpleMatch
+    $postgresIdemOk = Select-String -Path $testLog -Pattern "postgres_compensation_idempotency_roundtrip_when_configured ... ok" -SimpleMatch
+    $redisIdemOk = Select-String -Path $testLog -Pattern "redis_compensation_idempotency_roundtrip_when_configured ... ok" -SimpleMatch
 
     if (-not $postgresTestOk) {
         throw "Missing PostgreSQL adapter test success marker in smoke log."
     }
     if (-not $redisTestOk) {
         throw "Missing Redis adapter test success marker in smoke log."
+    }
+    if (-not $postgresIdemOk) {
+        throw "Missing PostgreSQL compensation idempotency test success marker in smoke log."
+    }
+    if (-not $redisIdemOk) {
+        throw "Missing Redis compensation idempotency test success marker in smoke log."
     }
 
     Write-Host "Persistence adapter smoke passed."

@@ -231,6 +231,138 @@ impl CompensationIdempotencyStore for InMemoryCompensationIdempotencyStore {
     }
 }
 
+#[cfg(feature = "persistence-postgres")]
+#[derive(Debug, Clone)]
+pub struct PostgresCompensationIdempotencyStore {
+    pool: sqlx::Pool<sqlx::Postgres>,
+    table: String,
+}
+
+#[cfg(feature = "persistence-postgres")]
+impl PostgresCompensationIdempotencyStore {
+    /// Create a PostgreSQL-backed compensation idempotency store.
+    pub fn new(pool: sqlx::Pool<sqlx::Postgres>) -> Self {
+        Self::with_table_prefix(pool, "ranvier_persistence")
+    }
+
+    /// Create with custom table prefix.
+    pub fn with_table_prefix(pool: sqlx::Pool<sqlx::Postgres>, prefix: impl Into<String>) -> Self {
+        let prefix = prefix.into();
+        Self {
+            pool,
+            table: format!("{}_compensation_idempotency", prefix),
+        }
+    }
+
+    /// Initialize adapter table when absent.
+    pub async fn ensure_schema(&self) -> Result<()> {
+        let create = format!(
+            "CREATE TABLE IF NOT EXISTS {} (
+                idempotency_key TEXT PRIMARY KEY,
+                created_at_ms BIGINT NOT NULL
+            )",
+            self.table
+        );
+        sqlx::query(&create).execute(&self.pool).await?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "persistence-postgres")]
+#[async_trait]
+impl CompensationIdempotencyStore for PostgresCompensationIdempotencyStore {
+    async fn was_compensated(&self, key: &str) -> Result<bool> {
+        let query = format!(
+            "SELECT 1
+             FROM {}
+             WHERE idempotency_key = $1
+             LIMIT 1",
+            self.table
+        );
+        let row: Option<i32> = sqlx::query_scalar(&query)
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
+    }
+
+    async fn mark_compensated(&self, key: &str) -> Result<()> {
+        let query = format!(
+            "INSERT INTO {} (idempotency_key, created_at_ms)
+             VALUES ($1, $2)
+             ON CONFLICT (idempotency_key) DO NOTHING",
+            self.table
+        );
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis();
+        sqlx::query(&query)
+            .bind(key)
+            .bind(i64::try_from(now_ms)?)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "persistence-redis")]
+#[derive(Clone)]
+pub struct RedisCompensationIdempotencyStore {
+    manager: redis::aio::ConnectionManager,
+    key_prefix: String,
+}
+
+#[cfg(feature = "persistence-redis")]
+impl std::fmt::Debug for RedisCompensationIdempotencyStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedisCompensationIdempotencyStore")
+            .field("key_prefix", &self.key_prefix)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "persistence-redis")]
+impl RedisCompensationIdempotencyStore {
+    /// Connect using Redis connection URL.
+    pub async fn connect(url: &str) -> Result<Self> {
+        let client = redis::Client::open(url)?;
+        let manager = redis::aio::ConnectionManager::new(client).await?;
+        Ok(Self {
+            manager,
+            key_prefix: "ranvier:compensation:idempotency".to_string(),
+        })
+    }
+
+    pub fn with_prefix(manager: redis::aio::ConnectionManager, key_prefix: impl Into<String>) -> Self {
+        Self {
+            manager,
+            key_prefix: key_prefix.into(),
+        }
+    }
+
+    fn key(&self, idempotency_key: &str) -> String {
+        format!("{}:{}", self.key_prefix, idempotency_key)
+    }
+}
+
+#[cfg(feature = "persistence-redis")]
+#[async_trait]
+impl CompensationIdempotencyStore for RedisCompensationIdempotencyStore {
+    async fn was_compensated(&self, key: &str) -> Result<bool> {
+        use redis::AsyncCommands;
+        let mut conn = self.manager.clone();
+        let exists: bool = conn.exists(self.key(key)).await?;
+        Ok(exists)
+    }
+
+    async fn mark_compensated(&self, key: &str) -> Result<()> {
+        use redis::AsyncCommands;
+        let mut conn = self.manager.clone();
+        let _: bool = conn.set_nx(self.key(key), "1").await?;
+        Ok(())
+    }
+}
+
 /// Persistence abstraction draft for long-running workflow recovery.
 ///
 /// This is intentionally minimal and marked experimental while M148 is active.
@@ -885,5 +1017,64 @@ mod tests {
         let key = store.key(&trace_id);
         let mut conn = store.manager.clone();
         let _: () = conn.del(key).await.unwrap();
+    }
+
+    #[cfg(feature = "persistence-postgres")]
+    #[tokio::test]
+    async fn postgres_compensation_idempotency_roundtrip_when_configured() {
+        let url = match std::env::var("RANVIER_PERSISTENCE_POSTGRES_URL") {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&url)
+            .await
+            .unwrap();
+        let table_prefix = format!(
+            "ranvier_compensation_idempotency_test_{}",
+            Uuid::new_v4().simple()
+        );
+        let store =
+            PostgresCompensationIdempotencyStore::with_table_prefix(pool.clone(), &table_prefix);
+        store.ensure_schema().await.unwrap();
+
+        let key = format!("trace-{}:OrderFlow:Fault", Uuid::new_v4().simple());
+        assert!(!store.was_compensated(&key).await.unwrap());
+        store.mark_compensated(&key).await.unwrap();
+        assert!(store.was_compensated(&key).await.unwrap());
+        store.mark_compensated(&key).await.unwrap();
+        assert!(store.was_compensated(&key).await.unwrap());
+
+        let drop_table = format!("DROP TABLE IF EXISTS {}", store.table);
+        sqlx::query(&drop_table).execute(&pool).await.unwrap();
+    }
+
+    #[cfg(feature = "persistence-redis")]
+    #[tokio::test]
+    async fn redis_compensation_idempotency_roundtrip_when_configured() {
+        let url = match std::env::var("RANVIER_PERSISTENCE_REDIS_URL") {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        let base = RedisCompensationIdempotencyStore::connect(&url).await.unwrap();
+        let prefix = format!(
+            "ranvier:compensation:idempotency:test:{}",
+            Uuid::new_v4().simple()
+        );
+        let store = RedisCompensationIdempotencyStore::with_prefix(base.manager.clone(), prefix);
+        let key = format!("trace-{}:OrderFlow:Fault", Uuid::new_v4().simple());
+
+        assert!(!store.was_compensated(&key).await.unwrap());
+        store.mark_compensated(&key).await.unwrap();
+        assert!(store.was_compensated(&key).await.unwrap());
+        store.mark_compensated(&key).await.unwrap();
+        assert!(store.was_compensated(&key).await.unwrap());
+
+        use redis::AsyncCommands;
+        let mut conn = store.manager.clone();
+        let _: () = conn.del(store.key(&key)).await.unwrap();
     }
 }

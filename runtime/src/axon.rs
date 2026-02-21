@@ -1083,7 +1083,7 @@ mod tests {
     use super::{sampled_by_bus_id, should_force_export, Axon};
     use crate::persistence::{
         CompletionState, CompensationContext, CompensationHandle, CompensationHook,
-        CompensationIdempotencyHandle, CompensationRetryPolicy,
+        CompensationIdempotencyHandle, CompensationIdempotencyStore, CompensationRetryPolicy,
         InMemoryCompensationIdempotencyStore, InMemoryPersistenceStore, PersistenceAutoComplete,
         PersistenceHandle, PersistenceStore, PersistenceTraceId,
     };
@@ -1205,6 +1205,27 @@ mod tests {
                 return Err(anyhow::anyhow!("transient compensation failure"));
             }
             Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct FailingCompensationIdempotencyStore {
+        read_calls: Arc<Mutex<u32>>,
+        write_calls: Arc<Mutex<u32>>,
+    }
+
+    #[async_trait]
+    impl CompensationIdempotencyStore for FailingCompensationIdempotencyStore {
+        async fn was_compensated(&self, _key: &str) -> Result<bool> {
+            let mut read_calls = self.read_calls.lock().await;
+            *read_calls += 1;
+            Err(anyhow::anyhow!("forced idempotency read failure"))
+        }
+
+        async fn mark_compensated(&self, _key: &str) -> Result<()> {
+            let mut write_calls = self.write_calls.lock().await;
+            *write_calls += 1;
+            Err(anyhow::anyhow!("forced idempotency write failure"))
         }
     }
 
@@ -1402,5 +1423,46 @@ mod tests {
 
         let recorded = calls.lock().await;
         assert_eq!(recorded.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn compensation_idempotency_store_failure_does_not_block_compensation() {
+        let store_impl = Arc::new(InMemoryPersistenceStore::new());
+        let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let read_calls = Arc::new(Mutex::new(0u32));
+        let write_calls = Arc::new(Mutex::new(0u32));
+        let compensation = RecordingCompensationHook {
+            calls: calls.clone(),
+            should_fail: false,
+        };
+        let idempotency = FailingCompensationIdempotencyStore {
+            read_calls: read_calls.clone(),
+            write_calls: write_calls.clone(),
+        };
+
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(store_dyn));
+        bus.insert(PersistenceTraceId::new("trace-idempotency-store-failure"));
+        bus.insert(CompensationHandle::from_hook(compensation));
+        bus.insert(CompensationIdempotencyHandle::from_store(idempotency));
+
+        let axon = Axon::<i32, i32, &'static str>::start("IdempotencyStoreFailure")
+            .then(AlwaysFault);
+        let outcome = axon.execute(9, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Fault("boom")));
+
+        let persisted = store_impl
+            .load("trace-idempotency-store-failure")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.completion, Some(CompletionState::Compensated));
+        assert_eq!(persisted.events.last().map(|e| e.outcome_kind.as_str()), Some("Compensated"));
+
+        let recorded = calls.lock().await;
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(*read_calls.lock().await, 1);
+        assert_eq!(*write_calls.lock().await, 1);
     }
 }
