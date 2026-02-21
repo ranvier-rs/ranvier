@@ -259,6 +259,7 @@ struct RouteEntry<R> {
     pattern: RoutePattern,
     handler: RouteHandler<R>,
     layers: Arc<Vec<ServiceLayer>>,
+    apply_global_layers: bool,
 }
 
 fn path_segments(path: &str) -> Vec<&str> {
@@ -452,6 +453,7 @@ where
             circuit,
             error_handler,
             Arc::new(Vec::new()),
+            true,
         )
     }
 
@@ -485,6 +487,41 @@ where
                     .into_response()
             },
             Arc::new(vec![to_service_layer(layer)]),
+            true,
+        )
+    }
+
+    pub fn route_method_with_layer_override<Out, E, L>(
+        self,
+        method: Method,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        layer: L,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+        L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
+        L::Service:
+            Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+                + Clone
+                + Send
+                + 'static,
+        <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
+    {
+        self.route_method_with_error_and_layers(
+            method,
+            path,
+            circuit,
+            |error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Error: {:?}", error),
+                )
+                    .into_response()
+            },
+            Arc::new(vec![to_service_layer(layer)]),
+            false,
         )
     }
 
@@ -495,6 +532,7 @@ where
         circuit: Axon<(), Out, E, R>,
         error_handler: H,
         route_layers: Arc<Vec<ServiceLayer>>,
+        apply_global_layers: bool,
     ) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
@@ -540,6 +578,7 @@ where
             pattern: RoutePattern::parse(&path_for_pattern),
             handler,
             layers: route_layers,
+            apply_global_layers,
         });
         self
     }
@@ -584,6 +623,26 @@ where
         <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
     {
         self.route_method_with_layer(Method::GET, path, circuit, layer)
+    }
+
+    pub fn get_with_layer_override<Out, E, L>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        layer: L,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+        L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
+        L::Service:
+            Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+                + Clone
+                + Send
+                + 'static,
+        <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
+    {
+        self.route_method_with_layer_override(Method::GET, path, circuit, layer)
     }
 
     pub fn post<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
@@ -791,6 +850,7 @@ where
         let routes = routes.clone();
         let fallback = fallback.clone();
         let resources = resources.clone();
+        let layers = layers.clone();
 
         async move {
             let mut req = req;
@@ -799,18 +859,30 @@ where
 
             if let Some((entry, params)) = find_matching_route(routes.as_slice(), &method, &path) {
                 req.extensions_mut().insert(params);
-                if entry.layers.is_empty() {
+                let effective_layers = if entry.apply_global_layers {
+                    merge_layers(&layers, &entry.layers)
+                } else {
+                    entry.layers.clone()
+                };
+
+                if effective_layers.is_empty() {
                     Ok::<_, Infallible>((entry.handler)(req, &resources).await)
                 } else {
                     let route_service = build_route_service(
                         entry.handler.clone(),
                         resources.clone(),
-                        entry.layers.clone(),
+                        effective_layers,
                     );
                     route_service.oneshot(req).await
                 }
             } else if let Some(ref fb) = fallback {
-                Ok(fb(req, &resources).await)
+                if layers.is_empty() {
+                    Ok(fb(req, &resources).await)
+                } else {
+                    let fallback_service =
+                        build_route_service(fb.clone(), resources.clone(), layers.clone());
+                    fallback_service.oneshot(req).await
+                }
             } else {
                 Ok(Response::builder()
                     .status(StatusCode::NOT_FOUND)
@@ -820,11 +892,7 @@ where
         }
     });
 
-    let mut service = BoxCloneService::new(base_service);
-    for layer in layers.iter() {
-        service = layer(service);
-    }
-    service
+    BoxCloneService::new(base_service)
 }
 
 fn build_route_service<R>(
@@ -846,6 +914,23 @@ where
         service = layer(service);
     }
     service
+}
+
+fn merge_layers(
+    global_layers: &Arc<Vec<ServiceLayer>>,
+    route_layers: &Arc<Vec<ServiceLayer>>,
+) -> Arc<Vec<ServiceLayer>> {
+    if global_layers.is_empty() {
+        return route_layers.clone();
+    }
+    if route_layers.is_empty() {
+        return global_layers.clone();
+    }
+
+    let mut combined = Vec::with_capacity(global_layers.len() + route_layers.len());
+    combined.extend(global_layers.iter().cloned());
+    combined.extend(route_layers.iter().cloned());
+    Arc::new(combined)
 }
 
 async fn shutdown_signal() {
@@ -1022,6 +1107,7 @@ mod tests {
         let ingress = HttpIngress::<()>::new().get("/ping", Axon::<(), (), Infallible, ()>::new("Ping"));
         assert_eq!(ingress.routes.len(), 1);
         assert!(ingress.routes[0].layers.is_empty());
+        assert!(ingress.routes[0].apply_global_layers);
     }
 
     #[test]
@@ -1033,6 +1119,19 @@ mod tests {
         );
         assert_eq!(ingress.routes.len(), 1);
         assert_eq!(ingress.routes[0].layers.len(), 1);
+        assert!(ingress.routes[0].apply_global_layers);
+    }
+
+    #[test]
+    fn route_with_layer_override_disables_global_layers() {
+        let ingress = HttpIngress::<()>::new().get_with_layer_override(
+            "/ping",
+            Axon::<(), (), Infallible, ()>::new("Ping"),
+            tower::layer::util::Identity::new(),
+        );
+        assert_eq!(ingress.routes.len(), 1);
+        assert_eq!(ingress.routes[0].layers.len(), 1);
+        assert!(!ingress.routes[0].apply_global_layers);
     }
 
     #[test]
