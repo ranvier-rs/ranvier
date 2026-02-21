@@ -41,8 +41,11 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     // 2. Extract Resources Type
+    let second_is_bus = inputs.get(1).map(is_bus_argument).unwrap_or(false);
     let res_type = if let Some(res) = res_override {
         quote! { #res }
+    } else if second_is_bus {
+        quote! { () }
     } else if let Some(FnArg::Typed(pat_type)) = inputs.get(1) {
         let ty = &pat_type.ty;
         if let Type::Reference(type_ref) = &**ty {
@@ -79,7 +82,12 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let pat = &pat_type.pat;
                 bindings.extend(quote! { let #pat = input; });
             }
-            if let Some(FnArg::Typed(pat_type)) = inputs.get(1) {
+            if second_is_bus {
+                if let Some(FnArg::Typed(pat_type)) = inputs.get(1) {
+                    let pat = &pat_type.pat;
+                    bindings.extend(quote! { let #pat = bus; });
+                }
+            } else if let Some(FnArg::Typed(pat_type)) = inputs.get(1) {
                 let pat = &pat_type.pat;
                 bindings.extend(quote! { let #pat = resources; });
             }
@@ -219,4 +227,46 @@ fn extract_outcome_types(
         }
     }
     None
+}
+
+fn is_bus_argument(arg: &FnArg) -> bool {
+    let FnArg::Typed(pat_type) = arg else {
+        return false;
+    };
+    let Type::Reference(type_ref) = &*pat_type.ty else {
+        return false;
+    };
+    let Type::Path(type_path) = &*type_ref.elem else {
+        return false;
+    };
+    type_path
+        .path
+        .segments
+        .last()
+        .map(|segment| segment.ident == "Bus")
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_bus_argument;
+    use syn::{FnArg, parse_quote};
+
+    #[test]
+    fn detects_mut_bus_reference_argument() {
+        let arg: FnArg = parse_quote!(bus: &mut Bus);
+        assert!(is_bus_argument(&arg));
+    }
+
+    #[test]
+    fn detects_fully_qualified_bus_reference_argument() {
+        let arg: FnArg = parse_quote!(bus: &mut ranvier_core::bus::Bus);
+        assert!(is_bus_argument(&arg));
+    }
+
+    #[test]
+    fn rejects_non_bus_argument() {
+        let arg: FnArg = parse_quote!(res: &MyResources);
+        assert!(!is_bus_argument(&arg));
+    }
 }

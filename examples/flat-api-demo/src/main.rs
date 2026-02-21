@@ -28,6 +28,11 @@ async fn add_three(input: i32) -> Outcome<i32, anyhow::Error> {
 }
 
 #[transition(res = MyResources)]
+async fn attach_trace(input: i32, _bus: &mut Bus) -> Outcome<i32, anyhow::Error> {
+    Outcome::Next(input)
+}
+
+#[transition(res = MyResources)]
 async fn to_string(input: i32) -> Outcome<String, anyhow::Error> {
     Outcome::Next(input.to_string())
 }
@@ -39,6 +44,7 @@ async fn math_circuit() -> Axon<(), String, anyhow::Error, MyResources> {
         .then(init_state)
         .then(multiply_by_res)
         .then(add_three)
+        .then(attach_trace)
         .then(to_string)
 }
 
