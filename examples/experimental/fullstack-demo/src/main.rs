@@ -1,109 +1,65 @@
-mod synapses;
+use std::convert::Infallible;
+use std::path::PathBuf;
 
-use crate::synapses::HttpListenerSynapse;
-use anyhow::Result;
-use ranvier_core::prelude::NodeKind;
-use ranvier_core::static_gen::StaticNode;
-use ranvier_core::synapse::Synapse;
-use std::sync::Arc;
-use tiny_http::Response;
+use ranvier_core::prelude::*;
+use ranvier_http::prelude::*;
+use ranvier_runtime::Axon;
+use serde_json::json;
 
-// Experimental inbound HTTP node for local frontend wiring.
-struct ProcessDataNode {
-    synapse: Arc<HttpListenerSynapse>,
-}
+#[derive(Clone)]
+struct AcceptOrder;
 
-impl StaticNode for ProcessDataNode {
-    fn id(&self) -> &'static str {
-        "process_data"
-    }
-    fn kind(&self) -> NodeKind {
-        NodeKind::Ingress
-    }
-    fn next_nodes(&self) -> Vec<&'static str> {
-        vec![]
-    }
-}
+#[async_trait::async_trait]
+impl Transition<(), serde_json::Value> for AcceptOrder {
+    type Error = Infallible;
+    type Resources = ();
 
-impl ProcessDataNode {
-    async fn execute(&self) -> Result<()> {
-        // Accept both legacy GET and current POST route for easier experimental testing.
-        match self.synapse.call(()).await {
-            Ok(req) => {
-                if req.method.as_str() == "OPTIONS" {
-                    let response = with_cors_headers(Response::empty(204));
-                    req.request.respond(response)?;
-                    return Ok(());
-                }
-
-                let is_legacy = req.method.as_str() == "GET" && req.url.contains("/api/process_data");
-                let is_order = req.method.as_str() == "POST" && req.url.contains("/api/order");
-
-                if is_legacy || is_order {
-                    println!("\x1b[32m[Node]\x1b[0m Received API Request: {}", req.url);
-
-                    let response_json = if is_order {
-                        serde_json::json!({
-                            "status": "accepted",
-                            "order_id": "ORDER-SUCCESS-999",
-                            "message": "Order received by experimental backend"
-                        })
-                    } else {
-                        serde_json::json!("Processed Data from Backend")
-                    };
-                    let response = with_cors_headers(
-                        Response::from_string(response_json.to_string()).with_header(
-                            tiny_http::Header::from_bytes(
-                                &b"Content-Type"[..],
-                                &b"application/json"[..],
-                            )
-                            .unwrap(),
-                        ),
-                    );
-
-                    req.request.respond(response)?;
-                } else {
-                    let _ = req.request.respond(with_cors_headers(Response::empty(404)));
-                }
-            }
-            Err(_) => {}
-        }
-        Ok(())
+    async fn run(
+        &self,
+        _state: (),
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<serde_json::Value, Self::Error> {
+        Outcome::next(json!({
+            "status": "accepted",
+            "order_id": "ORDER-SUCCESS-999",
+            "message": "Order received by embedded full-stack backend"
+        }))
     }
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> anyhow::Result<()> {
     println!("\n=== Ranvier Full-Stack Backend (Port 3030) ===\n");
 
-    let listener = Arc::new(HttpListenerSynapse::new(3030));
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let embedded_dir = manifest_dir.join("embedded");
+    let assets_dir = embedded_dir.join("assets");
+    let index_file = embedded_dir.join("index.html");
 
-    let process_data = ProcessDataNode {
-        synapse: listener.clone(),
-    };
-
-    // Main Loop
-    loop {
-        // Handle requests
-        if let Err(e) = process_data.execute().await {
-            eprintln!("Error: {}", e);
-        }
+    if !index_file.exists() {
+        anyhow::bail!("embedded index.html not found at {}", index_file.display());
     }
-}
+    if !assets_dir.exists() {
+        anyhow::bail!(
+            "embedded assets directory not found at {}",
+            assets_dir.display()
+        );
+    }
 
-fn with_cors_headers<R: std::io::Read>(response: Response<R>) -> Response<R> {
-    response
-        .with_header(
-            tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
-        )
-        .with_header(
-            tiny_http::Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, OPTIONS"[..]).unwrap(),
-        )
-        .with_header(
-            tiny_http::Header::from_bytes(
-                &b"Access-Control-Allow-Headers"[..],
-                &b"Content-Type"[..],
-            )
-            .unwrap(),
-        )
+    let order_route = Axon::<(), (), Infallible, ()>::new("AcceptOrder").then(AcceptOrder);
+
+    println!("Serving embedded frontend at http://127.0.0.1:3030");
+    println!("API endpoint: POST http://127.0.0.1:3030/api/order");
+
+    Ranvier::http::<()>()
+        .bind("127.0.0.1:3030")
+        .serve_dir("/assets", assets_dir.to_string_lossy().to_string())
+        .spa_fallback(index_file.to_string_lossy().to_string())
+        .post("/api/order", order_route)
+        .run(())
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+
+    Ok(())
 }

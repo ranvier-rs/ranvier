@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ranvier Embedded Fullstack Demo</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Segoe UI", "Noto Sans", sans-serif;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, #f2f7ff 0%, #ffffff 55%, #eef9f2 100%);
+      color: #1f2937;
+    }
+    .card {
+      width: min(680px, 92vw);
+      border: 1px solid #d5dee9;
+      border-radius: 14px;
+      padding: 1.25rem 1.4rem;
+      background: #ffffff;
+      box-shadow: 0 18px 50px rgba(31, 41, 55, 0.08);
+    }
+    h1 {
+      margin: 0 0 0.5rem;
+      font-size: 1.25rem;
+      letter-spacing: 0.01em;
+    }
+    p {
+      margin: 0 0 1rem;
+      color: #4b5563;
+    }
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 10px;
+      background: #0d9488;
+      color: #ffffff;
+      font-weight: 600;
+      padding: 0.65rem 0.95rem;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: progress;
+    }
+    pre {
+      margin-top: 1rem;
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: 10px;
+      padding: 0.9rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.45;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Ranvier Full-Stack Demo (Embedded Static)</h1>
+    <p>
+      This page is served by <code>HttpIngress.serve_dir()</code> and falls back via
+      <code>spa_fallback()</code>. Click to call <code>POST /api/order</code>.
+    </p>
+    <button id="place-order">Place Order</button>
+    <pre id="output">Waiting for request...</pre>
+  </main>
+  <script src="/assets/app.js"></script>
+</body>
+</html>
