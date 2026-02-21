@@ -55,6 +55,137 @@ type RouteHandler<R> = Arc<
         + Sync,
 >;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PathParams {
+    values: HashMap<String, String>,
+}
+
+impl PathParams {
+    pub fn new(values: HashMap<String, String>) -> Self {
+        Self { values }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.values.get(key).map(String::as_str)
+    }
+
+    pub fn into_inner(self) -> HashMap<String, String> {
+        self.values
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RouteSegment {
+    Static(String),
+    Param(String),
+    Wildcard(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RoutePattern {
+    raw: String,
+    segments: Vec<RouteSegment>,
+}
+
+impl RoutePattern {
+    fn parse(path: &str) -> Self {
+        let segments = path_segments(path)
+            .into_iter()
+            .map(|segment| {
+                if let Some(name) = segment.strip_prefix(':') {
+                    if !name.is_empty() {
+                        return RouteSegment::Param(name.to_string());
+                    }
+                }
+                if let Some(name) = segment.strip_prefix('*') {
+                    if !name.is_empty() {
+                        return RouteSegment::Wildcard(name.to_string());
+                    }
+                }
+                RouteSegment::Static(segment.to_string())
+            })
+            .collect();
+
+        Self {
+            raw: path.to_string(),
+            segments,
+        }
+    }
+
+    fn match_path(&self, path: &str) -> Option<PathParams> {
+        let mut params = HashMap::new();
+        let path_segments = path_segments(path);
+        let mut pattern_index = 0usize;
+        let mut path_index = 0usize;
+
+        while pattern_index < self.segments.len() {
+            match &self.segments[pattern_index] {
+                RouteSegment::Static(expected) => {
+                    let actual = path_segments.get(path_index)?;
+                    if actual != expected {
+                        return None;
+                    }
+                    pattern_index += 1;
+                    path_index += 1;
+                }
+                RouteSegment::Param(name) => {
+                    let actual = path_segments.get(path_index)?;
+                    params.insert(name.clone(), (*actual).to_string());
+                    pattern_index += 1;
+                    path_index += 1;
+                }
+                RouteSegment::Wildcard(name) => {
+                    let remaining = path_segments[path_index..].join("/");
+                    params.insert(name.clone(), remaining);
+                    pattern_index += 1;
+                    path_index = path_segments.len();
+                    break;
+                }
+            }
+        }
+
+        if pattern_index == self.segments.len() && path_index == path_segments.len() {
+            Some(PathParams::new(params))
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Clone)]
+struct RouteEntry<R> {
+    method: Method,
+    pattern: RoutePattern,
+    handler: RouteHandler<R>,
+}
+
+fn path_segments(path: &str) -> Vec<&str> {
+    if path == "/" {
+        return Vec::new();
+    }
+
+    path.trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+fn find_matching_route<'a, R>(
+    routes: &'a [RouteEntry<R>],
+    method: &Method,
+    path: &str,
+) -> Option<(&'a RouteHandler<R>, PathParams)> {
+    for entry in routes {
+        if &entry.method != method {
+            continue;
+        }
+        if let Some(params) = entry.pattern.match_path(path) {
+            return Some((&entry.handler, params));
+        }
+    }
+    None
+}
+
 /// HTTP Ingress Circuit Builder.
 ///
 /// Wires HTTP inputs to Ranvier Circuits. This is NOT a web server—it's a circuit wiring tool.
@@ -63,8 +194,8 @@ type RouteHandler<R> = Arc<
 pub struct HttpIngress<R = ()> {
     /// Bind address (e.g., "127.0.0.1:3000")
     addr: Option<String>,
-    /// Routes: (Method, Path) -> Handler
-    routes: HashMap<(Method, String), RouteHandler<R>>,
+    /// Routes: (Method, RoutePattern, Handler)
+    routes: Vec<RouteEntry<R>>,
     /// Fallback circuit for unmatched routes
     fallback: Option<RouteHandler<R>>,
     _phantom: std::marker::PhantomData<R>,
@@ -78,7 +209,7 @@ where
     pub fn new() -> Self {
         Self {
             addr: None,
-            routes: HashMap::new(),
+            routes: Vec::new(),
             fallback: None,
             _phantom: std::marker::PhantomData,
         }
@@ -97,7 +228,7 @@ where
     {
         let path_str: String = path.into();
         let circuit = Arc::new(circuit);
-        let path_for_map = path_str.clone();
+        let path_for_pattern = path_str.clone();
         let path_for_handler = path_str;
 
         let handler: RouteHandler<R> = Arc::new(move |_req: Request<Incoming>, res: &R| {
@@ -138,7 +269,11 @@ where
             }) as Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
         });
 
-        self.routes.insert((Method::GET, path_for_map), handler);
+        self.routes.push(RouteEntry {
+            method: Method::GET,
+            pattern: RoutePattern::parse(&path_for_pattern),
+            handler,
+        });
         self
     }
     /// Register a route with a specific HTTP method.
@@ -160,9 +295,9 @@ where
     {
         let path_str: String = path.into();
         let circuit = Arc::new(circuit);
-        let path_for_map = path_str.clone();
+        let path_for_pattern = path_str.clone();
         let path_for_handler = path_str;
-        let method_for_map = method.clone();
+        let method_for_pattern = method.clone();
         let method_for_handler = method;
 
         let handler: RouteHandler<R> = Arc::new(move |_req: Request<Incoming>, res: &R| {
@@ -204,7 +339,11 @@ where
             }) as Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
         });
 
-        self.routes.insert((method_for_map, path_for_map), handler);
+        self.routes.push(RouteEntry {
+            method: method_for_pattern,
+            pattern: RoutePattern::parse(&path_for_pattern),
+            handler,
+        });
         self
     }
 
@@ -287,11 +426,14 @@ where
                     let resources = resources.clone();
 
                     async move {
+                        let mut req = req;
                         let method = req.method().clone();
                         let path = req.uri().path().to_string();
 
-                        // Try to find a matching route
-                        if let Some(handler) = routes.get(&(method.clone(), path.clone())) {
+                        if let Some((handler, params)) =
+                            find_matching_route(routes.as_slice(), &method, &path)
+                        {
+                            req.extensions_mut().insert(params);
                             Ok::<_, Infallible>(handler(req, &resources).await)
                         } else if let Some(ref fb) = fallback {
                             Ok(fb(req, &resources).await)
@@ -352,7 +494,7 @@ where
 /// Internal service type for `into_raw_service()`
 #[derive(Clone)]
 pub struct RawIngressService<R> {
-    routes: Arc<HashMap<(Method, String), RouteHandler<R>>>,
+    routes: Arc<Vec<RouteEntry<R>>>,
     fallback: Option<RouteHandler<R>>,
     resources: Arc<R>,
 }
@@ -378,10 +520,12 @@ where
         let resources = self.resources.clone();
 
         Box::pin(async move {
+            let mut req = req;
             let method = req.method().clone();
             let path = req.uri().path().to_string();
 
-            if let Some(handler) = routes.get(&(method, path)) {
+            if let Some((handler, params)) = find_matching_route(routes.as_slice(), &method, &path) {
+                req.extensions_mut().insert(params);
                 Ok(handler(req, &resources).await)
             } else if let Some(ref fb) = fallback {
                 Ok(fb(req, &resources).await)
@@ -392,5 +536,42 @@ where
                     .unwrap())
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn route_pattern_matches_static_path() {
+        let pattern = RoutePattern::parse("/orders/list");
+        let params = pattern.match_path("/orders/list").expect("should match");
+        assert!(params.into_inner().is_empty());
+    }
+
+    #[test]
+    fn route_pattern_matches_param_segments() {
+        let pattern = RoutePattern::parse("/orders/:id/items/:item_id");
+        let params = pattern
+            .match_path("/orders/42/items/sku-123")
+            .expect("should match");
+        assert_eq!(params.get("id"), Some("42"));
+        assert_eq!(params.get("item_id"), Some("sku-123"));
+    }
+
+    #[test]
+    fn route_pattern_matches_wildcard_segment() {
+        let pattern = RoutePattern::parse("/assets/*path");
+        let params = pattern
+            .match_path("/assets/css/theme/light.css")
+            .expect("should match");
+        assert_eq!(params.get("path"), Some("css/theme/light.css"));
+    }
+
+    #[test]
+    fn route_pattern_rejects_non_matching_path() {
+        let pattern = RoutePattern::parse("/orders/:id");
+        assert!(pattern.match_path("/users/42").is_none());
     }
 }
