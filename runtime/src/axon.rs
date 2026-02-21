@@ -440,6 +440,10 @@ where
     /// Starts the Ranvier Inspector for this Axon on the specified port.
     /// This spawns a background task to serve the Schematic.
     pub fn serve_inspector(self, port: u16) -> Self {
+        if !inspector_dev_mode_from_env() {
+            tracing::info!("Inspector disabled because RANVIER_MODE is production");
+            return self;
+        }
         if !inspector_enabled_from_env() {
             tracing::info!("Inspector disabled by RANVIER_INSPECTOR");
             return self;
@@ -577,10 +581,27 @@ fn env_flag_is_true(key: &str) -> bool {
 }
 
 fn inspector_enabled_from_env() -> bool {
-    match std::env::var("RANVIER_INSPECTOR") {
-        Ok(v) => matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"),
-        Err(_) => true,
+    let raw = std::env::var("RANVIER_INSPECTOR").ok();
+    inspector_enabled_from_value(raw.as_deref())
+}
+
+fn inspector_enabled_from_value(value: Option<&str>) -> bool {
+    match value {
+        Some(v) => matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"),
+        None => true,
     }
+}
+
+fn inspector_dev_mode_from_env() -> bool {
+    let raw = std::env::var("RANVIER_MODE").ok();
+    inspector_dev_mode_from_value(raw.as_deref())
+}
+
+fn inspector_dev_mode_from_value(value: Option<&str>) -> bool {
+    !matches!(
+        value.map(|v| v.to_ascii_lowercase()),
+        Some(mode) if mode == "prod" || mode == "production"
+    )
 }
 
 fn maybe_export_timeline<Out, E>(bus: &mut Bus, outcome: &Outcome<Out, E>) {
@@ -1123,7 +1144,10 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Axon, sampled_by_bus_id, should_force_export};
+    use super::{
+        Axon, inspector_dev_mode_from_value, inspector_enabled_from_value, sampled_by_bus_id,
+        should_force_export,
+    };
     use crate::persistence::{
         CompensationContext, CompensationHandle, CompensationHook, CompensationIdempotencyHandle,
         CompensationIdempotencyStore, CompensationRetryPolicy, CompletionState,
@@ -1136,6 +1160,25 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use uuid::Uuid;
+
+    #[test]
+    fn inspector_enabled_flag_matrix() {
+        assert!(inspector_enabled_from_value(None));
+        assert!(inspector_enabled_from_value(Some("1")));
+        assert!(inspector_enabled_from_value(Some("true")));
+        assert!(inspector_enabled_from_value(Some("on")));
+        assert!(!inspector_enabled_from_value(Some("0")));
+        assert!(!inspector_enabled_from_value(Some("false")));
+    }
+
+    #[test]
+    fn inspector_dev_mode_matrix() {
+        assert!(inspector_dev_mode_from_value(None));
+        assert!(inspector_dev_mode_from_value(Some("dev")));
+        assert!(inspector_dev_mode_from_value(Some("staging")));
+        assert!(!inspector_dev_mode_from_value(Some("prod")));
+        assert!(!inspector_dev_mode_from_value(Some("production")));
+    }
 
     #[test]
     fn adaptive_policy_force_export_matrix() {
