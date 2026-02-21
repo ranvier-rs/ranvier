@@ -546,29 +546,7 @@ where
             }
         }
 
-        if !connections.is_empty() {
-            let drain_result = tokio::time::timeout(graceful_shutdown_timeout, async {
-                while let Some(join_result) = connections.join_next().await {
-                    if let Err(err) = join_result {
-                        tracing::warn!("Connection task join error during shutdown: {:?}", err);
-                    }
-                }
-            })
-            .await;
-
-            if drain_result.is_err() {
-                tracing::warn!(
-                    "Graceful shutdown timeout reached ({:?}). Aborting remaining connections.",
-                    graceful_shutdown_timeout
-                );
-                connections.abort_all();
-                while let Some(join_result) = connections.join_next().await {
-                    if let Err(err) = join_result {
-                        tracing::warn!("Connection task abort join error: {:?}", err);
-                    }
-                }
-            }
-        }
+        let _timed_out = drain_connections(&mut connections, graceful_shutdown_timeout).await;
 
         drop(resources);
         if let Some(callback) = on_shutdown.as_ref() {
@@ -632,6 +610,40 @@ async fn shutdown_signal() {
         if let Err(err) = tokio::signal::ctrl_c().await {
             tracing::warn!("Failed to listen for Ctrl+C: {:?}", err);
         }
+    }
+}
+
+async fn drain_connections(
+    connections: &mut tokio::task::JoinSet<()>,
+    graceful_shutdown_timeout: Duration,
+) -> bool {
+    if connections.is_empty() {
+        return false;
+    }
+
+    let drain_result = tokio::time::timeout(graceful_shutdown_timeout, async {
+        while let Some(join_result) = connections.join_next().await {
+            if let Err(err) = join_result {
+                tracing::warn!("Connection task join error during shutdown: {:?}", err);
+            }
+        }
+    })
+    .await;
+
+    if drain_result.is_err() {
+        tracing::warn!(
+            "Graceful shutdown timeout reached ({:?}). Aborting remaining connections.",
+            graceful_shutdown_timeout
+        );
+        connections.abort_all();
+        while let Some(join_result) = connections.join_next().await {
+            if let Err(err) = join_result {
+                tracing::warn!("Connection task abort join error: {:?}", err);
+            }
+        }
+        true
+    } else {
+        false
     }
 }
 
@@ -765,6 +777,30 @@ mod tests {
 
         assert!(started.load(Ordering::SeqCst));
         assert!(shutdown.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn drain_connections_completes_before_timeout() {
+        let mut connections = tokio::task::JoinSet::new();
+        connections.spawn(async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        });
+
+        let timed_out = drain_connections(&mut connections, Duration::from_millis(200)).await;
+        assert!(!timed_out);
+        assert!(connections.is_empty());
+    }
+
+    #[tokio::test]
+    async fn drain_connections_times_out_and_aborts() {
+        let mut connections = tokio::task::JoinSet::new();
+        connections.spawn(async {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        });
+
+        let timed_out = drain_connections(&mut connections, Duration::from_millis(10)).await;
+        assert!(timed_out);
+        assert!(connections.is_empty());
     }
 
 }
