@@ -330,6 +330,15 @@ impl Inspector {
     }
 
     pub async fn serve(self) -> Result<(), std::io::Error> {
+        let addr = SocketAddr::from(([0, 0, 0, 0], self.port));
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        self.serve_with_listener(listener).await
+    }
+
+    pub async fn serve_with_listener(
+        self,
+        listener: tokio::net::TcpListener,
+    ) -> Result<(), std::io::Error> {
         let state = InspectorState {
             schematic: self.schematic.clone(),
             public_projection: self.public_projection.clone(),
@@ -372,11 +381,9 @@ impl Inspector {
         }
 
         let app = app.with_state(state);
-
-        let addr = SocketAddr::from(([0, 0, 0, 0], self.port));
+        let addr = listener.local_addr()?;
         tracing::info!("Ranvier Inspector listening on http://{}", addr);
 
-        let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, app).await
     }
 }
@@ -999,12 +1006,13 @@ mod tests {
     use ranvier_core::schematic::Schematic;
     use std::time::Duration;
 
-    fn free_port() -> u16 {
-        std::net::TcpListener::bind("127.0.0.1:0")
-            .expect("bind ephemeral port")
-            .local_addr()
-            .expect("local addr")
-            .port()
+    fn reserve_listener() -> (u16, tokio::net::TcpListener) {
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        std_listener.set_nonblocking(true).expect("set nonblocking");
+        let port = std_listener.local_addr().expect("local addr").port();
+        let listener =
+            tokio::net::TcpListener::from_std(std_listener).expect("tokio listener conversion");
+        (port, listener)
     }
 
     async fn wait_ready(port: u16) {
@@ -1077,10 +1085,10 @@ mod tests {
 
     #[tokio::test]
     async fn dev_mode_exposes_quick_view_and_internal_routes() {
-        let port = free_port();
+        let (port, listener) = reserve_listener();
         let inspector = Inspector::new(Schematic::new("dev-test"), port).with_mode("dev");
         let handle = tokio::spawn(async move {
-            let _ = inspector.serve().await;
+            let _ = inspector.serve_with_listener(listener).await;
         });
         wait_ready(port).await;
 
@@ -1141,10 +1149,10 @@ mod tests {
 
     #[tokio::test]
     async fn prod_mode_hides_quick_view_and_internal_routes() {
-        let port = free_port();
+        let (port, listener) = reserve_listener();
         let inspector = Inspector::new(Schematic::new("prod-test"), port).with_mode("prod");
         let handle = tokio::spawn(async move {
-            let _ = inspector.serve().await;
+            let _ = inspector.serve_with_listener(listener).await;
         });
         wait_ready(port).await;
 
@@ -1186,10 +1194,10 @@ mod tests {
 
     #[tokio::test]
     async fn timeline_endpoint_returns_not_found_for_unknown_request() {
-        let port = free_port();
+        let (port, listener) = reserve_listener();
         let inspector = Inspector::new(Schematic::new("timeline-test"), port).with_mode("dev");
         let handle = tokio::spawn(async move {
-            let _ = inspector.serve().await;
+            let _ = inspector.serve_with_listener(listener).await;
         });
         wait_ready(port).await;
 
@@ -1208,12 +1216,12 @@ mod tests {
 
     #[tokio::test]
     async fn auth_enforcement_rejects_missing_role_header() {
-        let port = free_port();
+        let (port, listener) = reserve_listener();
         let inspector = Inspector::new(Schematic::new("auth-public"), port)
             .with_mode("dev")
             .with_auth_enforcement(true);
         let handle = tokio::spawn(async move {
-            let _ = inspector.serve().await;
+            let _ = inspector.serve_with_listener(listener).await;
         });
         wait_ready(port).await;
 
@@ -1230,13 +1238,13 @@ mod tests {
 
     #[tokio::test]
     async fn auth_enforcement_blocks_viewer_internal_and_requires_tenant() {
-        let port = free_port();
+        let (port, listener) = reserve_listener();
         let inspector = Inspector::new(Schematic::new("auth-internal"), port)
             .with_mode("dev")
             .with_auth_enforcement(true)
             .with_require_tenant_for_internal(true);
         let handle = tokio::spawn(async move {
-            let _ = inspector.serve().await;
+            let _ = inspector.serve_with_listener(listener).await;
         });
         wait_ready(port).await;
 
