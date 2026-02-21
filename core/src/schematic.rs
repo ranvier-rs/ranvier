@@ -103,9 +103,20 @@ pub struct Node {
     pub output_type: String, // Primary output type for Next
     pub resource_type: String,
     pub metadata: StepMetadata,
+    /// Optional transition-level Bus capability policy metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bus_capability: Option<BusCapabilitySchema>,
     /// 소스 코드 위치 (Studio Code↔Node 매핑용)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_location: Option<SourceLocation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BusCapabilitySchema {
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub allow: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub deny: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

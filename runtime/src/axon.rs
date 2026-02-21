@@ -18,7 +18,9 @@ use crate::persistence::{
 };
 use ranvier_core::bus::Bus;
 use ranvier_core::outcome::Outcome;
-use ranvier_core::schematic::{Edge, EdgeType, Node, NodeKind, Schematic, SourceLocation};
+use ranvier_core::schematic::{
+    BusCapabilitySchema, Edge, EdgeType, Node, NodeKind, Schematic, SourceLocation,
+};
 use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_core::transition::Transition;
 use std::any::type_name;
@@ -122,6 +124,7 @@ where
             output_type: type_name_of::<In>(),
             resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
+            bus_capability: None,
             source_location: Some(SourceLocation::new(caller.file(), caller.line())),
         };
 
@@ -172,6 +175,7 @@ where
             output_type: type_name_of::<Next>(),
             resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
+            bus_capability: bus_capability_schema_from_policy(transition.bus_access_policy()),
             source_location: Some(SourceLocation::new(caller.file(), caller.line())),
         };
 
@@ -297,6 +301,7 @@ where
             output_type: type_name_of::<Out>(),
             resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
+            bus_capability: None,
             source_location: Some(SourceLocation::new(caller.file(), caller.line())),
         };
 
@@ -1079,6 +1084,34 @@ fn cleanup_rotated_files(base_path: &str, keep: usize) -> Result<(), String> {
         let _ = fs::remove_file(path);
     }
     Ok(())
+}
+
+fn bus_capability_schema_from_policy(
+    policy: Option<ranvier_core::bus::BusAccessPolicy>,
+) -> Option<BusCapabilitySchema> {
+    let Some(policy) = policy else {
+        return None;
+    };
+
+    let mut allow = policy
+        .allow
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| entry.type_name.to_string())
+        .collect::<Vec<_>>();
+    let mut deny = policy
+        .deny
+        .into_iter()
+        .map(|entry| entry.type_name.to_string())
+        .collect::<Vec<_>>();
+    allow.sort();
+    deny.sort();
+
+    if allow.is_empty() && deny.is_empty() {
+        return None;
+    }
+
+    Some(BusCapabilitySchema { allow, deny })
 }
 
 fn now_ms() -> u64 {

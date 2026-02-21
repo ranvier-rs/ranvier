@@ -83,6 +83,7 @@ async fn main() -> Result<()> {
         output_type: "Void".to_string(),
         resource_type: "()".to_string(),
         metadata: Default::default(),
+        bus_capability: None,
         source_location: None,
     };
 
@@ -106,6 +107,7 @@ async fn main() -> Result<()> {
         output_type: "Void".to_string(),
         resource_type: "()".to_string(),
         metadata: Default::default(),
+        bus_capability: None,
         source_location: None,
     };
 
