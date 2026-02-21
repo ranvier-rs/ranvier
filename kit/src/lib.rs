@@ -6,6 +6,8 @@
 #[cfg(feature = "auth")]
 pub use ranvier_auth as auth;
 pub use ranvier_core as core;
+#[cfg(feature = "guard")]
+pub use ranvier_guard as guard;
 #[cfg(feature = "http")]
 pub use ranvier_http as http;
 pub use ranvier_runtime as runtime;
@@ -17,6 +19,10 @@ pub use ranvier_auth::{
     ApiKeyAuthLayer, AuthContext, AuthPolicy, AuthScheme, BearerAuthLayer, RequireRoleLayer,
 };
 pub use ranvier_core::{Bus, Outcome, Schematic, Transition};
+#[cfg(feature = "guard")]
+pub use ranvier_guard::{
+    CorsGuardLayer, RateLimitLayer, RateLimitPolicy, SecurityHeadersLayer, SecurityHeadersPolicy,
+};
 #[cfg(feature = "http")]
 pub use ranvier_http::{HttpIngress, Ranvier, RanvierService};
 pub use ranvier_runtime::Axon;
@@ -25,6 +31,8 @@ pub mod prelude {
     #[cfg(feature = "auth")]
     pub use ranvier_auth::prelude::*;
     pub use ranvier_core::prelude::*;
+    #[cfg(feature = "guard")]
+    pub use ranvier_guard::prelude::*;
     #[cfg(feature = "http")]
     pub use ranvier_http::prelude::*;
     pub use ranvier_runtime::prelude::*;

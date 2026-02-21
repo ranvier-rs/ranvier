@@ -1,0 +1,13 @@
+[package]
+name = "guard-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ranvier-core = { workspace = true }
+ranvier-runtime = { workspace = true }
+ranvier-http = { workspace = true }
+ranvier-guard = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+http = { workspace = true }

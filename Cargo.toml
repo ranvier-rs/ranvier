@@ -20,6 +20,7 @@ members = [
     "examples/websocket-loop",
     "examples/order-processing-demo",
     "examples/auth-jwt-role-demo",
+    "examples/guard-demo",
     "examples/experimental/fullstack-demo",
     "examples/static-build-demo",
     "examples/db-example",
@@ -32,6 +33,7 @@ members = [
     "extensions/db",
     "extensions/status",
     "extensions/auth",
+    "extensions/guard",
     "extensions/observe",
     "extensions/inspector",
     "examples/flat-api-demo",
@@ -56,6 +58,7 @@ ranvier-http = { path = "http", version = "0.1.2" }
 ranvier-db = { path = "extensions/db", version = "0.1.0" }
 ranvier-status = { path = "extensions/status", version = "0.1.1" }
 ranvier-auth = { path = "extensions/auth", version = "0.1.2" }
+ranvier-guard = { path = "extensions/guard", version = "0.1.2" }
 ranvier-observe = { path = "extensions/observe", version = "0.1.0" }
 ranvier-inspector = { path = "extensions/inspector", version = "0.1.2" }
 ranvier-std = { path = "std", version = "0.1.0" }

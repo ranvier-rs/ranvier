@@ -844,6 +844,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
+name = "guard-demo"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "http 1.4.0",
+ "ranvier-core",
+ "ranvier-guard",
+ "ranvier-http",
+ "ranvier-runtime",
+ "tokio",
+]
+
+[[package]]
 name = "h2"
 version = "0.3.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2030,6 +2043,7 @@ version = "0.1.2"
 dependencies = [
  "ranvier-auth",
  "ranvier-core",
+ "ranvier-guard",
  "ranvier-http",
  "ranvier-runtime",
  "ranvier-std",
@@ -2084,6 +2098,19 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "ranvier-guard"
+version = "0.1.2"
+dependencies = [
+ "bytes",
+ "http 1.4.0",
+ "http-body-util",
+ "serde_json",
+ "tokio",
+ "tower 0.5.3",
+ "tower-http 0.6.8",
 ]
 
 [[package]]
