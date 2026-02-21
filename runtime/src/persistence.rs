@@ -266,6 +266,21 @@ impl PostgresCompensationIdempotencyStore {
         sqlx::query(&create).execute(&self.pool).await?;
         Ok(())
     }
+
+    /// Remove stale idempotency rows older than `cutoff_ms` (unix epoch ms).
+    pub async fn purge_older_than_ms(&self, cutoff_ms: i64) -> Result<u64> {
+        let query = format!(
+            "DELETE FROM {}
+             WHERE created_at_ms < $1",
+            self.table
+        );
+        let rows = sqlx::query(&query)
+            .bind(cutoff_ms)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        Ok(rows)
+    }
 }
 
 #[cfg(feature = "persistence-postgres")]
@@ -310,6 +325,7 @@ impl CompensationIdempotencyStore for PostgresCompensationIdempotencyStore {
 pub struct RedisCompensationIdempotencyStore {
     manager: redis::aio::ConnectionManager,
     key_prefix: String,
+    ttl_seconds: Option<u64>,
 }
 
 #[cfg(feature = "persistence-redis")]
@@ -317,6 +333,7 @@ impl std::fmt::Debug for RedisCompensationIdempotencyStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RedisCompensationIdempotencyStore")
             .field("key_prefix", &self.key_prefix)
+            .field("ttl_seconds", &self.ttl_seconds)
             .finish_non_exhaustive()
     }
 }
@@ -330,6 +347,7 @@ impl RedisCompensationIdempotencyStore {
         Ok(Self {
             manager,
             key_prefix: "ranvier:compensation:idempotency".to_string(),
+            ttl_seconds: None,
         })
     }
 
@@ -337,6 +355,19 @@ impl RedisCompensationIdempotencyStore {
         Self {
             manager,
             key_prefix: key_prefix.into(),
+            ttl_seconds: None,
+        }
+    }
+
+    pub fn with_prefix_and_ttl(
+        manager: redis::aio::ConnectionManager,
+        key_prefix: impl Into<String>,
+        ttl_seconds: u64,
+    ) -> Self {
+        Self {
+            manager,
+            key_prefix: key_prefix.into(),
+            ttl_seconds: Some(ttl_seconds),
         }
     }
 
@@ -358,7 +389,14 @@ impl CompensationIdempotencyStore for RedisCompensationIdempotencyStore {
     async fn mark_compensated(&self, key: &str) -> Result<()> {
         use redis::AsyncCommands;
         let mut conn = self.manager.clone();
-        let _: bool = conn.set_nx(self.key(key), "1").await?;
+        let redis_key = self.key(key);
+        let inserted: bool = conn.set_nx(&redis_key, "1").await?;
+        if inserted {
+            if let Some(ttl_seconds) = self.ttl_seconds {
+                let ttl_i64 = i64::try_from(ttl_seconds)?;
+                let _: bool = conn.expire(&redis_key, ttl_i64).await?;
+            }
+        }
         Ok(())
     }
 }
@@ -1051,6 +1089,53 @@ mod tests {
         sqlx::query(&drop_table).execute(&pool).await.unwrap();
     }
 
+    #[cfg(feature = "persistence-postgres")]
+    #[tokio::test]
+    async fn postgres_compensation_idempotency_purge_when_configured() {
+        let url = match std::env::var("RANVIER_PERSISTENCE_POSTGRES_URL") {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&url)
+            .await
+            .unwrap();
+        let table_prefix = format!(
+            "ranvier_compensation_idempotency_purge_test_{}",
+            Uuid::new_v4().simple()
+        );
+        let store =
+            PostgresCompensationIdempotencyStore::with_table_prefix(pool.clone(), &table_prefix);
+        store.ensure_schema().await.unwrap();
+
+        let stale_key = format!("stale-{}", Uuid::new_v4().simple());
+        let fresh_key = format!("fresh-{}", Uuid::new_v4().simple());
+        store.mark_compensated(&stale_key).await.unwrap();
+        store.mark_compensated(&fresh_key).await.unwrap();
+
+        let force_stale_query = format!(
+            "UPDATE {}
+             SET created_at_ms = 0
+             WHERE idempotency_key = $1",
+            store.table
+        );
+        sqlx::query(&force_stale_query)
+            .bind(&stale_key)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let purged = store.purge_older_than_ms(1).await.unwrap();
+        assert!(purged >= 1);
+        assert!(!store.was_compensated(&stale_key).await.unwrap());
+        assert!(store.was_compensated(&fresh_key).await.unwrap());
+
+        let drop_table = format!("DROP TABLE IF EXISTS {}", store.table);
+        sqlx::query(&drop_table).execute(&pool).await.unwrap();
+    }
+
     #[cfg(feature = "persistence-redis")]
     #[tokio::test]
     async fn redis_compensation_idempotency_roundtrip_when_configured() {
@@ -1076,5 +1161,30 @@ mod tests {
         use redis::AsyncCommands;
         let mut conn = store.manager.clone();
         let _: () = conn.del(store.key(&key)).await.unwrap();
+    }
+
+    #[cfg(feature = "persistence-redis")]
+    #[tokio::test]
+    async fn redis_compensation_idempotency_ttl_when_configured() {
+        let url = match std::env::var("RANVIER_PERSISTENCE_REDIS_URL") {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        let base = RedisCompensationIdempotencyStore::connect(&url).await.unwrap();
+        let prefix = format!(
+            "ranvier:compensation:idempotency:ttl:test:{}",
+            Uuid::new_v4().simple()
+        );
+        let store =
+            RedisCompensationIdempotencyStore::with_prefix_and_ttl(base.manager.clone(), prefix, 1);
+        let key = format!("ttl-{}", Uuid::new_v4().simple());
+
+        assert!(!store.was_compensated(&key).await.unwrap());
+        store.mark_compensated(&key).await.unwrap();
+        assert!(store.was_compensated(&key).await.unwrap());
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        assert!(!store.was_compensated(&key).await.unwrap());
     }
 }

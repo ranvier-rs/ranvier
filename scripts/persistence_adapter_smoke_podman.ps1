@@ -103,6 +103,8 @@ try {
     $redisTestOk = Select-String -Path $testLog -Pattern "redis_store_roundtrip_when_configured ... ok" -SimpleMatch
     $postgresIdemOk = Select-String -Path $testLog -Pattern "postgres_compensation_idempotency_roundtrip_when_configured ... ok" -SimpleMatch
     $redisIdemOk = Select-String -Path $testLog -Pattern "redis_compensation_idempotency_roundtrip_when_configured ... ok" -SimpleMatch
+    $postgresPurgeOk = Select-String -Path $testLog -Pattern "postgres_compensation_idempotency_purge_when_configured ... ok" -SimpleMatch
+    $redisTtlOk = Select-String -Path $testLog -Pattern "redis_compensation_idempotency_ttl_when_configured ... ok" -SimpleMatch
 
     if (-not $postgresTestOk) {
         throw "Missing PostgreSQL adapter test success marker in smoke log."
@@ -115,6 +117,12 @@ try {
     }
     if (-not $redisIdemOk) {
         throw "Missing Redis compensation idempotency test success marker in smoke log."
+    }
+    if (-not $postgresPurgeOk) {
+        throw "Missing PostgreSQL idempotency purge test success marker in smoke log."
+    }
+    if (-not $redisTtlOk) {
+        throw "Missing Redis idempotency TTL test success marker in smoke log."
     }
 
     Write-Host "Persistence adapter smoke passed."
