@@ -198,6 +198,30 @@ pub struct PathParams {
     values: HashMap<String, String>,
 }
 
+/// Public route descriptor snapshot for tooling integrations (e.g., OpenAPI generation).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpRouteDescriptor {
+    method: Method,
+    path_pattern: String,
+}
+
+impl HttpRouteDescriptor {
+    pub fn new(method: Method, path_pattern: impl Into<String>) -> Self {
+        Self {
+            method,
+            path_pattern: path_pattern.into(),
+        }
+    }
+
+    pub fn method(&self) -> &Method {
+        &self.method
+    }
+
+    pub fn path_pattern(&self) -> &str {
+        &self.path_pattern
+    }
+}
+
 impl PathParams {
     pub fn new(values: HashMap<String, String>) -> Self {
         Self { values }
@@ -467,6 +491,27 @@ where
     {
         self.bus_injectors.push(Arc::new(injector));
         self
+    }
+
+    /// Export route metadata snapshot for external tooling.
+    pub fn route_descriptors(&self) -> Vec<HttpRouteDescriptor> {
+        let mut descriptors = self
+            .routes
+            .iter()
+            .map(|entry| HttpRouteDescriptor::new(entry.method.clone(), entry.pattern.raw.clone()))
+            .collect::<Vec<_>>();
+
+        if let Some(path) = &self.health.health_path {
+            descriptors.push(HttpRouteDescriptor::new(Method::GET, path.clone()));
+        }
+        if let Some(path) = &self.health.readiness_path {
+            descriptors.push(HttpRouteDescriptor::new(Method::GET, path.clone()));
+        }
+        if let Some(path) = &self.health.liveness_path {
+            descriptors.push(HttpRouteDescriptor::new(Method::GET, path.clone()));
+        }
+
+        descriptors
     }
 
     /// Enable built-in health endpoint at the given path.
@@ -1407,6 +1452,41 @@ mod tests {
             bus.insert("ok".to_string());
         });
         assert_eq!(ingress.bus_injectors.len(), 1);
+    }
+
+    #[test]
+    fn route_descriptors_export_http_and_health_paths() {
+        let ingress = HttpIngress::<()>::new()
+            .get("/orders/:id", Axon::<(), (), Infallible, ()>::new("OrderById"))
+            .health_endpoint("/healthz")
+            .readiness_liveness("/readyz", "/livez");
+
+        let descriptors = ingress.route_descriptors();
+
+        assert!(
+            descriptors
+                .iter()
+                .any(|descriptor| descriptor.method() == Method::GET
+                    && descriptor.path_pattern() == "/orders/:id")
+        );
+        assert!(
+            descriptors
+                .iter()
+                .any(|descriptor| descriptor.method() == Method::GET
+                    && descriptor.path_pattern() == "/healthz")
+        );
+        assert!(
+            descriptors
+                .iter()
+                .any(|descriptor| descriptor.method() == Method::GET
+                    && descriptor.path_pattern() == "/readyz")
+        );
+        assert!(
+            descriptors
+                .iter()
+                .any(|descriptor| descriptor.method() == Method::GET
+                    && descriptor.path_pattern() == "/livez")
+        );
     }
 
     #[tokio::test]

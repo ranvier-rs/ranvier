@@ -10,6 +10,8 @@ pub use ranvier_core as core;
 pub use ranvier_guard as guard;
 #[cfg(feature = "http")]
 pub use ranvier_http as http;
+#[cfg(feature = "openapi")]
+pub use ranvier_openapi as openapi;
 pub use ranvier_runtime as runtime;
 #[cfg(feature = "std")]
 pub use ranvier_std as std;
@@ -25,6 +27,8 @@ pub use ranvier_guard::{
 };
 #[cfg(feature = "http")]
 pub use ranvier_http::{HttpIngress, Ranvier, RanvierService};
+#[cfg(feature = "openapi")]
+pub use ranvier_openapi::{OpenApiDocument, OpenApiGenerator, swagger_ui_html};
 pub use ranvier_runtime::Axon;
 
 pub mod prelude {
@@ -35,6 +39,8 @@ pub mod prelude {
     pub use ranvier_guard::prelude::*;
     #[cfg(feature = "http")]
     pub use ranvier_http::prelude::*;
+    #[cfg(feature = "openapi")]
+    pub use ranvier_openapi::prelude::*;
     pub use ranvier_runtime::prelude::*;
     #[cfg(feature = "std")]
     pub use ranvier_std::prelude::*;

@@ -1,0 +1,17 @@
+[package]
+name = "ranvier-openapi"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+version.workspace = true
+edition.workspace = true
+description = "OpenAPI generation helpers for Ranvier HTTP ingress"
+
+[dependencies]
+ranvier-http = { workspace = true }
+ranvier-core = { workspace = true }
+http = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+schemars = { version = "1.2.0", features = ["derive"] }
