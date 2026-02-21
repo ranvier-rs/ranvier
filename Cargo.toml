@@ -22,6 +22,7 @@ members = [
     "examples/auth-jwt-role-demo",
     "examples/guard-demo",
     "examples/openapi-demo",
+    "examples/static-spa-demo",
     "examples/experimental/fullstack-demo",
     "examples/static-build-demo",
     "examples/db-example",

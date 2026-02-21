@@ -14,8 +14,9 @@
 //! User code depth ≤ 2. Complexity is isolated, not hidden.
 
 use bytes::Bytes;
-use http::{Method, Request, Response, StatusCode};
-use http_body_util::Full;
+use http::{Method, Request, Response, StatusCode, Uri};
+use http_body::Body;
+use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
@@ -33,6 +34,8 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tower::util::BoxCloneService;
 use tower::{Layer, Service, ServiceExt, service_fn};
+use tower_http::compression::CompressionLayer;
+use tower_http::services::{ServeDir, ServeFile};
 use tracing::Instrument;
 
 use crate::response::{IntoResponse, outcome_to_response_with_error};
@@ -91,6 +94,20 @@ impl<R> Default for HealthConfig<R> {
             checks: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Default)]
+struct StaticAssetsConfig {
+    mounts: Vec<StaticMount>,
+    spa_fallback: Option<String>,
+    cache_control: Option<String>,
+    enable_compression: bool,
+}
+
+#[derive(Clone)]
+struct StaticMount {
+    route_prefix: String,
+    directory: String,
 }
 
 #[derive(Serialize)]
@@ -387,6 +404,8 @@ pub struct HttpIngress<R = ()> {
     graceful_shutdown_timeout: Duration,
     /// Request-context to Bus injection hooks executed before each circuit run.
     bus_injectors: Vec<BusInjector>,
+    /// Static asset serving configuration (serve_dir + SPA fallback).
+    static_assets: StaticAssetsConfig,
     /// Built-in health endpoint configuration.
     health: HealthConfig<R>,
     _phantom: std::marker::PhantomData<R>,
@@ -407,6 +426,7 @@ where
             on_shutdown: None,
             graceful_shutdown_timeout: Duration::from_secs(30),
             bus_injectors: Vec::new(),
+            static_assets: StaticAssetsConfig::default(),
             health: HealthConfig::default(),
             _phantom: std::marker::PhantomData,
         }
@@ -512,6 +532,44 @@ where
         }
 
         descriptors
+    }
+
+    /// Mount a static directory under a path prefix.
+    ///
+    /// Example: `.serve_dir("/static", "./public")`.
+    pub fn serve_dir(
+        mut self,
+        route_prefix: impl Into<String>,
+        directory: impl Into<String>,
+    ) -> Self {
+        self.static_assets.mounts.push(StaticMount {
+            route_prefix: normalize_route_path(route_prefix.into()),
+            directory: directory.into(),
+        });
+        if self.static_assets.cache_control.is_none() {
+            self.static_assets.cache_control = Some("public, max-age=3600".to_string());
+        }
+        self
+    }
+
+    /// Configure SPA fallback file for unmatched GET/HEAD routes.
+    ///
+    /// Example: `.spa_fallback("./public/index.html")`.
+    pub fn spa_fallback(mut self, file_path: impl Into<String>) -> Self {
+        self.static_assets.spa_fallback = Some(file_path.into());
+        self
+    }
+
+    /// Override default Cache-Control for static responses.
+    pub fn static_cache_control(mut self, cache_control: impl Into<String>) -> Self {
+        self.static_assets.cache_control = Some(cache_control.into());
+        self
+    }
+
+    /// Add gzip/brotli response compression via `tower-http::CompressionLayer`.
+    pub fn compression_layer(mut self) -> Self {
+        self.static_assets.enable_compression = true;
+        self
     }
 
     /// Enable built-in health endpoint at the given path.
@@ -921,6 +979,7 @@ where
         let fallback = self.fallback;
         let layers = Arc::new(self.layers);
         let health = Arc::new(self.health);
+        let static_assets = Arc::new(self.static_assets);
         let on_start = self.on_start;
         let on_shutdown = self.on_shutdown;
         let graceful_shutdown_timeout = self.graceful_shutdown_timeout;
@@ -950,10 +1009,17 @@ where
                     let resources = resources.clone();
                     let layers = layers.clone();
                     let health = health.clone();
+                    let static_assets = static_assets.clone();
 
                     connections.spawn(async move {
-                        let service =
-                            build_http_service(routes, fallback, resources, layers, health);
+                        let service = build_http_service(
+                            routes,
+                            fallback,
+                            resources,
+                            layers,
+                            health,
+                            static_assets,
+                        );
                         let hyper_service = TowerToHyperService::new(service);
                         if let Err(err) = http1::Builder::new()
                             .serve_connection(io, hyper_service)
@@ -1001,6 +1067,7 @@ where
         let fallback = self.fallback;
         let layers = Arc::new(self.layers);
         let health = Arc::new(self.health);
+        let static_assets = Arc::new(self.static_assets);
         let resources = Arc::new(resources);
 
         RawIngressService {
@@ -1008,6 +1075,7 @@ where
             fallback,
             layers,
             health,
+            static_assets,
             resources,
         }
     }
@@ -1019,6 +1087,7 @@ fn build_http_service<R>(
     resources: Arc<R>,
     layers: Arc<Vec<ServiceLayer>>,
     health: Arc<HealthConfig<R>>,
+    static_assets: Arc<StaticAssetsConfig>,
 ) -> BoxHttpService
 where
     R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
@@ -1029,6 +1098,7 @@ where
         let resources = resources.clone();
         let layers = layers.clone();
         let health = health.clone();
+        let static_assets = static_assets.clone();
 
         async move {
             let mut req = req;
@@ -1059,7 +1129,13 @@ where
                     );
                     route_service.oneshot(req).await
                 }
-            } else if let Some(ref fb) = fallback {
+            } else {
+                let req = match maybe_handle_static_request(req, &method, &path, static_assets.as_ref()).await {
+                    Ok(req) => req,
+                    Err(response) => return Ok(response),
+                };
+
+                if let Some(ref fb) = fallback {
                 if layers.is_empty() {
                     Ok(fb(req, &resources).await)
                 } else {
@@ -1067,11 +1143,12 @@ where
                         build_route_service(fb.clone(), resources.clone(), layers.clone());
                     fallback_service.oneshot(req).await
                 }
-            } else {
-                Ok(Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .body(Full::new(Bytes::from("Not Found")))
-                    .unwrap())
+                } else {
+                    Ok(Response::builder()
+                        .status(StatusCode::NOT_FOUND)
+                        .body(Full::new(Bytes::from("Not Found")))
+                        .unwrap())
+                }
             }
         }
     });
@@ -1151,6 +1228,191 @@ where
     }
 
     None
+}
+
+async fn maybe_handle_static_request(
+    req: Request<Incoming>,
+    method: &Method,
+    path: &str,
+    static_assets: &StaticAssetsConfig,
+) -> Result<Request<Incoming>, Response<Full<Bytes>>> {
+    if method != Method::GET && method != Method::HEAD {
+        return Ok(req);
+    }
+
+    if let Some(mount) = static_assets
+        .mounts
+        .iter()
+        .find(|mount| strip_mount_prefix(path, &mount.route_prefix).is_some())
+    {
+        let accept_encoding = req.headers().get(http::header::ACCEPT_ENCODING).cloned();
+        let Some(stripped_path) = strip_mount_prefix(path, &mount.route_prefix) else {
+            return Ok(req);
+        };
+        let rewritten = rewrite_request_path(req, &stripped_path);
+        let service = ServeDir::new(&mount.directory);
+        let response = match service.oneshot(rewritten).await {
+            Ok(response) => response,
+            Err(_) => {
+                return Err(
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Full::new(Bytes::from("Failed to serve static asset")))
+                        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))),
+                )
+            }
+        };
+        let response = collect_static_response(response, static_assets.cache_control.as_deref()).await;
+        return Err(
+            maybe_compress_static_response(response, accept_encoding, static_assets.enable_compression)
+                .await,
+        );
+    }
+
+    if let Some(spa_file) = static_assets.spa_fallback.as_ref() {
+        if looks_like_spa_request(path) {
+            let accept_encoding = req.headers().get(http::header::ACCEPT_ENCODING).cloned();
+            let service = ServeFile::new(spa_file);
+            let response = match service.oneshot(req).await {
+                Ok(response) => response,
+                Err(_) => {
+                    return Err(
+                        Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Full::new(Bytes::from("Failed to serve SPA fallback")))
+                            .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))),
+                    )
+                }
+            };
+            let response = collect_static_response(response, static_assets.cache_control.as_deref()).await;
+            return Err(
+                maybe_compress_static_response(response, accept_encoding, static_assets.enable_compression)
+                    .await,
+            );
+        }
+    }
+
+    Ok(req)
+}
+
+fn strip_mount_prefix(path: &str, prefix: &str) -> Option<String> {
+    let normalized_prefix = if prefix == "/" {
+        "/"
+    } else {
+        prefix.trim_end_matches('/')
+    };
+
+    if normalized_prefix == "/" {
+        return Some(path.to_string());
+    }
+
+    if path == normalized_prefix {
+        return Some("/".to_string());
+    }
+
+    let with_slash = format!("{normalized_prefix}/");
+    path.strip_prefix(&with_slash)
+        .map(|stripped| format!("/{}", stripped))
+}
+
+fn rewrite_request_path(mut req: Request<Incoming>, new_path: &str) -> Request<Incoming> {
+    let query = req.uri().query().map(str::to_string);
+    let path_and_query = match query {
+        Some(query) => format!("{new_path}?{query}"),
+        None => new_path.to_string(),
+    };
+
+    let mut parts = req.uri().clone().into_parts();
+    if let Ok(parsed_path_and_query) = path_and_query.parse() {
+        parts.path_and_query = Some(parsed_path_and_query);
+        if let Ok(uri) = Uri::from_parts(parts) {
+            *req.uri_mut() = uri;
+        }
+    }
+
+    req
+}
+
+async fn collect_static_response<B>(
+    response: Response<B>,
+    cache_control: Option<&str>,
+) -> Response<Full<Bytes>>
+where
+    B: Body<Data = Bytes> + Send + 'static,
+    B::Error: std::fmt::Display,
+{
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = response.into_body();
+    let collected = body.collect().await;
+
+    let bytes = match collected {
+        Ok(value) => value.to_bytes(),
+        Err(error) => Bytes::from(error.to_string()),
+    };
+
+    let mut builder = Response::builder().status(status);
+    for (name, value) in headers.iter() {
+        builder = builder.header(name, value);
+    }
+
+    let mut response = builder
+        .body(Full::new(bytes))
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())));
+
+    if status == StatusCode::OK {
+        if let Some(value) = cache_control {
+            if !response.headers().contains_key(http::header::CACHE_CONTROL) {
+                if let Ok(header_value) = http::HeaderValue::from_str(value) {
+                    response
+                        .headers_mut()
+                        .insert(http::header::CACHE_CONTROL, header_value);
+                }
+            }
+        }
+    }
+
+    response
+}
+
+fn looks_like_spa_request(path: &str) -> bool {
+    let tail = path.rsplit('/').next().unwrap_or_default();
+    !tail.contains('.')
+}
+
+async fn maybe_compress_static_response(
+    response: Response<Full<Bytes>>,
+    accept_encoding: Option<http::HeaderValue>,
+    enable_compression: bool,
+) -> Response<Full<Bytes>> {
+    if !enable_compression {
+        return response;
+    }
+
+    let Some(accept_encoding) = accept_encoding else {
+        return response;
+    };
+
+    let mut request = Request::builder()
+        .uri("/")
+        .body(Full::new(Bytes::new()))
+        .unwrap_or_else(|_| Request::new(Full::new(Bytes::new())));
+    request
+        .headers_mut()
+        .insert(http::header::ACCEPT_ENCODING, accept_encoding);
+
+    let service = CompressionLayer::new().layer(service_fn({
+        let response = response.clone();
+        move |_req: Request<Full<Bytes>>| {
+            let response = response.clone();
+            async move { Ok::<_, Infallible>(response) }
+        }
+    }));
+
+    match service.oneshot(request).await {
+        Ok(compressed) => collect_static_response(compressed, None).await,
+        Err(_) => response,
+    }
 }
 
 async fn run_named_health_checks<R>(
@@ -1290,6 +1552,7 @@ pub struct RawIngressService<R> {
     fallback: Option<RouteHandler<R>>,
     layers: Arc<Vec<ServiceLayer>>,
     health: Arc<HealthConfig<R>>,
+    static_assets: Arc<StaticAssetsConfig>,
     resources: Arc<R>,
 }
 
@@ -1313,10 +1576,11 @@ where
         let fallback = self.fallback.clone();
         let layers = self.layers.clone();
         let health = self.health.clone();
+        let static_assets = self.static_assets.clone();
         let resources = self.resources.clone();
 
         Box::pin(async move {
-            let service = build_http_service(routes, fallback, resources, layers, health);
+            let service = build_http_service(routes, fallback, resources, layers, health, static_assets);
             service.oneshot(req).await
         })
     }
@@ -1326,7 +1590,9 @@ where
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     async fn connect_with_retry(addr: std::net::SocketAddr) -> tokio::net::TcpStream {
@@ -1383,6 +1649,7 @@ mod tests {
         assert_eq!(ingress.graceful_shutdown_timeout, Duration::from_secs(30));
         assert!(ingress.layers.is_empty());
         assert!(ingress.bus_injectors.is_empty());
+        assert!(ingress.static_assets.mounts.is_empty());
         assert!(ingress.on_start.is_none());
         assert!(ingress.on_shutdown.is_none());
     }
@@ -1444,6 +1711,12 @@ mod tests {
     fn request_id_layer_registers_builtin_middleware() {
         let ingress = HttpIngress::<()>::new().request_id_layer();
         assert_eq!(ingress.layers.len(), 1);
+    }
+
+    #[test]
+    fn compression_layer_registers_builtin_middleware() {
+        let ingress = HttpIngress::<()>::new().compression_layer();
+        assert!(ingress.static_assets.enable_compression);
     }
 
     #[test]
@@ -1516,6 +1789,75 @@ mod tests {
 
         assert!(started.load(Ordering::SeqCst));
         assert!(shutdown.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn serve_dir_serves_static_file_with_cache_and_metadata_headers() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("public");
+        fs::create_dir_all(&root).expect("create dir");
+        let file = root.join("hello.txt");
+        fs::write(&file, "hello static").expect("write file");
+
+        let ingress = Ranvier::http::<()>().serve_dir("/static", root.to_string_lossy().to_string());
+        let app = crate::test_harness::TestApp::new(ingress, ());
+        let response = app
+            .send(crate::test_harness::TestRequest::get("/static/hello.txt"))
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().expect("utf8"), "hello static");
+        assert!(response.header("cache-control").is_some());
+        let has_metadata_header = response.header("etag").is_some() || response.header("last-modified").is_some();
+        assert!(has_metadata_header);
+    }
+
+    #[tokio::test]
+    async fn spa_fallback_returns_index_for_unmatched_path() {
+        let temp = tempdir().expect("tempdir");
+        let index = temp.path().join("index.html");
+        fs::write(&index, "<html><body>spa</body></html>").expect("write index");
+
+        let ingress =
+            Ranvier::http::<()>().spa_fallback(index.to_string_lossy().to_string());
+        let app = crate::test_harness::TestApp::new(ingress, ());
+        let response = app
+            .send(crate::test_harness::TestRequest::get("/dashboard/settings"))
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.text().expect("utf8").contains("spa"));
+    }
+
+    #[tokio::test]
+    async fn static_compression_layer_sets_content_encoding_for_gzip_client() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("public");
+        fs::create_dir_all(&root).expect("create dir");
+        let file = root.join("compressed.txt");
+        fs::write(&file, "compress me ".repeat(400)).expect("write file");
+
+        let ingress = Ranvier::http::<()>()
+            .serve_dir("/static", root.to_string_lossy().to_string())
+            .compression_layer();
+        let app = crate::test_harness::TestApp::new(ingress, ());
+        let response = app
+            .send(
+                crate::test_harness::TestRequest::get("/static/compressed.txt")
+                    .header("accept-encoding", "gzip"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .header("content-encoding")
+                .and_then(|value| value.to_str().ok()),
+            Some("gzip")
+        );
     }
 
     #[tokio::test]

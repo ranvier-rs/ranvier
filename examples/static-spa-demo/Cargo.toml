@@ -1,0 +1,11 @@
+[package]
+name = "static-spa-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ranvier-core = { workspace = true }
+ranvier-runtime = { workspace = true }
+ranvier-http = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
