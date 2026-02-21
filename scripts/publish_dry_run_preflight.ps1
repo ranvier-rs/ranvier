@@ -187,13 +187,13 @@ function Invoke-PublishDryRun {
         $ErrorActionPreference = $previousErrorActionPreference
     }
 
-    $outputLines = @($commandOutput | ForEach-Object { $_.ToString() })
+    $outputLines = @($commandOutput | ForEach-Object { [string]$_ })
     Set-Content -Path $crateLogPath -Value $outputLines -Encoding utf8
     Add-Content -Path $evidencePath -Value $outputLines -Encoding utf8
 
     $tail = @()
     if (Test-Path $crateLogPath) {
-        $tail = Get-Content $crateLogPath -Tail 25
+        $tail = @((Get-Content $crateLogPath -Tail 25 | ForEach-Object { [string]$_ }))
     }
 
     return @{
