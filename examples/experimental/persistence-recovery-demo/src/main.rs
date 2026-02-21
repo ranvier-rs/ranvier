@@ -139,10 +139,11 @@ async fn main() -> anyhow::Result<()> {
     let trace_id = "order-1001";
 
     // First run (simulated process before crash): payment fault, keep trace open.
-    let mut bus1 = Bus::new();
-    bus1.insert(handle.clone());
-    bus1.insert(PersistenceTraceId::new(trace_id));
-    bus1.insert(PersistenceAutoComplete(false));
+    let mut bus1 = ranvier_core::ranvier_bus!(
+        handle.clone(),
+        PersistenceTraceId::new(trace_id),
+        PersistenceAutoComplete(false),
+    );
 
     let axon = build_order_axon();
     let first_input = OrderFlowState {
@@ -167,10 +168,11 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Second run (simulated process after restart): fix condition and complete.
-    let mut bus2 = Bus::new();
-    bus2.insert(handle.clone());
-    bus2.insert(PersistenceTraceId::new(trace_id));
-    bus2.insert(PersistenceAutoComplete(true));
+    let mut bus2 = ranvier_core::ranvier_bus!(
+        handle.clone(),
+        PersistenceTraceId::new(trace_id),
+        PersistenceAutoComplete(true),
+    );
 
     let second_input = OrderFlowState {
         order_id: "1001".to_string(),
@@ -188,14 +190,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Third run (compensation demo): fault with irreversible side-effect compensation hook.
     let compensation_trace_id = "order-2001";
-    let mut bus3 = Bus::new();
-    bus3.insert(handle);
-    bus3.insert(PersistenceTraceId::new(compensation_trace_id));
-    bus3.insert(CompensationHandle::from_hook(RefundPaymentCompensation::new(1)));
-    bus3.insert(CompensationRetryPolicy {
-        max_attempts: 2,
-        backoff_ms: 0,
-    });
+    let mut bus3 = ranvier_core::ranvier_bus!(
+        handle,
+        PersistenceTraceId::new(compensation_trace_id),
+        CompensationHandle::from_hook(RefundPaymentCompensation::new(1)),
+        CompensationRetryPolicy {
+            max_attempts: 2,
+            backoff_ms: 0,
+        },
+    );
 
     let compensation_input = OrderFlowState {
         order_id: "2001".to_string(),

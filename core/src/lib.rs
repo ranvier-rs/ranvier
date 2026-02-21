@@ -37,3 +37,37 @@ pub use bus::Bus;
 pub use outcome::Outcome;
 pub use schematic::Schematic;
 pub use transition::Transition;
+
+/// Build a `Bus` with optional resource inserts in one expression.
+///
+/// This macro is a helper for repetitive example/test wiring and does not
+/// change Bus boundary semantics: resources remain explicit values.
+#[macro_export]
+macro_rules! ranvier_bus {
+    () => {{
+        $crate::bus::Bus::new()
+    }};
+    ($($resource:expr),+ $(,)?) => {{
+        let mut __ranvier_bus = $crate::bus::Bus::new();
+        $(
+            __ranvier_bus.insert($resource);
+        )+
+        __ranvier_bus
+    }};
+}
+
+#[cfg(test)]
+mod macro_tests {
+    #[test]
+    fn ranvier_bus_macro_creates_empty_bus() {
+        let bus = crate::ranvier_bus!();
+        assert!(bus.is_empty());
+    }
+
+    #[test]
+    fn ranvier_bus_macro_inserts_multiple_resources() {
+        let bus = crate::ranvier_bus!(42i32, String::from("value"));
+        assert_eq!(*bus.read::<i32>().unwrap(), 42);
+        assert_eq!(bus.read::<String>().unwrap(), "value");
+    }
+}

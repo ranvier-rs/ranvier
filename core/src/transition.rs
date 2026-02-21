@@ -38,7 +38,13 @@ impl ResourceRequirement for () {}
 /// # #[async_trait::async_trait]
 /// # impl Transition<String, String> for ValidateUser {
 /// #     type Error = std::convert::Infallible;
-/// #     async fn run(&self, input: String, _bus: &mut Bus) -> Outcome<String, Self::Error> {
+/// #     type Resources = ();
+/// #     async fn run(
+/// #         &self,
+/// #         input: String,
+/// #         _resources: &Self::Resources,
+/// #         _bus: &mut Bus,
+/// #     ) -> Outcome<String, Self::Error> {
 /// #         Outcome::next(format!("validated: {}", input))
 /// #     }
 /// # }
@@ -46,7 +52,13 @@ impl ResourceRequirement for () {}
 /// # #[async_trait::async_trait]
 /// # impl Transition<i32, i32> for DoubleValue {
 /// #     type Error = std::convert::Infallible;
-/// #     async fn run(&self, input: i32, _bus: &mut Bus) -> Outcome<i32, Self::Error> {
+/// #     type Resources = ();
+/// #     async fn run(
+/// #         &self,
+/// #         input: i32,
+/// #         _resources: &Self::Resources,
+/// #         _bus: &mut Bus,
+/// #     ) -> Outcome<i32, Self::Error> {
 /// #         Outcome::next(input * 2)
 /// #     }
 /// # }
