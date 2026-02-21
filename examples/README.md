@@ -25,16 +25,17 @@ These are maintained and useful, but not the first onboarding path.
 
 1. `flat-api-demo`
 2. `routing-demo`
-3. `session-pattern`
-4. `std-lib-demo`
-5. `otel-concept`
-6. `db-example`
-7. `static-build-demo`
-8. `studio-demo`
-9. `websocket-loop`
-10. `complex-schematic`
-11. `synapse-demo`
-12. `order-processing-demo`
+3. `routing-params-demo`
+4. `session-pattern`
+5. `std-lib-demo`
+6. `otel-concept`
+7. `db-example`
+8. `static-build-demo`
+9. `studio-demo`
+10. `websocket-loop`
+11. `complex-schematic`
+12. `synapse-demo`
+13. `order-processing-demo`
 
 ### Tier C: Experimental (not authoritative for architecture)
 

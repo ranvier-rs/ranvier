@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
+use http_body::Body;
 use hyper::body::Incoming;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
@@ -42,8 +43,12 @@ impl ExtractError {
 }
 
 #[async_trait]
-pub trait FromRequest: Sized {
-    async fn from_request(req: &mut Request<Incoming>) -> Result<Self, ExtractError>;
+pub trait FromRequest<B = Incoming>: Sized
+where
+    B: Body<Data = Bytes> + Send + Unpin + 'static,
+    B::Error: std::fmt::Display + Send + Sync + 'static,
+{
+    async fn from_request(req: &mut Request<B>) -> Result<Self, ExtractError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,11 +79,13 @@ impl<T> Path<T> {
 }
 
 #[async_trait]
-impl<T> FromRequest for Json<T>
+impl<T, B> FromRequest<B> for Json<T>
 where
     T: DeserializeOwned + Send + 'static,
+    B: Body<Data = Bytes> + Send + Unpin + 'static,
+    B::Error: std::fmt::Display + Send + Sync + 'static,
 {
-    async fn from_request(req: &mut Request<Incoming>) -> Result<Self, ExtractError> {
+    async fn from_request(req: &mut Request<B>) -> Result<Self, ExtractError> {
         let bytes = read_body_limited(req, DEFAULT_BODY_LIMIT).await?;
         let value = parse_json_bytes(&bytes)?;
         Ok(Json(value))
@@ -86,22 +93,26 @@ where
 }
 
 #[async_trait]
-impl<T> FromRequest for Query<T>
+impl<T, B> FromRequest<B> for Query<T>
 where
     T: DeserializeOwned + Send + 'static,
+    B: Body<Data = Bytes> + Send + Unpin + 'static,
+    B::Error: std::fmt::Display + Send + Sync + 'static,
 {
-    async fn from_request(req: &mut Request<Incoming>) -> Result<Self, ExtractError> {
+    async fn from_request(req: &mut Request<B>) -> Result<Self, ExtractError> {
         let value = parse_query_str(req.uri().query().unwrap_or(""))?;
         Ok(Query(value))
     }
 }
 
 #[async_trait]
-impl<T> FromRequest for Path<T>
+impl<T, B> FromRequest<B> for Path<T>
 where
     T: DeserializeOwned + Send + 'static,
+    B: Body<Data = Bytes> + Send + Unpin + 'static,
+    B::Error: std::fmt::Display + Send + Sync + 'static,
 {
-    async fn from_request(req: &mut Request<Incoming>) -> Result<Self, ExtractError> {
+    async fn from_request(req: &mut Request<B>) -> Result<Self, ExtractError> {
         let params = req
             .extensions()
             .get::<PathParams>()
@@ -111,10 +122,11 @@ where
     }
 }
 
-async fn read_body_limited(
-    req: &mut Request<Incoming>,
-    limit: usize,
-) -> Result<Bytes, ExtractError> {
+async fn read_body_limited<B>(req: &mut Request<B>, limit: usize) -> Result<Bytes, ExtractError>
+where
+    B: Body<Data = Bytes> + Send + Unpin + 'static,
+    B::Error: std::fmt::Display + Send + Sync + 'static,
+{
     let body = req
         .body_mut()
         .collect()
@@ -207,5 +219,40 @@ mod tests {
     fn extract_error_maps_to_bad_request() {
         let error = ExtractError::InvalidQuery("bad input".to_string());
         assert_eq!(error.status_code(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn json_from_request_with_full_body() {
+        let body = Full::new(Bytes::from_static(br#"{"id":9,"name":"node"}"#));
+        let mut req = Request::builder()
+            .uri("/orders")
+            .body(body)
+            .expect("request build");
+
+        let Json(payload): Json<JsonPayload> = Json::from_request(&mut req).await.expect("extract");
+        assert_eq!(payload.id, 9);
+        assert_eq!(payload.name, "node");
+    }
+
+    #[tokio::test]
+    async fn query_and_path_from_request_extensions() {
+        let body = Full::new(Bytes::new());
+        let mut req = Request::builder()
+            .uri("/orders/42?page=3&size=10")
+            .body(body)
+            .expect("request build");
+
+        let mut params = HashMap::new();
+        params.insert("id".to_string(), "42".to_string());
+        params.insert("slug".to_string(), "created".to_string());
+        req.extensions_mut().insert(PathParams::new(params));
+
+        let Query(query): Query<QueryPayload> = Query::from_request(&mut req).await.expect("query");
+        let Path(path): Path<PathPayload> = Path::from_request(&mut req).await.expect("path");
+
+        assert_eq!(query.page, 3);
+        assert_eq!(query.size, 10);
+        assert_eq!(path.id, 42);
+        assert_eq!(path.slug, "created");
     }
 }

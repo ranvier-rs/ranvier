@@ -13,6 +13,7 @@ members = [
     "examples/hello-world",
     "examples/otel-concept",
     "examples/routing-demo",
+    "examples/routing-params-demo",
     "examples/session-pattern",
     "examples/experimental/state-tree-demo",
     "examples/synapse-demo",

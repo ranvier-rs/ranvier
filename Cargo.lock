@@ -1953,6 +1953,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "http 1.4.0",
+ "http-body 1.0.1",
  "http-body-util",
  "hyper 1.8.1",
  "hyper-util",
@@ -2256,6 +2257,23 @@ dependencies = [
  "ranvier-runtime",
  "serde",
  "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "routing-params-demo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "http 1.4.0",
+ "http-body-util",
+ "ranvier-core",
+ "ranvier-http",
+ "ranvier-macros",
+ "ranvier-runtime",
+ "serde",
  "tokio",
 ]
 
