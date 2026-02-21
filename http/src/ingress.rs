@@ -32,6 +32,8 @@ use tokio::net::TcpListener;
 use tower::Service;
 use tracing::Instrument;
 
+use crate::response::{IntoResponse, outcome_to_response};
+
 /// The Ranvier Framework entry point.
 ///
 /// `Ranvier` provides static methods to create Ingress builders for various protocols.
@@ -225,60 +227,13 @@ where
         self
     }
 
-    /// Register a route with a circuit.
-    pub fn route<E>(mut self, path: impl Into<String>, circuit: Axon<(), String, E, R>) -> Self
+    /// Register a route with GET method.
+    pub fn route<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
     where
+        Out: IntoResponse + Send + Sync + 'static,
         E: Send + 'static + std::fmt::Debug,
     {
-        let path_str: String = path.into();
-        let circuit = Arc::new(circuit);
-        let path_for_pattern = path_str.clone();
-        let path_for_handler = path_str;
-
-        let handler: RouteHandler<R> = Arc::new(move |_req: Request<Incoming>, res: &R| {
-            let circuit = circuit.clone();
-            let res = res.clone(); // R must be Clone
-            let path = path_for_handler.clone();
-
-            Box::pin(async move {
-                let request_id = uuid::Uuid::new_v4().to_string();
-                let span = tracing::info_span!(
-                    "HTTPRequest",
-                    ranvier.http.method = %Method::GET,
-                    ranvier.http.path = %path,
-                    ranvier.http.request_id = %request_id
-                );
-
-                async move {
-                    let mut bus = Bus::new();
-                    let result = circuit.execute((), &res, &mut bus).await;
-
-                    match result {
-                        Outcome::Next(body) => Response::builder()
-                            .status(StatusCode::OK)
-                            .body(Full::new(Bytes::from(body)))
-                            .unwrap(),
-                        Outcome::Fault(e) => Response::builder()
-                            .status(StatusCode::INTERNAL_SERVER_ERROR)
-                            .body(Full::new(Bytes::from(format!("Error: {:?}", e))))
-                            .unwrap(),
-                        _ => Response::builder()
-                            .status(StatusCode::OK)
-                            .body(Full::new(Bytes::from("OK")))
-                            .unwrap(),
-                    }
-                }
-                .instrument(span)
-                .await
-            }) as Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
-        });
-
-        self.routes.push(RouteEntry {
-            method: Method::GET,
-            pattern: RoutePattern::parse(&path_for_pattern),
-            handler,
-        });
-        self
+        self.route_method(Method::GET, path, circuit)
     }
     /// Register a route with a specific HTTP method.
     ///
@@ -288,13 +243,14 @@ where
     /// Ranvier::http()
     ///     .route_method(Method::POST, "/users", create_user_circuit)
     /// ```
-    pub fn route_method<E>(
+    pub fn route_method<Out, E>(
         mut self,
         method: Method,
         path: impl Into<String>,
-        circuit: Axon<(), String, E, R>,
+        circuit: Axon<(), Out, E, R>,
     ) -> Self
     where
+        Out: IntoResponse + Send + Sync + 'static,
         E: Send + 'static + std::fmt::Debug,
     {
         let path_str: String = path.into();
@@ -322,21 +278,7 @@ where
                 async move {
                     let mut bus = Bus::new();
                     let result = circuit.execute((), &res, &mut bus).await;
-
-                    match result {
-                        Outcome::Next(body) => Response::builder()
-                            .status(StatusCode::OK)
-                            .body(Full::new(Bytes::from(body)))
-                            .unwrap(),
-                        Outcome::Fault(e) => Response::builder()
-                            .status(StatusCode::INTERNAL_SERVER_ERROR)
-                            .body(Full::new(Bytes::from(format!("Error: {:?}", e))))
-                            .unwrap(),
-                        _ => Response::builder()
-                            .status(StatusCode::OK)
-                            .body(Full::new(Bytes::from("OK")))
-                            .unwrap(),
-                    }
+                    outcome_to_response(result)
                 }
                 .instrument(span)
                 .await
@@ -351,6 +293,46 @@ where
         self
     }
 
+    pub fn get<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.route_method(Method::GET, path, circuit)
+    }
+
+    pub fn post<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.route_method(Method::POST, path, circuit)
+    }
+
+    pub fn put<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.route_method(Method::PUT, path, circuit)
+    }
+
+    pub fn delete<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.route_method(Method::DELETE, path, circuit)
+    }
+
+    pub fn patch<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.route_method(Method::PATCH, path, circuit)
+    }
+
     /// Set a fallback circuit for unmatched routes.
     ///
     /// # Example
@@ -361,8 +343,9 @@ where
     ///     .route("/", home)
     ///     .fallback(not_found)
     /// ```
-    pub fn fallback<E>(mut self, circuit: Axon<(), String, E, R>) -> Self
+    pub fn fallback<Out, E>(mut self, circuit: Axon<(), Out, E, R>) -> Self
     where
+        Out: IntoResponse + Send + Sync + 'static,
         E: Send + 'static + std::fmt::Debug,
     {
         let circuit = Arc::new(circuit);
@@ -383,10 +366,11 @@ where
                     let result = circuit.execute((), &res, &mut bus).await;
 
                     match result {
-                        Outcome::Next(body) => Response::builder()
-                            .status(StatusCode::NOT_FOUND)
-                            .body(Full::new(Bytes::from(body)))
-                            .unwrap(),
+                        Outcome::Next(output) => {
+                            let mut response = output.into_response();
+                            *response.status_mut() = StatusCode::NOT_FOUND;
+                            response
+                        }
                         _ => Response::builder()
                             .status(StatusCode::NOT_FOUND)
                             .body(Full::new(Bytes::from("Not Found")))
@@ -528,7 +512,8 @@ where
             let method = req.method().clone();
             let path = req.uri().path().to_string();
 
-            if let Some((handler, params)) = find_matching_route(routes.as_slice(), &method, &path) {
+            if let Some((handler, params)) = find_matching_route(routes.as_slice(), &method, &path)
+            {
                 req.extensions_mut().insert(params);
                 Ok(handler(req, &resources).await)
             } else if let Some(ref fb) = fallback {

@@ -25,17 +25,20 @@
 //!     .await?;
 //! ```
 
-pub mod ingress;
-pub mod service;
 pub mod extract;
+pub mod ingress;
+pub mod response;
+pub mod service;
 
+pub use extract::{DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Json, Path, Query};
 pub use ingress::{HttpIngress, PathParams, Ranvier};
-pub use extract::{ExtractError, FromRequest, Json, Path, Query, DEFAULT_BODY_LIMIT};
+pub use response::{HttpResponse, IntoResponse, outcome_to_response};
 pub use service::RanvierService;
 
 /// Prelude module for convenient imports
 pub mod prelude {
-    pub use crate::extract::{ExtractError, FromRequest, Json, Path, Query, DEFAULT_BODY_LIMIT};
+    pub use crate::extract::{DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Json, Path, Query};
     pub use crate::ingress::{HttpIngress, PathParams, Ranvier};
+    pub use crate::response::{HttpResponse, IntoResponse, outcome_to_response};
     pub use crate::service::RanvierService;
 }

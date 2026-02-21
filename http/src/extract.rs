@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
-use http_body_util::{BodyExt, Full};
 use http_body::Body;
+use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
@@ -162,9 +162,10 @@ fn parse_path_map<T>(params: &HashMap<String, String>) -> Result<T, ExtractError
 where
     T: DeserializeOwned,
 {
-    let encoded =
-        serde_urlencoded::to_string(params).map_err(|error| ExtractError::PathEncode(error.to_string()))?;
-    serde_urlencoded::from_str(&encoded).map_err(|error| ExtractError::InvalidPath(error.to_string()))
+    let encoded = serde_urlencoded::to_string(params)
+        .map_err(|error| ExtractError::PathEncode(error.to_string()))?;
+    serde_urlencoded::from_str(&encoded)
+        .map_err(|error| ExtractError::InvalidPath(error.to_string()))
 }
 
 #[cfg(test)]

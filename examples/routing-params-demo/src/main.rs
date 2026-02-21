@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use http::{Method, Request};
+use http::Request;
 use http_body_util::Full;
 use ranvier_core::prelude::*;
 use ranvier_http::prelude::*;
@@ -84,9 +84,7 @@ async fn send_http_get(addr: &str, path: &str) -> Result<(u16, String)> {
         .await
         .with_context(|| format!("connect failed: {addr}"))?;
 
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
-    );
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
     stream
         .write_all(request.as_bytes())
         .await
@@ -121,8 +119,8 @@ async fn demo_dynamic_routes() -> Result<()> {
 
     let ingress = Ranvier::http()
         .bind(addr_text.clone())
-        .route_method(Method::GET, "/orders/:id", order_circuit())
-        .route_method(Method::GET, "/assets/*path", asset_circuit())
+        .get("/orders/:id", order_circuit())
+        .get("/assets/*path", asset_circuit())
         .fallback(fallback_circuit());
 
     let server = tokio::spawn(async move {
@@ -145,9 +143,7 @@ async fn demo_dynamic_routes() -> Result<()> {
     server.abort();
     let _ = server.await;
 
-    println!(
-        "Dynamic route matching OK: /orders/:id, /assets/*path, fallback"
-    );
+    println!("Dynamic route matching OK: /orders/:id, /assets/*path, fallback");
     Ok(())
 }
 
