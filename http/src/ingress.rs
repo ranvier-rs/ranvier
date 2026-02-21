@@ -1044,8 +1044,10 @@ where
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn route_pattern_matches_static_path() {
@@ -1197,6 +1199,131 @@ mod tests {
         let timed_out = drain_connections(&mut connections, Duration::from_millis(10)).await;
         assert!(timed_out);
         assert!(connections.is_empty());
+    }
+
+    #[tokio::test]
+    async fn timeout_layer_returns_408_for_slow_route() {
+        #[derive(Clone)]
+        struct SlowRoute;
+
+        #[async_trait]
+        impl Transition<(), &'static str> for SlowRoute {
+            type Error = Infallible;
+            type Resources = ();
+
+            async fn run(
+                &self,
+                _state: (),
+                _resources: &Self::Resources,
+                _bus: &mut Bus,
+            ) -> Outcome<&'static str, Self::Error> {
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                Outcome::next("slow-ok")
+            }
+        }
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
+        let addr = probe.local_addr().expect("local addr");
+        drop(probe);
+
+        let ingress = HttpIngress::<()>::new()
+            .bind(addr.to_string())
+            .timeout_layer(Duration::from_millis(10))
+            .get("/slow", Axon::<(), (), Infallible, ()>::new("Slow").then(SlowRoute));
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            ingress
+                .run_with_shutdown_signal((), async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect server");
+        stream
+            .write_all(b"GET /slow HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("write request");
+
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await.expect("read response");
+        let response = String::from_utf8_lossy(&buf);
+        assert!(response.starts_with("HTTP/1.1 408"), "{response}");
+
+        let _ = shutdown_tx.send(());
+        server
+            .await
+            .expect("server join")
+            .expect("server shutdown should succeed");
+    }
+
+    #[tokio::test]
+    async fn route_layer_override_bypasses_global_timeout() {
+        #[derive(Clone)]
+        struct SlowRoute;
+
+        #[async_trait]
+        impl Transition<(), &'static str> for SlowRoute {
+            type Error = Infallible;
+            type Resources = ();
+
+            async fn run(
+                &self,
+                _state: (),
+                _resources: &Self::Resources,
+                _bus: &mut Bus,
+            ) -> Outcome<&'static str, Self::Error> {
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                Outcome::next("override-ok")
+            }
+        }
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
+        let addr = probe.local_addr().expect("local addr");
+        drop(probe);
+
+        let ingress = HttpIngress::<()>::new()
+            .bind(addr.to_string())
+            .timeout_layer(Duration::from_millis(10))
+            .get_with_layer_override(
+                "/slow",
+                Axon::<(), (), Infallible, ()>::new("SlowOverride").then(SlowRoute),
+                tower::layer::util::Identity::new(),
+            );
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            ingress
+                .run_with_shutdown_signal((), async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect server");
+        stream
+            .write_all(b"GET /slow HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("write request");
+
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await.expect("read response");
+        let response = String::from_utf8_lossy(&buf);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.contains("override-ok"), "{response}");
+
+        let _ = shutdown_tx.send(());
+        server
+            .await
+            .expect("server join")
+            .expect("server shutdown should succeed");
     }
 
 }
