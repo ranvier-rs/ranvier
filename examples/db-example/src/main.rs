@@ -4,6 +4,7 @@
 // database operations within an Axon chain.
 
 use async_trait::async_trait;
+use chrono::NaiveDateTime;
 use ranvier_core::prelude::*;
 use ranvier_core::transition::ResourceRequirement;
 use ranvier_db::node::DbResources;
@@ -23,7 +24,7 @@ pub struct User {
     pub id: i32,
     pub username: String,
     pub email: String,
-    pub created_at: String,
+    pub created_at: NaiveDateTime,
 }
 
 /// User creation request

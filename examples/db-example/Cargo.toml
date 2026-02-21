@@ -11,5 +11,6 @@ async-trait = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 sqlx = { workspace = true }
+chrono = { workspace = true }
 anyhow = { workspace = true }
 http = { workspace = true }
