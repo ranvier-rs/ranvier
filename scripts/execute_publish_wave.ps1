@@ -4,8 +4,11 @@ param(
     [int]$Wave = 1,
     [ValidateSet("dry-run", "publish")]
     [string]$Mode = "dry-run",
+    [switch]$ConfirmPublish,
     [switch]$AllowDirty,
     [switch]$ContinueOnError,
+    [switch]$SkipTokenCheck,
+    [switch]$SkipCleanTreeCheck,
     [ValidateRange(0, 20)]
     [int]$RetryCount = 0,
     [ValidateRange(1, 600)]
@@ -66,6 +69,74 @@ function Resolve-WaveSummaryPath {
     }
 
     return $latest.FullName
+}
+
+function Get-CargoTokenState {
+    $envToken = [string]$env:CARGO_REGISTRY_TOKEN
+    if (-not [string]::IsNullOrWhiteSpace($envToken)) {
+        return [ordered]@{
+            configured = $true
+            source = "env:CARGO_REGISTRY_TOKEN"
+            credential_path = $null
+        }
+    }
+
+    $candidatePaths = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($env:CARGO_HOME)) {
+        $candidatePaths.Add((Join-Path $env:CARGO_HOME "credentials.toml"))
+        $candidatePaths.Add((Join-Path $env:CARGO_HOME "credentials"))
+    }
+    if (-not [string]::IsNullOrWhiteSpace($HOME)) {
+        $candidatePaths.Add((Join-Path $HOME ".cargo\\credentials.toml"))
+        $candidatePaths.Add((Join-Path $HOME ".cargo\\credentials"))
+    }
+
+    $visited = @{}
+    foreach ($path in $candidatePaths) {
+        if ([string]::IsNullOrWhiteSpace($path)) {
+            continue
+        }
+        if ($visited.ContainsKey($path)) {
+            continue
+        }
+        $visited[$path] = $true
+
+        if (-not (Test-Path $path)) {
+            continue
+        }
+
+        $raw = Get-Content -Path $path -Raw -ErrorAction SilentlyContinue
+        if (-not [string]::IsNullOrWhiteSpace($raw) -and $raw -match '(?m)^\s*token\s*=\s*".+?"\s*$') {
+            return [ordered]@{
+                configured = $true
+                source = "file"
+                credential_path = $path
+            }
+        }
+    }
+
+    return [ordered]@{
+        configured = $false
+        source = "none"
+        credential_path = $null
+    }
+}
+
+function Get-GitDirtyEntries {
+    param([string]$RepoRoot)
+
+    $previous = Get-Location
+    try {
+        Set-Location $RepoRoot
+        $output = & git status --porcelain 2>$null
+        return @(
+            $output |
+                ForEach-Object { [string]$_ } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+    } finally {
+        Set-Location $previous
+    }
 }
 
 function Invoke-CargoPublish {
@@ -136,9 +207,63 @@ $summaryOutPath = Join-Path $EvidenceDir "publish_wave_execute_${profileKey}_w${
 $waveSummaryPath = Resolve-WaveSummaryPath -Requested $WaveSummaryPath -ProfileKey $profileKey -EvidenceRoot $EvidenceDir -WorkspaceRoot "$workspaceRoot"
 $waveSummary = Get-Content -Path $waveSummaryPath -Raw | ConvertFrom-Json
 
-Write-Log -Path $evidencePath -Message "Publish wave execution started (profile=$profileKey, wave=$Wave, mode=$Mode, allow_dirty=$($AllowDirty.IsPresent), retry_count=$RetryCount, retry_delay_seconds=$RetryDelaySeconds)"
+Write-Log -Path $evidencePath -Message "Publish wave execution started (profile=$profileKey, wave=$Wave, mode=$Mode, confirm_publish=$($ConfirmPublish.IsPresent), allow_dirty=$($AllowDirty.IsPresent), retry_count=$RetryCount, retry_delay_seconds=$RetryDelaySeconds)"
 Write-Log -Path $evidencePath -Message "Workspace root: $workspaceRoot"
 Write-Log -Path $evidencePath -Message "Input wave summary: $waveSummaryPath"
+
+$publishGuard = [ordered]@{
+    mode = $Mode
+    confirm_publish = $ConfirmPublish.IsPresent
+    allow_dirty = $AllowDirty.IsPresent
+    skip_token_check = $SkipTokenCheck.IsPresent
+    skip_clean_tree_check = $SkipCleanTreeCheck.IsPresent
+    clean_tree_required = $false
+    clean_tree_ok = $null
+    dirty_entry_count = 0
+    dirty_entries = @()
+    token_check_required = $false
+    token_configured = $null
+    token_source = $null
+    token_credential_path = $null
+}
+
+if ($Mode -eq "publish") {
+    if (-not $ConfirmPublish.IsPresent) {
+        throw "Mode=publish requires -ConfirmPublish to prevent accidental crate publication."
+    }
+
+    $publishGuard.clean_tree_required = -not ($AllowDirty.IsPresent -or $SkipCleanTreeCheck.IsPresent)
+    if ($publishGuard.clean_tree_required) {
+        $dirtyEntries = Get-GitDirtyEntries -RepoRoot "$workspaceRoot"
+        $publishGuard.dirty_entries = $dirtyEntries
+        $publishGuard.dirty_entry_count = $dirtyEntries.Count
+        $publishGuard.clean_tree_ok = ($dirtyEntries.Count -eq 0)
+        if (-not $publishGuard.clean_tree_ok) {
+            throw "Publish guard failed: working tree is dirty. Commit/stash changes or run with -AllowDirty / -SkipCleanTreeCheck."
+        }
+    } else {
+        $publishGuard.clean_tree_ok = $null
+    }
+
+    $publishGuard.token_check_required = -not $SkipTokenCheck.IsPresent
+    if ($publishGuard.token_check_required) {
+        $tokenState = Get-CargoTokenState
+        $publishGuard.token_configured = [bool]$tokenState.configured
+        $publishGuard.token_source = [string]$tokenState.source
+        $publishGuard.token_credential_path = $tokenState.credential_path
+        if (-not $publishGuard.token_configured) {
+            throw "Publish guard failed: cargo registry token not detected. Set CARGO_REGISTRY_TOKEN or run cargo login before publish."
+        }
+    } else {
+        $publishGuard.token_configured = $null
+        $publishGuard.token_source = "skipped"
+        $publishGuard.token_credential_path = $null
+    }
+
+    Write-Log -Path $evidencePath -Message "Publish guard passed (clean_tree_required=$($publishGuard.clean_tree_required), token_check_required=$($publishGuard.token_check_required), token_source=$($publishGuard.token_source))"
+} elseif ($ConfirmPublish.IsPresent) {
+    Write-Log -Path $evidencePath -Message "Note: -ConfirmPublish is ignored in dry-run mode."
+}
 
 $selectedWave = $null
 foreach ($entry in @($waveSummary.waves)) {
@@ -226,8 +351,12 @@ $summary = [ordered]@{
     mode = $Mode
     allow_dirty = $AllowDirty.IsPresent
     continue_on_error = $ContinueOnError.IsPresent
+    confirm_publish = $ConfirmPublish.IsPresent
+    skip_token_check = $SkipTokenCheck.IsPresent
+    skip_clean_tree_check = $SkipCleanTreeCheck.IsPresent
     retry_count = $RetryCount
     retry_delay_seconds = $RetryDelaySeconds
+    publish_guard = $publishGuard
     input_wave_summary = $waveSummaryPath
     selected_wave_crates = $selectedCrates
     total_selected = $selectedCrates.Count

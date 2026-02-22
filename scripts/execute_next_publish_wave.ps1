@@ -4,8 +4,11 @@ param(
     [string]$TargetVersion,
     [ValidateSet("dry-run", "publish")]
     [string]$Mode = "dry-run",
+    [switch]$ConfirmPublish,
     [switch]$AllowDirty,
     [switch]$ContinueOnError,
+    [switch]$SkipTokenCheck,
+    [switch]$SkipCleanTreeCheck,
     [ValidateRange(0, 20)]
     [int]$RetryCount = 0,
     [ValidateRange(1, 600)]
@@ -132,7 +135,7 @@ $summaryOutPath = Join-Path $EvidenceDir "publish_next_wave_execute_${profileKey
 $resolvedNextWaveSummary = Resolve-NextWaveSummaryPath -Requested $NextWaveSummaryPath -ProfileKey $profileKey -Target $target -EvidenceRoot $EvidenceDir -WorkspaceRoot "$workspaceRoot"
 $nextWaveSummary = Get-Content -Path $resolvedNextWaveSummary -Raw | ConvertFrom-Json
 
-Write-Log -Path $evidencePath -Message "Next-wave execution started (profile=$profileKey, target=$target, mode=$Mode, allow_dirty=$($AllowDirty.IsPresent), retry_count=$RetryCount, retry_delay_seconds=$RetryDelaySeconds)"
+Write-Log -Path $evidencePath -Message "Next-wave execution started (profile=$profileKey, target=$target, mode=$Mode, confirm_publish=$($ConfirmPublish.IsPresent), allow_dirty=$($AllowDirty.IsPresent), retry_count=$RetryCount, retry_delay_seconds=$RetryDelaySeconds)"
 Write-Log -Path $evidencePath -Message "Next-wave summary: $resolvedNextWaveSummary"
 
 $allComplete = [bool]$nextWaveSummary.all_waves_complete
@@ -167,6 +170,15 @@ if ($allComplete -or $null -eq $nextWave) {
     if ($ContinueOnError.IsPresent) {
         $args += "-ContinueOnError"
     }
+    if ($ConfirmPublish.IsPresent) {
+        $args += "-ConfirmPublish"
+    }
+    if ($SkipTokenCheck.IsPresent) {
+        $args += "-SkipTokenCheck"
+    }
+    if ($SkipCleanTreeCheck.IsPresent) {
+        $args += "-SkipCleanTreeCheck"
+    }
     $args += @("-RetryCount", "$RetryCount", "-RetryDelaySeconds", "$RetryDelaySeconds")
 
     Write-Log -Path $evidencePath -Message "Executing wave $nextWave crates: $($nextCrates -join ', ')"
@@ -189,8 +201,11 @@ $summary = [ordered]@{
     profile = $profileKey
     target_version = $target
     mode = $Mode
+    confirm_publish = $ConfirmPublish.IsPresent
     allow_dirty = $AllowDirty.IsPresent
     continue_on_error = $ContinueOnError.IsPresent
+    skip_token_check = $SkipTokenCheck.IsPresent
+    skip_clean_tree_check = $SkipCleanTreeCheck.IsPresent
     retry_count = $RetryCount
     retry_delay_seconds = $RetryDelaySeconds
     next_wave_summary_path = $resolvedNextWaveSummary

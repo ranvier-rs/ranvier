@@ -5,8 +5,11 @@ param(
     [string]$Mode = "dry-run",
     [int]$StartWave = 1,
     [int]$EndWave = 0,
+    [switch]$ConfirmPublish,
     [switch]$AllowDirty,
     [switch]$ContinueOnError,
+    [switch]$SkipTokenCheck,
+    [switch]$SkipCleanTreeCheck,
     [ValidateRange(0, 20)]
     [int]$RetryCount = 0,
     [ValidateRange(1, 600)]
@@ -138,7 +141,7 @@ if ($selectedWaves.Count -eq 0) {
     throw "No waves selected for StartWave=$StartWave EndWave=$EndWave in summary: $waveSummaryPath"
 }
 
-Write-Log -Path $evidencePath -Message "Publish train execution started (profile=$profileKey, mode=$Mode, start_wave=$StartWave, end_wave=$EndWave, allow_dirty=$($AllowDirty.IsPresent), retry_count=$RetryCount, retry_delay_seconds=$RetryDelaySeconds)"
+Write-Log -Path $evidencePath -Message "Publish train execution started (profile=$profileKey, mode=$Mode, start_wave=$StartWave, end_wave=$EndWave, confirm_publish=$($ConfirmPublish.IsPresent), allow_dirty=$($AllowDirty.IsPresent), retry_count=$RetryCount, retry_delay_seconds=$RetryDelaySeconds)"
 Write-Log -Path $evidencePath -Message "Workspace root: $workspaceRoot"
 Write-Log -Path $evidencePath -Message "Input wave summary: $waveSummaryPath"
 Write-Log -Path $evidencePath -Message "Selected waves: $($selectedWaves -join ', ')"
@@ -162,6 +165,15 @@ foreach ($wave in $selectedWaves) {
     }
     if ($ContinueOnError.IsPresent) {
         $args += "-ContinueOnError"
+    }
+    if ($ConfirmPublish.IsPresent) {
+        $args += "-ConfirmPublish"
+    }
+    if ($SkipTokenCheck.IsPresent) {
+        $args += "-SkipTokenCheck"
+    }
+    if ($SkipCleanTreeCheck.IsPresent) {
+        $args += "-SkipCleanTreeCheck"
     }
     $args += @("-RetryCount", "$RetryCount", "-RetryDelaySeconds", "$RetryDelaySeconds")
 
@@ -206,8 +218,11 @@ $summary = [ordered]@{
     timestamp = $timestamp
     profile = $profileKey
     mode = $Mode
+    confirm_publish = $ConfirmPublish.IsPresent
     allow_dirty = $AllowDirty.IsPresent
     continue_on_error = $ContinueOnError.IsPresent
+    skip_token_check = $SkipTokenCheck.IsPresent
+    skip_clean_tree_check = $SkipCleanTreeCheck.IsPresent
     retry_count = $RetryCount
     retry_delay_seconds = $RetryDelaySeconds
     start_wave = $StartWave
