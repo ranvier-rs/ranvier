@@ -2,6 +2,7 @@ param(
     [ValidateSet("m119", "m131", "all")]
     [string]$Profile = "all",
     [switch]$NoAllowDirty,
+    [switch]$ExecuteNextWaveDryRun,
     [string]$TargetVersion,
     [string]$EvidenceDir = "..\docs\05_dev_plans\evidence"
 )
@@ -112,6 +113,7 @@ $preflightScript = Join-Path $PSScriptRoot "publish_dry_run_preflight.ps1"
 $waveScript = Join-Path $PSScriptRoot "plan_publish_waves.ps1"
 $registryScript = Join-Path $PSScriptRoot "check_cratesio_versions.ps1"
 $nextWaveScript = Join-Path $PSScriptRoot "plan_next_publish_wave.ps1"
+$nextWaveExecuteScript = Join-Path $PSScriptRoot "execute_next_publish_wave.ps1"
 
 $preflightStart = [datetime]::UtcNow
 $preflightArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $preflightScript, "-Profile", $profileKey)
@@ -188,10 +190,42 @@ if ($null -eq $nextWaveSummaryFile) {
 }
 Write-Log -Path $bundleLogPath -Message "next-wave gate summary: $($nextWaveSummaryFile.FullName)"
 
+$nextWaveExecuteExitCode = 0
+$nextWaveExecuteSummaryFile = $null
+if ($ExecuteNextWaveDryRun.IsPresent) {
+    $nextWaveExecuteStart = [datetime]::UtcNow
+    $nextWaveExecuteArgs = @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $nextWaveExecuteScript,
+        "-Profile", $profileKey,
+        "-TargetVersion", $target,
+        "-Mode", "dry-run",
+        "-NextWaveSummaryPath", $nextWaveSummaryFile.FullName
+    )
+    if (-not $NoAllowDirty.IsPresent) {
+        $nextWaveExecuteArgs += "-AllowDirty"
+    }
+
+    Write-Log -Path $bundleLogPath -Message "running next-wave execution (dry-run)..."
+    & $psExe @nextWaveExecuteArgs
+    $nextWaveExecuteExitCode = $LASTEXITCODE
+    Write-Log -Path $bundleLogPath -Message "next-wave execution exit_code=$nextWaveExecuteExitCode"
+
+    $nextWaveExecutePattern = "publish_next_wave_execute_${profileKey}_${target}_*.json"
+    $nextWaveExecuteSummaryFile = Get-LatestFile -Directory $EvidenceDir -Pattern $nextWaveExecutePattern -SinceUtc $nextWaveExecuteStart
+    if ($null -eq $nextWaveExecuteSummaryFile) {
+        throw "Failed to locate next-wave execute summary for profile=$profileKey target=$target"
+    }
+    Write-Log -Path $bundleLogPath -Message "next-wave execute summary: $($nextWaveExecuteSummaryFile.FullName)"
+}
+
 $preflightSummary = Get-Content -Path $preflightSummaryFile.FullName -Raw | ConvertFrom-Json
 $waveSummary = Get-Content -Path $waveSummaryFile.FullName -Raw | ConvertFrom-Json
 $registrySummary = Get-Content -Path $registrySummaryFile.FullName -Raw | ConvertFrom-Json
 $nextWaveSummary = Get-Content -Path $nextWaveSummaryFile.FullName -Raw | ConvertFrom-Json
+$nextWaveExecuteSummary = $null
+if ($null -ne $nextWaveExecuteSummaryFile) {
+    $nextWaveExecuteSummary = Get-Content -Path $nextWaveExecuteSummaryFile.FullName -Raw | ConvertFrom-Json
+}
 
 $wave1Crates = @(
     $waveSummary.waves |
@@ -242,6 +276,15 @@ $bundleSummary = [ordered]@{
         next_publish_crates = @(As-Array $nextWaveSummary.next_publish_crates | ForEach-Object { [string]$_ })
         next_publish_commands = @(As-Array $nextWaveSummary.next_publish_commands | ForEach-Object { [string]$_ })
     }
+    next_publish_execute = [ordered]@{
+        enabled = $ExecuteNextWaveDryRun.IsPresent
+        mode = if ($ExecuteNextWaveDryRun.IsPresent) { "dry-run" } else { $null }
+        exit_code = if ($ExecuteNextWaveDryRun.IsPresent) { $nextWaveExecuteExitCode } else { $null }
+        summary_path = if ($null -ne $nextWaveExecuteSummaryFile) { $nextWaveExecuteSummaryFile.FullName } else { $null }
+        skipped = if ($null -ne $nextWaveExecuteSummary) { [bool]$nextWaveExecuteSummary.skipped } else { $null }
+        next_publish_wave = if ($null -ne $nextWaveExecuteSummary) { $nextWaveExecuteSummary.next_publish_wave } else { $null }
+        next_publish_crates = if ($null -ne $nextWaveExecuteSummary) { @(As-Array $nextWaveExecuteSummary.next_publish_crates | ForEach-Object { [string]$_ }) } else { @() }
+    }
 }
 
 $bundleSummary | ConvertTo-Json -Depth 8 | Set-Content -Path $bundleSummaryPath -Encoding utf8
@@ -249,6 +292,9 @@ $bundleSummary | ConvertTo-Json -Depth 8 | Set-Content -Path $bundleSummaryPath 
 Write-Log -Path $bundleLogPath -Message "wave1 crates: $($wave1Crates -join ', ')"
 Write-Log -Path $bundleLogPath -Message "registry target_present_count=$($bundleSummary.registry_snapshot.target_present_count)"
 Write-Log -Path $bundleLogPath -Message "next publish wave=$($bundleSummary.next_publish_gate.next_publish_wave)"
+if ($ExecuteNextWaveDryRun.IsPresent) {
+    Write-Log -Path $bundleLogPath -Message "next-wave execution enabled: exit_code=$nextWaveExecuteExitCode"
+}
 Write-Log -Path $bundleLogPath -Message "bundle summary: $bundleSummaryPath"
 
 Write-Host "Evidence: $bundleLogPath"
@@ -256,4 +302,8 @@ Write-Host "Summary:  $bundleSummaryPath"
 
 if ($preflightExitCode -ne 0) {
     exit $preflightExitCode
+}
+
+if ($ExecuteNextWaveDryRun.IsPresent -and $nextWaveExecuteExitCode -ne 0) {
+    exit $nextWaveExecuteExitCode
 }
