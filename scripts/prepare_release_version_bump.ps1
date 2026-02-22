@@ -4,6 +4,7 @@ param(
     [string]$TargetVersion,
     [switch]$Apply,
     [switch]$NoWorkspacePackageBump,
+    [switch]$NoIncludeWorkspaceVersionUsers,
     [string]$EvidenceDir = "..\docs\05_dev_plans\evidence"
 )
 
@@ -75,23 +76,35 @@ function Write-Log {
     Add-Content -Path $Path -Value $line -Encoding utf8
 }
 
+function Write-FileUtf8NoBom {
+    param(
+        [string]$Path,
+        [string[]]$Lines
+    )
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $content = [string]::Join([Environment]::NewLine, $Lines)
+    [System.IO.File]::WriteAllText($Path, $content, $utf8NoBom)
+}
+
 $workspaceRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $trainKey = $Train.ToLowerInvariant()
 $targetVersion = Infer-TargetVersion -TrainKey $trainKey -Requested $TargetVersion
 $bumpWorkspacePackage = -not $NoWorkspacePackageBump
+$includeWorkspaceVersionUsers = -not $NoIncludeWorkspaceVersionUsers
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
 $evidencePath = Join-Path $EvidenceDir "release_version_bump_plan_${trainKey}_${targetVersion}_${timestamp}.log"
 $summaryPath = Join-Path $EvidenceDir "release_version_bump_plan_${trainKey}_${targetVersion}_${timestamp}.json"
 
-Write-Log "Release version bump planning started (train=$trainKey, target=$targetVersion, apply=$($Apply.IsPresent), workspace_package_bump=$bumpWorkspacePackage)" -Path $evidencePath
+Write-Log "Release version bump planning started (train=$trainKey, target=$targetVersion, apply=$($Apply.IsPresent), workspace_package_bump=$bumpWorkspacePackage, include_workspace_users=$includeWorkspaceVersionUsers)" -Path $evidencePath
 Write-Log "Workspace root: $workspaceRoot" -Path $evidencePath
 
-$trainCrates = Resolve-TrainCrates -Key $trainKey
-$crateSet = New-Object "System.Collections.Generic.HashSet[string]"
+$trainCrates = @((Resolve-TrainCrates -Key $trainKey) | Sort-Object -Unique)
+$trainSet = New-Object "System.Collections.Generic.HashSet[string]"
 foreach ($crate in $trainCrates) {
-    [void]$crateSet.Add($crate)
+    [void]$trainSet.Add($crate)
 }
 Write-Log "Train crates: $($trainCrates -join ', ')" -Path $evidencePath
 
@@ -123,6 +136,40 @@ foreach ($crate in $trainCrates) {
     }
 }
 
+$workspaceVersionUsersDetected = New-Object System.Collections.Generic.List[string]
+foreach ($pkg in $memberPackages) {
+    $pkgManifestPath = ([string]$pkg.manifest_path).Replace("/", "\")
+    $manifestLines = Get-Content -Path $pkgManifestPath
+    if ($manifestLines -match '^\s*version\.workspace\s*=\s*true\s*$') {
+        [void]$workspaceVersionUsersDetected.Add([string]$pkg.name)
+    }
+}
+
+$effectiveCrates = New-Object System.Collections.Generic.List[string]
+foreach ($crate in $trainCrates) {
+    [void]$effectiveCrates.Add($crate)
+}
+
+if ($bumpWorkspacePackage -and $includeWorkspaceVersionUsers) {
+    foreach ($pkgName in @($workspaceVersionUsersDetected | Sort-Object -Unique)) {
+        if (-not $effectiveCrates.Contains($pkgName)) {
+            [void]$effectiveCrates.Add($pkgName)
+        }
+    }
+}
+
+$effectiveCrates = @($effectiveCrates | Sort-Object -Unique)
+$crateSet = New-Object "System.Collections.Generic.HashSet[string]"
+foreach ($crate in $effectiveCrates) {
+    [void]$crateSet.Add($crate)
+}
+
+if ($effectiveCrates.Count -ne $trainCrates.Count) {
+    $autoIncluded = @($effectiveCrates | Where-Object { $trainCrates -notcontains $_ })
+    Write-Log "Auto-included workspace-version crates: $($autoIncluded -join ', ')" -Path $evidencePath
+}
+Write-Log "Effective crates for version edits: $($effectiveCrates -join ', ')" -Path $evidencePath
+
 $manifestPaths = New-Object System.Collections.Generic.List[string]
 [void]$manifestPaths.Add((Resolve-Path $manifestPath).Path)
 foreach ($pkg in $memberPackages | Sort-Object name) {
@@ -132,7 +179,8 @@ foreach ($pkg in $memberPackages | Sort-Object name) {
 $workspaceManifestAbs = (Resolve-Path $manifestPath).Path
 $changedFiles = New-Object System.Collections.Generic.List[object]
 $workspaceVersionUsers = New-Object System.Collections.Generic.List[string]
-$workspaceVersionUsersSelected = New-Object System.Collections.Generic.List[string]
+$workspaceVersionUsersInTrain = New-Object System.Collections.Generic.List[string]
+$workspaceVersionUsersInEffective = New-Object System.Collections.Generic.List[string]
 
 foreach ($filePath in $manifestPaths) {
     $absPath = (Resolve-Path $filePath).Path
@@ -185,7 +233,7 @@ foreach ($filePath in $manifestPaths) {
             }
         }
 
-        foreach ($crate in $trainCrates) {
+        foreach ($crate in $effectiveCrates) {
             $escapedCrate = [regex]::Escape($crate)
             if ($updatedLine -match "^\s*$escapedCrate\s*=\s*\{.*\bversion\s*=\s*`"([^`"]+)`".*\}\s*$") {
                 $old = $matches[1]
@@ -193,7 +241,10 @@ foreach ($filePath in $manifestPaths) {
                     $updatedLine = [regex]::Replace(
                         $updatedLine,
                         '(\bversion\s*=\s*")[^"]+(")',
-                        "`$1$targetVersion`$2",
+                        {
+                            param($match)
+                            return "$($match.Groups[1].Value)$targetVersion$($match.Groups[2].Value)"
+                        },
                         1
                     )
                     $edits.Add([ordered]@{
@@ -211,14 +262,17 @@ foreach ($filePath in $manifestPaths) {
 
     if ($pkgName -ne $null -and $isPackageVersionWorkspace) {
         [void]$workspaceVersionUsers.Add($pkgName)
+        if ($trainSet.Contains($pkgName)) {
+            [void]$workspaceVersionUsersInTrain.Add($pkgName)
+        }
         if ($crateSet.Contains($pkgName)) {
-            [void]$workspaceVersionUsersSelected.Add($pkgName)
+            [void]$workspaceVersionUsersInEffective.Add($pkgName)
         }
     }
 
     if ($edits.Count -gt 0) {
         if ($Apply.IsPresent) {
-            Set-Content -Path $absPath -Value $newLines -Encoding utf8
+            Write-FileUtf8NoBom -Path $absPath -Lines @($newLines)
         }
 
         $relative = Resolve-Path -Relative $absPath
@@ -238,8 +292,10 @@ $summary = [ordered]@{
     workspace_package_bump = $bumpWorkspacePackage
     workspace_root = "$workspaceRoot"
     train_crates = @($trainCrates)
+    effective_crates = @($effectiveCrates)
     workspace_version_users = @($workspaceVersionUsers | Sort-Object -Unique)
-    workspace_version_users_in_train = @($workspaceVersionUsersSelected | Sort-Object -Unique)
+    workspace_version_users_in_train = @($workspaceVersionUsersInTrain | Sort-Object -Unique)
+    workspace_version_users_in_effective = @($workspaceVersionUsersInEffective | Sort-Object -Unique)
     changed_file_count = $changedFiles.Count
     changed_files = $changedFiles
 }

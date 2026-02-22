@@ -2187,7 +2187,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "ranvier-auth",
  "ranvier-core",
@@ -2200,7 +2200,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-auth"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "http 1.4.0",
@@ -2216,7 +2216,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-core"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2251,7 +2251,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-guard"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "http 1.4.0",
@@ -2264,7 +2264,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-http"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2295,7 +2295,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-inspector"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum 0.7.9",
  "futures",
@@ -2311,7 +2311,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-macros"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2336,7 +2336,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-openapi"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "http 1.4.0",
  "ranvier-core",
@@ -2348,7 +2348,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-runtime"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2381,7 +2381,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-std"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2398,7 +2398,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-synapse"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
