@@ -87,11 +87,13 @@ function Resolve-PublishPlan {
     }
 
     $dependencyMap = @{}
+    $outOfScopeDependencyMap = @{}
     $adjacency = @{}
     $indegree = @{}
 
     foreach ($crate in $Crates) {
         $dependencyMap[$crate] = @()
+        $outOfScopeDependencyMap[$crate] = @()
         $adjacency[$crate] = @()
         $indegree[$crate] = 0
     }
@@ -102,13 +104,18 @@ function Resolve-PublishPlan {
         }
 
         $deps = New-Object System.Collections.Generic.List[string]
+        $outOfScopeDeps = New-Object System.Collections.Generic.List[string]
         foreach ($dep in $packagesByName[$crate].dependencies) {
             if ($crateSet.Contains($dep.name)) {
                 $deps.Add($dep.name)
+            } elseif ($dep.name -like "ranvier-*" -and $packagesByName.ContainsKey($dep.name)) {
+                $outOfScopeDeps.Add($dep.name)
             }
         }
         $uniqueDeps = @($deps | Sort-Object -Unique)
+        $uniqueOutOfScopeDeps = @($outOfScopeDeps | Sort-Object -Unique)
         $dependencyMap[$crate] = $uniqueDeps
+        $outOfScopeDependencyMap[$crate] = $uniqueOutOfScopeDeps
 
         foreach ($depName in $uniqueDeps) {
             $adjacency[$depName] = @($adjacency[$depName] + $crate)
@@ -145,9 +152,13 @@ function Resolve-PublishPlan {
     }
 
     $edges = New-Object System.Collections.Generic.List[string]
+    $outOfScopeEdges = New-Object System.Collections.Generic.List[string]
     foreach ($crate in $Crates) {
         foreach ($depName in @($dependencyMap[$crate])) {
             $edges.Add("$depName -> $crate")
+        }
+        foreach ($depName in @($outOfScopeDependencyMap[$crate])) {
+            $outOfScopeEdges.Add("$depName -> $crate")
         }
     }
 
@@ -155,6 +166,8 @@ function Resolve-PublishPlan {
         publish_order = @($order)
         dependency_map = $dependencyMap
         dependency_edges = @($edges | Sort-Object -Unique)
+        out_of_scope_dependency_map = $outOfScopeDependencyMap
+        out_of_scope_dependency_edges = @($outOfScopeEdges | Sort-Object -Unique)
     }
 }
 
@@ -214,12 +227,20 @@ Write-Log "Resolving publish order plan from workspace metadata..."
 try {
     $publishPlan = Resolve-PublishPlan -Crates $crates -WorkspaceRoot "$workspaceRoot"
     Write-Log "Suggested publish order: $($publishPlan.publish_order -join ', ')"
+    if (@($publishPlan.out_of_scope_dependency_edges).Count -gt 0) {
+        Write-Log "Detected profile-external internal dependencies:"
+        foreach ($edge in @($publishPlan.out_of_scope_dependency_edges)) {
+            Write-Log "  - $edge"
+        }
+    }
 } catch {
     Write-Log "WARN: publish order planning failed; using profile order. reason=$($_.Exception.Message)"
     $publishPlan = @{
         publish_order = @($crates)
         dependency_map = @{}
         dependency_edges = @()
+        out_of_scope_dependency_map = @{}
+        out_of_scope_dependency_edges = @()
     }
 }
 
@@ -246,6 +267,7 @@ $summary = [ordered]@{
     failed_crates = @($failed | ForEach-Object { $_.crate })
     suggested_publish_order = @($publishPlan.publish_order)
     dependency_edges = @($publishPlan.dependency_edges)
+    out_of_scope_dependency_edges = @($publishPlan.out_of_scope_dependency_edges)
     results = $results
 }
 
