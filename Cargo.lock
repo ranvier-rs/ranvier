@@ -2311,7 +2311,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-macros"
-version = "0.2.0"
+version = "0.7.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2381,7 +2381,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-std"
-version = "0.2.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
