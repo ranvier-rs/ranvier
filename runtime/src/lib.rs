@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 pub mod axon;
 pub mod persistence;
 pub mod replay;

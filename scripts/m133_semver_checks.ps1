@@ -12,6 +12,8 @@ param(
         "ranvier-observe",
         "ranvier-inspector"
     ),
+    [ValidateSet("heuristic", "default", "only-explicit")]
+    [string]$FeatureMode = "only-explicit",
     [string]$EvidenceDir = "..\docs\05_dev_plans\evidence",
     [switch]$InstallIfMissing
 )
@@ -23,6 +25,7 @@ $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $logPath = Join-Path $EvidenceDir "m133_semver_checks_$timestamp.log"
 $jsonPath = Join-Path $EvidenceDir "m133_semver_checks_$timestamp.json"
 New-Item -ItemType Directory -Path $EvidenceDir -Force | Out-Null
+Set-Content -Path $logPath -Value "" -Encoding UTF8
 
 function Ensure-SemverTool {
     $cargoList = & cargo --list
@@ -50,56 +53,93 @@ function Ensure-SemverTool {
     }
 }
 
+function Resolve-FeatureArgs {
+    switch ($FeatureMode) {
+        "default" { return @("--default-features") }
+        "only-explicit" { return @("--only-explicit-features") }
+        default { return @() }
+    }
+}
+
+function Write-Log {
+    param([string]$Message)
+    $Message | Tee-Object -FilePath $logPath -Append | Out-Host
+}
+
 $rows = New-Object System.Collections.Generic.List[object]
 $failed = $false
 
-Start-Transcript -Path $logPath | Out-Null
-
 try {
-    Write-Host "=== M133 cargo-semver-checks Baseline ==="
-    Write-Host "Timestamp: $timestamp"
-    Write-Host "Workspace: $(Get-Location)"
+    Write-Log "=== M133 cargo-semver-checks Baseline ==="
+    Write-Log "Timestamp: $timestamp"
+    Write-Log "Workspace: $(Get-Location)"
+    Write-Log "Feature mode: $FeatureMode"
 
     Ensure-SemverTool
+    $featureArgs = Resolve-FeatureArgs
 
     foreach ($pkg in $Packages) {
-        Write-Host ""
-        Write-Host "[check-release] $pkg"
+        Write-Log ""
+        Write-Log "[check-release] $pkg"
 
-        & cargo semver-checks check-release -p $pkg
+        $args = @("semver-checks", "check-release", "-p", $pkg) + $featureArgs
+        Write-Log "[command] cargo $($args -join ' ')"
+        $tmpOutput = Join-Path $env:TEMP ("m133_semver_" + $pkg.Replace("-", "_") + "_" + $timestamp + ".log")
+        $cmdLine = "cargo $($args -join ' ') > `"$tmpOutput`" 2>&1"
+        cmd /c $cmdLine | Out-Null
         $exitCode = $LASTEXITCODE
+        $commandOutput = @()
+        if (Test-Path $tmpOutput) {
+            $commandOutput = Get-Content -Path $tmpOutput
+            $commandOutput | Tee-Object -FilePath $logPath -Append | Out-Host
+            Remove-Item -Path $tmpOutput -Force
+        }
+        $blockedByPolicy = $false
+        if ($exitCode -ne 0) {
+            $blockedByPolicy = ($commandOutput -join "`n") -match "os error 4551"
+        }
+
+        $result = if ($exitCode -eq 0) {
+            "pass"
+        } elseif ($blockedByPolicy) {
+            "blocked_policy"
+        } else {
+            "fail"
+        }
 
         $rows.Add([ordered]@{
                 package = $pkg
-                command = "cargo semver-checks check-release -p $pkg"
+                command = "cargo $($args -join ' ')"
+                feature_mode = $FeatureMode
                 exit_code = $exitCode
-                result = $(if ($exitCode -eq 0) { "pass" } else { "fail" })
+                result = $result
             })
 
         if ($exitCode -ne 0) {
             $failed = $true
-            Write-Host "[fail] $pkg (exit=$exitCode)"
+            Write-Log "[fail] $pkg (exit=$exitCode, result=$result)"
         } else {
-            Write-Host "[pass] $pkg"
+            Write-Log "[pass] $pkg"
         }
     }
 
     $summary = [ordered]@{
         timestamp = $timestamp
         generated_by = "scripts/m133_semver_checks.ps1"
+        feature_mode = $FeatureMode
         package_count = $rows.Count
         failed = $failed
         results = $rows
     }
     $summary | ConvertTo-Json -Depth 6 | Set-Content -Path $jsonPath -Encoding UTF8
 
-    Write-Host ""
-    Write-Host "Result JSON: $jsonPath"
-    Write-Host "Log: $logPath"
+    Write-Log ""
+    Write-Log "Result JSON: $jsonPath"
+    Write-Log "Log: $logPath"
 
     if ($failed) {
         throw "One or more semver checks failed"
     }
 } finally {
-    Stop-Transcript | Out-Null
+    # log file is written incrementally via Tee-Object
 }

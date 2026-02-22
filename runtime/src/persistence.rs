@@ -127,6 +127,10 @@ impl Default for CompensationRetryPolicy {
 }
 
 /// Compensation hook contract for irreversible side effects.
+#[deprecated(
+    since = "0.7.0",
+    note = "Experimental compensation contract (M148); API may change before stabilization."
+)]
 #[async_trait]
 pub trait CompensationHook: Send + Sync {
     async fn compensate(&self, context: CompensationContext) -> Result<()>;
@@ -167,6 +171,10 @@ impl CompensationHandle {
 }
 
 /// Idempotency store contract for compensation execution deduplication.
+#[deprecated(
+    since = "0.7.0",
+    note = "Experimental compensation idempotency contract (M148); API may change before stabilization."
+)]
 #[async_trait]
 pub trait CompensationIdempotencyStore: Send + Sync {
     async fn was_compensated(&self, key: &str) -> Result<bool>;
@@ -407,6 +415,10 @@ impl CompensationIdempotencyStore for RedisCompensationIdempotencyStore {
 /// Persistence abstraction draft for long-running workflow recovery.
 ///
 /// This is intentionally minimal and marked experimental while M148 is active.
+#[deprecated(
+    since = "0.7.0",
+    note = "Experimental persistence contract (M148); API may change before stabilization."
+)]
 #[async_trait]
 pub trait PersistenceStore: Send + Sync {
     async fn append(&self, envelope: PersistenceEnvelope) -> Result<()>;
