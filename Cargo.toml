@@ -28,6 +28,8 @@ members = [
     "examples/static-build-demo",
     "examples/db-example",
     "examples/ecosystem-seaorm-demo",
+    "examples/ecosystem-diesel-demo",
+    "examples/ecosystem-redis-demo",
     "examples/otel-demo",
     "examples/observe-http-demo",
     "examples/bus-capability-demo",
