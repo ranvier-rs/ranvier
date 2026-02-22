@@ -111,6 +111,7 @@ Write-Log -Path $bundleLogPath -Message "powershell executable: $psExe"
 $preflightScript = Join-Path $PSScriptRoot "publish_dry_run_preflight.ps1"
 $waveScript = Join-Path $PSScriptRoot "plan_publish_waves.ps1"
 $registryScript = Join-Path $PSScriptRoot "check_cratesio_versions.ps1"
+$nextWaveScript = Join-Path $PSScriptRoot "plan_next_publish_wave.ps1"
 
 $preflightStart = [datetime]::UtcNow
 $preflightArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $preflightScript, "-Profile", $profileKey)
@@ -166,9 +167,31 @@ if ($null -eq $registrySummaryFile) {
 }
 Write-Log -Path $bundleLogPath -Message "registry summary: $($registrySummaryFile.FullName)"
 
+$nextWaveStart = [datetime]::UtcNow
+$nextWaveArgs = @(
+    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $nextWaveScript,
+    "-Profile", $profileKey,
+    "-TargetVersion", $target,
+    "-WaveSummaryPath", $waveSummaryFile.FullName,
+    "-RegistrySummaryPath", $registrySummaryFile.FullName
+)
+
+Write-Log -Path $bundleLogPath -Message "running next-wave gate planner..."
+& $psExe @nextWaveArgs
+$nextWaveExitCode = $LASTEXITCODE
+Write-Log -Path $bundleLogPath -Message "next-wave gate planner exit_code=$nextWaveExitCode"
+
+$nextWavePattern = "publish_next_wave_gate_${profileKey}_${target}_*.json"
+$nextWaveSummaryFile = Get-LatestFile -Directory $EvidenceDir -Pattern $nextWavePattern -SinceUtc $nextWaveStart
+if ($null -eq $nextWaveSummaryFile) {
+    throw "Failed to locate next-wave gate summary for profile=$profileKey target=$target"
+}
+Write-Log -Path $bundleLogPath -Message "next-wave gate summary: $($nextWaveSummaryFile.FullName)"
+
 $preflightSummary = Get-Content -Path $preflightSummaryFile.FullName -Raw | ConvertFrom-Json
 $waveSummary = Get-Content -Path $waveSummaryFile.FullName -Raw | ConvertFrom-Json
 $registrySummary = Get-Content -Path $registrySummaryFile.FullName -Raw | ConvertFrom-Json
+$nextWaveSummary = Get-Content -Path $nextWaveSummaryFile.FullName -Raw | ConvertFrom-Json
 
 $wave1Crates = @(
     $waveSummary.waves |
@@ -211,12 +234,21 @@ $bundleSummary = [ordered]@{
         target_missing_crates = @(As-Array $registrySummary.target_missing_crates | ForEach-Object { [string]$_ })
         not_found_crates = @(As-Array $registrySummary.not_found_crates | ForEach-Object { [string]$_ })
     }
+    next_publish_gate = [ordered]@{
+        exit_code = $nextWaveExitCode
+        summary_path = $nextWaveSummaryFile.FullName
+        all_waves_complete = [bool]$nextWaveSummary.all_waves_complete
+        next_publish_wave = $nextWaveSummary.next_publish_wave
+        next_publish_crates = @(As-Array $nextWaveSummary.next_publish_crates | ForEach-Object { [string]$_ })
+        next_publish_commands = @(As-Array $nextWaveSummary.next_publish_commands | ForEach-Object { [string]$_ })
+    }
 }
 
 $bundleSummary | ConvertTo-Json -Depth 8 | Set-Content -Path $bundleSummaryPath -Encoding utf8
 
 Write-Log -Path $bundleLogPath -Message "wave1 crates: $($wave1Crates -join ', ')"
 Write-Log -Path $bundleLogPath -Message "registry target_present_count=$($bundleSummary.registry_snapshot.target_present_count)"
+Write-Log -Path $bundleLogPath -Message "next publish wave=$($bundleSummary.next_publish_gate.next_publish_wave)"
 Write-Log -Path $bundleLogPath -Message "bundle summary: $bundleSummaryPath"
 
 Write-Host "Evidence: $bundleLogPath"
