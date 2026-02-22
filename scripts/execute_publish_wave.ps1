@@ -6,6 +6,10 @@ param(
     [string]$Mode = "dry-run",
     [switch]$AllowDirty,
     [switch]$ContinueOnError,
+    [ValidateRange(0, 20)]
+    [int]$RetryCount = 0,
+    [ValidateRange(1, 600)]
+    [int]$RetryDelaySeconds = 20,
     [string]$WaveSummaryPath,
     [string]$EvidenceDir = "..\docs\05_dev_plans\evidence"
 )
@@ -71,13 +75,15 @@ function Invoke-CargoPublish {
         [bool]$AllowDirtyFlag,
         [string]$ProfileKey,
         [int]$WaveIndex,
+        [int]$Attempt,
         [string]$Timestamp,
         [string]$EvidenceRoot,
         [string]$AggregateLogPath
     )
 
     $sanitized = $Crate.Replace("-", "_")
-    $crateLogPath = Join-Path $EvidenceRoot "publish_wave_execute_${ProfileKey}_w${WaveIndex}_${sanitized}_${Timestamp}.log"
+    $attemptSuffix = if ($Attempt -gt 0) { "_attempt$Attempt" } else { "" }
+    $crateLogPath = Join-Path $EvidenceRoot "publish_wave_execute_${ProfileKey}_w${WaveIndex}_${sanitized}_${Timestamp}${attemptSuffix}.log"
 
     $args = @("publish", "-p", $Crate)
     if ($ModeKey -eq "dry-run") {
@@ -110,6 +116,7 @@ function Invoke-CargoPublish {
 
     return [ordered]@{
         crate = $Crate
+        attempt = $Attempt
         command = $commandLine
         success = ($exitCode -eq 0)
         exit_code = $exitCode
@@ -129,7 +136,7 @@ $summaryOutPath = Join-Path $EvidenceDir "publish_wave_execute_${profileKey}_w${
 $waveSummaryPath = Resolve-WaveSummaryPath -Requested $WaveSummaryPath -ProfileKey $profileKey -EvidenceRoot $EvidenceDir -WorkspaceRoot "$workspaceRoot"
 $waveSummary = Get-Content -Path $waveSummaryPath -Raw | ConvertFrom-Json
 
-Write-Log -Path $evidencePath -Message "Publish wave execution started (profile=$profileKey, wave=$Wave, mode=$Mode, allow_dirty=$($AllowDirty.IsPresent))"
+Write-Log -Path $evidencePath -Message "Publish wave execution started (profile=$profileKey, wave=$Wave, mode=$Mode, allow_dirty=$($AllowDirty.IsPresent), retry_count=$RetryCount, retry_delay_seconds=$RetryDelaySeconds)"
 Write-Log -Path $evidencePath -Message "Workspace root: $workspaceRoot"
 Write-Log -Path $evidencePath -Message "Input wave summary: $waveSummaryPath"
 
@@ -157,13 +164,52 @@ $results = New-Object System.Collections.Generic.List[object]
 $stoppedEarly = $false
 
 foreach ($crate in $selectedCrates) {
-    $result = Invoke-CargoPublish -Crate $crate -ModeKey $Mode -AllowDirtyFlag:$AllowDirty.IsPresent -ProfileKey $profileKey -WaveIndex $Wave -Timestamp $timestamp -EvidenceRoot $EvidenceDir -AggregateLogPath $evidencePath
+    $attempt = 0
+    $attemptResults = New-Object System.Collections.Generic.List[object]
+
+    while ($true) {
+        $attemptResult = Invoke-CargoPublish -Crate $crate -ModeKey $Mode -AllowDirtyFlag:$AllowDirty.IsPresent -ProfileKey $profileKey -WaveIndex $Wave -Attempt $attempt -Timestamp $timestamp -EvidenceRoot $EvidenceDir -AggregateLogPath $evidencePath
+        $attemptResults.Add($attemptResult)
+
+        if ($attemptResult.success -or $attempt -ge $RetryCount) {
+            break
+        }
+
+        $nextAttempt = $attempt + 1
+        Write-Log -Path $evidencePath -Message "Retrying $crate in $RetryDelaySeconds seconds (attempt $nextAttempt/$RetryCount)..."
+        Start-Sleep -Seconds $RetryDelaySeconds
+        $attempt = $nextAttempt
+    }
+
+    $finalAttempt = $attemptResults[$attemptResults.Count - 1]
+    $attemptSummaries = @(
+        $attemptResults | ForEach-Object {
+            [ordered]@{
+                attempt = [int]$_.attempt
+                success = [bool]$_.success
+                exit_code = [int]$_.exit_code
+                log_path = [string]$_.log_path
+            }
+        }
+    )
+
+    $result = [ordered]@{
+        crate = [string]$finalAttempt.crate
+        command = [string]$finalAttempt.command
+        success = [bool]$finalAttempt.success
+        exit_code = [int]$finalAttempt.exit_code
+        log_path = [string]$finalAttempt.log_path
+        tail = @($finalAttempt.tail | ForEach-Object { [string]$_ })
+        final_attempt = [int]$finalAttempt.attempt
+        retry_attempts = [int]($attemptResults.Count - 1)
+        attempts = $attemptSummaries
+    }
     $results.Add($result)
 
     if ($result.success) {
-        Write-Log -Path $evidencePath -Message "PASS: $crate"
+        Write-Log -Path $evidencePath -Message "PASS: $crate (attempts=$($result.retry_attempts + 1))"
     } else {
-        Write-Log -Path $evidencePath -Message "FAIL: $crate (exit=$($result.exit_code))"
+        Write-Log -Path $evidencePath -Message "FAIL: $crate (exit=$($result.exit_code), attempts=$($result.retry_attempts + 1))"
         if (-not $ContinueOnError.IsPresent) {
             $stoppedEarly = $true
             Write-Log -Path $evidencePath -Message "Stopping after first failure (use -ContinueOnError to continue)."
@@ -180,6 +226,8 @@ $summary = [ordered]@{
     mode = $Mode
     allow_dirty = $AllowDirty.IsPresent
     continue_on_error = $ContinueOnError.IsPresent
+    retry_count = $RetryCount
+    retry_delay_seconds = $RetryDelaySeconds
     input_wave_summary = $waveSummaryPath
     selected_wave_crates = $selectedCrates
     total_selected = $selectedCrates.Count
