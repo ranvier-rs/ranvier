@@ -30,6 +30,8 @@ members = [
     "examples/ecosystem-seaorm-demo",
     "examples/ecosystem-diesel-demo",
     "examples/ecosystem-redis-demo",
+    "examples/ecosystem-nats-demo",
+    "examples/ecosystem-meilisearch-demo",
     "examples/otel-demo",
     "examples/observe-http-demo",
     "examples/bus-capability-demo",
