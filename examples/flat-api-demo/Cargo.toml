@@ -1,8 +1,8 @@
 [package]
 name = "flat-api-demo"
 version = "0.1.0"
-edition = "2021"
-
+edition.workspace = true
+rust-version.workspace = true
 [dependencies]
 ranvier-core = { path = "../../core" }
 ranvier-runtime = { path = "../../runtime" }
@@ -14,3 +14,4 @@ http = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+

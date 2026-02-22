@@ -6,6 +6,7 @@ repository.workspace = true
 homepage.workspace = true
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "Security and request-guard layers for Ranvier HTTP ingress"
 
 [dependencies]
@@ -18,3 +19,5 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+
+

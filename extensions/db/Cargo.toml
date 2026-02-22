@@ -1,8 +1,8 @@
 [package]
 name = "ranvier-db"
 version = "0.1.0"
-edition = "2021"
-
+edition.workspace = true
+rust-version.workspace = true
 [dependencies]
 # Ranvier core
 ranvier-core = { workspace = true }
@@ -39,3 +39,5 @@ futures-util = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+
+

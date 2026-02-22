@@ -6,6 +6,7 @@ repository.workspace = true
 homepage.workspace = true
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "Async Execution Engine for Ranvier"
 
 [features]
@@ -27,3 +28,4 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 sqlx = { workspace = true, optional = true }
 redis = { version = "0.29.5", optional = true, features = ["tokio-comp", "connection-manager"] }
+

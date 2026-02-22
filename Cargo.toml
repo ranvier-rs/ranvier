@@ -57,6 +57,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/ranvier-rs/ranvier"
 homepage = "https://ranvier.studio"
 edition = "2024"
+rust-version = "1.93.0"
 version = "0.7.0"
 keywords = ["automation", "workflow", "decision-engine", "circuit", "async"]
 categories = ["asynchronous", "development-tools", "web-programming"]
@@ -109,3 +110,4 @@ sqlx = { version = "0.8", features = [
     "uuid",
     "json",
 ] }
+

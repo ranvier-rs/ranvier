@@ -81,6 +81,12 @@ See `examples/README.md` for tiers and additional workflows.
 
 ---
 
+**MSRV**
+
+- Rust `1.85.0` or newer.
+
+---
+
 **Workspace Structure**
 
 1. `core/` — protocol-agnostic contracts (`Transition`, `Outcome`, `Bus`, `Schematic`)

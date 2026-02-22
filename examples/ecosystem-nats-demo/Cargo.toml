@@ -1,7 +1,8 @@
 [package]
 name = "ecosystem-nats-demo"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [dependencies]
@@ -13,3 +14,4 @@ ranvier-core = { workspace = true }
 ranvier-runtime = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 async-nats = "0.40"
+

@@ -1,7 +1,8 @@
 [package]
 name = "std-lib-demo"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 publish = false
 
 [dependencies]
@@ -19,3 +20,4 @@ http-body-util = { workspace = true }
 hyper-util = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
+

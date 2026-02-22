@@ -26,3 +26,7 @@ use ranvier_core::prelude::*;
 let axon = Axon::start("MyCircuit")
     .then(some_transition);
 ```
+
+## MSRV
+
+- Rust `1.85.0` or newer.

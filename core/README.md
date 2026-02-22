@@ -22,3 +22,7 @@
 - **Strict Separation:** Keep this crate free of transport-layer dependencies.
 - **Type Safety:** Leverage Rust's type system to ensure valid state transitions.
 - **Telemetry:** Built-in tracing for visual debugging in Ranvier Studio.
+
+## MSRV
+
+- Rust `1.85.0` or newer.

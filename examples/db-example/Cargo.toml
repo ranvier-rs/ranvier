@@ -1,8 +1,8 @@
 [package]
 name = "db-example"
 version = "0.1.0"
-edition = "2021"
-
+edition.workspace = true
+rust-version.workspace = true
 [dependencies]
 ranvier-core = { workspace = true }
 ranvier-runtime = { workspace = true }
@@ -14,3 +14,4 @@ sqlx = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 http = { workspace = true }
+

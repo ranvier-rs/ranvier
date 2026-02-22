@@ -6,6 +6,7 @@ repository.workspace = true
 homepage.workspace = true
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "HTTP Ingress adapter for Ranvier - Tower-native Service implementation"
 
 [features]
@@ -47,3 +48,5 @@ sha1 = "0.10"
 [dev-dependencies]
 tempfile = "3.14"
 ranvier-observe = { workspace = true }
+
+

@@ -1,8 +1,8 @@
 [package]
 name = "hello-world"
 version = "0.1.0"
-edition = "2021"
-
+edition.workspace = true
+rust-version.workspace = true
 [[bin]]
 name = "hello-world"
 path = "src/main.rs"
@@ -16,3 +16,4 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 ranvier-macros = { workspace = true }
 tracing-subscriber = "0.3"
+

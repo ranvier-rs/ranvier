@@ -23,3 +23,7 @@ Ranvier::http()
     .run()
     .await?;
 ```
+
+## MSRV
+
+- Rust `1.85.0` or newer.

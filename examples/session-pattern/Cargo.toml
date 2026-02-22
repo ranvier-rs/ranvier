@@ -1,8 +1,8 @@
 [package]
 name = "session-pattern"
 version = "0.1.0"
-edition = "2024"
-
+edition.workspace = true
+rust-version.workspace = true
 [dependencies]
 ranvier-core = { path = "../../core" }
 ranvier-runtime = { path = "../../runtime" }
@@ -13,3 +13,4 @@ async-trait = "0.1"
 anyhow = "1.0"
 http = "1.2"
 chrono = { version = "0.4", features = ["serde"] }
+
