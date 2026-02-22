@@ -1,5 +1,9 @@
 [package]
 name = "ranvier-observe"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 version = "0.1.0"
 edition = "2021"
 description = "Observability and OTLP integration for Ranvier"
