@@ -14,7 +14,7 @@ persistence-postgres = ["dep:sqlx"]
 persistence-redis = ["dep:redis"]
 
 [dependencies]
-ranvier-core = { path = "../core", version = "0.2.0" }
+ranvier-core = { path = "../core", version = "0.7.0" }
 ranvier-inspector = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
