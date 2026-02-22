@@ -7,6 +7,10 @@ param(
     [int]$EndWave = 0,
     [switch]$AllowDirty,
     [switch]$ContinueOnError,
+    [ValidateRange(0, 20)]
+    [int]$RetryCount = 0,
+    [ValidateRange(1, 600)]
+    [int]$RetryDelaySeconds = 20,
     [string]$WaveSummaryPath,
     [string]$EvidenceDir = "..\docs\05_dev_plans\evidence"
 )
@@ -134,7 +138,7 @@ if ($selectedWaves.Count -eq 0) {
     throw "No waves selected for StartWave=$StartWave EndWave=$EndWave in summary: $waveSummaryPath"
 }
 
-Write-Log -Path $evidencePath -Message "Publish train execution started (profile=$profileKey, mode=$Mode, start_wave=$StartWave, end_wave=$EndWave, allow_dirty=$($AllowDirty.IsPresent))"
+Write-Log -Path $evidencePath -Message "Publish train execution started (profile=$profileKey, mode=$Mode, start_wave=$StartWave, end_wave=$EndWave, allow_dirty=$($AllowDirty.IsPresent), retry_count=$RetryCount, retry_delay_seconds=$RetryDelaySeconds)"
 Write-Log -Path $evidencePath -Message "Workspace root: $workspaceRoot"
 Write-Log -Path $evidencePath -Message "Input wave summary: $waveSummaryPath"
 Write-Log -Path $evidencePath -Message "Selected waves: $($selectedWaves -join ', ')"
@@ -150,6 +154,7 @@ foreach ($wave in $selectedWaves) {
         "-Profile", $profileKey,
         "-Wave", "$wave",
         "-Mode", $Mode,
+        "-EvidenceDir", $EvidenceDir,
         "-WaveSummaryPath", $waveSummaryPath
     )
     if ($AllowDirty.IsPresent) {
@@ -158,6 +163,7 @@ foreach ($wave in $selectedWaves) {
     if ($ContinueOnError.IsPresent) {
         $args += "-ContinueOnError"
     }
+    $args += @("-RetryCount", "$RetryCount", "-RetryDelaySeconds", "$RetryDelaySeconds")
 
     Write-Log -Path $evidencePath -Message "Running wave $wave via execute_publish_wave.ps1..."
     & $psExe @args
@@ -202,6 +208,8 @@ $summary = [ordered]@{
     mode = $Mode
     allow_dirty = $AllowDirty.IsPresent
     continue_on_error = $ContinueOnError.IsPresent
+    retry_count = $RetryCount
+    retry_delay_seconds = $RetryDelaySeconds
     start_wave = $StartWave
     end_wave = $EndWave
     input_wave_summary = $waveSummaryPath

@@ -6,6 +6,10 @@ param(
     [string]$Mode = "dry-run",
     [switch]$AllowDirty,
     [switch]$ContinueOnError,
+    [ValidateRange(0, 20)]
+    [int]$RetryCount = 0,
+    [ValidateRange(1, 600)]
+    [int]$RetryDelaySeconds = 20,
     [string]$NextWaveSummaryPath,
     [string]$EvidenceDir = "..\docs\05_dev_plans\evidence"
 )
@@ -128,7 +132,7 @@ $summaryOutPath = Join-Path $EvidenceDir "publish_next_wave_execute_${profileKey
 $resolvedNextWaveSummary = Resolve-NextWaveSummaryPath -Requested $NextWaveSummaryPath -ProfileKey $profileKey -Target $target -EvidenceRoot $EvidenceDir -WorkspaceRoot "$workspaceRoot"
 $nextWaveSummary = Get-Content -Path $resolvedNextWaveSummary -Raw | ConvertFrom-Json
 
-Write-Log -Path $evidencePath -Message "Next-wave execution started (profile=$profileKey, target=$target, mode=$Mode, allow_dirty=$($AllowDirty.IsPresent))"
+Write-Log -Path $evidencePath -Message "Next-wave execution started (profile=$profileKey, target=$target, mode=$Mode, allow_dirty=$($AllowDirty.IsPresent), retry_count=$RetryCount, retry_delay_seconds=$RetryDelaySeconds)"
 Write-Log -Path $evidencePath -Message "Next-wave summary: $resolvedNextWaveSummary"
 
 $allComplete = [bool]$nextWaveSummary.all_waves_complete
@@ -150,7 +154,8 @@ if ($allComplete -or $null -eq $nextWave) {
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $executeScript,
         "-Profile", $profileKey,
         "-Wave", "$nextWave",
-        "-Mode", $Mode
+        "-Mode", $Mode,
+        "-EvidenceDir", $EvidenceDir
     )
 
     if (-not [string]::IsNullOrWhiteSpace($waveSummaryPath)) {
@@ -162,6 +167,7 @@ if ($allComplete -or $null -eq $nextWave) {
     if ($ContinueOnError.IsPresent) {
         $args += "-ContinueOnError"
     }
+    $args += @("-RetryCount", "$RetryCount", "-RetryDelaySeconds", "$RetryDelaySeconds")
 
     Write-Log -Path $evidencePath -Message "Executing wave $nextWave crates: $($nextCrates -join ', ')"
     & $psExe @args
@@ -185,6 +191,8 @@ $summary = [ordered]@{
     mode = $Mode
     allow_dirty = $AllowDirty.IsPresent
     continue_on_error = $ContinueOnError.IsPresent
+    retry_count = $RetryCount
+    retry_delay_seconds = $RetryDelaySeconds
     next_wave_summary_path = $resolvedNextWaveSummary
     all_waves_complete = $allComplete
     next_publish_wave = $nextWave
