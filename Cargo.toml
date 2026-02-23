@@ -48,7 +48,7 @@ members = [
     "extensions/observe",
     "extensions/inspector",
     "examples/flat-api-demo",
-    "examples/studio-demo",
+    "examples/studio-demo", "ranvier-job", "examples/job-scheduler-demo",
 ]
 
 [workspace.package]
