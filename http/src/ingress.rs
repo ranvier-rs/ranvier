@@ -1937,6 +1937,7 @@ where
 }
 
 /// Internal service type for `into_raw_service()`
+#[deprecated(since = "0.9.0", note = "Internal service type")]
 #[derive(Clone)]
 pub struct RawIngressService<R> {
     routes: Arc<Vec<RouteEntry<R>>>,
