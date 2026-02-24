@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
     // 1. Build the Linear Axon
     // Axon currently builds the 'Happy Path' automatically
     let mut axon =
-        Axon::<LoginInput, LoginInput, anyhow::Error>::start("StartFlow").then(Authenticate);
+        Axon::<LoginInput, LoginInput, anyhow::Error>::new("StartFlow").then(Authenticate);
 
     // 2. Start Manual Schematic Enhancement
     // Since Axon's Builder doesn't yet support auto-extraction of Branches,

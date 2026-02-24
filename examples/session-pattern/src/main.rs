@@ -170,7 +170,7 @@ async fn main() -> anyhow::Result<()> {
     println!("--- Case 1: Valid Session ---");
     let req_valid = "GET /profile (Cookie: sid=valid_sid_123)".to_string();
 
-    let axon = Axon::<String, String, anyhow::Error>::start("SecureProfileFlow")
+    let axon = Axon::<String, String, anyhow::Error>::new("SecureProfileFlow")
         .then(LoadSession)
         .then(RequireAuth)
         .then(UserProfile);
@@ -192,7 +192,7 @@ async fn main() -> anyhow::Result<()> {
     println!("\n--- Case 2: No/Invalid Session ---");
     let req_invalid = "GET /profile (No Cookie)".to_string();
 
-    let axon2 = Axon::<String, String, anyhow::Error>::start("SecureProfileFlow")
+    let axon2 = Axon::<String, String, anyhow::Error>::new("SecureProfileFlow")
         .then(LoadSession)
         .then(RequireAuth)
         .then(UserProfile);

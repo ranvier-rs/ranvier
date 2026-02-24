@@ -360,7 +360,7 @@ async fn main() -> Result<()> {
     };
 
     let axon =
-        Axon::<SearchInput, SearchInput, anyhow::Error, AppResources>::start("meili.search_flow")
+        Axon::<SearchInput, SearchInput, anyhow::Error, AppResources>::new("meili.search_flow")
             .then(SeedIndexTransition)
             .then(SearchTransition);
 

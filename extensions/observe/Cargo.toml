@@ -4,7 +4,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-version = "0.7.0"
+version = "0.10.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "Observability and OTLP integration for Ranvier"
@@ -20,4 +20,3 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
 http = { workspace = true }
 tower = { workspace = true }
-

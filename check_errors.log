@@ -19,120 +19,43 @@ warning: use of deprecated function `static_gen::write_json_file`: Internal API
    |                     ^^^^^^^^^^^^^^^
 
 warning: `ranvier-core` (lib) generated 3 warnings
-warning: unused import: `ranvier_core::outcome::Outcome`
- --> ranvier-job\src\job.rs:4:5
+    Checking ranvier-session v0.7.0 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\session)
+error[E0432]: unresolved import `bytes`
+ --> extensions\session\src\layer.rs:2:5
   |
-4 | use ranvier_core::outcome::Outcome;
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2 | use bytes::Bytes;
+  |     ^^^^^ use of unresolved module or unlinked crate `bytes`
   |
-  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+  = help: if you wanted to use a crate named `bytes`, use `cargo add bytes` to add it to your `Cargo.toml`
 
-warning: `ranvier-job` (lib) generated 1 warning (run `cargo fix --lib -p ranvier-job` to apply 1 suggestion)
-    Checking job-scheduler-demo v0.7.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\job-scheduler-demo)
-error[E0433]: failed to resolve: could not find `async_trait` in the list of imported crates
-  --> examples\job-scheduler-demo\src\main.rs:10:1
-   |
-10 | #[transition]
-   | ^^^^^^^^^^^^^ could not find `async_trait` in the list of imported crates
-   |
-   = note: this error originates in the attribute macro `transition` (in Nightly builds, run with -Z macro-backtrace for more info)
+error[E0432]: unresolved import `http_body_util`
+ --> extensions\session\src\layer.rs:4:5
+  |
+4 | use http_body_util::Full;
+  |     ^^^^^^^^^^^^^^ use of unresolved module or unlinked crate `http_body_util`
+  |
+  = help: if you wanted to use a crate named `http_body_util`, use `cargo add http_body_util` to add it to your `Cargo.toml`
 
-error[E0433]: failed to resolve: could not find `async_trait` in the list of imported crates
-  --> examples\job-scheduler-demo\src\main.rs:18:1
+error[E0616]: field `id` of struct `SessionInner` is private
+  --> extensions\session\src\memory.rs:44:36
    |
-18 | #[transition]
-   | ^^^^^^^^^^^^^ could not find `async_trait` in the list of imported crates
-   |
-   = note: this error originates in the attribute macro `transition` (in Nightly builds, run with -Z macro-backtrace for more info)
+44 |         store.insert(session_inner.id.clone(), session_inner);
+   |                                    ^^ private field
 
-error[E0433]: failed to resolve: use of unresolved module or unlinked crate `job`
-  --> examples\job-scheduler-demo\src\main.rs:41:22
-   |
-41 |     let health_job = job::AxonJob::new("health-check-1", health_trigger, health_axon, (), ());
-   |                      ^^^ use of unresolved module or unlinked crate `job`
-   |
-   = help: if you wanted to use a crate named `job`, use `cargo add job` to add it to your `Cargo.toml`
-help: consider importing this struct
-   |
- 1 + use ranvier_job::job::AxonJob;
-   |
-help: if you import `AxonJob`, refer to it directly
-   |
-41 -     let health_job = job::AxonJob::new("health-check-1", health_trigger, health_axon, (), ());
-41 +     let health_job = AxonJob::new("health-check-1", health_trigger, health_axon, (), ());
-   |
-
-error[E0433]: failed to resolve: use of unresolved module or unlinked crate `job`
-  --> examples\job-scheduler-demo\src\main.rs:49:28
-   |
-49 |     let cleanup_job_task = job::AxonJob::new("cleanup-db", cleanup_trigger, cleanup_axon, (), ());
-   |                            ^^^ use of unresolved module or unlinked crate `job`
-   |
-   = help: if you wanted to use a crate named `job`, use `cargo add job` to add it to your `Cargo.toml`
-help: consider importing this struct
-   |
- 1 + use ranvier_job::job::AxonJob;
-   |
-help: if you import `AxonJob`, refer to it directly
-   |
-49 -     let cleanup_job_task = job::AxonJob::new("cleanup-db", cleanup_trigger, cleanup_axon, (), ());
-49 +     let cleanup_job_task = AxonJob::new("cleanup-db", cleanup_trigger, cleanup_axon, (), ());
-   |
-
-error[E0195]: lifetime parameters or bounds on method `run` do not match the trait declaration
-   --> examples\job-scheduler-demo\src\main.rs:10:14
+error[E0282]: type annotations needed
+   --> extensions\session\src\layer.rs:109:17
     |
- 10 |   #[transition]
-    |                ^ lifetimes do not match method in trait
+109 |             let mut response = inner.call(req).await?;
+    |                 ^^^^^^^^^^^^
+...
+116 |                 response.headers_mut().append(
+    |                 -------- type must be known at this point
     |
-   ::: F:\project\ranvier\ranvier-workspace\ranvier\core\src\transition.rs:121:5
+help: consider giving `response` an explicit type
     |
-121 | /     async fn run(
-122 | |         &self,
-123 | |         state: From,
-124 | |         resources: &Self::Resources,
-125 | |         bus: &mut Bus,
-126 | |     ) -> Outcome<To, Self::Error>;
-    | |__________________________________- lifetimes in impl do not match this method in trait
-    |
-    = note: this error originates in the attribute macro `transition` (in Nightly builds, run with -Z macro-backtrace for more info)
+109 |             let mut response: /* Type */ = inner.call(req).await?;
+    |                             ++++++++++++
 
-error[E0195]: lifetime parameters or bounds on method `run` do not match the trait declaration
-   --> examples\job-scheduler-demo\src\main.rs:18:14
-    |
- 18 |   #[transition]
-    |                ^ lifetimes do not match method in trait
-    |
-   ::: F:\project\ranvier\ranvier-workspace\ranvier\core\src\transition.rs:121:5
-    |
-121 | /     async fn run(
-122 | |         &self,
-123 | |         state: From,
-124 | |         resources: &Self::Resources,
-125 | |         bus: &mut Bus,
-126 | |     ) -> Outcome<To, Self::Error>;
-    | |__________________________________- lifetimes in impl do not match this method in trait
-    |
-    = note: this error originates in the attribute macro `transition` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-error[E0599]: no function or associated item named `new` found for struct `Axon<(), String, anyhow::Error>` in the current scope
-  --> examples\job-scheduler-demo\src\main.rs:39:58
-   |
-39 |     let health_axon = Axon::<(), String, anyhow::Error>::new("HealthCheck").then(health_check);
-   |                                                          ^^^ function or associated item not found in `Axon<(), String, anyhow::Error>`
-   |
-   = note: the function or associated item was found for
-           - `Axon<In, In, E, Res>`
-
-error[E0599]: no function or associated item named `new` found for struct `Axon<(), String, anyhow::Error>` in the current scope
-  --> examples\job-scheduler-demo\src\main.rs:46:59
-   |
-46 |     let cleanup_axon = Axon::<(), String, anyhow::Error>::new("CleanupTask").then(cleanup_job);
-   |                                                           ^^^ function or associated item not found in `Axon<(), String, anyhow::Error>`
-   |
-   = note: the function or associated item was found for
-           - `Axon<In, In, E, Res>`
-
-Some errors have detailed explanations: E0195, E0433, E0599.
-For more information about an error, try `rustc --explain E0195`.
-error: could not compile `job-scheduler-demo` (bin "job-scheduler-demo") due to 8 previous errors
+Some errors have detailed explanations: E0282, E0432, E0616.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `ranvier-session` (lib) due to 4 previous errors

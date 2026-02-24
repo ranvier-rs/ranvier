@@ -119,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
     // Provide a name for each span
     // 2. Define Axon with Tracing Wrappers
     // Provide a name for each span
-    let axon = Axon::<HttpRequest, HttpRequest, anyhow::Error>::start("HttpTransaction")
+    let axon = Axon::<HttpRequest, HttpRequest, anyhow::Error>::new("HttpTransaction")
         .then(Traced::new(Authenticate, "Authenticate"))
         .then(Traced::new(HandleRequest, "HandleRequest"));
 

@@ -75,7 +75,7 @@ impl Transition<OrderFlowState, String> for FinalizeOrder {
 }
 
 fn build_order_axon() -> Axon<OrderFlowState, String, &'static str> {
-    Axon::<OrderFlowState, OrderFlowState, &'static str>::start("OrderRecoveryFlow")
+    Axon::<OrderFlowState, OrderFlowState, &'static str>::new("OrderRecoveryFlow")
         .then(ValidateOrder)
         .then(ChargePayment)
         .then(FinalizeOrder)

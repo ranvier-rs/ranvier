@@ -156,7 +156,7 @@ async fn main() -> Result<()> {
         subject: outbound_subject.clone(),
     };
 
-    let axon = Axon::<String, String, anyhow::Error, AppResources>::start("nats.pub_sub_pipeline")
+    let axon = Axon::<String, String, anyhow::Error, AppResources>::new("nats.pub_sub_pipeline")
         .then(ParseEventTransition)
         .then(ProjectToSinkTransition);
 

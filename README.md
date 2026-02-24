@@ -8,6 +8,17 @@ diff, and validate.
 
 ---
 
+**What's new in v0.10.0**
+
+- **Gate A Stabilized**: Core Execution and Decision Engine APIs are now frozen.
+- **Typed Fallbacks**: Typed fallback execution and error extraction in `ranvier-core`.
+- **Background Jobs**: New `ranvier-job` background job scheduling functionality.
+- **Cache & Sessions**: New `ranvier-session` cache and session management backends.
+- **Gate B Stabilized**: Official extensions (`ranvier-auth`, `ranvier-guard`, `ranvier-openapi`) stable.
+- **Ecosystem integrations**: SeaORM, Diesel, MQ, Search, Redis verified in Gate C.
+
+---
+
 **What Ranvier is**
 
 1. **Axon**: explicit execution chain built from typed transitions.

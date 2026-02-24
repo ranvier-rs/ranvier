@@ -1,0 +1,489 @@
+    Checking windows-sys v0.61.2
+    Checking num-traits v0.2.19
+    Checking serde_json v1.0.149
+    Checking smallvec v1.15.1
+    Checking digest v0.10.7
+    Checking fnv v1.0.7
+    Checking rand v0.8.5
+    Checking lazy_static v1.5.0
+    Checking bitflags v2.10.0
+    Checking alloc-no-stdlib v2.0.4
+   Compiling serde_core v1.0.228
+    Checking windows-strings v0.5.1
+    Checking windows-result v0.4.1
+    Checking simd-adler32 v0.3.8
+    Checking adler2 v2.0.1
+    Checking crc32fast v1.5.0
+    Checking sharded-slab v0.1.7
+   Compiling unicase v2.9.0
+    Checking compression-core v0.4.31
+    Checking alloc-stdlib v0.2.2
+    Checking miniz_oxide v0.8.9
+    Checking windows-registry v0.6.1
+    Checking brotli-decompressor v5.0.0
+    Checking parking_lot_core v0.9.12
+    Checking sha1 v0.10.6
+    Checking http-range-header v0.4.2
+   Compiling cfg-if v1.0.4
+   Compiling mime_guess v2.0.5
+    Checking icu_normalizer v2.1.1
+   Compiling zerofrom v0.1.6
+    Checking parking_lot v0.12.5
+   Compiling stable_deref_trait v1.2.1
+   Compiling const-oid v0.9.6
+    Checking flate2 v1.1.9
+    Checking chrono v0.4.43
+    Checking hdrhistogram v7.5.4
+    Checking num-integer v0.1.46
+   Compiling typenum v1.19.0
+   Compiling yoke v0.8.1
+    Checking tungstenite v0.24.0
+   Compiling zeroize v1.8.2
+    Checking ring v0.17.14
+    Checking idna_adapter v1.2.1
+   Compiling libm v0.2.16
+   Compiling windows-link v0.2.1
+   Compiling zerovec v0.11.5
+   Compiling getrandom v0.2.17
+   Compiling subtle v2.6.1
+    Checking idna v1.1.0
+   Compiling scopeguard v1.2.0
+    Checking num-bigint v0.4.6
+    Checking brotli v8.0.2
+   Compiling litemap v0.8.1
+   Compiling writeable v0.6.2
+   Compiling zerotrie v0.2.3
+    Checking windows_x86_64_msvc v0.48.5
+   Compiling lock_api v0.4.14
+   Compiling pin-project-lite v0.2.16
+    Checking url v2.5.8
+   Compiling generic-array v0.14.7
+   Compiling tinystr v0.8.2
+   Compiling potential_utf v0.1.4
+   Compiling futures-core v0.3.31
+    Checking windows-targets v0.48.5
+   Compiling icu_collections v2.1.1
+   Compiling icu_locale_core v2.1.1
+   Compiling windows_x86_64_msvc v0.53.1
+    Checking windows-sys v0.48.0
+   Compiling rustls-pki-types v1.14.0
+   Compiling icu_normalizer_data v2.1.1
+   Compiling icu_properties_data v2.1.2
+   Compiling windows-targets v0.53.5
+    Checking rustls-webpki v0.103.9
+   Compiling rand_core v0.6.4
+   Compiling windows-sys v0.60.2
+   Compiling crossbeam-utils v0.8.21
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling zerocopy v0.8.37
+   Compiling icu_provider v2.1.1
+   Compiling serde v1.0.228
+   Compiling untrusted v0.9.0
+    Checking rustls v0.23.36
+   Compiling equivalent v1.0.2
+   Compiling percent-encoding v2.3.2
+   Compiling base64ct v1.8.3
+   Compiling icu_properties v2.1.2
+   Compiling once_cell v1.21.3
+   Compiling itoa v1.0.17
+   Compiling memchr v2.7.6
+   Compiling pem-rfc7468 v0.7.0
+   Compiling form_urlencoded v1.2.2
+   Compiling either v1.15.0
+   Compiling socket2 v0.6.1
+   Compiling spin v0.9.8
+   Compiling thiserror v2.0.18
+    Checking signature v2.2.0
+    Checking sha2 v0.10.9
+   Compiling futures-task v0.3.31
+   Compiling foldhash v0.1.5
+   Compiling futures-io v0.3.31
+   Compiling allocator-api2 v0.2.21
+   Compiling powerfmt v0.2.0
+   Compiling pin-utils v0.1.0
+   Compiling slab v0.4.11
+   Compiling cpufeatures v0.2.17
+   Compiling utf8_iter v1.0.4
+   Compiling deranged v0.5.7
+   Compiling futures-util v0.3.31
+    Checking compression-codecs v0.4.36
+   Compiling der v0.7.10
+   Compiling hashbrown v0.15.5
+   Compiling tracing-core v0.1.36
+   Compiling concurrent-queue v2.5.0
+   Compiling webpki-roots v1.0.6
+   Compiling mio v1.1.1
+   Compiling zmij v1.0.15
+   Compiling arrayvec v0.7.6
+   Compiling hashbrown v0.16.1
+   Compiling crc-catalog v2.4.0
+   Compiling tokio v1.49.0
+   Compiling parking v2.2.1
+   Compiling tinyvec_macros v0.1.1
+   Compiling tracing v0.1.44
+   Compiling bigdecimal v0.4.10
+   Compiling event-listener v5.4.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling indexmap v2.13.0
+   Compiling tinyvec v1.10.0
+   Compiling time v0.3.47
+   Compiling crc v3.4.0
+   Compiling rust_decimal v1.40.0
+   Compiling spki v0.7.3
+   Compiling hashlink v0.10.0
+   Compiling rand_chacha v0.3.1
+   Compiling webpki-roots v0.26.11
+    Checking nu-ansi-term v0.50.3
+   Compiling futures-intrusive v0.5.0
+    Checking tracing-subscriber v0.3.22
+   Compiling crossbeam-queue v0.3.12
+    Checking http v0.2.12
+    Checking socket2 v0.5.10
+   Compiling unicode-normalization v0.1.25
+   Compiling pkcs8 v0.10.2
+   Compiling num-iter v0.1.45
+   Compiling atoi v2.0.0
+   Compiling hmac v0.12.1
+   Compiling futures-channel v0.3.31
+    Checking ordered-float v4.6.0
+   Compiling unicode-properties v0.1.4
+   Compiling unicode-bidi v0.3.18
+   Compiling hkdf v0.12.4
+    Checking http-body v0.4.6
+   Compiling num-bigint-dig v0.8.6
+   Compiling pkcs1 v0.7.5
+   Compiling home v0.5.12
+   Compiling md-5 v0.10.6
+   Compiling ryu v1.0.22
+   Compiling stringprep v0.1.5
+   Compiling whoami v1.6.1
+   Compiling hex v0.4.3
+   Compiling dotenvy v0.15.7
+   Compiling serde_urlencoded v0.7.1
+   Compiling futures-executor v0.3.31
+   Compiling flume v0.11.1
+   Compiling rsa v0.9.10
+    Checking etcetera v0.8.0
+    Checking hashbrown v0.12.3
+    Checking urlencoding v2.1.3
+    Checking sync_wrapper v0.1.2
+   Compiling itertools v0.12.1
+   Compiling tokio-stream v0.1.18
+   Compiling anyhow v1.0.100
+    Checking opentelemetry v0.22.0
+    Checking base64 v0.21.7
+    Checking ref-cast v1.0.25
+    Checking axum-core v0.3.4
+    Checking crossbeam-channel v0.5.15
+    Checking bitflags v1.3.2
+    Checking dyn-clone v1.0.20
+    Checking winreg v0.50.0
+   Compiling ranvier-macros v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\macros)
+    Checking encoding_rs v0.8.35
+    Checking indexmap v1.9.3
+   Compiling sqlx-core v0.8.6
+    Checking schemars v1.2.0
+    Checking anstyle-wincon v3.0.11
+   Compiling sea-query-derive v0.4.3
+    Checking anstyle-query v1.1.5
+   Compiling serde_spanned v1.0.4
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+    Checking minimal-lexical v0.2.1
+    Checking anstream v0.6.21
+    Checking opentelemetry-semantic-conventions v0.14.0
+    Checking curve25519-dalek v4.1.3
+    Checking nom v7.1.3
+   Compiling toml v0.9.12+spec-1.1.0
+   Compiling dsl_auto_type v0.2.0
+    Checking clap_builder v4.5.60
+    Checking ed25519 v2.2.3
+    Checking simple_asn1 v0.6.4
+    Checking tokio-util v0.7.18
+    Checking ranvier-core v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\core)
+    Checking tokio-tungstenite v0.24.0
+    Checking async-compression v0.4.37
+   Compiling prost-derive v0.12.6
+    Checking tokio-io-timeout v1.2.1
+    Checking sea-query v0.32.7
+warning: use of deprecated trait `static_gen::StaticNode`: Legacy trait kept for backward compatibility. Use StaticAxon instead.
+  --> core\src\lib.rs:17:71
+   |
+17 |     StaticAxon, StaticBuildConfig, StaticBuildResult, StaticManifest, StaticNode, StaticStateEntry,
+   |                                                                       ^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated function `static_gen::read_json_file`: Internal API
+  --> core\src\lib.rs:18:5
+   |
+18 |     read_json_file, write_json_file,
+   |     ^^^^^^^^^^^^^^
+
+warning: use of deprecated function `static_gen::write_json_file`: Internal API
+  --> core\src\lib.rs:18:21
+   |
+18 |     read_json_file, write_json_file,
+   |                     ^^^^^^^^^^^^^^^
+
+    Checking tokio-rustls v0.26.4
+    Checking scheduled-thread-pool v0.2.7
+    Checking pem v3.0.6
+    Checking unicode-ident v1.0.22
+    Checking tower v0.5.3
+    Checking h2 v0.4.13
+    Checking tower-http v0.5.2
+    Checking h2 v0.3.27
+    Checking tower v0.4.13
+warning: `ranvier-core` (lib) generated 3 warnings
+    Checking opentelemetry_sdk v0.22.1
+    Checking jsonwebtoken v9.3.1
+    Checking cron v0.13.0
+    Checking proc-macro2 v1.0.105
+    Checking r2d2 v0.8.10
+    Checking clap v4.5.60
+   Compiling diesel_derives v2.3.7
+   Compiling migrations_internals v2.3.0
+    Checking ed25519-dalek v2.2.0
+    Checking schannel v0.1.28
+    Checking signatory v0.27.1
+   Compiling migrations_macros v2.3.0
+   Compiling sqlx-postgres v0.8.6
+   Compiling sqlx-mysql v0.8.6
+   Compiling sqlx-sqlite v0.8.6
+    Checking tracing-opentelemetry v0.23.0
+    Checking nkeys v0.4.5
+    Checking rustls-native-certs v0.7.3
+    Checking quote v1.0.43
+    Checking sea-orm-cli v1.1.19
+    Checking ranvier-std v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\std)
+    Checking combine v4.6.7
+    Checking tower-http v0.6.8
+    Checking tryhard v0.5.2
+    Checking nuid v0.5.0
+    Checking syn v2.0.114
+    Checking ranvier-auth v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\auth)
+    Checking async-nats v0.40.0
+    Checking prost v0.12.6
+    Checking ranvier-status v0.1.1 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\status)
+    Checking ranvier-guard v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\guard)
+ Documenting ranvier-guard v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\guard)
+ Documenting ranvier-auth v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\auth)
+ Documenting synapse-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\synapse-demo)
+ Documenting ranvier-std v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\std)
+ Documenting static-build-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\static-build-demo)
+ Documenting state-tree-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\experimental\state-tree-demo)
+    Checking hyper v0.14.32
+    Checking hyper v1.8.1
+ Documenting ranvier-status v0.1.1 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\status)
+ Documenting ranvier-synapse v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\synapse)
+ Documenting ranvier-core v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\core)
+ Documenting ranvier-macros v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\macros)
+    Checking hyper-util v0.1.19
+   Compiling sqlx-macros-core v0.8.6
+    Checking redis v0.27.6
+    Checking axum v0.7.9
+    Checking hyper-rustls v0.27.7
+    Checking hyper-timeout v0.4.1
+    Checking axum v0.6.20
+    Checking reqwest v0.11.27
+    Checking reqwest v0.12.28
+    Checking diesel v2.3.6
+   Compiling sqlx-macros v0.8.6
+    Checking opentelemetry-http v0.11.1
+    Checking sqlx v0.8.6
+    Checking tonic v0.11.0
+    Checking ranvier-inspector v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\inspector)
+ Documenting ranvier-inspector v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\inspector)
+    Checking sea-query-binder v0.7.0
+    Checking ranvier-db v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\db)
+ Documenting ranvier-db v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\db)
+    Checking sea-schema v0.16.2
+    Checking sea-orm v1.1.19
+    Checking ranvier-runtime v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\runtime)
+ Documenting ranvier-runtime v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\runtime)
+    Checking opentelemetry-proto v0.5.0
+    Checking opentelemetry-otlp v0.15.0
+    Checking ranvier-http v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\http)
+    Checking ranvier-session v0.7.0 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\session)
+    Checking ranvier-job v0.7.0 (F:\project\ranvier\ranvier-workspace\ranvier\ranvier-job)
+ Documenting websocket-loop v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\websocket-loop)
+ Documenting order-processing-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\order-processing-demo)
+ Documenting persistence-recovery-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\experimental\persistence-recovery-demo)
+ Documenting session-pattern v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\session-pattern)
+ Documenting basic-schematic v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\basic-schematic)
+ Documenting ecosystem-redis-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\ecosystem-redis-demo)
+ Documenting ranvier-job v0.7.0 (F:\project\ranvier\ranvier-workspace\ranvier\ranvier-job)
+warning: unused import: `ranvier_core::outcome::Outcome`
+ --> ranvier-job\src\job.rs:4:5
+  |
+4 | use ranvier_core::outcome::Outcome;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+ Documenting db-example v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\db-example)
+warning: unused variable: `cookie`
+   --> extensions\session\src\layer.rs:136:21
+    |
+136 |                 let cookie = format!("{}=path=/; HttpOnly; SameSite=Lax", current_id);
+    |                     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_cookie`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: use of deprecated struct `ingress::RawIngressService`: Internal service type
+    --> http\src\ingress.rs:1951:40
+     |
+1951 | impl<R> Service<Request<Incoming>> for RawIngressService<R>
+     |                                        ^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated struct `ingress::RawIngressService`: Internal service type
+    --> http\src\ingress.rs:1451:52
+     |
+1451 |     pub fn into_raw_service(self, resources: R) -> RawIngressService<R> {
+     |                                                    ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated struct `ingress::RawIngressService`: Internal service type
+    --> http\src\ingress.rs:1459:9
+     |
+1459 |         RawIngressService {
+     |         ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated struct `ingress::RawIngressService`: Internal service type
+  --> http\src\test_harness.rs:11:35
+   |
+11 | use crate::ingress::{HttpIngress, RawIngressService};
+   |                                   ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated struct `ingress::RawIngressService`: Internal service type
+  --> http\src\test_harness.rs:43:14
+   |
+43 |     service: RawIngressService<R>,
+   |              ^^^^^^^^^^^^^^^^^
+
+warning: `ranvier-session` (lib) generated 1 warning (run `cargo fix --lib -p ranvier-session` to apply 1 suggestion)
+ Documenting ranvier-session v0.7.0 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\session)
+warning: `ranvier-job` (lib) generated 1 warning (run `cargo fix --lib -p ranvier-job` to apply 1 suggestion)
+ Documenting job-scheduler-demo v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\examples\job-scheduler-demo)
+    Checking ranvier-observe v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\observe)
+warning: use of deprecated field `ingress::RawIngressService::routes`: Internal service type
+    --> http\src\ingress.rs:1460:13
+     |
+1460 |             routes,
+     |             ^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::fallback`: Internal service type
+    --> http\src\ingress.rs:1461:13
+     |
+1461 |             fallback,
+     |             ^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::layers`: Internal service type
+    --> http\src\ingress.rs:1462:13
+     |
+1462 |             layers,
+     |             ^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::health`: Internal service type
+    --> http\src\ingress.rs:1463:13
+     |
+1463 |             health,
+     |             ^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::static_assets`: Internal service type
+    --> http\src\ingress.rs:1464:13
+     |
+1464 |             static_assets,
+     |             ^^^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::resources`: Internal service type
+    --> http\src\ingress.rs:1465:13
+     |
+1465 |             resources,
+     |             ^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::routes`: Internal service type
+    --> http\src\ingress.rs:1967:22
+     |
+1967 |         let routes = self.routes.clone();
+     |                      ^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::fallback`: Internal service type
+    --> http\src\ingress.rs:1968:24
+     |
+1968 |         let fallback = self.fallback.clone();
+     |                        ^^^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::layers`: Internal service type
+    --> http\src\ingress.rs:1969:22
+     |
+1969 |         let layers = self.layers.clone();
+     |                      ^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::health`: Internal service type
+    --> http\src\ingress.rs:1970:22
+     |
+1970 |         let health = self.health.clone();
+     |                      ^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::static_assets`: Internal service type
+    --> http\src\ingress.rs:1971:29
+     |
+1971 |         let static_assets = self.static_assets.clone();
+     |                             ^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::resources`: Internal service type
+    --> http\src\ingress.rs:1972:25
+     |
+1972 |         let resources = self.resources.clone();
+     |                         ^^^^^^^^^^^^^^
+
+ Documenting otel-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\otel-demo)
+ Documenting ranvier-observe v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\observe)
+warning: unclosed HTML tag `RwLock`
+  --> extensions\session\src\store.rs:22:36
+   |
+22 | /// Wraps the inner state in an Arc<RwLock> for interior mutability.
+   |                                    ^^^^^^^^
+   |
+   = note: `#[warn(rustdoc::invalid_html_tags)]` on by default
+help: try marking as source code
+   |
+22 | /// Wraps the inner state in an `Arc<RwLock>` for interior mutability.
+   |                                 +           +
+
+warning: `ranvier-http` (lib) generated 17 warnings
+    Checking ranvier-openapi v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\openapi)
+ Documenting websocket-ingress-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\websocket-ingress-demo)
+ Documenting openapi-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\openapi-demo)
+    Checking sea-orm-migration v1.1.19
+ Documenting std-lib-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\std-lib-demo)
+ Documenting hello-world v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\hello-world)
+ Documenting session-demo v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\examples\session-demo)
+ Documenting ecosystem-seaorm-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\ecosystem-seaorm-demo)
+ Documenting observe-http-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\observe-http-demo)
+warning: `ranvier-session` (lib doc) generated 1 warning
+ Documenting fullstack-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\experimental\fullstack-demo)
+    Checking diesel_migrations v2.3.1
+ Documenting ecosystem-diesel-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\ecosystem-diesel-demo)
+ Documenting static-spa-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\static-spa-demo)
+ Documenting routing-params-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\routing-params-demo)
+ Documenting auth-jwt-role-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\auth-jwt-role-demo)
+ Documenting flat-api-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\flat-api-demo)
+ Documenting ranvier-openapi v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\openapi)
+ Documenting guard-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\guard-demo)
+ Documenting ranvier v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\kit)
+ Documenting ecosystem-meilisearch-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\ecosystem-meilisearch-demo)
+ Documenting ranvier-http v0.10.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\http)
+ Documenting studio-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\studio-demo)
+ Documenting typed-state-tree v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\typed-state-tree)
+ Documenting routing-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\routing-demo)
+ Documenting complex-schematic v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\complex-schematic)
+ Documenting replay-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\experimental\replay-demo)
+ Documenting bus-capability-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\bus-capability-demo)
+ Documenting ecosystem-nats-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\ecosystem-nats-demo)
+ Documenting otel-concept v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\otel-concept)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 36s
+   Generated F:\project\ranvier\ranvier-workspace\ranvier\target\doc\auth_jwt_role_demo\index.html and 50 other files
