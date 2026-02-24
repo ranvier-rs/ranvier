@@ -10,8 +10,8 @@ categories = ["asynchronous", "web-programming"]
 keywords = ["session", "cache", "redis", "middleware"]
 
 [dependencies]
-ranvier-core = { path = "../../core", version = "0.10.0" }
-ranvier-runtime = { path = "../../runtime", version = "0.10.0" }
+ranvier-core = { path = "../../core", version = "0.11.0" }
+ranvier-runtime = { path = "../../runtime", version = "0.11.0" }
 tokio = { version = "1.43", features = ["full"] }
 tower = "0.5"
 http = "1.1"
