@@ -25,13 +25,16 @@
 //!     .await?;
 //! ```
 
+pub mod body;
 pub mod extract;
 pub mod ingress;
 pub mod response;
 pub mod service;
 pub mod test_harness;
 
-pub use extract::{DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Json, Path, Query};
+pub use body::{JsonBody, JsonBodyError};
+pub use extract::{DEFAULT_BODY_LIMIT, ExtractError, FromRequest, HttpRequestBody, Json, Path, Query};
+
 pub use ingress::{
     HttpIngress, HttpRouteDescriptor, PathParams, Ranvier, WebSocketConnection, WebSocketError,
     WebSocketEvent, WebSocketSessionContext,
@@ -45,7 +48,9 @@ pub use test_harness::{TestApp, TestHarnessError, TestRequest, TestResponse};
 
 /// Prelude module for convenient imports
 pub mod prelude {
-    pub use crate::extract::{DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Json, Path, Query};
+    pub use crate::body::{JsonBody, JsonBodyError};
+    pub use crate::extract::{DEFAULT_BODY_LIMIT, ExtractError, FromRequest, HttpRequestBody, Json, Path, Query};
+
     pub use crate::ingress::{
         HttpIngress, HttpRouteDescriptor, PathParams, Ranvier, WebSocketConnection, WebSocketError,
         WebSocketEvent, WebSocketSessionContext,

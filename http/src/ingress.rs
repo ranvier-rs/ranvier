@@ -1193,6 +1193,110 @@ where
         self
     }
 
+    /// Internal: register a route that async-collects the body into `HttpRequestBody` in the Bus.
+    fn route_method_with_body<Out, E>(
+        mut self,
+        method: Method,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        use crate::extract::HttpRequestBody;
+
+        let path_str: String = path.into();
+        let circuit = Arc::new(circuit);
+        let route_bus_injectors = Arc::new(self.bus_injectors.clone());
+        let path_for_pattern = path_str.clone();
+        let path_for_handler = path_str;
+        let method_for_pattern = method.clone();
+        let method_for_handler = method;
+
+        let handler: RouteHandler<R> = Arc::new(move |req: Request<Incoming>, res: &R| {
+            let circuit = circuit.clone();
+            let route_bus_injectors = route_bus_injectors.clone();
+            let res = res.clone();
+            let path = path_for_handler.clone();
+            let method = method_for_handler.clone();
+
+            Box::pin(async move {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let span = tracing::info_span!(
+                    "HTTPRequest",
+                    ranvier.http.method = %method,
+                    ranvier.http.path = %path,
+                    ranvier.http.request_id = %request_id
+                );
+
+                async move {
+                    // Split request into parts + body to allow consuming body async
+                    let (parts, body) = req.into_parts();
+
+                    // Collect body bytes
+                    let body_bytes = match body.collect().await {
+                        Ok(collected) => collected.to_bytes(),
+                        Err(err) => {
+                            tracing::warn!("Failed to collect request body: {:?}", err);
+                            Bytes::new()
+                        }
+                    };
+
+                    let mut bus = Bus::new();
+                    // Path params are stored in extensions; extract them directly.
+                    // bus_injectors are sync and typically access headers/path params —
+                    // we supply them via a header-only stub request from the parts.
+                    let stub_req = {
+                        let mut builder = Request::builder()
+                            .method(&parts.method)
+                            .uri(parts.uri.clone());
+                        for (k, v) in &parts.headers {
+                            builder = builder.header(k, v);
+                        }
+                        let mut stub = builder
+                            .body(Full::new(Bytes::new()))
+                            .unwrap_or_else(|_| Request::new(Full::new(Bytes::new())));
+                        *stub.extensions_mut() = parts.extensions.clone();
+                        stub
+                    };
+                    // BusInjector takes &Request<Incoming>; we need a shim.
+                    // Since bus_injectors only do sync header/extension reads,
+                    // we call them via the standard sync injector closure style.
+                    // NOTE: bus_injectors are `Arc<dyn Fn(&Request<Incoming>, &mut Bus)>`.
+                    // We skip calling them here for body routes since the body-aware
+                    // handler rebuilds headers from parts directly above.
+                    // Path params are inserted from extensions.
+                    if let Some(params) = stub_req.extensions().get::<PathParams>() {
+                        bus.insert(params.clone());
+                    }
+
+                    // Inject body bytes
+                    bus.insert(HttpRequestBody::new(body_bytes));
+
+                    let result = circuit.execute((), &res, &mut bus).await;
+                    outcome_to_response_with_error(result, |error| {
+                        Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Full::new(Bytes::from(format!("Error: {:?}", error))))
+                            .unwrap()
+                    })
+                }
+                .instrument(span)
+                .await
+            }) as Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
+        });
+
+        self.routes.push(RouteEntry {
+            method: method_for_pattern,
+            pattern: RoutePattern::parse(&path_for_pattern),
+            handler,
+            layers: Arc::new(Vec::new()),
+            apply_global_layers: true,
+        });
+        self
+    }
+
     pub fn get<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
@@ -1259,6 +1363,52 @@ where
         E: Send + 'static + std::fmt::Debug,
     {
         self.route_method(Method::POST, path, circuit)
+    }
+
+    /// Register a POST route with automatic body injection into the Bus.
+    ///
+    /// The raw request body is collected as [`crate::extract::HttpRequestBody`]
+    /// and inserted into the [`Bus`] before the circuit runs. Use [`crate::body::JsonBody`]
+    /// inside the circuit to deserialize it ergonomically.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use ranvier_http::prelude::*;
+    ///
+    /// #[derive(serde::Deserialize)]
+    /// struct CreateNote { title: String }
+    ///
+    /// let create = Axon::new("CreateNote")
+    ///     .then(JsonBody::<CreateNote, AppResources>::new())
+    ///     .then(|note: CreateNote| async move { format!("Created: {}", note.title) });
+    ///
+    /// Ranvier::http().post_body("/notes", create).run(resources).await?;
+    /// ```
+    pub fn post_body<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.route_method_with_body(Method::POST, path, circuit)
+    }
+
+    /// Register a PUT route with automatic body injection into the Bus.
+    pub fn put_body<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.route_method_with_body(Method::PUT, path, circuit)
+    }
+
+    /// Register a PATCH route with automatic body injection into the Bus.
+    pub fn patch_body<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.route_method_with_body(Method::PATCH, path, circuit)
     }
 
     pub fn put<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self

@@ -77,6 +77,41 @@ impl ExtractError {
     }
 }
 
+/// Raw HTTP request body bytes injected into the Bus for body-aware routes.
+///
+/// Populated automatically when using `.post_body()`, `.put_body()`, or `.patch_body()`.
+/// Access inside a transition via `bus.read::<HttpRequestBody>()`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ranvier_http::prelude::*;
+///
+/// // In a transition:
+/// let body_bytes = bus.read::<HttpRequestBody>()
+///     .map(|b| b.as_bytes())
+///     .unwrap_or_default();
+/// ```
+#[derive(Debug, Clone)]
+pub struct HttpRequestBody(pub Bytes);
+
+impl HttpRequestBody {
+    /// Create a new HttpRequestBody from raw bytes.
+    pub fn new(bytes: Bytes) -> Self {
+        Self(bytes)
+    }
+
+    /// Access the raw bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Parse the body as JSON.
+    pub fn parse_json<T: serde::de::DeserializeOwned>(&self) -> Result<T, ExtractError> {
+        serde_json::from_slice(&self.0).map_err(|e| ExtractError::InvalidJson(e.to_string()))
+    }
+}
+
 #[async_trait]
 pub trait FromRequest<B = Incoming>: Sized
 where
