@@ -127,10 +127,10 @@ impl Default for CompensationRetryPolicy {
 }
 
 /// Compensation hook contract for irreversible side effects.
-#[deprecated(
-    since = "0.7.0",
-    note = "Experimental compensation contract (M148); API may change before stabilization."
-)]
+///
+/// **Production-stable since 0.12 (M156).** Implement and register this hook
+/// via [`CompensationHandle`] to define rollback actions when an Axon pipeline
+/// faults after committing external side effects.
 #[async_trait]
 pub trait CompensationHook: Send + Sync {
     async fn compensate(&self, context: CompensationContext) -> Result<()>;
@@ -171,10 +171,12 @@ impl CompensationHandle {
 }
 
 /// Idempotency store contract for compensation execution deduplication.
-#[deprecated(
-    since = "0.7.0",
-    note = "Experimental compensation idempotency contract (M148); API may change before stabilization."
-)]
+///
+/// **Production-stable since 0.12 (M156).** Ensures that compensation actions
+/// are executed at most once even when retried after a process restart.
+/// Built-in adapters: [`InMemoryCompensationIdempotencyStore`],
+/// [`PostgresCompensationIdempotencyStore`] (feature `persistence-postgres`),
+/// [`RedisCompensationIdempotencyStore`] (feature `persistence-redis`).
 #[async_trait]
 pub trait CompensationIdempotencyStore: Send + Sync {
     async fn was_compensated(&self, key: &str) -> Result<bool>;
@@ -412,13 +414,26 @@ impl CompensationIdempotencyStore for RedisCompensationIdempotencyStore {
     }
 }
 
-/// Persistence abstraction draft for long-running workflow recovery.
+/// Persistence abstraction for long-running workflow crash recovery.
 ///
-/// This is intentionally minimal and marked experimental while M148 is active.
-#[deprecated(
-    since = "0.7.0",
-    note = "Experimental persistence contract (M148); API may change before stabilization."
-)]
+/// **Production-stable since 0.12 (M156).**
+///
+/// Implement this trait to store and reload Axon execution checkpoints across
+/// process restarts. The runtime calls `append` on each step and `complete` on
+/// terminal outcomes. Use `resume` to replay a pipeline from a saved cursor.
+///
+/// # Built-in adapters
+///
+/// | Adapter | Feature flag | Best for |
+/// |---|---|---|
+/// | [`InMemoryPersistenceStore`] | none (default) | tests, local dev |
+/// | [`PostgresPersistenceStore`] | `persistence-postgres` | durable prod storage |
+/// | [`RedisPersistenceStore`] | `persistence-redis` | ephemeral/fast checkpoints |
+///
+/// # See also
+///
+/// - `docs/03_guides/persistence_ops_runbook.md` — operational playbook
+/// - `docs/manual/04_PERSISTENCE.md` — concept guide + adapter selection
 #[async_trait]
 pub trait PersistenceStore: Send + Sync {
     async fn append(&self, envelope: PersistenceEnvelope) -> Result<()>;
@@ -565,7 +580,9 @@ struct PostgresStateRow {
 impl PostgresPersistenceStore {
     /// Create a PostgreSQL-backed persistence store.
     ///
-    /// This is an alpha adapter intended for M148 validation.
+    /// Uses the default table prefix `ranvier_persistence`. Call
+    /// `ensure_schema()` once at startup to create required tables.
+    /// See [`Self::with_table_prefix`] for multi-tenant setups.
     pub fn new(pool: sqlx::Pool<sqlx::Postgres>) -> Self {
         Self::with_table_prefix(pool, "ranvier_persistence")
     }
