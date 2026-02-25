@@ -49,6 +49,7 @@ members = [
     "extensions/inspector",
     "examples/flat-api-demo",
     "examples/studio-demo", "ranvier-job", "examples/job-scheduler-demo", "extensions/session", "examples/session-demo",
+    "examples/otel-ops-demo",
 ]
 
 [workspace.package]
