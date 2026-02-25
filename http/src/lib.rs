@@ -36,8 +36,8 @@ pub use body::{JsonBody, JsonBodyError};
 pub use extract::{DEFAULT_BODY_LIMIT, ExtractError, FromRequest, HttpRequestBody, Json, Path, Query};
 
 pub use ingress::{
-    HttpIngress, HttpRouteDescriptor, PathParams, Ranvier, WebSocketConnection, WebSocketError,
-    WebSocketEvent, WebSocketSessionContext,
+    HttpIngress, HttpRouteDescriptor, PathParams, Ranvier, RouteGroup, WebSocketConnection,
+    WebSocketError, WebSocketEvent, WebSocketSessionContext,
 };
 pub use response::{
     HttpResponse, IntoResponse, json_error_response, outcome_to_response,
@@ -52,8 +52,8 @@ pub mod prelude {
     pub use crate::extract::{DEFAULT_BODY_LIMIT, ExtractError, FromRequest, HttpRequestBody, Json, Path, Query};
 
     pub use crate::ingress::{
-        HttpIngress, HttpRouteDescriptor, PathParams, Ranvier, WebSocketConnection, WebSocketError,
-        WebSocketEvent, WebSocketSessionContext,
+        HttpIngress, HttpRouteDescriptor, PathParams, Ranvier, RouteGroup, WebSocketConnection,
+        WebSocketError, WebSocketEvent, WebSocketSessionContext,
     };
     pub use crate::response::{
         HttpResponse, IntoResponse, json_error_response, outcome_to_response,

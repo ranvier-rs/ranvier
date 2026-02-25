@@ -679,11 +679,233 @@ fn websocket_upgrade_response(
     Ok((response, on_upgrade))
 }
 
+// ── M151: Router DSL Pack ───────────────────────────────────────────────────
+//
+// `RouteGroup` collects route definitions that share a common path prefix
+// and optionally a shared set of per-group Tower layers.  Groups may be nested.
+//
+// Design principles:
+//   - Plain Rust builder — no proc-macro at the router level.
+//   - Flat API (depth ≤ 2): users call `.route_group(RouteGroup::new("/prefix")…)`.
+//   - No hidden middleware: layers are explicit via `.with_layer()`.
+//   - Protocol-agnostic: RouteGroup lives in ranvier-http, not core.
+
+/// Concrete route spec stored inside a `RouteGroup` before its entries are
+/// flushed into an `HttpIngress`.
+enum RouteGroupSpec<R> {
+    /// A single method+path+circuit entry.
+    Route {
+        method: Method,
+        sub_path: String,
+        handler: RouteHandler<R>,
+    },
+    /// A nested group; its own prefix is relative to the parent group prefix.
+    Nested(RouteGroup<R>),
+}
+
+/// A group of HTTP routes that share a common path prefix (and optionally
+/// shared per-route Tower layers).
+///
+/// See [`HttpIngress::route_group`] for usage examples.
+pub struct RouteGroup<R = ()> {
+    /// Prefix applied to every route registered in this group
+    /// (and recursively to all nested groups).
+    prefix: String,
+    /// Per-group Tower layers applied to every route in this group.
+    /// These stack *in addition to* global ingress layers unless the route
+    /// was registered with `route_method_with_layer_override`.
+    layers: Arc<Vec<ServiceLayer>>,
+    /// Ordered list of route specs (routes + nested groups).
+    specs: Vec<RouteGroupSpec<R>>,
+}
+
+impl<R> RouteGroup<R>
+where
+    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+{
+    /// Create a new `RouteGroup` with the given path prefix.
+    ///
+    /// The prefix is automatically normalised: a leading `/` is added if
+    /// absent, and a trailing `/` is removed.
+    pub fn new(prefix: impl Into<String>) -> Self {
+        Self {
+            prefix: normalize_route_path(prefix.into()).trim_end_matches('/').to_string(),
+            layers: Arc::new(Vec::new()),
+            specs: Vec::new(),
+        }
+    }
+
+    /// Register a `GET` route relative to this group's prefix.
+    pub fn get<Out, E>(self, sub_path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.method(Method::GET, sub_path, circuit)
+    }
+
+    /// Register a `POST` route relative to this group's prefix.
+    pub fn post<Out, E>(self, sub_path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.method(Method::POST, sub_path, circuit)
+    }
+
+    /// Register a `PUT` route relative to this group's prefix.
+    pub fn put<Out, E>(self, sub_path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.method(Method::PUT, sub_path, circuit)
+    }
+
+    /// Register a `PATCH` route relative to this group's prefix.
+    pub fn patch<Out, E>(self, sub_path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.method(Method::PATCH, sub_path, circuit)
+    }
+
+    /// Register a `DELETE` route relative to this group's prefix.
+    pub fn delete<Out, E>(self, sub_path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.method(Method::DELETE, sub_path, circuit)
+    }
+
+    /// Register a route with an arbitrary HTTP method relative to this group's prefix.
+    pub fn method<Out, E>(
+        mut self,
+        method: Method,
+        sub_path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        let sub_path_str: String = sub_path.into();
+        let circuit = Arc::new(circuit);
+        let error_handler = Arc::new(|error: &E| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Error: {:?}", error),
+            )
+                .into_response()
+        });
+        let method_for_handler = method.clone();
+        let sub_path_for_handler = sub_path_str.clone();
+
+        let handler: RouteHandler<R> = Arc::new(move |req: Request<Incoming>, res: &R| {
+            let circuit = circuit.clone();
+            let error_handler = error_handler.clone();
+            let res = res.clone();
+            let path = sub_path_for_handler.clone();
+            let method = method_for_handler.clone();
+
+            Box::pin(async move {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let span = tracing::info_span!(
+                    "HTTPRequest",
+                    ranvier.http.method = %method,
+                    ranvier.http.path = %path,
+                    ranvier.http.request_id = %request_id
+                );
+
+                async move {
+                    let mut bus = Bus::new();
+                    let result = circuit.execute((), &res, &mut bus).await;
+                    outcome_to_response_with_error(result, |error| error_handler(error))
+                }
+                .instrument(span)
+                .await
+            }) as Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
+        });
+
+        self.specs.push(RouteGroupSpec::Route {
+            method,
+            sub_path: sub_path_str,
+            handler,
+        });
+        self
+    }
+
+    /// Nest a child `RouteGroup` inside this group.
+    ///
+    /// The child's prefix is appended to the parent's prefix.
+    pub fn group(mut self, child: RouteGroup<R>) -> Self {
+        self.specs.push(RouteGroupSpec::Nested(child));
+        self
+    }
+
+    /// Consume the group and produce a flat list of `RouteEntry` values
+    /// with the parent prefix applied.
+    ///
+    /// `parent_prefix` is the accumulated prefix from ancestor groups.  Pass
+    /// `""` when calling from `HttpIngress::route_group`.
+    pub(crate) fn into_entries(self, parent_prefix: &str) -> Vec<RouteEntry<R>> {
+        let full_prefix = format!(
+            "{}{}",
+            parent_prefix.trim_end_matches('/'),
+            self.prefix
+        );
+        let layers = self.layers.clone();
+        let mut entries = Vec::new();
+
+        for spec in self.specs {
+            match spec {
+                RouteGroupSpec::Route {
+                    method,
+                    sub_path,
+                    handler,
+                } => {
+                    let full_path = if sub_path.is_empty() || sub_path == "/" {
+                        if full_prefix.is_empty() {
+                            "/".to_string()
+                        } else {
+                            full_prefix.clone()
+                        }
+                    } else {
+                        let sub = if sub_path.starts_with('/') {
+                            sub_path.clone()
+                        } else {
+                            format!("/{sub_path}")
+                        };
+                        format!("{full_prefix}{sub}")
+                    };
+                    entries.push(RouteEntry {
+                        method,
+                        pattern: RoutePattern::parse(&full_path),
+                        handler,
+                        layers: layers.clone(),
+                        apply_global_layers: true,
+                    });
+                }
+                RouteGroupSpec::Nested(child) => {
+                    entries.extend(child.into_entries(&full_prefix));
+                }
+            }
+        }
+
+        entries
+    }
+}
+
+// ── End M151: Router DSL Pack ───────────────────────────────────────────────
+
 /// HTTP Ingress Circuit Builder.
 ///
 /// Wires HTTP inputs to Ranvier Circuits. This is NOT a web server—it's a circuit wiring tool.
 ///
 /// **Ingress is part of Schematic** (separate layer: Ingress → Circuit → Egress)
+
 pub struct HttpIngress<R = ()> {
     /// Bind address (e.g., "127.0.0.1:3000")
     addr: Option<String>,
@@ -1015,7 +1237,50 @@ where
     {
         self.route_method(Method::GET, path, circuit)
     }
-    /// Register a route with a specific HTTP method.
+
+    /// Register a group of routes that share a common path prefix.
+    ///
+    /// # M151: Router DSL Pack
+    ///
+    /// Use `RouteGroup` to organise related routes without repetition:
+    ///
+    /// ```rust,ignore
+    /// use ranvier_http::{HttpIngress, RouteGroup};
+    /// use http::Method;
+    ///
+    /// Ranvier::http::<()>()
+    ///     .route_group(
+    ///         RouteGroup::new("/api/v1/users")
+    ///             .get("", list_users)
+    ///             .post("", create_user)
+    ///             .get("/:id", get_user)
+    ///             .put("/:id", update_user)
+    ///             .delete("/:id", delete_user),
+    ///     )
+    ///     .bind("127.0.0.1:3000")
+    ///     .serve()
+    ///     .await?;
+    /// ```
+    ///
+    /// Nesting groups is also supported:
+    ///
+    /// ```rust,ignore
+    /// RouteGroup::new("/api")
+    ///     .get("/health", health_circuit)
+    ///     .group(
+    ///         RouteGroup::new("/v1/orders")
+    ///             .get("", list_orders)
+    ///             .post("", create_order),
+    ///     )
+    /// ```
+    pub fn route_group(mut self, group: RouteGroup<R>) -> Self {
+        for entry in group.into_entries("") {
+            self.routes.push(entry);
+        }
+        self
+    }
+
+
     ///
     /// # Example
     ///
