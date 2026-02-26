@@ -11,10 +11,10 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-ranvier-core = { path = "../../core", version = "0.11.0" }
-ranvier-runtime = { path = "../../runtime", version = "0.11.0" }
-ranvier-http = { path = "../../http", version = "0.11.0" }
-ranvier-macros = { path = "../../macros", version = "0.11.0" }
+ranvier-core = { path = "../../core", version = "0.12.0" }
+ranvier-runtime = { path = "../../runtime", version = "0.12.0" }
+ranvier-http = { path = "../../http", version = "0.12.0" }
+ranvier-macros = { path = "../../macros", version = "0.12.0" }
 ranvier-session = { path = "../../extensions/session", version = "0.7.0" }
 tokio = { version = "1.43", features = ["full", "signal"] }
 tracing = "0.1"
