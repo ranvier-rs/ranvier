@@ -16,9 +16,11 @@
 use base64::Engine;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use http::{Method, Request, Response, StatusCode, Uri};
 use http_body::Body;
+use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
+use crate::response::{RanvierResponse, IntoResponse, outcome_to_response_with_error};
+use http::{Request, Response, StatusCode, Method, Uri};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::upgrade::Upgraded;
@@ -47,8 +49,6 @@ use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::Instrument;
 
-use crate::response::{IntoResponse, outcome_to_response_with_error};
-
 /// The Ranvier Framework entry point.
 ///
 /// `Ranvier` provides static methods to create Ingress builders for various protocols.
@@ -67,12 +67,12 @@ impl Ranvier {
 
 /// Route handler type: boxed async function returning Response
 type RouteHandler<R> = Arc<
-    dyn Fn(Request<Incoming>, &R) -> Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
+    dyn Fn(Request<Incoming>, &R) -> Pin<Box<dyn Future<Output = RanvierResponse> + Send>>
         + Send
         + Sync,
 >;
 
-type BoxHttpService = BoxCloneService<Request<Incoming>, Response<Full<Bytes>>, Infallible>;
+type BoxHttpService = BoxCloneService<Request<Incoming>, RanvierResponse, Infallible>;
 type ServiceLayer = Arc<dyn Fn(BoxHttpService) -> BoxHttpService + Send + Sync>;
 type LifecycleHook = Arc<dyn Fn() + Send + Sync>;
 type BusInjector = Arc<dyn Fn(&Request<Incoming>, &mut Bus) + Send + Sync>;
@@ -146,7 +146,7 @@ struct TimeoutService {
 }
 
 impl Service<Request<Incoming>> for TimeoutService {
-    type Response = Response<Full<Bytes>>;
+    type Response = RanvierResponse;
     type Error = Infallible;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
@@ -165,7 +165,7 @@ impl Service<Request<Incoming>> for TimeoutService {
                 Ok(response) => response,
                 Err(_) => Ok(Response::builder()
                     .status(StatusCode::REQUEST_TIMEOUT)
-                    .body(Full::new(Bytes::from("Request Timeout")))
+                    .body(Full::new(Bytes::from("Request Timeout")).map_err(|e| match e {}).boxed())
                     .unwrap()),
             }
         })
@@ -178,7 +178,7 @@ struct RequestIdService {
 }
 
 impl Service<Request<Incoming>> for RequestIdService {
-    type Response = Response<Full<Bytes>>;
+    type Response = RanvierResponse;
     type Error = Infallible;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
@@ -215,7 +215,7 @@ impl Service<Request<Incoming>> for RequestIdService {
 fn to_service_layer<L>(layer: L) -> ServiceLayer
 where
     L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-    L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+    L::Service: Service<Request<Incoming>, Response = RanvierResponse, Error = Infallible>
         + Clone
         + Send
         + 'static,
@@ -622,16 +622,16 @@ fn websocket_accept_key(client_key: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(digest)
 }
 
-fn websocket_bad_request(message: &'static str) -> Response<Full<Bytes>> {
+fn websocket_bad_request(message: &'static str) -> RanvierResponse {
     Response::builder()
         .status(StatusCode::BAD_REQUEST)
-        .body(Full::new(Bytes::from(message)))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+        .body(Full::new(Bytes::from(message)).map_err(|e| match e {}).boxed())
+        .unwrap()
 }
 
 fn websocket_upgrade_response(
     req: &mut Request<Incoming>,
-) -> Result<(Response<Full<Bytes>>, hyper::upgrade::OnUpgrade), Response<Full<Bytes>>> {
+) -> Result<(RanvierResponse, hyper::upgrade::OnUpgrade), RanvierResponse> {
     if req.method() != Method::GET {
         return Err(websocket_bad_request(
             "WebSocket upgrade requires GET method",
@@ -673,8 +673,8 @@ fn websocket_upgrade_response(
         .header(http::header::UPGRADE, WS_UPGRADE_TOKEN)
         .header(http::header::CONNECTION, "Upgrade")
         .header("sec-websocket-accept", accept_key)
-        .body(Full::new(Bytes::new()))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())));
+        .body(Full::new(Bytes::new()).map_err(|e| match e {}).boxed())
+        .unwrap();
 
     Ok((response, on_upgrade))
 }
@@ -826,7 +826,7 @@ where
                 }
                 .instrument(span)
                 .await
-            }) as Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
+            }) as Pin<Box<dyn Future<Output = RanvierResponse> + Send>>
         });
 
         self.specs.push(RouteGroupSpec::Route {
@@ -988,7 +988,7 @@ where
     pub fn layer<L>(mut self, layer: L) -> Self
     where
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-        L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+        L::Service: Service<Request<Incoming>, Response = RanvierResponse, Error = Infallible>
             + Clone
             + Send
             + 'static,
@@ -1165,7 +1165,7 @@ where
                     }
                     .instrument(span)
                     .await
-                }) as Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
+                }) as Pin<Box<dyn Future<Output = RanvierResponse> + Send>>
             });
 
         self.routes.push(RouteEntry {
@@ -1179,7 +1179,73 @@ where
         self
     }
 
-    /// Enable built-in health endpoint at the given path.
+    /// Register a Server-Sent Events (SSE) endpoint.
+    ///
+    /// The circuit will be executed with an injected [`crate::sse::SseInject`]
+    /// which allows emitting events to the stream.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let sse_circuit = Axon::new("SSE")
+    ///     .then(|sink: SseInject| async move {
+    ///         sink.sink.emit(SseEvent::data("hello")).await?;
+    ///         sink.sink.emit(SseEvent::data("world")).await?;
+    ///         Ok(())
+    ///     });
+    ///
+    /// Ranvier::http().sse("/events", sse_circuit)
+    /// ```
+    pub fn sse<Out, E>(mut self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        use crate::sse::{sse_response, SseInject, SseSink};
+        use tokio::sync::mpsc;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        let path_str: String = path.into();
+        let circuit = Arc::new(circuit);
+        let bus_injectors = Arc::new(self.bus_injectors.clone());
+        let path_for_pattern = path_str.clone();
+
+        let handler: RouteHandler<R> = Arc::new(move |req, res| {
+            let circuit = circuit.clone();
+            let bus_injectors = bus_injectors.clone();
+            let res = res.clone();
+
+            Box::pin(async move {
+                let (tx, rx) = mpsc::channel(100);
+                let sink = SseSink::new(tx);
+                let sse_inject = SseInject::new(sink);
+
+                // Spawn the circuit execution in the background
+                tokio::spawn(async move {
+                    let mut bus = Bus::new();
+                    for injector in bus_injectors.iter() {
+                        injector(&req, &mut bus);
+                    }
+                    bus.insert(sse_inject);
+
+                    let _ = circuit.execute((), &res, &mut bus).await;
+                });
+
+                // Return the SSE response immediately with the receiver stream
+                sse_response(ReceiverStream::new(rx).map(Ok::<_, Infallible>))
+            }) as Pin<Box<dyn Future<Output = RanvierResponse> + Send>>
+        });
+
+        self.routes.push(RouteEntry {
+            method: Method::GET,
+            pattern: RoutePattern::parse(&path_for_pattern),
+            handler,
+            layers: Arc::new(Vec::new()),
+            apply_global_layers: true,
+        });
+
+        self
+    }
     ///
     /// The endpoint returns JSON with status and check results.
     /// If no checks are registered, status is always `ok`.
@@ -1317,7 +1383,7 @@ where
     where
         Out: IntoResponse + Send + Sync + 'static,
         E: Send + 'static + std::fmt::Debug,
-        H: Fn(&E) -> Response<Full<Bytes>> + Send + Sync + 'static,
+        H: Fn(&E) -> RanvierResponse + Send + Sync + 'static,
     {
         self.route_method_with_error_and_layers(
             method,
@@ -1340,7 +1406,7 @@ where
         Out: IntoResponse + Send + Sync + 'static,
         E: Send + 'static + std::fmt::Debug,
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-        L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+        L::Service: Service<Request<Incoming>, Response = RanvierResponse, Error = Infallible>
             + Clone
             + Send
             + 'static,
@@ -1373,7 +1439,7 @@ where
         Out: IntoResponse + Send + Sync + 'static,
         E: Send + 'static + std::fmt::Debug,
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-        L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+        L::Service: Service<Request<Incoming>, Response = RanvierResponse, Error = Infallible>
             + Clone
             + Send
             + 'static,
@@ -1407,7 +1473,7 @@ where
     where
         Out: IntoResponse + Send + Sync + 'static,
         E: Send + 'static + std::fmt::Debug,
-        H: Fn(&E) -> Response<Full<Bytes>> + Send + Sync + 'static,
+        H: Fn(&E) -> RanvierResponse + Send + Sync + 'static,
     {
         let path_str: String = path.into();
         let circuit = Arc::new(circuit);
@@ -1445,7 +1511,7 @@ where
                 }
                 .instrument(span)
                 .await
-            }) as Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
+            }) as Pin<Box<dyn Future<Output = RanvierResponse> + Send>>
         });
 
         self.routes.push(RouteEntry {
@@ -1513,15 +1579,16 @@ where
                     // bus_injectors are sync and typically access headers/path params —
                     // we supply them via a header-only stub request from the parts.
                     let stub_req = {
-                        let mut builder = Request::builder()
+                        let mut stub = Request::builder()
                             .method(&parts.method)
-                            .uri(parts.uri.clone());
+                            .uri(parts.uri.clone())
+                            .body(Full::new(Bytes::new()).map_err(|e| match e {}).boxed())
+                            .unwrap();
+
                         for (k, v) in &parts.headers {
-                            builder = builder.header(k, v);
+                            stub.headers_mut().insert(k, v.clone());
                         }
-                        let mut stub = builder
-                            .body(Full::new(Bytes::new()))
-                            .unwrap_or_else(|_| Request::new(Full::new(Bytes::new())));
+
                         *stub.extensions_mut() = parts.extensions.clone();
                         stub
                     };
@@ -1543,13 +1610,13 @@ where
                     outcome_to_response_with_error(result, |error| {
                         Response::builder()
                             .status(StatusCode::INTERNAL_SERVER_ERROR)
-                            .body(Full::new(Bytes::from(format!("Error: {:?}", error))))
+                            .body(Full::new(Bytes::from(format!("Error: {:?}", error))).map_err(|e| match e {}).boxed())
                             .unwrap()
                     })
                 }
                 .instrument(span)
                 .await
-            }) as Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
+            }) as Pin<Box<dyn Future<Output = RanvierResponse> + Send>>
         });
 
         self.routes.push(RouteEntry {
@@ -1579,7 +1646,7 @@ where
     where
         Out: IntoResponse + Send + Sync + 'static,
         E: Send + 'static + std::fmt::Debug,
-        H: Fn(&E) -> Response<Full<Bytes>> + Send + Sync + 'static,
+        H: Fn(&E) -> RanvierResponse + Send + Sync + 'static,
     {
         self.route_method_with_error(Method::GET, path, circuit, error_handler)
     }
@@ -1594,7 +1661,7 @@ where
         Out: IntoResponse + Send + Sync + 'static,
         E: Send + 'static + std::fmt::Debug,
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-        L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+        L::Service: Service<Request<Incoming>, Response = RanvierResponse, Error = Infallible>
             + Clone
             + Send
             + 'static,
@@ -1613,7 +1680,7 @@ where
         Out: IntoResponse + Send + Sync + 'static,
         E: Send + 'static + std::fmt::Debug,
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-        L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+        L::Service: Service<Request<Incoming>, Response = RanvierResponse, Error = Infallible>
             + Clone
             + Send
             + 'static,
@@ -1745,13 +1812,13 @@ where
                         }
                         _ => Response::builder()
                             .status(StatusCode::NOT_FOUND)
-                            .body(Full::new(Bytes::from("Not Found")))
+                            .body(Full::new(Bytes::from("Not Found")).map_err(|e| match e {}).boxed())
                             .unwrap(),
                     }
                 }
                 .instrument(span)
                 .await
-            }) as Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
+            }) as Pin<Box<dyn Future<Output = RanvierResponse> + Send>>
         });
 
         self.fallback = Some(handler);
@@ -1950,7 +2017,7 @@ where
                 } else {
                     Ok(Response::builder()
                         .status(StatusCode::NOT_FOUND)
-                        .body(Full::new(Bytes::from("Not Found")))
+                        .body(Full::new(Bytes::from("Not Found")).map_err(|e| match e {}).boxed())
                         .unwrap())
                 }
             }
@@ -2003,7 +2070,7 @@ async fn maybe_handle_health_request<R>(
     path: &str,
     health: &HealthConfig<R>,
     resources: Arc<R>,
-) -> Option<Response<Full<Bytes>>>
+) -> Option<RanvierResponse>
 where
     R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
 {
@@ -2039,7 +2106,7 @@ async fn maybe_handle_static_request(
     method: &Method,
     path: &str,
     static_assets: &StaticAssetsConfig,
-) -> Result<Request<Incoming>, Response<Full<Bytes>>> {
+) -> Result<Request<Incoming>, RanvierResponse> {
     if method != Method::GET && method != Method::HEAD {
         return Ok(req);
     }
@@ -2060,8 +2127,8 @@ async fn maybe_handle_static_request(
             Err(_) => {
                 return Err(Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(Full::new(Bytes::from("Failed to serve static asset")))
-                    .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))));
+                    .body(Full::new(Bytes::from("Failed to serve static asset")).map_err(|e| match e {}).boxed())
+                    .unwrap());
             }
         };
         let response =
@@ -2083,8 +2150,8 @@ async fn maybe_handle_static_request(
                 Err(_) => {
                     return Err(Response::builder()
                         .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Full::new(Bytes::from("Failed to serve SPA fallback")))
-                        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))));
+                        .body(Full::new(Bytes::from("Failed to serve SPA fallback")).map_err(|e| match e {}).boxed())
+                        .unwrap());
                 }
             };
             let response =
@@ -2142,7 +2209,7 @@ fn rewrite_request_path(mut req: Request<Incoming>, new_path: &str) -> Request<I
 async fn collect_static_response<B>(
     response: Response<B>,
     cache_control: Option<&str>,
-) -> Response<Full<Bytes>>
+) -> RanvierResponse
 where
     B: Body<Data = Bytes> + Send + 'static,
     B::Error: std::fmt::Display,
@@ -2163,8 +2230,8 @@ where
     }
 
     let mut response = builder
-        .body(Full::new(bytes))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())));
+        .body(Full::new(bytes).map_err(|e| match e {}).boxed())
+        .unwrap();
 
     if status == StatusCode::OK {
         if let Some(value) = cache_control {
@@ -2187,10 +2254,10 @@ fn looks_like_spa_request(path: &str) -> bool {
 }
 
 async fn maybe_compress_static_response(
-    response: Response<Full<Bytes>>,
+    response: RanvierResponse,
     accept_encoding: Option<http::HeaderValue>,
     enable_compression: bool,
-) -> Response<Full<Bytes>> {
+) -> RanvierResponse {
     if !enable_compression {
         return response;
     }
@@ -2199,25 +2266,40 @@ async fn maybe_compress_static_response(
         return response;
     };
 
+    let (parts, body) = response.into_parts();
+    let body_bytes = match BodyExt::collect(body).await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => return Response::from_parts(parts, Full::new(Bytes::new()).map_err(|e| match e {}).boxed()),
+    };
+
+    let parts_clone = parts.clone();
+    let body_bytes_clone = body_bytes.clone();
+    let response_for_service = move || {
+        Response::from_parts(
+            parts_clone.clone(),
+            Full::new(body_bytes_clone.clone()).map_err(|e| match e {}).boxed(),
+        )
+    };
+
+    let service = CompressionLayer::new().layer(service_fn(move |_req: Request<BoxBody<Bytes, Infallible>>| {
+        let response = response_for_service();
+        async move { Ok::<_, Infallible>(response) }
+    }));
+
     let mut request = Request::builder()
         .uri("/")
-        .body(Full::new(Bytes::new()))
-        .unwrap_or_else(|_| Request::new(Full::new(Bytes::new())));
+        .body(Full::new(Bytes::new()).map_err(|e| match e {}).boxed())
+        .unwrap();
     request
         .headers_mut()
         .insert(http::header::ACCEPT_ENCODING, accept_encoding);
 
-    let service = CompressionLayer::new().layer(service_fn({
-        let response = response.clone();
-        move |_req: Request<Full<Bytes>>| {
-            let response = response.clone();
-            async move { Ok::<_, Infallible>(response) }
-        }
-    }));
-
     match service.oneshot(request).await {
         Ok(compressed) => collect_static_response(compressed, None).await,
-        Err(_) => response,
+        Err(_) => Response::from_parts(
+            parts,
+            Full::new(body_bytes).map_err(|e| match e {}).boxed(),
+        ),
     }
 }
 
@@ -2256,7 +2338,7 @@ fn health_json_response(
     probe: &'static str,
     healthy: bool,
     checks: Vec<HealthCheckReport>,
-) -> Response<Full<Bytes>> {
+) -> RanvierResponse {
     let status_code = if healthy {
         StatusCode::OK
     } else {
@@ -2275,7 +2357,7 @@ fn health_json_response(
     Response::builder()
         .status(status_code)
         .header(http::header::CONTENT_TYPE, "application/json")
-        .body(Full::new(Bytes::from(body)))
+        .body(Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed())
         .unwrap()
 }
 
@@ -2367,7 +2449,7 @@ impl<R> Service<Request<Incoming>> for RawIngressService<R>
 where
     R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
 {
-    type Response = Response<Full<Bytes>>;
+    type Response = RanvierResponse;
     type Error = Infallible;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 

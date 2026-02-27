@@ -20,6 +20,7 @@ ranvier-runtime = { workspace = true }
 
 # Async
 tokio = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
 tokio-tungstenite = "0.24"
@@ -44,6 +45,7 @@ serde_urlencoded = "0.7"
 validator = { version = "0.20", features = ["derive"], optional = true }
 base64 = "0.22"
 sha1 = "0.10"
+multer = "3.1"
 
 [dev-dependencies]
 tempfile = "3.14"

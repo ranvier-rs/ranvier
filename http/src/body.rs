@@ -31,13 +31,13 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use http::Response;
 use http::StatusCode;
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use ranvier_core::prelude::*;
 use ranvier_core::transition::ResourceRequirement;
 use serde::de::DeserializeOwned;
 
 use crate::extract::HttpRequestBody;
-use crate::response::IntoResponse;
+use crate::response::{IntoResponse, RanvierResponse};
 
 /// A `Transition` that reads `HttpRequestBody` from the [`Bus`] and deserializes it as JSON.
 ///
@@ -87,14 +87,14 @@ pub enum JsonBodyError {
 }
 
 impl IntoResponse for JsonBodyError {
-    fn into_response(self) -> Response<Full<Bytes>> {
+    fn into_response(self) -> RanvierResponse {
         let status = match self {
             Self::MissingBody => StatusCode::INTERNAL_SERVER_ERROR,
             Self::ParseError(_) => StatusCode::BAD_REQUEST,
         };
         Response::builder()
             .status(status)
-            .body(Full::new(Bytes::from(self.to_string())))
+            .body(Full::new(Bytes::from(self.to_string())).map_err(|e| match e {}).boxed())
             .unwrap()
     }
 }

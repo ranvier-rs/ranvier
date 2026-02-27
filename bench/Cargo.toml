@@ -1,0 +1,35 @@
+[package]
+name = "ranvier-bench"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+ranvier = { path = "../kit" }
+ranvier-core = { workspace = true }
+ranvier-runtime = { workspace = true }
+ranvier-macros = { workspace = true }
+ranvier-http = { workspace = true }
+ranvier-auth = { workspace = true }
+ranvier-guard = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+criterion = { version = "0.5", features = ["async_tokio"] }
+jsonwebtoken = "9"
+async-trait = "0.1"
+anyhow = { workspace = true }
+axum = "0.8"
+
+[[bench]]
+name = "axon_latency"
+harness = false
+
+[[bench]]
+name = "http_throughput"
+harness = false
