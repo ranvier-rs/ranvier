@@ -49,6 +49,7 @@ members = [
     "extensions/inspector",
     "examples/flat-api-demo",
     "examples/studio-demo",
+    "examples/sse-streaming-demo",
 ]
 
 [workspace.package]

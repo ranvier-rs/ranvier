@@ -1,10 +1,12 @@
 use bytes::Bytes;
 use http::header::CONTENT_TYPE;
 use http::{Response, StatusCode};
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use ranvier_core::Outcome;
+use std::convert::Infallible;
+use http_body_util::combinators::BoxBody;
 
-pub type HttpResponse = Response<Full<Bytes>>;
+pub type HttpResponse = Response<BoxBody<Bytes, Infallible>>;
 
 pub trait IntoResponse {
     fn into_response(self) -> HttpResponse;
@@ -15,7 +17,7 @@ pub fn json_error_response(status: StatusCode, message: impl Into<String>) -> Ht
     Response::builder()
         .status(status)
         .header(CONTENT_TYPE, "application/json")
-        .body(Full::new(Bytes::from(payload.to_string())))
+        .body(Full::new(Bytes::from(payload.to_string())).map_err(|never| match never {}).boxed())
         .expect("response builder should be infallible")
 }
 
@@ -30,7 +32,7 @@ impl IntoResponse for String {
         Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(Full::new(Bytes::from(self)))
+            .body(Full::new(Bytes::from(self)).map_err(|never| match never {}).boxed())
             .expect("response builder should be infallible")
     }
 }
@@ -40,7 +42,7 @@ impl IntoResponse for &'static str {
         Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(Full::new(Bytes::from(self)))
+            .body(Full::new(Bytes::from(self)).map_err(|never| match never {}).boxed())
             .expect("response builder should be infallible")
     }
 }
@@ -50,7 +52,7 @@ impl IntoResponse for Bytes {
         Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "application/octet-stream")
-            .body(Full::new(self))
+            .body(Full::new(self).map_err(|never| match never {}).boxed())
             .expect("response builder should be infallible")
     }
 }
@@ -60,7 +62,7 @@ impl IntoResponse for serde_json::Value {
         Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "application/json")
-            .body(Full::new(Bytes::from(self.to_string())))
+            .body(Full::new(Bytes::from(self.to_string())).map_err(|never| match never {}).boxed())
             .expect("response builder should be infallible")
     }
 }
@@ -69,7 +71,7 @@ impl IntoResponse for () {
     fn into_response(self) -> HttpResponse {
         Response::builder()
             .status(StatusCode::NO_CONTENT)
-            .body(Full::new(Bytes::new()))
+            .body(Full::new(Bytes::new()).map_err(|never| match never {}).boxed())
             .expect("response builder should be infallible")
     }
 }
@@ -79,7 +81,7 @@ impl IntoResponse for (StatusCode, String) {
         Response::builder()
             .status(self.0)
             .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(Full::new(Bytes::from(self.1)))
+            .body(Full::new(Bytes::from(self.1)).map_err(|never| match never {}).boxed())
             .expect("response builder should be infallible")
     }
 }
@@ -89,7 +91,7 @@ impl IntoResponse for (StatusCode, &'static str) {
         Response::builder()
             .status(self.0)
             .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(Full::new(Bytes::from(self.1)))
+            .body(Full::new(Bytes::from(self.1)).map_err(|never| match never {}).boxed())
             .expect("response builder should be infallible")
     }
 }
@@ -99,7 +101,7 @@ impl IntoResponse for (StatusCode, Bytes) {
         Response::builder()
             .status(self.0)
             .header(CONTENT_TYPE, "application/octet-stream")
-            .body(Full::new(self.1))
+            .body(Full::new(self.1).map_err(|never| match never {}).boxed())
             .expect("response builder should be infallible")
     }
 }

@@ -1,0 +1,64 @@
+    Checking ranvier-http v0.7.0 (F:\project\ranvier\ranvier-workspace\ranvier\http)
+warning: unused imports: `Response` and `header::CONTENT_TYPE`
+ --> http\src\sse.rs:2:12
+  |
+2 | use http::{header::CONTENT_TYPE, Response};
+  |            ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `BodyExt` and `StreamBody`
+ --> http\src\sse.rs:3:22
+  |
+3 | use http_body_util::{StreamBody, BodyExt};
+  |                      ^^^^^^^^^^  ^^^^^^^
+
+warning: unused import: `StreamExt`
+ --> http\src\sse.rs:7:36
+  |
+7 | use futures_util::stream::{Stream, StreamExt};
+  |                                    ^^^^^^^^^
+
+error[E0599]: no method named `into_response` found for struct `Response<T>` in the current scope
+    --> http\src\ingress.rs:1656:16
+     |
+1651 |           return Err(maybe_compress_static_response(
+     |  ____________________-
+1652 | |             response,
+1653 | |             accept_encoding,
+1654 | |             static_assets.enable_compression,
+1655 | |         )
+1656 | |         .await.into_response());
+     | |               -^^^^^^^^^^^^^ method not found in `Response<http_body_util::Full<bytes::Bytes>>`
+     | |_______________|
+     |
+     |
+     = help: items from traits can only be used if the trait is in scope
+help: trait `IntoResponse` which provides `into_response` is implemented but not in scope; perhaps you want to import it
+     |
+  16 + use axum_core::response::into_response::IntoResponse;
+     |
+
+error[E0599]: no method named `into_response` found for struct `Response<T>` in the current scope
+    --> http\src\ingress.rs:1679:20
+     |
+1674 |               return Err(maybe_compress_static_response(
+     |  ________________________-
+1675 | |                 response,
+1676 | |                 accept_encoding,
+1677 | |                 static_assets.enable_compression,
+1678 | |             )
+1679 | |             .await.into_response());
+     | |                   -^^^^^^^^^^^^^ method not found in `Response<http_body_util::Full<bytes::Bytes>>`
+     | |___________________|
+     |
+     |
+     = help: items from traits can only be used if the trait is in scope
+help: trait `IntoResponse` which provides `into_response` is implemented but not in scope; perhaps you want to import it
+     |
+  16 + use axum_core::response::into_response::IntoResponse;
+     |
+
+For more information about this error, try `rustc --explain E0599`.
+warning: `ranvier-http` (lib) generated 3 warnings
+error: could not compile `ranvier-http` (lib) due to 2 previous errors; 3 warnings emitted

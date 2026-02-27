@@ -4,6 +4,7 @@ pub mod axon;
 pub mod persistence;
 pub mod replay;
 pub mod testkit;
+pub mod distributed;
 
 pub mod prelude {
     pub use crate::axon::{Axon, SchematicExportRequest};
@@ -20,6 +21,9 @@ pub mod prelude {
     pub use crate::persistence::{RedisCompensationIdempotencyStore, RedisPersistenceStore};
     pub use crate::replay::ReplayEngine;
     pub use crate::testkit::AxonTestKit;
+    pub use crate::distributed::{
+        DistributedError, DistributedLock, DistributedStore, Guard, LockOptions,
+    };
 }
 
 pub use axon::{Axon, SchematicExportRequest};
@@ -36,3 +40,6 @@ pub use persistence::{PostgresCompensationIdempotencyStore, PostgresPersistenceS
 pub use persistence::{RedisCompensationIdempotencyStore, RedisPersistenceStore};
 pub use replay::ReplayEngine;
 pub use testkit::AxonTestKit;
+pub use distributed::{
+    DistributedError, DistributedLock, DistributedStore, Guard, LockOptions,
+};

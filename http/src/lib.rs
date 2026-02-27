@@ -29,6 +29,7 @@ pub mod extract;
 pub mod ingress;
 pub mod response;
 pub mod service;
+pub mod sse;
 pub mod test_harness;
 
 pub use extract::{DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Json, Path, Query};
@@ -41,6 +42,7 @@ pub use response::{
     outcome_to_response_with_error,
 };
 pub use service::RanvierService;
+pub use sse::{Sse, SseEvent};
 pub use test_harness::{TestApp, TestHarnessError, TestRequest, TestResponse};
 
 /// Prelude module for convenient imports
@@ -55,5 +57,6 @@ pub mod prelude {
         outcome_to_response_with_error,
     };
     pub use crate::service::RanvierService;
+    pub use crate::sse::{Sse, SseEvent};
     pub use crate::test_harness::{TestApp, TestHarnessError, TestRequest, TestResponse};
 }
