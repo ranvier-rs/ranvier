@@ -14,6 +14,11 @@ use validator::{Validate, ValidationErrors, ValidationErrorsKind};
 
 use crate::ingress::PathParams;
 
+#[cfg(feature = "multer")]
+pub mod multipart;
+#[cfg(feature = "multer")]
+pub use multipart::Multipart;
+
 pub const DEFAULT_BODY_LIMIT: usize = 1024 * 1024;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -35,6 +40,9 @@ pub enum ExtractError {
     #[cfg(feature = "validation")]
     #[error("validation failed")]
     ValidationFailed(ValidationErrorBody),
+    #[cfg(feature = "multer")]
+    #[error("multipart parsing error: {0}")]
+    MultipartError(String),
 }
 
 #[cfg(feature = "validation")]

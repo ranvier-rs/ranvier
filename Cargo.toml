@@ -50,6 +50,7 @@ members = [
     "examples/flat-api-demo",
     "examples/studio-demo",
     "examples/sse-streaming-demo",
+    "examples/multipart-upload-demo",
 ]
 
 [workspace.package]
