@@ -51,6 +51,8 @@ members = [
     "examples/studio-demo",
     "examples/sse-streaming-demo",
     "examples/multipart-upload-demo",
+    "grpc",
+    "examples/grpc-service-demo",
 ]
 
 [workspace.package]

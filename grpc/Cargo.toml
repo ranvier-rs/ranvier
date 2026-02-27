@@ -1,0 +1,38 @@
+[package]
+name = "ranvier-grpc"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "gRPC Ingress adapter for Ranvier - bridges tonic to Axon circuits"
+
+[dependencies]
+# Internal
+ranvier-core = { workspace = true }
+ranvier-runtime = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+futures-core = { workspace = true }
+
+# gRPC / Protocol Buffers
+tonic = "0.12"
+prost = "0.13"
+
+# Tower
+tower = { workspace = true }
+http = { workspace = true }
+tokio-stream = "0.1"
+
+# Utilities
+thiserror = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
