@@ -15,7 +15,10 @@
 //! belong in the **HTTP Adapter Layer**, not in the core Bus.
 
 use std::any::{Any, TypeId, type_name};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use ahash::AHashMap;
 use uuid::Uuid;
 
 /// Type reference used by bus access policy declarations.
@@ -62,31 +65,31 @@ impl BusAccessPolicy {
 
 #[derive(Debug, Clone)]
 struct BusAccessGuard {
-    transition_label: String,
+    transition_label: Arc<str>,
     allow: Option<HashSet<TypeId>>,
-    allow_names: Vec<&'static str>,
+    allow_names: Arc<[&'static str]>,
     deny: HashSet<TypeId>,
-    deny_names: Vec<&'static str>,
+    deny_names: Arc<[&'static str]>,
 }
 
 impl BusAccessGuard {
     fn from_policy(transition_label: String, policy: BusAccessPolicy) -> Self {
-        let allow_names = policy
+        let allow_names: Arc<[&'static str]> = policy
             .allow
             .as_ref()
-            .map(|types| types.iter().map(|t| t.type_name).collect::<Vec<_>>())
+            .map(|types| types.iter().map(|t| t.type_name).collect())
             .unwrap_or_default();
         let allow = policy
             .allow
             .map(|types| types.into_iter().map(|t| t.type_id).collect::<HashSet<_>>());
-        let deny_names = policy.deny.iter().map(|t| t.type_name).collect::<Vec<_>>();
+        let deny_names: Arc<[&'static str]> = policy.deny.iter().map(|t| t.type_name).collect();
         let deny = policy
             .deny
             .into_iter()
             .map(|type_ref| type_ref.type_id)
             .collect::<HashSet<_>>();
         Self {
-            transition_label,
+            transition_label: transition_label.into(),
             allow,
             allow_names,
             deny,
@@ -145,7 +148,7 @@ impl std::error::Error for BusAccessError {}
 /// This ensures compile-time safety and explicit dependencies.
 pub struct Bus {
     /// Type-indexed resource storage
-    resources: HashMap<std::any::TypeId, Box<dyn Any + Send + Sync>>,
+    resources: AHashMap<std::any::TypeId, Box<dyn Any + Send + Sync>>,
     /// Optional unique identifier for this Bus instance
     pub id: Uuid,
     /// Optional transition-scoped access guard (M143 opt-in)
@@ -154,9 +157,10 @@ pub struct Bus {
 
 impl Bus {
     /// Create a new empty Bus.
+    #[inline]
     pub fn new() -> Self {
         Self {
-            resources: HashMap::new(),
+            resources: AHashMap::new(),
             id: Uuid::new_v4(),
             access_guard: None,
         }
@@ -174,6 +178,7 @@ impl Bus {
     /// let mut bus = Bus::new();
     /// bus.insert(db_pool);
     /// ```
+    #[inline]
     pub fn insert<T: Any + Send + Sync + 'static>(&mut self, resource: T) {
         let type_id = std::any::TypeId::of::<T>();
         self.resources.insert(type_id, Box::new(resource));
@@ -192,6 +197,7 @@ impl Bus {
     /// let value = bus.read::<i32>().unwrap();
     /// assert_eq!(*value, 42);
     /// ```
+    #[inline]
     pub fn read<T: Any + Send + Sync + 'static>(&self) -> Option<&T> {
         match self.get::<T>() {
             Ok(value) => Some(value),
@@ -203,6 +209,7 @@ impl Bus {
     /// Read a mutable reference to a resource from the Bus.
     ///
     /// Returns `None` if the resource type is not present.
+    #[inline]
     pub fn read_mut<T: Any + Send + Sync + 'static>(&mut self) -> Option<&mut T> {
         match self.get_mut::<T>() {
             Ok(value) => Some(value),
@@ -212,6 +219,7 @@ impl Bus {
     }
 
     /// Read a resource with explicit policy/not-found error details.
+    #[inline]
     pub fn get<T: Any + Send + Sync + 'static>(&self) -> Result<&T, BusAccessError> {
         self.ensure_access::<T>()?;
         let type_id = TypeId::of::<T>();
@@ -224,6 +232,7 @@ impl Bus {
     }
 
     /// Read a mutable resource with explicit policy/not-found error details.
+    #[inline]
     pub fn get_mut<T: Any + Send + Sync + 'static>(&mut self) -> Result<&mut T, BusAccessError> {
         self.ensure_access::<T>()?;
         let type_id = TypeId::of::<T>();
@@ -236,6 +245,7 @@ impl Bus {
     }
 
     /// Check if a resource type exists in the Bus.
+    #[inline]
     pub fn has<T: Any + Send + Sync + 'static>(&self) -> bool {
         if let Err(err) = self.ensure_access::<T>() {
             panic!("{err}");
@@ -282,6 +292,7 @@ impl Bus {
         self.access_guard = None;
     }
 
+    #[inline]
     fn ensure_access<T: Any + Send + Sync + 'static>(&self) -> Result<(), BusAccessError> {
         let Some(guard) = &self.access_guard else {
             return Ok(());
@@ -290,24 +301,24 @@ impl Bus {
         let requested = TypeId::of::<T>();
         if guard.deny.contains(&requested) {
             return Err(BusAccessError::Unauthorized {
-                transition: guard.transition_label.clone(),
+                transition: guard.transition_label.to_string(),
                 resource: type_name::<T>(),
                 allow: if guard.allow_names.is_empty() {
                     None
                 } else {
-                    Some(guard.allow_names.clone())
+                    Some(guard.allow_names.to_vec())
                 },
-                deny: guard.deny_names.clone(),
+                deny: guard.deny_names.to_vec(),
             });
         }
 
         if let Some(allow) = &guard.allow {
             if !allow.contains(&requested) {
                 return Err(BusAccessError::Unauthorized {
-                    transition: guard.transition_label.clone(),
+                    transition: guard.transition_label.to_string(),
                     resource: type_name::<T>(),
-                    allow: Some(guard.allow_names.clone()),
-                    deny: guard.deny_names.clone(),
+                    allow: Some(guard.allow_names.to_vec()),
+                    deny: guard.deny_names.to_vec(),
                 });
             }
         }

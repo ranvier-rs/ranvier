@@ -20,6 +20,7 @@ chrono = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow = { workspace = true }
 tracing = "0.1"
+ahash = "0.8"
 # NOTE: hyper, tower, http removed per Discussion 190 - Core MUST be Protocol-agnostic
 # HTTP-related functionality now lives in ranvier-http
 

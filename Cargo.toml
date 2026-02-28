@@ -115,3 +115,10 @@ sqlx = { version = "0.8", features = [
     "json",
 ] }
 
+# --- Release Profiles ---
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+opt-level = 3
