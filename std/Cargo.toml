@@ -1,6 +1,6 @@
 [package]
 name = "ranvier-std"
-version = "0.14.1"
+version = "0.14.2"
 edition.workspace = true
 rust-version.workspace = true
 description = "Standard Module Library for Ranvier"
