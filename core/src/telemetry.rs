@@ -96,3 +96,37 @@ where
         .await
     }
 }
+
+/// Represents a manual intervention performed on an in-flight workflow.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum InterventionEvent {
+    /// A workflow was forcefully resumed from a stalled node.
+    ForceResume {
+        workflow_id: String,
+        node_id: String,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        operator: String,
+        reason: Option<String>,
+    },
+    /// A workflow was manually failed.
+    ForceFail {
+        workflow_id: String,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        operator: String,
+        reason: Option<String>,
+    },
+    /// A systematic snapshot migration was applied to a workflow.
+    SnapshotMigration {
+        workflow_id: String,
+        from_version: String,
+        to_version: String,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    },
+}
+
+/// A port for recording manual intervention audit logs.
+#[async_trait]
+pub trait AuditLogger: Send + Sync {
+    /// Log an intervention event permanently and securely.
+    async fn log_intervention(&self, event: InterventionEvent) -> Result<(), String>;
+}

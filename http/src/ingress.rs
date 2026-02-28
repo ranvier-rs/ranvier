@@ -709,6 +709,8 @@ pub struct HttpIngress<R = ()> {
     http3_config: Option<crate::http3::Http3Config>,
     #[cfg(feature = "http3")]
     alt_svc_h3_port: Option<u16>,
+    /// Features: enable active intervention system routes
+    active_intervention: bool,
     _phantom: std::marker::PhantomData<R>,
 }
 
@@ -733,6 +735,7 @@ where
             http3_config: None,
             #[cfg(feature = "http3")]
             alt_svc_h3_port: None,
+            active_intervention: false,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -740,6 +743,14 @@ where
     /// Set the bind address for the server.
     pub fn bind(mut self, addr: impl Into<String>) -> Self {
         self.addr = Some(addr.into());
+        self
+    }
+
+    /// Enable active intervention endpoints (`/_system/intervene/*`).
+    /// These endpoints allow external tooling (like Ranvier Studio) to pause,
+    /// inspect, and forcefully resume or re-route in-flight workflow instances.
+    pub fn with_active_intervention(mut self) -> Self {
+        self.active_intervention = true;
         self
     }
 
@@ -1381,7 +1392,26 @@ where
         let addr_str = self.addr.as_deref().unwrap_or("127.0.0.1:3000");
         let addr: SocketAddr = addr_str.parse()?;
 
-        let routes = Arc::new(self.routes);
+        let mut raw_routes = self.routes;
+        if self.active_intervention {
+            let handler: RouteHandler<R> = Arc::new(|_parts, _res| {
+                Box::pin(async move {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .body(Full::new(Bytes::from("Intervention accepted")).map_err(|never| match never {} as Infallible).boxed())
+                        .unwrap()
+                }) as Pin<Box<dyn Future<Output = HttpResponse> + Send>>
+            });
+
+            raw_routes.push(RouteEntry {
+                method: Method::POST,
+                pattern: RoutePattern::parse("/_system/intervene/force_resume"),
+                handler,
+                layers: Arc::new(Vec::new()),
+                apply_global_layers: true,
+            });
+        }
+        let routes = Arc::new(raw_routes);
         let fallback = self.fallback;
         let layers = Arc::new(self.layers);
         let health = Arc::new(self.health);

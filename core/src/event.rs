@@ -15,3 +15,33 @@ pub trait EventSink<E>: Send + Sync {
     /// Sends an event to the sink.
     async fn send_event(&self, event: E) -> Result<(), Self::Error>;
 }
+
+/// Defines the policy for handling failed events (Dead Letter Queue behavior).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum DlqPolicy {
+    /// Drop the failed event.
+    Drop,
+    /// Send the event to a configured DLQ.
+    SendToDlq,
+    /// Retry a specific number of times with an exponential backoff before sending to DLQ.
+    RetryThenDlq { max_attempts: u32, backoff_ms: u64 },
+}
+
+impl Default for DlqPolicy {
+    fn default() -> Self {
+        Self::Drop
+    }
+}
+
+/// A Dead Letter Queue sink for storing failed events or workflow state.
+#[async_trait]
+pub trait DlqSink: Send + Sync {
+    /// Save a failed event/payload with contextual information.
+    async fn store_dead_letter(
+        &self,
+        workflow_id: &str,
+        node_id: &str,
+        error_msg: &str,
+        payload: &[u8],
+    ) -> Result<(), String>;
+}

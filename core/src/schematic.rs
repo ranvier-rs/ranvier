@@ -1,6 +1,7 @@
 use crate::metadata::StepMetadata;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// 스키마 버전 상수
@@ -176,6 +177,33 @@ pub struct Edge {
     pub to: String,
     pub kind: EdgeType,
     pub label: Option<String>,
+}
+
+/// Defines how an in-flight workflow instance should be handled during a schema migration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MigrationStrategy {
+    /// Stop and fail the in-flight instance.
+    Fail,
+    /// Wait for the instance to complete on the old version before migrating.
+    CompleteOnOldVersion,
+    /// Migrate the active node from the old ID to the new ID.
+    MigrateActiveNode { old_node_id: String, new_node_id: String },
+    /// Resume from a specific fallback node.
+    FallbackToNode(String),
+}
+
+/// A snapshot migration definition indicating how to move state from one schema version to another.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotMigration {
+    /// The unique identifier of the old schematic version.
+    pub from_version: String,
+    /// The unique identifier of the new schematic version.
+    pub to_version: String,
+    /// The default strategy to apply if a node-specific strategy is not provided.
+    pub default_strategy: MigrationStrategy,
+    /// Node-specific migration strategies, keyed by the active node ID in the old version.
+    #[serde(skip_serializing_if = "HashMap::is_empty", default)]
+    pub node_mapping: HashMap<String, MigrationStrategy>,
 }
 
 #[cfg(test)]

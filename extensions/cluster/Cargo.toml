@@ -1,0 +1,28 @@
+[package]
+name = "ranvier-cluster"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Distributed execution and state synchronization extensions for Ranvier"
+
+[features]
+default = []
+redis = ["dep:redis", "dep:bb8", "dep:bb8-redis"]
+
+[dependencies]
+ranvier-core = { workspace = true }
+async-trait = { workspace = true }
+tracing = "0.1"
+thiserror = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Optional REDIS support
+redis = { version = "0.27", features = ["tokio-comp", "aio"], optional = true }
+bb8 = { version = "0.8", optional = true }
+bb8-redis = { version = "0.17", optional = true }

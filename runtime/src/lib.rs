@@ -5,6 +5,7 @@ pub mod persistence;
 pub mod replay;
 pub mod testkit;
 pub mod distributed;
+pub mod cluster;
 
 pub mod prelude {
     pub use crate::axon::{Axon, SchematicExportRequest};
@@ -24,6 +25,7 @@ pub mod prelude {
     pub use crate::distributed::{
         DistributedError, DistributedLock, DistributedStore, Guard, LockOptions,
     };
+    pub use crate::cluster::{ClusterManager, LeaderElection, LockBasedElection};
 }
 
 pub use axon::{Axon, SchematicExportRequest};
@@ -43,3 +45,4 @@ pub use testkit::AxonTestKit;
 pub use distributed::{
     DistributedError, DistributedLock, DistributedStore, Guard, LockOptions,
 };
+pub use cluster::{ClusterManager, LeaderElection, LockBasedElection};

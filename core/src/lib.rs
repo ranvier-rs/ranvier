@@ -1,4 +1,5 @@
 pub mod bus;
+pub mod cluster;
 pub mod event;
 pub mod metadata;
 pub mod outcome;
@@ -34,6 +35,7 @@ pub mod prelude {
 // pub mod service; // Moved to ranvier-http
 
 pub use bus::{Bus, BusAccessError, BusAccessPolicy, BusTypeRef};
+pub use cluster::{ClusterBus, ClusterError, DistributedLock};
 pub use outcome::Outcome;
 pub use schematic::Schematic;
 pub use transition::Transition;
