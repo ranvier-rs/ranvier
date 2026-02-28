@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
+use std::net::IpAddr;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -64,11 +66,22 @@ impl<S> Layer<S> for CorsGuardLayer {
 }
 
 /// Default security-header policy.
+///
+/// Covers HSTS, X-Content-Type-Options, X-Frame-Options, and optional
+/// Content-Security-Policy, Cross-Origin-Embedder-Policy, Cross-Origin-Opener-Policy,
+/// Cross-Origin-Resource-Policy, and Permissions-Policy.
 #[derive(Clone, Debug)]
 pub struct SecurityHeadersPolicy {
     pub strict_transport_security: HeaderValue,
     pub x_content_type_options: HeaderValue,
     pub x_frame_options: HeaderValue,
+    pub content_security_policy: Option<HeaderValue>,
+    pub cross_origin_embedder_policy: Option<HeaderValue>,
+    pub cross_origin_opener_policy: Option<HeaderValue>,
+    pub cross_origin_resource_policy: Option<HeaderValue>,
+    pub permissions_policy: Option<HeaderValue>,
+    pub x_xss_protection: Option<HeaderValue>,
+    pub referrer_policy: Option<HeaderValue>,
 }
 
 impl Default for SecurityHeadersPolicy {
@@ -79,11 +92,78 @@ impl Default for SecurityHeadersPolicy {
             ),
             x_content_type_options: HeaderValue::from_static("nosniff"),
             x_frame_options: HeaderValue::from_static("DENY"),
+            content_security_policy: None,
+            cross_origin_embedder_policy: None,
+            cross_origin_opener_policy: None,
+            cross_origin_resource_policy: None,
+            permissions_policy: None,
+            x_xss_protection: None,
+            referrer_policy: None,
         }
     }
 }
 
 impl SecurityHeadersPolicy {
+    /// Maximum security preset with all optional headers enabled.
+    ///
+    /// Includes CSP `default-src 'self'`, COEP `require-corp`, COOP `same-origin`,
+    /// CORP `same-origin`, Permissions-Policy (restrictive), X-XSS-Protection,
+    /// and strict Referrer-Policy.
+    pub fn strict() -> Self {
+        Self {
+            content_security_policy: Some(HeaderValue::from_static("default-src 'self'")),
+            cross_origin_embedder_policy: Some(HeaderValue::from_static("require-corp")),
+            cross_origin_opener_policy: Some(HeaderValue::from_static("same-origin")),
+            cross_origin_resource_policy: Some(HeaderValue::from_static("same-origin")),
+            permissions_policy: Some(HeaderValue::from_static(
+                "camera=(), microphone=(), geolocation=()",
+            )),
+            x_xss_protection: Some(HeaderValue::from_static("1; mode=block")),
+            referrer_policy: Some(HeaderValue::from_static("strict-origin-when-cross-origin")),
+            ..Default::default()
+        }
+    }
+
+    /// Set Content-Security-Policy from a `CspBuilder`.
+    pub fn csp(mut self, builder: CspBuilder) -> Self {
+        self.content_security_policy = Some(
+            HeaderValue::from_str(&builder.build()).expect("valid CSP header"),
+        );
+        self
+    }
+
+    /// Set the Cross-Origin-Embedder-Policy header.
+    pub fn coep(mut self, value: &'static str) -> Self {
+        self.cross_origin_embedder_policy = Some(HeaderValue::from_static(value));
+        self
+    }
+
+    /// Set the Cross-Origin-Opener-Policy header.
+    pub fn coop(mut self, value: &'static str) -> Self {
+        self.cross_origin_opener_policy = Some(HeaderValue::from_static(value));
+        self
+    }
+
+    /// Set the Cross-Origin-Resource-Policy header.
+    pub fn corp(mut self, value: &'static str) -> Self {
+        self.cross_origin_resource_policy = Some(HeaderValue::from_static(value));
+        self
+    }
+
+    /// Set the Permissions-Policy header.
+    pub fn permissions_policy(mut self, value: &str) -> Self {
+        self.permissions_policy = Some(
+            HeaderValue::from_str(value).expect("valid Permissions-Policy header"),
+        );
+        self
+    }
+
+    /// Set the Referrer-Policy header.
+    pub fn referrer_policy(mut self, value: &'static str) -> Self {
+        self.referrer_policy = Some(HeaderValue::from_static(value));
+        self
+    }
+
     fn apply(&self, headers: &mut http::HeaderMap) {
         headers.insert(
             HeaderName::from_static("strict-transport-security"),
@@ -97,6 +177,157 @@ impl SecurityHeadersPolicy {
             HeaderName::from_static("x-frame-options"),
             self.x_frame_options.clone(),
         );
+        if let Some(ref csp) = self.content_security_policy {
+            headers.insert(
+                HeaderName::from_static("content-security-policy"),
+                csp.clone(),
+            );
+        }
+        if let Some(ref coep) = self.cross_origin_embedder_policy {
+            headers.insert(
+                HeaderName::from_static("cross-origin-embedder-policy"),
+                coep.clone(),
+            );
+        }
+        if let Some(ref coop) = self.cross_origin_opener_policy {
+            headers.insert(
+                HeaderName::from_static("cross-origin-opener-policy"),
+                coop.clone(),
+            );
+        }
+        if let Some(ref corp) = self.cross_origin_resource_policy {
+            headers.insert(
+                HeaderName::from_static("cross-origin-resource-policy"),
+                corp.clone(),
+            );
+        }
+        if let Some(ref pp) = self.permissions_policy {
+            headers.insert(
+                HeaderName::from_static("permissions-policy"),
+                pp.clone(),
+            );
+        }
+        if let Some(ref xss) = self.x_xss_protection {
+            headers.insert(
+                HeaderName::from_static("x-xss-protection"),
+                xss.clone(),
+            );
+        }
+        if let Some(ref rp) = self.referrer_policy {
+            headers.insert(
+                HeaderName::from_static("referrer-policy"),
+                rp.clone(),
+            );
+        }
+    }
+}
+
+/// Fluent builder for Content-Security-Policy header values.
+///
+/// # Example
+/// ```
+/// use ranvier_guard::CspBuilder;
+///
+/// let csp = CspBuilder::new()
+///     .default_src(&["'self'"])
+///     .script_src(&["'self'", "https://cdn.example.com"])
+///     .style_src(&["'self'", "'unsafe-inline'"])
+///     .img_src(&["'self'", "data:"])
+///     .connect_src(&["'self'", "https://api.example.com"])
+///     .frame_ancestors(&["'none'"])
+///     .build();
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct CspBuilder {
+    directives: Vec<(String, Vec<String>)>,
+}
+
+impl CspBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `default-src` directive — fallback for all resource types.
+    pub fn default_src(self, sources: &[&str]) -> Self {
+        self.directive("default-src", sources)
+    }
+
+    /// `script-src` directive — controls script sources.
+    pub fn script_src(self, sources: &[&str]) -> Self {
+        self.directive("script-src", sources)
+    }
+
+    /// `style-src` directive — controls stylesheet sources.
+    pub fn style_src(self, sources: &[&str]) -> Self {
+        self.directive("style-src", sources)
+    }
+
+    /// `img-src` directive — controls image sources.
+    pub fn img_src(self, sources: &[&str]) -> Self {
+        self.directive("img-src", sources)
+    }
+
+    /// `font-src` directive — controls font sources.
+    pub fn font_src(self, sources: &[&str]) -> Self {
+        self.directive("font-src", sources)
+    }
+
+    /// `connect-src` directive — controls fetch/XHR/WebSocket destinations.
+    pub fn connect_src(self, sources: &[&str]) -> Self {
+        self.directive("connect-src", sources)
+    }
+
+    /// `media-src` directive — controls audio/video sources.
+    pub fn media_src(self, sources: &[&str]) -> Self {
+        self.directive("media-src", sources)
+    }
+
+    /// `object-src` directive — controls plugin sources.
+    pub fn object_src(self, sources: &[&str]) -> Self {
+        self.directive("object-src", sources)
+    }
+
+    /// `frame-src` directive — controls iframe sources.
+    pub fn frame_src(self, sources: &[&str]) -> Self {
+        self.directive("frame-src", sources)
+    }
+
+    /// `frame-ancestors` directive — controls who can embed this page.
+    pub fn frame_ancestors(self, sources: &[&str]) -> Self {
+        self.directive("frame-ancestors", sources)
+    }
+
+    /// `base-uri` directive — restricts `<base>` element URLs.
+    pub fn base_uri(self, sources: &[&str]) -> Self {
+        self.directive("base-uri", sources)
+    }
+
+    /// `form-action` directive — restricts form submission targets.
+    pub fn form_action(self, sources: &[&str]) -> Self {
+        self.directive("form-action", sources)
+    }
+
+    /// `worker-src` directive — controls Worker/SharedWorker/ServiceWorker sources.
+    pub fn worker_src(self, sources: &[&str]) -> Self {
+        self.directive("worker-src", sources)
+    }
+
+    /// Add a custom CSP directive.
+    pub fn directive(mut self, name: &str, sources: &[&str]) -> Self {
+        self.directives.push((
+            name.to_string(),
+            sources.iter().map(|s| s.to_string()).collect(),
+        ));
+        self
+    }
+
+    /// Build the CSP header string value.
+    pub fn build(&self) -> String {
+        self.directives
+            .iter()
+            .map(|(name, sources)| format!("{} {}", name, sources.join(" ")))
+            .collect::<Vec<_>>()
+            .join("; ")
     }
 }
 
@@ -353,10 +584,249 @@ fn rate_limited_response(limit: u64) -> Response<Full<Bytes>> {
     response
 }
 
+// ---------------------------------------------------------------------------
+// Connection Limit Layer
+// ---------------------------------------------------------------------------
+
+/// Tower layer that limits concurrent connections per IP address.
+///
+/// Prevents connection exhaustion attacks by enforcing a maximum number
+/// of simultaneous active requests from a single IP.
+#[derive(Clone)]
+pub struct ConnectionLimitLayer {
+    max_per_ip: usize,
+    state: Arc<Mutex<HashMap<IpAddr, Arc<AtomicUsize>>>>,
+}
+
+impl ConnectionLimitLayer {
+    /// Create a layer that allows at most `max_per_ip` concurrent requests per IP.
+    pub fn new(max_per_ip: usize) -> Self {
+        Self {
+            max_per_ip,
+            state: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl<S> Layer<S> for ConnectionLimitLayer {
+    type Service = ConnectionLimitService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        ConnectionLimitService {
+            inner,
+            max_per_ip: self.max_per_ip,
+            state: self.state.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ConnectionLimitService<S> {
+    inner: S,
+    max_per_ip: usize,
+    state: Arc<Mutex<HashMap<IpAddr, Arc<AtomicUsize>>>>,
+}
+
+impl<S, B> Service<Request<B>> for ConnectionLimitService<S>
+where
+    S: Service<Request<B>, Response = Response<Full<Bytes>>, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send + 'static,
+    B: Send + 'static,
+{
+    type Response = Response<Full<Bytes>>;
+    type Error = Infallible;
+    type Future = BoxFuture<Self::Response>;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Request<B>) -> Self::Future {
+        let mut inner = self.inner.clone();
+        let max = self.max_per_ip;
+        let state = self.state.clone();
+
+        Box::pin(async move {
+            let ip = extract_client_ip(&req);
+            let counter = {
+                let mut store = state.lock().expect("connection-limit state lock");
+                store.entry(ip).or_insert_with(|| Arc::new(AtomicUsize::new(0))).clone()
+            };
+
+            let current = counter.fetch_add(1, Ordering::SeqCst);
+            if current >= max {
+                counter.fetch_sub(1, Ordering::SeqCst);
+                let payload = serde_json::json!({
+                    "error": "connection_limit_exceeded",
+                    "message": "too many concurrent connections",
+                });
+                return Ok(Response::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Full::new(Bytes::from(payload.to_string())))
+                    .expect("connection-limit response"));
+            }
+
+            let response = inner.call(req).await;
+            counter.fetch_sub(1, Ordering::SeqCst);
+            response
+        })
+    }
+}
+
+fn extract_client_ip<B>(req: &Request<B>) -> IpAddr {
+    // Try X-Forwarded-For first, then X-Real-IP, fall back to loopback
+    if let Some(xff) = req.headers().get("x-forwarded-for") {
+        if let Ok(text) = xff.to_str() {
+            if let Some(first) = text.split(',').next() {
+                if let Ok(ip) = first.trim().parse::<IpAddr>() {
+                    return ip;
+                }
+            }
+        }
+    }
+    if let Some(xri) = req.headers().get("x-real-ip") {
+        if let Ok(text) = xri.to_str() {
+            if let Ok(ip) = text.trim().parse::<IpAddr>() {
+                return ip;
+            }
+        }
+    }
+    IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+}
+
+// ---------------------------------------------------------------------------
+// Request Size Limit Layer
+// ---------------------------------------------------------------------------
+
+/// Tower layer that rejects requests exceeding size limits.
+///
+/// Enforces maximum header sizes and URL lengths to prevent abuse.
+#[derive(Clone)]
+pub struct RequestSizeLimitLayer {
+    /// Maximum total header size in bytes (default: 8KB).
+    pub max_header_bytes: usize,
+    /// Maximum URL length in bytes (default: 2KB).
+    pub max_url_bytes: usize,
+}
+
+impl Default for RequestSizeLimitLayer {
+    fn default() -> Self {
+        Self {
+            max_header_bytes: 8 * 1024,
+            max_url_bytes: 2 * 1024,
+        }
+    }
+}
+
+impl RequestSizeLimitLayer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set maximum total header size in bytes.
+    pub fn max_header_bytes(mut self, max: usize) -> Self {
+        self.max_header_bytes = max;
+        self
+    }
+
+    /// Set maximum URL length in bytes.
+    pub fn max_url_bytes(mut self, max: usize) -> Self {
+        self.max_url_bytes = max;
+        self
+    }
+}
+
+impl<S> Layer<S> for RequestSizeLimitLayer {
+    type Service = RequestSizeLimitService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        RequestSizeLimitService {
+            inner,
+            max_header_bytes: self.max_header_bytes,
+            max_url_bytes: self.max_url_bytes,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct RequestSizeLimitService<S> {
+    inner: S,
+    max_header_bytes: usize,
+    max_url_bytes: usize,
+}
+
+impl<S, B> Service<Request<B>> for RequestSizeLimitService<S>
+where
+    S: Service<Request<B>, Response = Response<Full<Bytes>>, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send + 'static,
+    B: Send + 'static,
+{
+    type Response = Response<Full<Bytes>>;
+    type Error = Infallible;
+    type Future = BoxFuture<Self::Response>;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Request<B>) -> Self::Future {
+        let mut inner = self.inner.clone();
+        let max_header = self.max_header_bytes;
+        let max_url = self.max_url_bytes;
+
+        Box::pin(async move {
+            // Check URL length
+            let url_len = req.uri().to_string().len();
+            if url_len > max_url {
+                let payload = serde_json::json!({
+                    "error": "url_too_long",
+                    "message": format!("URL length {} exceeds limit {}", url_len, max_url),
+                });
+                return Ok(Response::builder()
+                    .status(StatusCode::URI_TOO_LONG)
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Full::new(Bytes::from(payload.to_string())))
+                    .expect("url-limit response"));
+            }
+
+            // Check total header size
+            let header_bytes: usize = req.headers().iter()
+                .map(|(k, v)| k.as_str().len() + v.len())
+                .sum();
+            if header_bytes > max_header {
+                let payload = serde_json::json!({
+                    "error": "headers_too_large",
+                    "message": format!("header size {} exceeds limit {}", header_bytes, max_header),
+                });
+                return Ok(Response::builder()
+                    .status(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE)
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Full::new(Bytes::from(payload.to_string())))
+                    .expect("header-limit response"));
+            }
+
+            inner.call(req).await
+        })
+    }
+}
+
 pub mod prelude {
     pub use crate::{
-        CorsGuardLayer, RateLimitLayer, RateLimitPolicy, SecurityHeadersLayer,
-        SecurityHeadersPolicy,
+        ConnectionLimitLayer, CorsGuardLayer, CspBuilder, RateLimitLayer, RateLimitPolicy,
+        RequestSizeLimitLayer, SecurityHeadersLayer, SecurityHeadersPolicy,
     };
 }
 
