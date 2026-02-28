@@ -16,6 +16,8 @@ use tower_http::cors::CorsLayer;
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = Result<T, Infallible>> + Send>>;
 
+pub mod sanitize;
+
 /// CORS convenience wrapper for Ranvier ingress.
 #[derive(Clone)]
 pub struct CorsGuardLayer {
