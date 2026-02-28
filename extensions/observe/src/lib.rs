@@ -16,11 +16,15 @@ use tracing_subscriber::{EnvFilter, Registry};
 
 pub mod http_metrics;
 pub mod http_trace;
+pub mod metrics;
+pub mod business;
 
 pub use http_metrics::{HttpMetrics, HttpMetricsLayer, HttpMetricsSnapshot, ResponseStatus};
 pub use http_trace::{
     extract_trace_context, extract_trace_context_snapshot, IncomingTraceContext, TraceContextLayer,
 };
+pub use metrics::{Counter, Gauge, Histogram, MetricsRegistry};
+pub use business::SliTracker;
 
 /// OTLP transport preset for trace export.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
