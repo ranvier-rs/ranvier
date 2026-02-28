@@ -1,0 +1,244 @@
+    Checking tokio v1.49.0
+    Checking futures-task v0.3.31
+    Checking tracing-core v0.1.36
+    Checking memchr v2.7.6
+    Checking serde_core v1.0.228
+    Checking tower-http v0.6.8
+    Checking futures-util v0.3.31
+    Checking tracing v0.1.44
+    Checking tokio-util v0.7.18
+    Checking tower v0.5.3
+    Checking serde_json v1.0.149
+    Checking ranvier-guard v0.14.3 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\guard)
+error[E0603]: module `box_body` is private
+   --> extensions\guard\src\lib.rs:367:77
+    |
+367 |     S: Service<Request<B>, Response = Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>>, E...
+    |                                                                             ^^^^^^^^ private module
+    |
+note: the module `box_body` is defined here
+   --> C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-body-util-0.1.3\src\combinators\mod.rs:3:1
+    |
+  3 | mod box_body;
+    | ^^^^^^^^^^^^
+help: consider importing this struct instead
+    |
+367 -     S: Service<Request<B>, Response = Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
+367 +     S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
+    |
+
+error[E0603]: module `box_body` is private
+   --> extensions\guard\src\lib.rs:374:59
+    |
+374 |     type Response = Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    |                                                           ^^^^^^^^ private module
+    |
+note: the module `box_body` is defined here
+   --> C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-body-util-0.1.3\src\combinators\mod.rs:3:1
+    |
+  3 | mod box_body;
+    | ^^^^^^^^^^^^
+help: consider importing this struct instead
+    |
+374 -     type Response = Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+374 +     type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    |
+
+error[E0603]: module `box_body` is private
+   --> extensions\guard\src\lib.rs:481:77
+    |
+481 |     S: Service<Request<B>, Response = Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>>, E...
+    |                                                                             ^^^^^^^^ private module
+    |
+note: the module `box_body` is defined here
+   --> C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-body-util-0.1.3\src\combinators\mod.rs:3:1
+    |
+  3 | mod box_body;
+    | ^^^^^^^^^^^^
+help: consider importing this struct instead
+    |
+481 -     S: Service<Request<B>, Response = Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
+481 +     S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
+    |
+
+error[E0603]: module `box_body` is private
+   --> extensions\guard\src\lib.rs:488:59
+    |
+488 |     type Response = Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    |                                                           ^^^^^^^^ private module
+    |
+note: the module `box_body` is defined here
+   --> C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-body-util-0.1.3\src\combinators\mod.rs:3:1
+    |
+  3 | mod box_body;
+    | ^^^^^^^^^^^^
+help: consider importing this struct instead
+    |
+488 -     type Response = Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+488 +     type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    |
+
+error[E0603]: module `box_body` is private
+   --> extensions\guard\src\lib.rs:573:79
+    |
+573 | fn rate_limited_response(limit: u64) -> Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>> {
+    |                                                                               ^^^^^^^^ private module
+    |
+note: the module `box_body` is defined here
+   --> C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-body-util-0.1.3\src\combinators\mod.rs:3:1
+    |
+  3 | mod box_body;
+    | ^^^^^^^^^^^^
+help: consider importing this struct instead
+    |
+573 - fn rate_limited_response(limit: u64) -> Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>> {
+573 + fn rate_limited_response(limit: u64) -> Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>> {
+    |
+
+error[E0603]: module `box_body` is private
+   --> extensions\guard\src\lib.rs:634:77
+    |
+634 |     S: Service<Request<B>, Response = Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>>, E...
+    |                                                                             ^^^^^^^^ private module
+    |
+note: the module `box_body` is defined here
+   --> C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-body-util-0.1.3\src\combinators\mod.rs:3:1
+    |
+  3 | mod box_body;
+    | ^^^^^^^^^^^^
+help: consider importing this struct instead
+    |
+634 -     S: Service<Request<B>, Response = Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
+634 +     S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
+    |
+
+error[E0603]: module `box_body` is private
+   --> extensions\guard\src\lib.rs:641:59
+    |
+641 |     type Response = Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    |                                                           ^^^^^^^^ private module
+    |
+note: the module `box_body` is defined here
+   --> C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-body-util-0.1.3\src\combinators\mod.rs:3:1
+    |
+  3 | mod box_body;
+    | ^^^^^^^^^^^^
+help: consider importing this struct instead
+    |
+641 -     type Response = Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+641 +     type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    |
+
+error[E0603]: module `box_body` is private
+   --> extensions\guard\src\lib.rs:769:77
+    |
+769 |     S: Service<Request<B>, Response = Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>>, E...
+    |                                                                             ^^^^^^^^ private module
+    |
+note: the module `box_body` is defined here
+   --> C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-body-util-0.1.3\src\combinators\mod.rs:3:1
+    |
+  3 | mod box_body;
+    | ^^^^^^^^^^^^
+help: consider importing this struct instead
+    |
+769 -     S: Service<Request<B>, Response = Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
+769 +     S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
+    |
+
+error[E0603]: module `box_body` is private
+   --> extensions\guard\src\lib.rs:776:59
+    |
+776 |     type Response = Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    |                                                           ^^^^^^^^ private module
+    |
+note: the module `box_body` is defined here
+   --> C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-body-util-0.1.3\src\combinators\mod.rs:3:1
+    |
+  3 | mod box_body;
+    | ^^^^^^^^^^^^
+help: consider importing this struct instead
+    |
+776 -     type Response = Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+776 +     type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    |
+
+error[E0308]: mismatched types
+   --> extensions\guard\src\lib.rs:586:5
+    |
+573 | fn rate_limited_response(limit: u64) -> Response<http_body_util::combinators::box_body::BoxBody<bytes::Bytes, std::convert::Infallible>> {
+    |                                         ------------------------------------------------------------------------------------------------ expected `Response<BoxBody<bytes::Bytes, Infallible>>` because of return type
+...
+586 |     response
+    |     ^^^^^^^^ expected `Response<BoxBody<Bytes, Infallible>>`, found `Response<Full<Bytes>>`
+    |
+    = note: expected struct `Response<BoxBody<bytes::Bytes, Infallible>>`
+               found struct `Response<http_body_util::Full<bytes::Bytes>>`
+
+error[E0308]: mismatched types
+   --> extensions\guard\src\lib.rs:680:13
+    |
+680 |             response
+    |             ^^^^^^^^ expected `Result<Response<Full<Bytes>>, _>`, found `Result<Response<BoxBody<..., ...>>, ...>`
+    |
+    = note: expected enum `Result<Response<http_body_util::Full<bytes::Bytes>>, _>`
+               found enum `Result<Response<BoxBody<bytes::Bytes, Infallible>>, Infallible>`
+note: return type inferred to be `Result<Response<http_body_util::Full<bytes::Bytes>>, _>` here
+   --> extensions\guard\src\lib.rs:671:24
+    |
+671 |                   return Ok(Response::builder()
+    |  ________________________^
+672 | |                     .status(StatusCode::SERVICE_UNAVAILABLE)
+673 | |                     .header(http::header::CONTENT_TYPE, "application/json")
+674 | |                     .body(Full::new(Bytes::from(payload.to_string())))
+675 | |                     .expect("connection-limit response"));
+    | |_________________________________________________________^
+
+error[E0271]: expected `{async block@extensions\guard\src\lib.rs:657:18: 657:28}` to be a future that resolves to `Result<Response<BoxBody<Bytes, Infallible>>, Infallible>`, but it resolves to `Result<Response<Full<Bytes>>, _>`
+   --> extensions\guard\src\lib.rs:657:9
+    |
+657 | /         Box::pin(async move {
+658 | |             let ip = extract_client_ip(&req);
+659 | |             let counter = {
+660 | |                 let mut store = state.lock().expect("connection-limit state lock");
+...   |
+680 | |             response
+681 | |         })
+    | |__________^ expected `Result<Response<BoxBody<..., ...>>, ...>`, found `Result<Response<Full<Bytes>>, _>`
+    |
+    = note: expected enum `Result<Response<BoxBody<bytes::Bytes, Infallible>>, Infallible>`
+               found enum `Result<Response<http_body_util::Full<bytes::Bytes>>, _>`
+    = note: required for the cast from `Pin<Box<{async block@extensions\guard\src\lib.rs:657:18: 657:28}>>` to `Pin<Box<dyn Future<Output = Result<Response<...>, ...>> + Send>>`
+    = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\ranvier_guard-6a10a8b5d8ece9e2.long-type-6072342472029305815.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0308]: mismatched types
+   --> extensions\guard\src\lib.rs:823:13
+    |
+823 |             inner.call(req).await
+    |             ^^^^^^^^^^^^^^^^^^^^^ expected `Result<Response<Full<Bytes>>, _>`, found `Result<Response<BoxBody<..., ...>>, ...>`
+    |
+    = note: expected enum `Result<Response<http_body_util::Full<bytes::Bytes>>, _>`
+               found enum `Result<Response<BoxBody<bytes::Bytes, Infallible>>, Infallible>`
+
+error[E0271]: expected `{async block@extensions\guard\src\lib.rs:792:18: 792:28}` to be a future that resolves to `Result<Response<BoxBody<Bytes, Infallible>>, Infallible>`, but it resolves to `Result<Response<Full<Bytes>>, _>`
+   --> extensions\guard\src\lib.rs:792:9
+    |
+792 | /         Box::pin(async move {
+793 | |             // Check URL length
+794 | |             let url_len = req.uri().to_string().len();
+795 | |             if url_len > max_url {
+...   |
+823 | |             inner.call(req).await
+824 | |         })
+    | |__________^ expected `Result<Response<BoxBody<..., ...>>, ...>`, found `Result<Response<Full<Bytes>>, _>`
+    |
+    = note: expected enum `Result<Response<BoxBody<bytes::Bytes, Infallible>>, Infallible>`
+               found enum `Result<Response<http_body_util::Full<bytes::Bytes>>, _>`
+    = note: required for the cast from `Pin<Box<{async block@extensions\guard\src\lib.rs:792:18: 792:28}>>` to `Pin<Box<dyn Future<Output = Result<Response<...>, ...>> + Send>>`
+    = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\ranvier_guard-6a10a8b5d8ece9e2.long-type-6072342472029305815.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+Some errors have detailed explanations: E0271, E0308, E0603.
+For more information about an error, try `rustc --explain E0271`.
+error: could not compile `ranvier-guard` (lib) due to 14 previous errors

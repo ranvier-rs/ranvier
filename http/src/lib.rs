@@ -30,6 +30,9 @@ pub mod ingress;
 pub mod response;
 pub mod service;
 pub mod sse;
+
+#[cfg(feature = "http3")]
+pub mod http3;
 pub mod test_harness;
 
 pub use extract::{DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Json, Path, Query};

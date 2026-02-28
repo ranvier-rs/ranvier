@@ -31,7 +31,7 @@ impl Transition<(), String> for WhoAmI {
 async fn bus_injector_moves_request_context_into_bus() {
     let ingress = Ranvier::http::<()>()
         .bus_injector(|req, bus| {
-            if let Some(value) = req.headers().get("x-user") {
+            if let Some(value) = req.headers.get("x-user") {
                 if let Ok(user) = value.to_str() {
                     bus.insert(user.to_string());
                 }

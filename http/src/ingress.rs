@@ -67,7 +67,7 @@ impl Ranvier {
 
 /// Route handler type: boxed async function returning Response
 type RouteHandler<R> = Arc<
-    dyn Fn(Request<Incoming>, &R) -> Pin<Box<dyn Future<Output = HttpResponse> + Send>>
+    dyn Fn(http::request::Parts, &R) -> Pin<Box<dyn Future<Output = HttpResponse> + Send>>
         + Send
         + Sync,
 >;
@@ -75,7 +75,7 @@ type RouteHandler<R> = Arc<
 type BoxHttpService = BoxCloneService<Request<Incoming>, HttpResponse, Infallible>;
 type ServiceLayer = Arc<dyn Fn(BoxHttpService) -> BoxHttpService + Send + Sync>;
 type LifecycleHook = Arc<dyn Fn() + Send + Sync>;
-type BusInjector = Arc<dyn Fn(&Request<Incoming>, &mut Bus) + Send + Sync>;
+type BusInjector = Arc<dyn Fn(&http::request::Parts, &mut Bus) + Send + Sync + 'static>;
 type WsSessionFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 type WsSessionHandler<R> =
     Arc<dyn Fn(WebSocketConnection, Arc<R>, Bus) -> WsSessionFuture + Send + Sync>;
@@ -606,7 +606,7 @@ fn header_contains_token(
         .unwrap_or(false)
 }
 
-fn websocket_session_from_request(req: &Request<Incoming>) -> WebSocketSessionContext {
+fn websocket_session_from_request<B>(req: &Request<B>) -> WebSocketSessionContext {
     WebSocketSessionContext {
         connection_id: uuid::Uuid::new_v4(),
         path: req.uri().path().to_string(),
@@ -629,8 +629,8 @@ fn websocket_bad_request(message: &'static str) -> HttpResponse {
         .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()).map_err(|never| match never {}).boxed()))
 }
 
-fn websocket_upgrade_response(
-    req: &mut Request<Incoming>,
+fn websocket_upgrade_response<B>(
+    req: &mut Request<B>,
 ) -> Result<(HttpResponse, hyper::upgrade::OnUpgrade), HttpResponse> {
     if req.method() != Method::GET {
         return Err(websocket_bad_request(
@@ -705,6 +705,10 @@ pub struct HttpIngress<R = ()> {
     static_assets: StaticAssetsConfig,
     /// Built-in health endpoint configuration.
     health: HealthConfig<R>,
+    #[cfg(feature = "http3")]
+    http3_config: Option<crate::http3::Http3Config>,
+    #[cfg(feature = "http3")]
+    alt_svc_h3_port: Option<u16>,
     _phantom: std::marker::PhantomData<R>,
 }
 
@@ -725,6 +729,10 @@ where
             bus_injectors: Vec::new(),
             static_assets: StaticAssetsConfig::default(),
             health: HealthConfig::default(),
+            #[cfg(feature = "http3")]
+            http3_config: None,
+            #[cfg(feature = "http3")]
+            alt_svc_h3_port: None,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -804,9 +812,23 @@ where
     /// into explicit Bus resources consumed by Transitions.
     pub fn bus_injector<F>(mut self, injector: F) -> Self
     where
-        F: Fn(&Request<Incoming>, &mut Bus) + Send + Sync + 'static,
+        F: Fn(&http::request::Parts, &mut Bus) + Send + Sync + 'static,
     {
         self.bus_injectors.push(Arc::new(injector));
+        self
+    }
+
+    /// Configure HTTP/3 QUIC support.
+    #[cfg(feature = "http3")]
+    pub fn enable_http3(mut self, config: crate::http3::Http3Config) -> Self {
+        self.http3_config = Some(config);
+        self
+    }
+
+    /// Automatically injects the `Alt-Svc` header into responses to signal HTTP/3 availability.
+    #[cfg(feature = "http3")]
+    pub fn alt_svc_h3(mut self, port: u16) -> Self {
+        self.alt_svc_h3_port = Some(port);
         self
     }
 
@@ -889,7 +911,7 @@ where
         let path_for_handler = path_str;
 
         let route_handler: RouteHandler<R> =
-            Arc::new(move |mut req: Request<Incoming>, res: &R| {
+            Arc::new(move |parts: http::request::Parts, res: &R| {
                 let ws_handler = ws_handler.clone();
                 let bus_injectors = bus_injectors.clone();
                 let resources = Arc::new(res.clone());
@@ -906,9 +928,11 @@ where
                     async move {
                         let mut bus = Bus::new();
                         for injector in bus_injectors.iter() {
-                            injector(&req, &mut bus);
+                            injector(&parts, &mut bus);
                         }
 
+                        // Reconstruct a dummy Request for WebSocket extraction
+                        let mut req = Request::from_parts(parts, ());
                         let session = websocket_session_from_request(&req);
                         bus.insert(session.clone());
 
@@ -1150,7 +1174,7 @@ where
         let method_for_pattern = method.clone();
         let method_for_handler = method;
 
-        let handler: RouteHandler<R> = Arc::new(move |req: Request<Incoming>, res: &R| {
+        let handler: RouteHandler<R> = Arc::new(move |parts: http::request::Parts, res: &R| {
             let circuit = circuit.clone();
             let error_handler = error_handler.clone();
             let route_bus_injectors = route_bus_injectors.clone();
@@ -1170,7 +1194,7 @@ where
                 async move {
                     let mut bus = Bus::new();
                     for injector in route_bus_injectors.iter() {
-                        injector(&req, &mut bus);
+                        injector(&parts, &mut bus);
                     }
                     let result = circuit.execute((), &res, &mut bus).await;
                     outcome_to_response_with_error(result, |error| error_handler(error))
@@ -1300,7 +1324,7 @@ where
         let circuit = Arc::new(circuit);
         let fallback_bus_injectors = Arc::new(self.bus_injectors.clone());
 
-        let handler: RouteHandler<R> = Arc::new(move |req: Request<Incoming>, res: &R| {
+        let handler: RouteHandler<R> = Arc::new(move |parts: http::request::Parts, res: &R| {
             let circuit = circuit.clone();
             let fallback_bus_injectors = fallback_bus_injectors.clone();
             let res = res.clone();
@@ -1315,7 +1339,7 @@ where
                 async move {
                     let mut bus = Bus::new();
                     for injector in fallback_bus_injectors.iter() {
-                        injector(&req, &mut bus);
+                        injector(&parts, &mut bus);
                     }
                     let result = circuit.execute((), &res, &mut bus).await;
 
@@ -1392,6 +1416,8 @@ where
                     let layers = layers.clone();
                     let health = health.clone();
                     let static_assets = static_assets.clone();
+                    #[cfg(feature = "http3")]
+                    let alt_svc_h3_port = self.alt_svc_h3_port;
 
                     connections.spawn(async move {
                         let service = build_http_service(
@@ -1401,6 +1427,7 @@ where
                             layers,
                             health,
                             static_assets,
+                            #[cfg(feature = "http3")] alt_svc_h3_port,
                         );
                         let hyper_service = TowerToHyperService::new(service);
                         if let Err(err) = http1::Builder::new()
@@ -1471,6 +1498,7 @@ fn build_http_service<R>(
     layers: Arc<Vec<ServiceLayer>>,
     health: Arc<HealthConfig<R>>,
     static_assets: Arc<StaticAssetsConfig>,
+    #[cfg(feature = "http3")] alt_svc_port: Option<u16>,
 ) -> BoxHttpService
 where
     R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
@@ -1503,14 +1531,31 @@ where
                 };
 
                 if effective_layers.is_empty() {
-                    Ok::<_, Infallible>((entry.handler)(req, &resources).await)
+                    let (parts, _) = req.into_parts();
+                    let mut res = (entry.handler)(parts, &resources).await;
+                    #[cfg(feature = "http3")]
+                    if let Some(port) = alt_svc_port {
+                        if let Ok(val) = http::HeaderValue::from_str(&format!("h3=\":{}\"; ma=86400", port)) {
+                            res.headers_mut().insert(http::header::ALT_SVC, val);
+                        }
+                    }
+                    Ok::<_, Infallible>(res)
                 } else {
                     let route_service = build_route_service(
                         entry.handler.clone(),
                         resources.clone(),
                         effective_layers,
                     );
-                    route_service.oneshot(req).await
+                    let mut res = route_service.oneshot(req).await;
+                    #[cfg(feature = "http3")]
+                    if let Ok(ref mut r) = res {
+                        if let Some(port) = alt_svc_port {
+                            if let Ok(val) = http::HeaderValue::from_str(&format!("h3=\":{}\"; ma=86400", port)) {
+                                r.headers_mut().insert(http::header::ALT_SVC, val);
+                            }
+                        }
+                    }
+                    res
                 }
             } else {
                 let req =
@@ -1521,9 +1566,10 @@ where
                         Err(response) => return Ok(response),
                     };
 
-                if let Some(ref fb) = fallback {
+                let mut fallback_res = if let Some(ref fb) = fallback {
                     if layers.is_empty() {
-                        Ok(fb(req, &resources).await)
+                        let (parts, _) = req.into_parts();
+                        Ok(fb(parts, &resources).await)
                     } else {
                         let fallback_service =
                             build_route_service(fb.clone(), resources.clone(), layers.clone());
@@ -1534,7 +1580,18 @@ where
                         .status(StatusCode::NOT_FOUND)
                         .body(Full::new(Bytes::from("Not Found")).map_err(|never| match never {}).boxed())
                         .unwrap())
+                };
+                
+                #[cfg(feature = "http3")]
+                if let Ok(r) = fallback_res.as_mut() {
+                    if let Some(port) = alt_svc_port {
+                        if let Ok(val) = http::HeaderValue::from_str(&format!("h3=\":{}\"; ma=86400", port)) {
+                            r.headers_mut().insert(http::header::ALT_SVC, val);
+                        }
+                    }
                 }
+                
+                fallback_res
             }
         }
     });
@@ -1553,7 +1610,8 @@ where
     let base_service = service_fn(move |req: Request<Incoming>| {
         let handler = handler.clone();
         let resources = resources.clone();
-        async move { Ok::<_, Infallible>(handler(req, &resources).await) }
+        let (parts, _) = req.into_parts();
+        async move { Ok::<_, Infallible>(handler(parts, &resources).await) }
     });
 
     let mut service = BoxCloneService::new(base_service);
@@ -1973,7 +2031,7 @@ where
 
         Box::pin(async move {
             let service =
-                build_http_service(routes, fallback, resources, layers, health, static_assets);
+                build_http_service(routes, fallback, resources, layers, health, static_assets, #[cfg(feature = "http3")] None);
             service.oneshot(req).await
         })
     }
@@ -2151,7 +2209,7 @@ mod tests {
             .bind(addr.to_string())
             .bus_injector(|req, bus| {
                 if let Some(value) = req
-                    .headers()
+                    .headers
                     .get("x-tenant-id")
                     .and_then(|v| v.to_str().ok())
                 {
@@ -2285,7 +2343,7 @@ mod tests {
             .layer(TraceContextLayer::new())
             .layer(HttpMetricsLayer::new(metrics.clone()))
             .bus_injector(|req, bus| {
-                if let Some(trace) = req.extensions().get::<IncomingTraceContext>() {
+                if let Some(trace) = req.extensions.get::<IncomingTraceContext>() {
                     bus.insert(trace.trace_id().to_string());
                 }
             })

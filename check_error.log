@@ -1,0 +1,293 @@
+warning: unused import: `DEFAULT_BODY_LIMIT`
+  --> http\src\extract\multipart.rs:21:40
+   |
+21 | ...quest, DEFAULT_BODY_LIMIT};
+   |           ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `Response` and `header::CONTENT_TYPE`
+ --> http\src\sse.rs:2:12
+  |
+2 | ...::{header::CONTENT_TYPE, Response};
+  |       ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^
+
+warning: unused imports: `BodyExt` and `StreamBody`
+ --> http\src\sse.rs:3:22
+  |
+3 | ...util::{StreamBody, BodyExt};
+  |           ^^^^^^^^^^  ^^^^^^^
+
+warning: unused import: `StreamExt`
+ --> http\src\sse.rs:7:36
+  |
+7 | ...m::{Stream, StreamExt};
+  |                ^^^^^^^^^
+
+warning: variable does not need to be mutable
+    --> http\src\ingress.rs:1535:25
+     |
+1535 | ...     let mut res = (entry.hand...
+     |             ----^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> http\src\ingress.rs:1549:25
+     |
+1549 | ...     let mut res = route_servi...
+     |             ----^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> http\src\ingress.rs:1569:21
+     |
+1569 | ... let mut fallback_res = if let...
+     |         ----^^^^^^^^^^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: `ranvier-http` (lib) generated 7 warnings (run `cargo fix --lib -p ranvier-http` to apply 7 suggestions)
+   Compiling sqlx-macros-core v0.8.6
+    Checking observe-http-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\observe-http-demo)
+    Checking openapi-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\openapi-demo)
+    Checking ecosystem-meilisearch-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\ecosystem-meilisearch-demo)
+    Checking grpc-service-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\grpc-service-demo)
+    Checking guard-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\guard-demo)
+    Checking auth-jwt-role-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\auth-jwt-role-demo)
+    Checking ranvier v0.14.3 (F:\project\ranvier\ranvier-workspace\ranvier\kit)
+    Checking routing-params-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\routing-params-demo)
+    Checking multipart-upload-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\multipart-upload-demo)
+    Checking fullstack-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\experimental\fullstack-demo)
+    Checking static-spa-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\static-spa-demo)
+    Checking sse-streaming-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\sse-streaming-demo)
+    Checking websocket-ingress-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\websocket-ingress-demo)
+warning: use of deprecated trait `ranvier_runtime::CompensationHook`: Experimental compensation contract (M148); API may change before stabilization.
+ --> examples\experimental\persistence-recovery-demo\src\main.rs:4:52
+  |
+4 | ...Handle, CompensationHook, Compens...
+  |            ^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated trait `ranvier_runtime::PersistenceStore`: Experimental persistence contract (M148); API may change before stabilization.
+ --> examples\experimental\persistence-recovery-demo\src\main.rs:5:75
+  |
+5 | ...Handle, PersistenceStore,
+  |            ^^^^^^^^^^^^^^^^
+
+warning: use of deprecated trait `ranvier_runtime::CompensationHook`: Experimental compensation contract (M148); API may change before stabilization.
+   --> examples\experimental\persistence-recovery-demo\src\main.rs:113:6
+    |
+113 | impl CompensationHook for RefundPa...
+    |      ^^^^^^^^^^^^^^^^
+
+warning: use of deprecated trait `ranvier_runtime::PersistenceStore`: Experimental persistence contract (M148); API may change before stabilization.
+   --> examples\experimental\persistence-recovery-demo\src\main.rs:137:28
+    |
+137 | ...rc<dyn PersistenceStore> = stor...
+    |           ^^^^^^^^^^^^^^^^
+
+warning: use of deprecated method `ranvier_runtime::PersistenceStore::load`: Experimental persistence contract (M148); API may change before stabilization.
+   --> examples\experimental\persistence-recovery-demo\src\main.rs:158:10
+    |
+158 |         .load(trace_id)
+    |          ^^^^
+
+warning: use of deprecated method `ranvier_runtime::PersistenceStore::resume`: Experimental persistence contract (M148); API may change before stabilization.
+   --> examples\experimental\persistence-recovery-demo\src\main.rs:168:29
+    |
+168 | ... store_impl.resume(trace_id, re...
+    |                ^^^^^^
+
+warning: use of deprecated method `ranvier_runtime::PersistenceStore::load`: Experimental persistence contract (M148); API may change before stabilization.
+   --> examples\experimental\persistence-recovery-demo\src\main.rs:190:10
+    |
+190 |         .load(trace_id)
+    |          ^^^^
+
+warning: use of deprecated method `ranvier_runtime::PersistenceStore::load`: Experimental persistence contract (M148); API may change before stabilization.
+   --> examples\experimental\persistence-recovery-demo\src\main.rs:219:10
+    |
+219 |         .load(compensation_trace_id)
+    |          ^^^^
+
+warning: `persistence-recovery-demo` (bin "persistence-recovery-demo") generated 8 warnings
+error[E0271]: type mismatch resolving `<SecurityHeadersService<...> as Service<...>>::Response == Response<...>`
+   --> examples\guard-demo\src\main.rs:65:16
+    |
+ 65 |         .layer(SecurityHeadersLayer::default())
+    |          ----- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Response<BoxBody<Bytes, Infallible>>`, found `Response<Full<Bytes>>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+    = note: expected struct `Response<http_body_util::combinators::box_body::BoxBody<bytes::bytes::Bytes, Infallible>>`
+               found struct `Response<http_body_util::full::Full<bytes::bytes::Bytes>>`
+note: required by a bound in `HttpIngress::<R>::layer`
+   --> F:\project\ranvier\ranvier-workspace\ranvier\http\src\ingress.rs:777:48
+    |
+774 |     pub fn layer<L>(mut self, layer: L) -> Self
+    |            ----- required by a bound in this associated function
+...
+777 |         L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
+    |                                                ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `HttpIngress::<R>::layer`
+    = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\guard_demo-984cc3ccc6029021.long-type-9332363781592378047.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0271]: type mismatch resolving `<BoxCloneService<..., ..., ...> as Service<...>>::Response == Response<...>`
+  --> examples\guard-demo\src\main.rs:65:10
+   |
+65 |         .layer(SecurityHeadersLayer::default())
+   |          ^^^^^ expected `Response<Full<Bytes>>`, found `Response<BoxBody<Bytes, Infallible>>`
+   |
+   = note: expected struct `Response<http_body_util::full::Full<bytes::bytes::Bytes>>`
+              found struct `Response<http_body_util::combinators::box_body::BoxBody<bytes::bytes::Bytes, Infallible>>`
+   = note: required for `SecurityHeadersService<BoxCloneService<Request<Incoming>, ..., ...>>` to implement `tower_service::Service<http::Request<hyper::body::incoming::Incoming>>`
+   = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\guard_demo-984cc3ccc6029021.long-type-11531067383092342926.txt'
+   = note: consider using `--verbose` to print the full type name to the console
+
+error[E0271]: type mismatch resolving `<RateLimitService<...> as Service<...>>::Response == Response<...>`
+   --> examples\guard-demo\src\main.rs:66:16
+    |
+ 66 |         .layer(global_rate_limit)
+    |          ----- ^^^^^^^^^^^^^^^^^ expected `Response<BoxBody<Bytes, Infallible>>`, found `Response<Full<Bytes>>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+    = note: expected struct `Response<http_body_util::combinators::box_body::BoxBody<bytes::bytes::Bytes, Infallible>>`
+               found struct `Response<http_body_util::full::Full<bytes::bytes::Bytes>>`
+note: required by a bound in `HttpIngress::<R>::layer`
+   --> F:\project\ranvier\ranvier-workspace\ranvier\http\src\ingress.rs:777:48
+    |
+774 |     pub fn layer<L>(mut self, layer: L) -> Self
+    |            ----- required by a bound in this associated function
+...
+777 |         L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
+    |                                                ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `HttpIngress::<R>::layer`
+    = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\guard_demo-984cc3ccc6029021.long-type-1596417852567379606.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0271]: type mismatch resolving `<BoxCloneService<..., ..., ...> as Service<...>>::Response == Response<...>`
+  --> examples\guard-demo\src\main.rs:66:10
+   |
+66 |         .layer(global_rate_limit)
+   |          ^^^^^ expected `Response<Full<Bytes>>`, found `Response<BoxBody<Bytes, Infallible>>`
+   |
+   = note: expected struct `Response<http_body_util::full::Full<bytes::bytes::Bytes>>`
+              found struct `Response<http_body_util::combinators::box_body::BoxBody<bytes::bytes::Bytes, Infallible>>`
+   = note: required for `RateLimitService<BoxCloneService<Request<Incoming>, ..., ...>>` to implement `tower_service::Service<http::Request<hyper::body::incoming::Incoming>>`
+   = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\guard_demo-984cc3ccc6029021.long-type-11531067383092342926.txt'
+   = note: consider using `--verbose` to print the full type name to the console
+
+error[E0271]: type mismatch resolving `<RateLimitService<...> as Service<...>>::Response == Response<...>`
+    --> examples\guard-demo\src\main.rs:68:42
+     |
+  68 |         .get_with_layer("/burst", burst, burst_rate_limit)
+     |          --------------                  ^^^^^^^^^^^^^^^^ expected `Response<BoxBody<Bytes, Infallible>>`, found `Response<Full<Bytes>>`
+     |          |
+     |          required by a bound introduced by this call
+     |
+     = note: expected struct `Response<http_body_util::combinators::box_body::BoxBody<bytes::bytes::Bytes, Infallible>>`
+                found struct `Response<http_body_util::full::Full<bytes::bytes::Bytes>>`
+note: required by a bound in `HttpIngress::<R>::get_with_layer`
+    --> F:\project\ranvier\ranvier-workspace\ranvier\http\src\ingress.rs:1249:48
+     |
+1239 |     pub fn get_with_layer<Out, E, L>(
+     |            -------------- required by a bound in this associated function
+...
+1249 |         L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
+     |                                                ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `HttpIngress::<R>::get_with_layer`
+     = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\guard_demo-984cc3ccc6029021.long-type-1596417852567379606.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `futures_core`
+  --> examples\sse-streaming-demo\src\main.rs:31:43
+   |
+31 | async fn sse_handler() -> Result<Sse<impl futures_core::stream::Stream<Item = Result<SseEvent, Infallible>>>, Infallible> {
+   |                                           ^^^^^^^^^^^^ use of unresolved module or unlinked crate `futures_core`
+   |
+   = help: if you wanted to use a crate named `futures_core`, use `cargo add futures_core` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `axum`
+  --> examples\sse-streaming-demo\src\main.rs:45:27
+   |
+45 |         .route("/events", axum::routing::get(sse_handler));
+   |                           ^^^^ use of unresolved module or unlinked crate `axum`
+   |
+   = help: if you wanted to use a crate named `axum`, use `cargo add axum` to add it to your `Cargo.toml`
+
+For more information about this error, try `rustc --explain E0271`.
+error: could not compile `guard-demo` (bin "guard-demo") due to 5 previous errors
+warning: build failed, waiting for other jobs to finish...
+For more information about this error, try `rustc --explain E0433`.
+error[E0271]: type mismatch resolving `<RequireRoleService<...> as Service<...>>::Response == Response<...>`
+   --> examples\auth-jwt-role-demo\src\main.rs:71:16
+    |
+ 71 |         .layer(RequireRoleLayer::new("admin"))
+    |          ----- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Response<BoxBody<Bytes, Infallible>>`, found `Response<Full<Bytes>>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+    = note: expected struct `http::response::Response<http_body_util::combinators::box_body::BoxBody<bytes::bytes::Bytes, Infallible>>`
+               found struct `http::response::Response<http_body_util::full::Full<bytes::bytes::Bytes>>`
+note: required by a bound in `HttpIngress::<R>::layer`
+   --> F:\project\ranvier\ranvier-workspace\ranvier\http\src\ingress.rs:777:48
+    |
+774 |     pub fn layer<L>(mut self, layer: L) -> Self
+    |            ----- required by a bound in this associated function
+...
+777 |         L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
+    |                                                ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `HttpIngress::<R>::layer`
+    = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\auth_jwt_role_demo-a45d1fa7534ff0a8.long-type-16614248479988159317.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error: could not compile `sse-streaming-demo` (bin "sse-streaming-demo") due to 2 previous errors
+error[E0271]: type mismatch resolving `<BoxCloneService<..., ..., ...> as Service<...>>::Response == Response<...>`
+  --> examples\auth-jwt-role-demo\src\main.rs:71:10
+   |
+71 |         .layer(RequireRoleLayer::new("admin"))
+   |          ^^^^^ expected `Response<Full<Bytes>>`, found `Response<BoxBody<Bytes, Infallible>>`
+   |
+   = note: expected struct `http::response::Response<http_body_util::full::Full<bytes::bytes::Bytes>>`
+              found struct `http::response::Response<http_body_util::combinators::box_body::BoxBody<bytes::bytes::Bytes, Infallible>>`
+   = note: required for `RequireRoleService<BoxCloneService<Request<Incoming>, ..., ...>>` to implement `tower_service::Service<http::request::Request<hyper::body::incoming::Incoming>>`
+   = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\auth_jwt_role_demo-a45d1fa7534ff0a8.long-type-7616778453823262440.txt'
+   = note: consider using `--verbose` to print the full type name to the console
+
+error[E0271]: type mismatch resolving `<BearerAuthService<...> as Service<...>>::Response == Response<...>`
+   --> examples\auth-jwt-role-demo\src\main.rs:74:16
+    |
+ 74 |         .layer(BearerAuthLayer::new_hs256(JWT_SECRET).required())
+    |          ----- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Response<BoxBody<Bytes, Infallible>>`, found `Response<Full<Bytes>>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+    = note: expected struct `http::response::Response<http_body_util::combinators::box_body::BoxBody<bytes::bytes::Bytes, Infallible>>`
+               found struct `http::response::Response<http_body_util::full::Full<bytes::bytes::Bytes>>`
+note: required by a bound in `HttpIngress::<R>::layer`
+   --> F:\project\ranvier\ranvier-workspace\ranvier\http\src\ingress.rs:777:48
+    |
+774 |     pub fn layer<L>(mut self, layer: L) -> Self
+    |            ----- required by a bound in this associated function
+...
+777 |         L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
+    |                                                ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `HttpIngress::<R>::layer`
+    = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\auth_jwt_role_demo-a45d1fa7534ff0a8.long-type-7536841496731557915.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0271]: type mismatch resolving `<BoxCloneService<..., ..., ...> as Service<...>>::Response == Response<...>`
+  --> examples\auth-jwt-role-demo\src\main.rs:74:10
+   |
+74 |         .layer(BearerAuthLayer::new_hs256(JWT_SECRET).required())
+   |          ^^^^^ expected `Response<Full<Bytes>>`, found `Response<BoxBody<Bytes, Infallible>>`
+   |
+   = note: expected struct `http::response::Response<http_body_util::full::Full<bytes::bytes::Bytes>>`
+              found struct `http::response::Response<http_body_util::combinators::box_body::BoxBody<bytes::bytes::Bytes, Infallible>>`
+   = note: required for `BearerAuthService<BoxCloneService<Request<Incoming>, ..., ...>>` to implement `tower_service::Service<http::request::Request<hyper::body::incoming::Incoming>>`
+   = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\auth_jwt_role_demo-a45d1fa7534ff0a8.long-type-7616778453823262440.txt'
+   = note: consider using `--verbose` to print the full type name to the console
+
+error: could not compile `auth-jwt-role-demo` (bin "auth-jwt-role-demo") due to 4 previous errors

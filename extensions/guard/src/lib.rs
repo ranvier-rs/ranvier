@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use http::header::{HeaderName, HeaderValue};
 use http::{Method, Request, Response, StatusCode};
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use tower::{Layer, Service};
 use tower_http::cors::CorsLayer;
 
@@ -364,14 +364,14 @@ pub struct SecurityHeadersService<S> {
 
 impl<S, B> Service<Request<B>> for SecurityHeadersService<S>
 where
-    S: Service<Request<B>, Response = Response<Full<Bytes>>, Error = Infallible>
+    S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
         + Clone
         + Send
         + 'static,
     S::Future: Send + 'static,
     B: Send + 'static,
 {
-    type Response = Response<Full<Bytes>>;
+    type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
     type Error = Infallible;
     type Future = BoxFuture<Self::Response>;
 
@@ -478,14 +478,14 @@ struct RateDecision {
 
 impl<S, B> Service<Request<B>> for RateLimitService<S>
 where
-    S: Service<Request<B>, Response = Response<Full<Bytes>>, Error = Infallible>
+    S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
         + Clone
         + Send
         + 'static,
     S::Future: Send + 'static,
     B: Send + 'static,
 {
-    type Response = Response<Full<Bytes>>;
+    type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
     type Error = Infallible;
     type Future = BoxFuture<Self::Response>;
 
@@ -570,7 +570,7 @@ fn add_rate_headers(headers: &mut http::HeaderMap, limit: u64, remaining: u64) {
     );
 }
 
-fn rate_limited_response(limit: u64) -> Response<Full<Bytes>> {
+fn rate_limited_response(limit: u64) -> Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>> {
     let payload = serde_json::json!({
         "error": "rate_limit_exceeded",
         "message": "too many requests",
@@ -579,7 +579,7 @@ fn rate_limited_response(limit: u64) -> Response<Full<Bytes>> {
     let mut response = Response::builder()
         .status(StatusCode::TOO_MANY_REQUESTS)
         .header(http::header::CONTENT_TYPE, "application/json")
-        .body(Full::new(Bytes::from(payload.to_string())))
+        .body(Full::new(Bytes::from(payload.to_string())).boxed())
         .expect("rate-limit response should be infallible");
 
     add_rate_headers(response.headers_mut(), limit, 0);
@@ -631,14 +631,14 @@ pub struct ConnectionLimitService<S> {
 
 impl<S, B> Service<Request<B>> for ConnectionLimitService<S>
 where
-    S: Service<Request<B>, Response = Response<Full<Bytes>>, Error = Infallible>
+    S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
         + Clone
         + Send
         + 'static,
     S::Future: Send + 'static,
     B: Send + 'static,
 {
-    type Response = Response<Full<Bytes>>;
+    type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
     type Error = Infallible;
     type Future = BoxFuture<Self::Response>;
 
@@ -671,7 +671,7 @@ where
                 return Ok(Response::builder()
                     .status(StatusCode::SERVICE_UNAVAILABLE)
                     .header(http::header::CONTENT_TYPE, "application/json")
-                    .body(Full::new(Bytes::from(payload.to_string())))
+                    .body(Full::new(Bytes::from(payload.to_string())).boxed())
                     .expect("connection-limit response"));
             }
 
@@ -766,14 +766,14 @@ pub struct RequestSizeLimitService<S> {
 
 impl<S, B> Service<Request<B>> for RequestSizeLimitService<S>
 where
-    S: Service<Request<B>, Response = Response<Full<Bytes>>, Error = Infallible>
+    S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
         + Clone
         + Send
         + 'static,
     S::Future: Send + 'static,
     B: Send + 'static,
 {
-    type Response = Response<Full<Bytes>>;
+    type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
     type Error = Infallible;
     type Future = BoxFuture<Self::Response>;
 
@@ -800,7 +800,7 @@ where
                 return Ok(Response::builder()
                     .status(StatusCode::URI_TOO_LONG)
                     .header(http::header::CONTENT_TYPE, "application/json")
-                    .body(Full::new(Bytes::from(payload.to_string())))
+                    .body(Full::new(Bytes::from(payload.to_string())).boxed())
                     .expect("url-limit response"));
             }
 
@@ -816,7 +816,7 @@ where
                 return Ok(Response::builder()
                     .status(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE)
                     .header(http::header::CONTENT_TYPE, "application/json")
-                    .body(Full::new(Bytes::from(payload.to_string())))
+                    .body(Full::new(Bytes::from(payload.to_string())).boxed())
                     .expect("header-limit response"));
             }
 
@@ -841,15 +841,15 @@ mod tests {
 
     fn ok_service() -> impl Service<
         Request<Full<Bytes>>,
-        Response = Response<Full<Bytes>>,
+        Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>,
         Error = Infallible,
-        Future = impl Future<Output = Result<Response<Full<Bytes>>, Infallible>> + Send,
+        Future = impl Future<Output = Result<Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Infallible>> + Send,
     > + Clone {
         tower::service_fn(|_req: Request<Full<Bytes>>| async move {
             Ok::<_, Infallible>(
                 Response::builder()
                     .status(StatusCode::OK)
-                    .body(Full::new(Bytes::from_static(b"ok")))
+                    .body(Full::new(Bytes::from_static(b"ok")).boxed())
                     .expect("response build"),
             )
         })

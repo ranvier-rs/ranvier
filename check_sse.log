@@ -1,0 +1,100 @@
+    Checking tower-http v0.5.2
+    Checking ranvier-core v0.14.3 (F:\project\ranvier\ranvier-workspace\ranvier\core)
+    Checking ranvier-inspector v0.14.3 (F:\project\ranvier\ranvier-workspace\ranvier\extensions\inspector)
+    Checking ranvier-runtime v0.14.3 (F:\project\ranvier\ranvier-workspace\ranvier\runtime)
+    Checking ranvier-http v0.14.3 (F:\project\ranvier\ranvier-workspace\ranvier\http)
+warning: unused imports: `Response` and `header::CONTENT_TYPE`
+ --> http\src\sse.rs:2:12
+  |
+2 | use http::{header::CONTENT_TYPE, Response};
+  |            ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `BodyExt` and `StreamBody`
+ --> http\src\sse.rs:3:22
+  |
+3 | use http_body_util::{StreamBody, BodyExt};
+  |                      ^^^^^^^^^^  ^^^^^^^
+
+warning: unused import: `StreamExt`
+ --> http\src\sse.rs:7:36
+  |
+7 | use futures_util::stream::{Stream, StreamExt};
+  |                                    ^^^^^^^^^
+
+warning: variable does not need to be mutable
+    --> http\src\ingress.rs:1535:25
+     |
+1535 |                     let mut res = (entry.handler)(parts, &resources).await;
+     |                         ----^^^
+     |                         |
+     |                         help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> http\src\ingress.rs:1549:25
+     |
+1549 |                     let mut res = route_service.oneshot(req).await;
+     |                         ----^^^
+     |                         |
+     |                         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> http\src\ingress.rs:1569:21
+     |
+1569 |                 let mut fallback_res = if let Some(ref fb) = fallback {
+     |                     ----^^^^^^^^^^^^
+     |                     |
+     |                     help: remove this `mut`
+
+warning: `ranvier-http` (lib) generated 6 warnings (run `cargo fix --lib -p ranvier-http` to apply 6 suggestions)
+    Checking sse-streaming-demo v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\sse-streaming-demo)
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `futures_core`
+ --> examples\sse-streaming-demo\src\main.rs:9:5
+  |
+9 | use futures_core::stream::Stream;
+  |     ^^^^^^^^^^^^ use of unresolved module or unlinked crate `futures_core`
+  |
+  = help: if you wanted to use a crate named `futures_core`, use `cargo add futures_core` to add it to your `Cargo.toml`
+
+error[E0432]: unresolved import `ranvier_runtime`
+ --> examples\sse-streaming-demo\src\main.rs:4:5
+  |
+4 | use ranvier_runtime::Axon;
+  |     ^^^^^^^^^^^^^^^ use of unresolved module or unlinked crate `ranvier_runtime`
+  |
+  = help: if you wanted to use a crate named `ranvier_runtime`, use `cargo add ranvier_runtime` to add it to your `Cargo.toml`
+
+error[E0425]: cannot find type `Pin` in this scope
+  --> examples\sse-streaming-demo\src\main.rs:38:25
+   |
+38 | impl Transition<(), Sse<Pin<Box<dyn Stream<Item = Result<SseEvent, Infallible>> + Send>>>> for SseHandler {
+   |                         ^^^ not found in this scope
+   |
+help: consider importing this struct
+   |
+ 1 + use std::pin::Pin;
+   |
+
+error[E0425]: cannot find type `Pin` in this scope
+  --> examples\sse-streaming-demo\src\main.rs:42:71
+   |
+42 |     async fn run(&self, _s: (), _r: &(), _b: &mut Bus) -> Outcome<Sse<Pin<Box<dyn Stream<Item = Result<SseEvent, Infallible>> + Send>>>, ...
+   |                                                                       ^^^ not found in this scope
+   |
+help: consider importing this struct
+   |
+ 1 + use std::pin::Pin;
+   |
+
+error[E0599]: no method named `clone` found for struct `ranvier_http::HttpIngress<R>` in the current scope
+  --> examples\sse-streaming-demo\src\main.rs:60:9
+   |
+60 |     app.clone().bind("127.0.0.1:3000").run(()).await?;
+   |         ^^^^^ method not found in `ranvier_http::HttpIngress<_>`
+
+Some errors have detailed explanations: E0425, E0432, E0433, E0599.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `sse-streaming-demo` (bin "sse-streaming-demo") due to 5 previous errors

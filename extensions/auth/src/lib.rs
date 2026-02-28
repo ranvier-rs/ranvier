@@ -7,7 +7,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http::header::{AUTHORIZATION, HeaderName};
 use http::{Request, Response, StatusCode};
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use ranvier_core::Bus;
 use serde::{Deserialize, Serialize};
@@ -128,14 +128,14 @@ pub struct BearerAuthService<S> {
 
 impl<S, B> Service<Request<B>> for BearerAuthService<S>
 where
-    S: Service<Request<B>, Response = Response<Full<Bytes>>, Error = Infallible>
+    S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
         + Clone
         + Send
         + 'static,
     S::Future: Send + 'static,
     B: Send + 'static,
 {
-    type Response = Response<Full<Bytes>>;
+    type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
     type Error = Infallible;
     type Future = BoxFuture<Self::Response>;
 
@@ -254,14 +254,14 @@ pub struct ApiKeyAuthService<S> {
 
 impl<S, B> Service<Request<B>> for ApiKeyAuthService<S>
 where
-    S: Service<Request<B>, Response = Response<Full<Bytes>>, Error = Infallible>
+    S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
         + Clone
         + Send
         + 'static,
     S::Future: Send + 'static,
     B: Send + 'static,
 {
-    type Response = Response<Full<Bytes>>;
+    type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
     type Error = Infallible;
     type Future = BoxFuture<Self::Response>;
 
@@ -351,14 +351,14 @@ pub struct RequireRoleService<S> {
 
 impl<S, B> Service<Request<B>> for RequireRoleService<S>
 where
-    S: Service<Request<B>, Response = Response<Full<Bytes>>, Error = Infallible>
+    S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
         + Clone
         + Send
         + 'static,
     S::Future: Send + 'static,
     B: Send + 'static,
 {
-    type Response = Response<Full<Bytes>>;
+    type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
     type Error = Infallible;
     type Future = BoxFuture<Self::Response>;
 
@@ -393,13 +393,11 @@ where
 }
 
 /// Move authenticated request context into Bus so Transition code can read it explicitly.
-pub fn inject_auth_context<B>(request: &Request<B>, bus: &mut Bus) {
-    if let Some(context) = request.extensions().get::<AuthContext>() {
-        bus.insert(context.clone());
+pub fn inject_auth_context(parts: &http::request::Parts, bus: &mut Bus) {
+    if let Some(ctx) = parts.extensions.get::<AuthContext>() {
+        bus.insert(ctx.clone());
     }
 }
-
-/// Read auth context from Bus.
 pub fn auth_context<'a>(bus: &'a Bus) -> Option<&'a AuthContext> {
     bus.read::<AuthContext>()
 }
@@ -433,7 +431,7 @@ fn auth_error_response(
     status: StatusCode,
     code: &'static str,
     message: &'static str,
-) -> Response<Full<Bytes>> {
+) -> Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>> {
     let payload = serde_json::json!({
         "error": code,
         "message": message,
@@ -442,7 +440,7 @@ fn auth_error_response(
     Response::builder()
         .status(status)
         .header(http::header::CONTENT_TYPE, "application/json")
-        .body(Full::new(Bytes::from(payload.to_string())))
+        .body(Full::new(Bytes::from(payload.to_string())).boxed())
         .expect("auth error response should be infallible")
 }
 
@@ -464,9 +462,9 @@ mod tests {
 
     fn ok_service() -> impl Service<
         Request<Full<Bytes>>,
-        Response = Response<Full<Bytes>>,
+        Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>,
         Error = Infallible,
-        Future = impl Future<Output = Result<Response<Full<Bytes>>, Infallible>> + Send,
+        Future = impl Future<Output = Result<Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Infallible>> + Send,
     > + Clone {
         tower::service_fn(|req: Request<Full<Bytes>>| async move {
             let who = req
@@ -477,7 +475,7 @@ mod tests {
             Ok::<_, Infallible>(
                 Response::builder()
                     .status(StatusCode::OK)
-                    .body(Full::new(Bytes::from(who)))
+                    .body(Full::new(Bytes::from(who)).boxed())
                     .expect("response build"),
             )
         })
@@ -586,7 +584,7 @@ mod tests {
         request.extensions_mut().insert(context.clone());
 
         let mut bus = Bus::new();
-        inject_auth_context(&request, &mut bus);
+        inject_auth_context(&request.into_parts().0, &mut bus);
 
         assert_eq!(auth_context(&bus), Some(&context));
     }

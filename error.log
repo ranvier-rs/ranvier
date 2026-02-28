@@ -1,0 +1,314 @@
+    Checking ranvier-http v0.14.2 (F:\project\ranvier\ranvier-workspace\ranvier\http)
+error[E0432]: unresolved import `anyhow`
+ --> http\src\http3.rs:8:5
+  |
+8 | use anyhow::{bail, Context, Result};
+  |     ^^^^^^ use of unresolved module or unlinked crate `anyhow`
+  |
+  = help: if you wanted to use a crate named `anyhow`, use `cargo add anyhow` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `anyhow`
+  --> http\src\http3.rs:69:22
+   |
+69 |         .map_err(|e| anyhow::anyhow!("Invalid private key: {}", e))?;
+   |                      ^^^^^^ use of unresolved module or unlinked crate `anyhow`
+
+error[E0425]: cannot find value `alt_svc_h3_port` in this scope
+    --> http\src\ingress.rs:1428:55
+     |
+1428 | ...                   #[cfg(feature = "http3")] alt_svc_h3_port,
+     |                                                 ^^^^^^^^^^^^^^^
+     |
+help: you might have meant to use the available field
+     |
+1428 |                             #[cfg(feature = "http3")] self.alt_svc_h3_port,
+     |                                                       +++++
+
+warning: unused import: `DEFAULT_BODY_LIMIT`
+  --> http\src\extract\multipart.rs:21:40
+   |
+21 | use super::{ExtractError, FromRequest, DEFAULT_BODY_LIMIT};
+   |                                        ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `Response` and `header::CONTENT_TYPE`
+ --> http\src\sse.rs:2:12
+  |
+2 | use http::{header::CONTENT_TYPE, Response};
+  |            ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^
+
+warning: unused imports: `BodyExt` and `StreamBody`
+ --> http\src\sse.rs:3:22
+  |
+3 | use http_body_util::{StreamBody, BodyExt};
+  |                      ^^^^^^^^^^  ^^^^^^^
+
+warning: unused import: `StreamExt`
+ --> http\src\sse.rs:7:36
+  |
+7 | use futures_util::stream::{Stream, StreamExt};
+  |                                    ^^^^^^^^^
+
+error[E0599]: no method named `context` found for enum `Result<T, E>` in the current scope
+   --> http\src\http3.rs:74:10
+    |
+ 71 |       let mut crypto = rustls::ServerConfig::builder()
+    |  ______________________-
+ 72 | |         .with_no_client_auth()
+ 73 | |         .with_single_cert(certs, key)
+ 74 | |         .context("Failed to build rustls ServerConfig")?;
+    | |_________-^^^^^^^
+    |
+   ::: C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anyhow-1.0.100\src\lib.rs:622:8
+    |
+622 |       fn context<C>(self, context: C) -> Result<T, Error>
+    |          ------- the method is available for `Result<rustls::ServerConfig, rustls::Error>` here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `Context` which provides `context` is implemented but not in scope; perhaps you want to import it
+    |
+  5 + use anyhow::Context;
+    |
+help: there is a method `with_context` with a similar name
+    |
+ 74 |         .with_context("Failed to build rustls ServerConfig")?;
+    |          +++++
+
+error[E0599]: no method named `context` found for enum `Result<T, E>` in the current scope
+   --> http\src\http3.rs:83:10
+    |
+ 82 |       let endpoint = Endpoint::server(server_config, config.bind_addr)
+    |  ____________________-
+ 83 | |         .context("Failed to bind QUIC endpoint")?;
+    | |_________-^^^^^^^
+    |
+   ::: C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anyhow-1.0.100\src\lib.rs:622:8
+    |
+622 |       fn context<C>(self, context: C) -> Result<T, Error>
+    |          ------- the method is available for `Result<Endpoint, std::io::Error>` here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `Context` which provides `context` is implemented but not in scope; perhaps you want to import it
+    |
+  5 + use anyhow::Context;
+    |
+help: there is a method `with_context` with a similar name
+    |
+ 83 |         .with_context("Failed to bind QUIC endpoint")?;
+    |          +++++
+
+error[E0599]: no method named `context` found for enum `Result<T, E>` in the current scope
+   --> http\src\http3.rs:107:37
+    |
+107 |     let connection = incoming.await.context("QUIC connection failed")?;
+    |                                     ^^^^^^^
+    |
+   ::: C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anyhow-1.0.100\src\lib.rs:622:8
+    |
+622 |     fn context<C>(self, context: C) -> Result<T, Error>
+    |        ------- the method is available for `Result<h3_quinn::quinn::Connection, h3_quinn::quinn::ConnectionError>` here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `Context` which provides `context` is implemented but not in scope; perhaps you want to import it
+    |
+  5 + use anyhow::Context;
+    |
+help: there is a method `with_context` with a similar name
+    |
+107 |     let connection = incoming.await.with_context("QUIC connection failed")?;
+    |                                     +++++
+
+error[E0599]: no method named `context` found for enum `Result<T, E>` in the current scope
+   --> http\src\http3.rs:115:10
+    |
+113 |       let mut h3_server = h3::server::Connection::new(h3_conn)
+    |  _________________________-
+114 | |         .await
+115 | |         .context("HTTP/3 connection setup failed")?;
+    | |_________-^^^^^^^
+    |
+   ::: C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anyhow-1.0.100\src\lib.rs:622:8
+    |
+622 |       fn context<C>(self, context: C) -> Result<T, Error>
+    |          ------- the method is available for `Result<h3::server::Connection<h3_quinn::Connection, _>, h3::error::ConnectionError>` here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `Context` which provides `context` is implemented but not in scope; perhaps you want to import it
+    |
+  5 + use anyhow::Context;
+    |
+help: there is a method `with_context` with a similar name
+    |
+115 |         .with_context("HTTP/3 connection setup failed")?;
+    |          +++++
+
+error[E0308]: mismatched types
+    --> http\src\http3.rs:154:38
+     |
+ 154 |         body_bytes.extend_from_slice(&chunk);
+     |                    ----------------- ^^^^^^ expected `&[_]`, found `&impl Buf`
+     |                    |
+     |                    arguments to this method are incorrect
+     |
+    ::: C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\h3-0.0.8\src\server\stream.rs:70:56
+     |
+  70 |     pub async fn recv_data(&mut self) -> Result<Option<impl Buf>, StreamError> {
+     |                                                        -------- the found opaque type
+     |
+     = note: expected reference `&[_]`
+                found reference `&impl Buf`
+note: method defined here
+    --> C:\Users\realwolf\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\alloc\src\vec\mod.rs:3358:12
+     |
+3358 |     pub fn extend_from_slice(&mut self, other: &[T]) {
+     |            ^^^^^^^^^^^^^^^^^
+
+error[E0282]: type annotations needed
+   --> http\src\http3.rs:173:39
+    |
+173 |                     if let Ok(data) = frame.into_data() {
+    |                                       ^^^^^ cannot infer type
+
+error[E0277]: expected a `Fn(&http::Request<hyper::body::Incoming>, &mut ranvier_core::Bus)` closure, found `F`
+   --> http\src\ingress.rs:817:33
+    |
+817 |         self.bus_injectors.push(Arc::new(injector));
+    |                                 ^^^^^^^^^^^^^^^^^^ expected an `Fn(&http::Request<hyper::body::Incoming>, &mut ranvier_core::Bus)` closure, found `F`
+    |
+    = note: expected a closure with signature `for<'a, 'b> fn(&'a http::Request<hyper::body::Incoming>, &'b mut ranvier_core::Bus)`
+               found a closure with signature `fn(&http::request::Parts, &mut ranvier_core::Bus)`
+    = note: required for the cast from `Arc<F>` to `Arc<dyn Fn(&Request<Incoming>, &mut Bus) + Send + Sync>`
+    = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\ranvier_http-cc0c36cf37e0d999.long-type-2765317871728610138.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0308]: mismatched types
+   --> http\src\ingress.rs:931:38
+    |
+931 | ...                   injector(&parts, &mut bus);
+    |                       -------- ^^^^^^ expected `&Request<Incoming>`, found `&Parts`
+    |                       |
+    |                       arguments to this function are incorrect
+    |
+    = note: expected reference `&http::Request<hyper::body::Incoming>`
+               found reference `&http::request::Parts`
+
+error[E0308]: mismatched types
+    --> http\src\ingress.rs:1197:34
+     |
+1197 |                         injector(&parts, &mut bus);
+     |                         -------- ^^^^^^ expected `&Request<Incoming>`, found `&Parts`
+     |                         |
+     |                         arguments to this function are incorrect
+     |
+     = note: expected reference `&http::Request<hyper::body::Incoming>`
+                found reference `&http::request::Parts`
+
+error[E0308]: mismatched types
+    --> http\src\ingress.rs:1342:34
+     |
+1342 |                         injector(&parts, &mut bus);
+     |                         -------- ^^^^^^ expected `&Request<Incoming>`, found `&Parts`
+     |                         |
+     |                         arguments to this function are incorrect
+     |
+     = note: expected reference `&http::Request<hyper::body::Incoming>`
+                found reference `&http::request::Parts`
+
+error[E0560]: struct `RawIngressService<R>` has no field named `alt_svc_h3_port`
+    --> http\src\ingress.rs:1489:13
+     |
+1489 |             alt_svc_h3_port: self.alt_svc_h3_port,
+     |             ^^^^^^^^^^^^^^^ `RawIngressService<_>` does not have this field
+     |
+     = note: all struct fields are already assigned
+
+error[E0061]: this function takes 7 arguments but 6 arguments were supplied
+    --> http\src\ingress.rs:2034:17
+     |
+2034 |                 build_http_service(routes, fallback, resources, layers, health, static_assets);
+     |                 ^^^^^^^^^^^^^^^^^^------------------------------------------------------------ argument #7 of type `std::option::Option<u16>` is missing
+     |
+note: function defined here
+    --> http\src\ingress.rs:1494:4
+     |
+1494 | fn build_http_service<R>(
+     |    ^^^^^^^^^^^^^^^^^^
+...
+1501 |     #[cfg(feature = "http3")] alt_svc_port: Option<u16>,
+     |     ---------------------------------------------------
+help: provide the argument
+     |
+2034 |                 build_http_service(routes, fallback, resources, layers, health, static_assets, /* std::option::Option<u16> */);
+     |                                                                                              ++++++++++++++++++++++++++++++++
+
+error[E0599]: no method named `context` found for enum `Result<T, E>` in the current scope
+   --> http\src\http3.rs:40:14
+    |
+ 39 |           let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+    |  ____________________-
+ 40 | |             .context("Failed to generate self-signed cert")?;
+    | |_____________-^^^^^^^
+    |
+   ::: C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\anyhow-1.0.100\src\lib.rs:622:8
+    |
+622 |       fn context<C>(self, context: C) -> Result<T, Error>
+    |          ------- the method is available for `Result<rcgen::CertifiedKey, rcgen::Error>` here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `Context` which provides `context` is implemented but not in scope; perhaps you want to import it
+    |
+  5 + use anyhow::Context;
+    |
+help: there is a method `with_context` with a similar name
+    |
+ 40 |             .with_context("Failed to generate self-signed cert")?;
+    |              +++++
+
+warning: irrefutable `if let` pattern
+    --> http\src\ingress.rs:1551:24
+     |
+1551 |                     if let Ok(ref mut r) = res {
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this pattern will always match, so the `if let` is useless
+     = help: consider replacing the `if let` with a `let`
+     = note: `#[warn(irrefutable_let_patterns)]` on by default
+
+warning: irrefutable `if let` pattern
+    --> http\src\ingress.rs:1586:20
+     |
+1586 |                 if let Ok(ref mut r) = fallback_res {
+     |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this pattern will always match, so the `if let` is useless
+     = help: consider replacing the `if let` with a `let`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `anyhow`
+  --> http\src\http3.rs:59:46
+   |
+59 |     B: http_body::Body<Data = Bytes, Error = anyhow::Error> + Send + 'static,
+   |                                              ^^^^^^ use of unresolved module or unlinked crate `anyhow`
+   |
+   = help: if you wanted to use a crate named `anyhow`, use `cargo add anyhow` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `anyhow`
+   --> http\src\http3.rs:105:46
+    |
+105 |     B: http_body::Body<Data = Bytes, Error = anyhow::Error> + Send + 'static,
+    |                                              ^^^^^^ use of unresolved module or unlinked crate `anyhow`
+    |
+    = help: if you wanted to use a crate named `anyhow`, use `cargo add anyhow` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `anyhow`
+   --> http\src\http3.rs:149:46
+    |
+149 |     B: http_body::Body<Data = Bytes, Error = anyhow::Error> + Send + 'static,
+    |                                              ^^^^^^ use of unresolved module or unlinked crate `anyhow`
+    |
+    = help: if you wanted to use a crate named `anyhow`, use `cargo add anyhow` to add it to your `Cargo.toml`
+
+Some errors have detailed explanations: E0061, E0277, E0282, E0308, E0425, E0432, E0433, E0560, E0599.
+For more information about an error, try `rustc --explain E0061`.
+warning: `ranvier-http` (lib) generated 6 warnings
+error: could not compile `ranvier-http` (lib) due to 19 previous errors; 6 warnings emitted

@@ -1,9 +1,13 @@
 use ranvier_core::event::EventSource;
+use ranvier_core::prelude::*;
 use ranvier_http::prelude::*;
+use ranvier_runtime::Axon;
 use std::time::Duration;
 use tokio::time::{interval, Interval};
 use async_trait::async_trait;
 use std::convert::Infallible;
+use futures_core::stream::Stream;
+use std::pin::Pin;
 
 struct TickerSource {
     ticker: Interval,
@@ -28,12 +32,21 @@ impl EventSource<String> for TickerSource {
     }
 }
 
-async fn sse_handler() -> Result<Sse<impl futures_core::stream::Stream<Item = Result<SseEvent, Infallible>>>, Infallible> {
-    let source = TickerSource::new();
-    let stream = ranvier_http::sse::from_event_source(source, |msg| {
-        SseEvent::default().data(msg)
-    });
-    Ok(Sse::new(stream))
+#[derive(Clone)]
+struct SseHandler;
+
+#[async_trait]
+impl Transition<(), Sse<Pin<Box<dyn Stream<Item = Result<SseEvent, Infallible>> + Send + Sync>>>> for SseHandler {
+    type Error = Infallible;
+    type Resources = ();
+
+    async fn run(&self, _s: (), _r: &(), _b: &mut Bus) -> Outcome<Sse<Pin<Box<dyn Stream<Item = Result<SseEvent, Infallible>> + Send + Sync>>>, Self::Error> {
+        let source = TickerSource::new();
+        let stream = ranvier_http::sse::from_event_source(source, |msg| {
+            SseEvent::default().data(msg)
+        });
+        Outcome::next(Sse::new(Box::pin(stream)))
+    }
 }
 
 #[tokio::main]
@@ -41,10 +54,11 @@ async fn main() -> anyhow::Result<()> {
     println!("Starting Ranvier SSE Demo Server on http://127.0.0.1:3000/");
     println!("To test: curl -N http://127.0.0.1:3000/events");
 
+    let handler = Axon::<(), (), Infallible, ()>::new("sse").then(SseHandler);
     let app = HttpIngress::new()
-        .route("/events", axum::routing::get(sse_handler));
+        .get("/events", handler);
 
-    app.clone().bind("127.0.0.1:3000").run().await?;
+    app.bind("127.0.0.1:3000").run(()).await.map_err(|e| anyhow::anyhow!("{:?}", e))?;
     
     Ok(())
 }

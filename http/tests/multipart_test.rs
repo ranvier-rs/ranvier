@@ -1,5 +1,7 @@
 //! Integration tests for the multipart extractor.
 
+#![cfg(feature = "multer")]
+
 use bytes::Bytes;
 use http::Request;
 use http_body_util::Full;

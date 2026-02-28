@@ -4,21 +4,21 @@ use std::time::Duration;
 use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode};
 use http::header::HeaderName;
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use ranvier_guard::*;
 use tower::{Layer, Service, ServiceExt};
 
 fn ok_service() -> impl Service<
     Request<Full<Bytes>>,
-    Response = Response<Full<Bytes>>,
+    Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>,
     Error = Infallible,
-    Future = impl std::future::Future<Output = Result<Response<Full<Bytes>>, Infallible>> + Send,
+    Future = impl std::future::Future<Output = Result<Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Infallible>> + Send,
 > + Clone {
     tower::service_fn(|_req: Request<Full<Bytes>>| async move {
         Ok::<_, Infallible>(
             Response::builder()
                 .status(StatusCode::OK)
-                .body(Full::new(Bytes::from_static(b"ok")))
+                .body(Full::new(Bytes::from_static(b"ok")).boxed())
                 .expect("response build"),
         )
     })
