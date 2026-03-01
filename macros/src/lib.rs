@@ -24,6 +24,8 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut bus_deny_types: Vec<Type> = Vec::new();
     let mut bus_allow_specified = false;
     let mut bus_deny_specified = false;
+    let mut x_pos = None;
+    let mut y_pos = None;
     if !attr.is_empty() {
         let parser = syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated;
         if let Ok(metas) = syn::parse::Parser::parse2(parser, attr.into()) {
@@ -43,6 +45,10 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
                             Ok(types) => bus_deny_types = types,
                             Err(err) => return err.to_compile_error().into(),
                         }
+                    } else if nv.path.is_ident("x") {
+                        x_pos = Some(nv.value);
+                    } else if nv.path.is_ident("y") {
+                        y_pos = Some(nv.value);
                     }
                 }
             }
@@ -160,6 +166,16 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {}
     };
 
+    let position_method = if let (Some(x), Some(y)) = (x_pos, y_pos) {
+        quote! {
+            fn position(&self) -> Option<(f32, f32)> {
+                Some((#x as f32, #y as f32))
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     let expanded = quote! {
         #[derive(Clone, Default)]
         #[allow(non_camel_case_types)]
@@ -171,6 +187,7 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
             type Resources = #res_type;
 
             #bus_policy_method
+            #position_method
 
             async fn run(
                 &self,

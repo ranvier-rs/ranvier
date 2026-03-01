@@ -85,6 +85,7 @@ async fn main() -> Result<()> {
         metadata: Default::default(),
         bus_capability: None,
         source_location: None,
+        position: None,
         compensation_node_id: None,
     };
 
@@ -110,6 +111,7 @@ async fn main() -> Result<()> {
         metadata: Default::default(),
         bus_capability: None,
         source_location: None,
+        position: None,
         compensation_node_id: None,
     };
 

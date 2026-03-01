@@ -100,6 +100,12 @@ where
         None
     }
 
+    /// Returns the visual position of this transition in a schematic.
+    /// (x, y) coordinates.
+    fn position(&self) -> Option<(f32, f32)> {
+        None
+    }
+
     /// Optional transition-scoped Bus access policy (M143).
     ///
     /// Default is unrestricted access for backward compatibility.

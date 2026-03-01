@@ -128,6 +128,12 @@ impl SourceLocation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Position {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub id: String, // Uuid typically
     pub kind: NodeKind,
@@ -144,6 +150,9 @@ pub struct Node {
     /// 소스 코드 위치 (Studio Code↔Node 매핑용)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_location: Option<SourceLocation>,
+    /// Visual position in schematic
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<Position>,
     /// Schematic-level Saga compensation routing.
     /// Points to the node ID that handles compensation for this node.
     #[serde(skip_serializing_if = "Option::is_none")]

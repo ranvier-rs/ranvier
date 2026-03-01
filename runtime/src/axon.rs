@@ -143,6 +143,7 @@ where
             metadata: Default::default(),
             bus_capability: None,
             source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            position: None,
             compensation_node_id: None,
         };
 
@@ -203,6 +204,7 @@ where
             metadata: Default::default(),
             bus_capability: bus_capability_schema_from_policy(transition.bus_access_policy()),
             source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            position: transition.position().map(|(x, y)| ranvier_core::schematic::Position { x, y }),
             compensation_node_id: None,
         };
 
@@ -346,6 +348,7 @@ where
             metadata: Default::default(),
             bus_capability: bus_capability_schema_from_policy(transition.bus_access_policy()),
             source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            position: transition.position().map(|(x, y)| ranvier_core::schematic::Position { x, y }),
             compensation_node_id: Some(comp_node_id.clone()),
         };
 
@@ -361,6 +364,7 @@ where
             metadata: Default::default(),
             bus_capability: None,
             source_location: None,
+            position: compensation.position().map(|(x, y)| ranvier_core::schematic::Position { x, y }),
             compensation_node_id: None,
         };
 
@@ -505,6 +509,7 @@ where
             metadata: Default::default(),
             bus_capability: None,
             source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            position: transition.position().map(|(x, y)| ranvier_core::schematic::Position { x, y }),
             compensation_node_id: None,
         };
 
@@ -539,6 +544,7 @@ where
             metadata: Default::default(),
             bus_capability: None,
             source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            position: None,
             compensation_node_id: None,
         };
 
