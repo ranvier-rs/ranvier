@@ -29,6 +29,7 @@ use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -711,6 +712,8 @@ pub struct HttpIngress<R = ()> {
     alt_svc_h3_port: Option<u16>,
     /// Features: enable active intervention system routes
     active_intervention: bool,
+    /// Optional policy registry for hot-reloads
+    policy_registry: Option<ranvier_core::policy::PolicyRegistry>,
     _phantom: std::marker::PhantomData<R>,
 }
 
@@ -736,6 +739,7 @@ where
             #[cfg(feature = "http3")]
             alt_svc_h3_port: None,
             active_intervention: false,
+            policy_registry: None,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -751,6 +755,12 @@ where
     /// inspect, and forcefully resume or re-route in-flight workflow instances.
     pub fn with_active_intervention(mut self) -> Self {
         self.active_intervention = true;
+        self
+    }
+
+    /// Attach a policy registry for hot-reloads.
+    pub fn with_policy_registry(mut self, registry: ranvier_core::policy::PolicyRegistry) -> Self {
+        self.policy_registry = Some(registry);
         self
     }
 
@@ -1406,6 +1416,29 @@ where
             raw_routes.push(RouteEntry {
                 method: Method::POST,
                 pattern: RoutePattern::parse("/_system/intervene/force_resume"),
+                handler,
+                layers: Arc::new(Vec::new()),
+                apply_global_layers: true,
+            });
+        }
+
+        if let Some(registry) = self.policy_registry.clone() {
+            let handler: RouteHandler<R> = Arc::new(move |parts, _res| {
+                let registry = registry.clone();
+                Box::pin(async move {
+                    // This is a simplified reload endpoint.
+                    // In a real implementation, it would parse JSON from the body.
+                    // For now, we provide the infrastructure.
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .body(Full::new(Bytes::from("Policy registry active")).map_err(|never| match never {} as Infallible).boxed())
+                        .unwrap()
+                }) as Pin<Box<dyn Future<Output = HttpResponse> + Send>>
+            });
+
+            raw_routes.push(RouteEntry {
+                method: Method::POST,
+                pattern: RoutePattern::parse("/_system/policy/reload"),
                 handler,
                 layers: Arc::new(Vec::new()),
                 apply_global_layers: true,

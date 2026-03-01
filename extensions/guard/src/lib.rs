@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use ranvier_core::policy::DynamicPolicy;
 use bytes::Bytes;
 use http::header::{HeaderName, HeaderValue};
 use http::{Method, Request, Response, StatusCode};
@@ -463,10 +464,45 @@ impl<S> Layer<S> for RateLimitLayer {
     }
 }
 
+/// Tower layer that supports dynamic rate-limit policy updates via `DynamicPolicy`.
+#[derive(Clone)]
+pub struct DynamicRateLimitLayer {
+    policy: DynamicPolicy<RateLimitPolicy>,
+    state: Arc<Mutex<HashMap<String, WindowCounter>>>,
+}
+
+impl DynamicRateLimitLayer {
+    pub fn new(policy: DynamicPolicy<RateLimitPolicy>) -> Self {
+        Self {
+            policy,
+            state: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl<S> Layer<S> for DynamicRateLimitLayer {
+    type Service = DynamicRateLimitService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        DynamicRateLimitService {
+            inner,
+            policy: self.policy.clone(),
+            state: self.state.clone(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct RateLimitService<S> {
     inner: S,
     policy: RateLimitPolicy,
+    state: Arc<Mutex<HashMap<String, WindowCounter>>>,
+}
+
+#[derive(Clone)]
+pub struct DynamicRateLimitService<S> {
+    inner: S,
+    policy: DynamicPolicy<RateLimitPolicy>,
     state: Arc<Mutex<HashMap<String, WindowCounter>>>,
 }
 
@@ -502,6 +538,47 @@ where
         let state = self.state.clone();
 
         Box::pin(async move {
+            let key = client_key(&req, &policy);
+            let decision = consume_quota(&state, &key, &policy);
+
+            if !decision.allowed {
+                return Ok(rate_limited_response(policy.limit));
+            }
+
+            let mut response = inner.call(req).await?;
+            add_rate_headers(response.headers_mut(), policy.limit, decision.remaining);
+            Ok(response)
+        })
+    }
+}
+
+impl<S, B> Service<Request<B>> for DynamicRateLimitService<S>
+where
+    S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send + 'static,
+    B: Send + 'static,
+{
+    type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    type Error = Infallible;
+    type Future = BoxFuture<Self::Response>;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Request<B>) -> Self::Future {
+        let mut inner = self.inner.clone();
+        let policy_rx = self.policy.clone();
+        let state = self.state.clone();
+
+        Box::pin(async move {
+            let policy = policy_rx.current();
             let key = client_key(&req, &policy);
             let decision = consume_quota(&state, &key, &policy);
 

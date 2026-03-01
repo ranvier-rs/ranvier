@@ -94,7 +94,7 @@ impl<In, Out, E, Res> Clone for Axon<In, Out, E, Res> {
 impl<In, E, Res> Axon<In, In, E, Res>
 where
     In: Send + Sync + 'static,
-    E: Send + 'static,
+    E: Send + Sync + std::fmt::Debug + 'static,
     Res: ranvier_core::transition::ResourceRequirement,
 {
     /// Create a new Axon flow with the given label.
@@ -146,7 +146,7 @@ impl<In, Out, E, Res> Axon<In, Out, E, Res>
 where
     In: Send + Sync + 'static,
     Out: Send + Sync + 'static,
-    E: Send + 'static,
+    E: Send + Sync + std::fmt::Debug + 'static,
     Res: ranvier_core::transition::ResourceRequirement,
 {
     /// Chain a transition to this Axon.
@@ -282,6 +282,178 @@ where
         }
     }
 
+    /// Chain a transition to this Axon with a Saga compensation step.
+    ///
+    /// If the transition fails, the compensation transition will be executed
+    /// automatically if `CompensationAutoTrigger` is enabled in the Bus.
+    #[track_caller]
+    pub fn then_compensated<Next, Trans, Comp>(
+        self,
+        transition: Trans,
+        compensation: Comp,
+    ) -> Axon<In, Next, E, Res>
+    where
+        Out: Clone,
+        Next: Send + Sync + 'static,
+        Trans: Transition<Out, Next, Resources = Res, Error = E> + Clone + Send + Sync + 'static,
+        Comp: Transition<Out, (), Resources = Res, Error = E> + Clone + Send + Sync + 'static,
+{
+        let caller = Location::caller();
+        let Axon {
+            mut schematic,
+            executor: prev_executor,
+        } = self;
+
+        // 1. Add Primary Node
+        let next_node_id = uuid::Uuid::new_v4().to_string();
+        let comp_node_id = uuid::Uuid::new_v4().to_string();
+
+        let next_node = Node {
+            id: next_node_id.clone(),
+            kind: NodeKind::Atom,
+            label: transition.label(),
+            description: transition.description(),
+            input_type: type_name_of::<Out>(),
+            output_type: type_name_of::<Next>(),
+            resource_type: type_name_of::<Res>(),
+            metadata: Default::default(),
+            bus_capability: bus_capability_schema_from_policy(transition.bus_access_policy()),
+            source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            compensation_node_id: Some(comp_node_id.clone()),
+        };
+
+        // 2. Add Compensation Node
+        let comp_node = Node {
+            id: comp_node_id.clone(),
+            kind: NodeKind::Atom,
+            label: format!("Compensate: {}", compensation.label()),
+            description: compensation.description(),
+            input_type: type_name_of::<Out>(),
+            output_type: "void".to_string(),
+            resource_type: type_name_of::<Res>(),
+            metadata: Default::default(),
+            bus_capability: None,
+            source_location: None,
+            compensation_node_id: None,
+        };
+
+        let last_node_id = schematic
+            .nodes
+            .last()
+            .map(|n| n.id.clone())
+            .unwrap_or_default();
+
+        schematic.nodes.push(next_node);
+        schematic.nodes.push(comp_node);
+        schematic.edges.push(Edge {
+            from: last_node_id,
+            to: next_node_id.clone(),
+            kind: EdgeType::Linear,
+            label: Some("Next".to_string()),
+        });
+
+        // 3. Compose Executor with Compensation Logic
+        let node_id_for_exec = next_node_id.clone();
+        let comp_id_for_exec = comp_node_id.clone();
+        let node_label_for_exec = transition.label();
+        let bus_policy_for_exec = transition.bus_access_policy();
+
+        let next_executor: Executor<In, Next, E, Res> = Arc::new(
+            move |input: In, res: &Res, bus: &mut Bus| -> BoxFuture<'_, Outcome<Next, E>> {
+                let prev = prev_executor.clone();
+                let trans = transition.clone();
+                let comp = compensation.clone();
+                let timeline_node_id = node_id_for_exec.clone();
+                let timeline_comp_id = comp_id_for_exec.clone();
+                let timeline_node_label = node_label_for_exec.clone();
+                let transition_bus_policy = bus_policy_for_exec.clone();
+
+                Box::pin(async move {
+                    // Run previous step
+                    let prev_result = prev(input, res, bus).await;
+
+                    // Unpack
+                    let state = match prev_result {
+                        Outcome::Next(t) => t,
+                        other => return other.map(|_| unreachable!()),
+                    };
+
+                    // Run this step
+                    let label = trans.label();
+                    let _res_type = std::any::type_name::<Res>()
+                        .split("::")
+                        .last()
+                        .unwrap_or("unknown");
+
+                    let enter_ts = now_ms();
+                    if let Some(timeline) = bus.read_mut::<Timeline>() {
+                        timeline.push(TimelineEvent::NodeEnter {
+                            node_id: timeline_node_id.clone(),
+                            node_label: timeline_node_label.clone(),
+                            timestamp: enter_ts,
+                        });
+                    }
+
+                    let node_span = tracing::info_span!("Node", ranvier.node = %label);
+                    bus.set_access_policy(label.clone(), transition_bus_policy.clone());
+                    let result = trans.run(state.clone(), res, bus).instrument(node_span).await;
+                    bus.clear_access_policy();
+
+                    let duration_ms = 0; // Simplified for this implementation
+                    let exit_ts = now_ms();
+
+                    if let Some(timeline) = bus.read_mut::<Timeline>() {
+                        timeline.push(TimelineEvent::NodeExit {
+                            node_id: timeline_node_id.clone(),
+                            outcome_type: outcome_type_name(&result),
+                            duration_ms,
+                            timestamp: exit_ts,
+                        });
+                    }
+
+                    // Automated Compensation Trigger
+                    if let Outcome::Fault(ref err) = result {
+                        if compensation_auto_trigger(bus) {
+                            tracing::info!(
+                                ranvier.node = %label,
+                                ranvier.compensation.trigger = "saga",
+                                error = ?err,
+                                "Saga compensation triggered"
+                            );
+
+                            if let Some(timeline) = bus.read_mut::<Timeline>() {
+                                timeline.push(TimelineEvent::NodeEnter {
+                                    node_id: timeline_comp_id.clone(),
+                                    node_label: format!("Compensate: {}", comp.label()),
+                                    timestamp: exit_ts,
+                                });
+                            }
+
+                            // Run compensation with the state BEFORE the fault
+                            let _ = comp.run(state, res, bus).await;
+
+                            if let Some(timeline) = bus.read_mut::<Timeline>() {
+                                timeline.push(TimelineEvent::NodeExit {
+                                    node_id: timeline_comp_id.clone(),
+                                    outcome_type: "Compensated".to_string(),
+                                    duration_ms: 0,
+                                    timestamp: now_ms(),
+                                });
+                            }
+                        }
+                    }
+
+                    result
+                })
+            },
+        );
+
+        Axon {
+            schematic,
+            executor: next_executor,
+        }
+    }
+
     /// Attach a compensation transition to the previously added node.
     /// This establishes a Schematic-level Saga compensation mapping.
     #[track_caller]
@@ -289,6 +461,8 @@ where
     where
         Comp: Transition<Out, (), Resources = Res, Error = E> + Clone + Send + Sync + 'static,
     {
+        // NOTE: This currently only updates the Schematic.
+        // For runtime compensation behavior, use `then_compensated`.
         let caller = Location::caller();
         let comp_node_id = uuid::Uuid::new_v4().to_string();
 

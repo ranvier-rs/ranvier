@@ -3236,6 +3236,7 @@ dependencies = [
  "bytes",
  "http 1.4.0",
  "http-body-util",
+ "ranvier-core",
  "serde_json",
  "tokio",
  "tower 0.5.3",

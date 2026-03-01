@@ -61,7 +61,7 @@ where
     where
         In: Send + Sync + 'static,
         Out: Send + Sync + 'static,
-        E: Send + 'static,
+        E: Send + Sync + std::fmt::Debug + 'static,
     {
         axon.execute(input, &self.resources, &mut self.bus).await
     }

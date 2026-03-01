@@ -3,6 +3,7 @@ pub mod cluster;
 pub mod event;
 pub mod metadata;
 pub mod outcome;
+pub mod policy;
 pub mod schematic;
 pub mod static_gen;
 pub mod synapse;
