@@ -85,6 +85,7 @@ async fn main() -> Result<()> {
         metadata: Default::default(),
         bus_capability: None,
         source_location: None,
+        compensation_node_id: None,
     };
 
     // Create a Branch Edge
@@ -109,6 +110,7 @@ async fn main() -> Result<()> {
         metadata: Default::default(),
         bus_capability: None,
         source_location: None,
+        compensation_node_id: None,
     };
 
     // Add Subgraph to the main graph (conceptually unconnected for now, just to show JSON structure)

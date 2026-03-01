@@ -9,10 +9,9 @@
 
 use bytes::Bytes;
 use http::{Request, Response};
-use http_body_util::{BodyExt, Full};
+use http_body_util::Full;
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
-use crate::response::RanvierResponse;
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
@@ -50,7 +49,7 @@ where
     F: Fn(Request<B>, &mut Bus) -> In + Clone + Send + Sync + 'static,
     Res: ranvier_core::transition::ResourceRequirement + Send + Sync + 'static,
 {
-    type Response = RanvierResponse;
+    type Response = Response<Full<Bytes>>;
     type Error = Infallible;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
@@ -79,10 +78,7 @@ where
                 "result (Debug missing on Outcome?)"
             );
 
-            let response = Response::builder()
-                .status(200)
-                .body(Full::new(Bytes::from(body_str)).map_err(|e| match e {}).boxed())
-                .unwrap();
+            let response = Response::new(Full::new(Bytes::from(body_str)));
             Ok(response)
         })
     }

@@ -1,13 +1,3 @@
-use http_body_util::BodyExt;
-use http_body_util::combinators::BoxBody;
-
-pub type RanvierResponse = Response<BoxBody<Bytes, std::convert::Infallible>>;
-pub type HttpResponse = RanvierResponse;
-
-pub trait IntoResponse {
-    fn into_response(self) -> RanvierResponse;
-}
-
 use bytes::Bytes;
 use http::header::CONTENT_TYPE;
 use http::{Response, StatusCode};
@@ -31,14 +21,14 @@ pub fn json_error_response(status: StatusCode, message: impl Into<String>) -> Ht
         .expect("response builder should be infallible")
 }
 
-impl IntoResponse for RanvierResponse {
-    fn into_response(self) -> RanvierResponse {
+impl IntoResponse for HttpResponse {
+    fn into_response(self) -> HttpResponse {
         self
     }
 }
 
 impl IntoResponse for String {
-    fn into_response(self) -> RanvierResponse {
+    fn into_response(self) -> HttpResponse {
         Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "text/plain; charset=utf-8")
@@ -48,7 +38,7 @@ impl IntoResponse for String {
 }
 
 impl IntoResponse for &'static str {
-    fn into_response(self) -> RanvierResponse {
+    fn into_response(self) -> HttpResponse {
         Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "text/plain; charset=utf-8")
@@ -58,7 +48,7 @@ impl IntoResponse for &'static str {
 }
 
 impl IntoResponse for Bytes {
-    fn into_response(self) -> RanvierResponse {
+    fn into_response(self) -> HttpResponse {
         Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "application/octet-stream")
@@ -68,7 +58,7 @@ impl IntoResponse for Bytes {
 }
 
 impl IntoResponse for serde_json::Value {
-    fn into_response(self) -> RanvierResponse {
+    fn into_response(self) -> HttpResponse {
         Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "application/json")
@@ -78,7 +68,7 @@ impl IntoResponse for serde_json::Value {
 }
 
 impl IntoResponse for () {
-    fn into_response(self) -> RanvierResponse {
+    fn into_response(self) -> HttpResponse {
         Response::builder()
             .status(StatusCode::NO_CONTENT)
             .body(Full::new(Bytes::new()).map_err(|never| match never {}).boxed())
@@ -87,7 +77,7 @@ impl IntoResponse for () {
 }
 
 impl IntoResponse for (StatusCode, String) {
-    fn into_response(self) -> RanvierResponse {
+    fn into_response(self) -> HttpResponse {
         Response::builder()
             .status(self.0)
             .header(CONTENT_TYPE, "text/plain; charset=utf-8")
@@ -97,7 +87,7 @@ impl IntoResponse for (StatusCode, String) {
 }
 
 impl IntoResponse for (StatusCode, &'static str) {
-    fn into_response(self) -> RanvierResponse {
+    fn into_response(self) -> HttpResponse {
         Response::builder()
             .status(self.0)
             .header(CONTENT_TYPE, "text/plain; charset=utf-8")
@@ -107,7 +97,7 @@ impl IntoResponse for (StatusCode, &'static str) {
 }
 
 impl IntoResponse for (StatusCode, Bytes) {
-    fn into_response(self) -> RanvierResponse {
+    fn into_response(self) -> HttpResponse {
         Response::builder()
             .status(self.0)
             .header(CONTENT_TYPE, "application/octet-stream")
@@ -116,7 +106,7 @@ impl IntoResponse for (StatusCode, Bytes) {
     }
 }
 
-pub fn outcome_to_response<Out, E>(outcome: Outcome<Out, E>) -> RanvierResponse
+pub fn outcome_to_response<Out, E>(outcome: Outcome<Out, E>) -> HttpResponse
 where
     Out: IntoResponse,
     E: std::fmt::Debug,
@@ -133,10 +123,10 @@ where
 pub fn outcome_to_response_with_error<Out, E, F>(
     outcome: Outcome<Out, E>,
     on_fault: F,
-) -> RanvierResponse
+) -> HttpResponse
 where
     Out: IntoResponse,
-    F: FnOnce(&E) -> RanvierResponse,
+    F: FnOnce(&E) -> HttpResponse,
 {
     match outcome {
         Outcome::Next(output) => output.into_response(),

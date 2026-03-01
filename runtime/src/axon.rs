@@ -33,6 +33,20 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::Instrument;
+use ranvier_core::cluster::DistributedLock;
+
+/// Configuration for Execution Mode.
+#[derive(Clone)]
+pub enum ExecutionMode {
+    /// Normal, unpartitioned local execution.
+    Local,
+    /// Singleton execution, ensures only one instance runs across the entire cluster.
+    Singleton {
+        lock_key: String,
+        ttl_ms: u64,
+        lock_provider: Arc<dyn DistributedLock>,
+    },
+}
 
 /// Type alias for async boxed futures used in Axon execution.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -73,6 +87,8 @@ pub struct Axon<In, Out, E, Res = ()> {
     pub schematic: Schematic,
     /// The runtime executor
     executor: Executor<In, Out, E, Res>,
+    /// How this Axon is executed across the cluster
+    pub execution_mode: ExecutionMode,
 }
 
 /// Schematic export request derived from command-line args/env.
@@ -87,6 +103,7 @@ impl<In, Out, E, Res> Clone for Axon<In, Out, E, Res> {
         Self {
             schematic: self.schematic.clone(),
             executor: self.executor.clone(),
+            execution_mode: self.execution_mode.clone(),
         }
     }
 }
@@ -138,7 +155,14 @@ where
         Self {
             schematic,
             executor,
+            execution_mode: ExecutionMode::Local,
         }
+    }
+
+    /// Update the Execution Mode for this Axon (e.g., Local vs Singleton).
+    pub fn with_execution_mode(mut self, mode: ExecutionMode) -> Self {
+        self.execution_mode = mode;
+        self
     }
 }
 
@@ -163,6 +187,7 @@ where
         let Axon {
             mut schematic,
             executor: prev_executor,
+            execution_mode,
         } = self;
 
         // Update Schematic
@@ -279,6 +304,7 @@ where
         Axon {
             schematic,
             executor: next_executor,
+            execution_mode,
         }
     }
 
@@ -302,6 +328,7 @@ where
         let Axon {
             mut schematic,
             executor: prev_executor,
+            execution_mode,
         } = self;
 
         // 1. Add Primary Node
@@ -451,6 +478,7 @@ where
         Axon {
             schematic,
             executor: next_executor,
+            execution_mode,
         }
     }
 
@@ -527,6 +555,29 @@ where
 
     /// Execute the Axon with the given input and resources.
     pub async fn execute(&self, input: In, resources: &Res, bus: &mut Bus) -> Outcome<Out, E> {
+        if let ExecutionMode::Singleton { lock_key, ttl_ms, lock_provider } = &self.execution_mode {
+            let trace_span = tracing::info_span!("Singleton Execution", key = %lock_key);
+            let _enter = trace_span.enter();
+            match lock_provider.try_acquire(lock_key, *ttl_ms).await {
+                Ok(true) => {
+                    tracing::debug!("Successfully acquired singleton lock: {}", lock_key);
+                }
+                Ok(false) => {
+                    tracing::debug!("Singleton lock {} already held, aborting execution.", lock_key);
+                    // Emit a specific event indicating skip
+                    return Outcome::emit("execution.skipped.lock_held", Some(serde_json::json!({
+                        "lock_key": lock_key
+                    })));
+                }
+                Err(e) => {
+                    tracing::error!("Failed to check singleton lock {}: {:?}", lock_key, e);
+                    return Outcome::emit("execution.skipped.lock_error", Some(serde_json::json!({
+                        "error": e.to_string()
+                    })));
+                }
+            }
+        }
+
         let trace_id = persistence_trace_id(bus);
         let label = self.schematic.name.clone();
         let persistence_handle = bus.read::<PersistenceHandle>().cloned();

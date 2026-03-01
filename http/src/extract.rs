@@ -6,7 +6,6 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
-use http::header::CONTENT_TYPE;
 
 #[cfg(feature = "validation")]
 use std::collections::BTreeMap;
@@ -83,41 +82,6 @@ impl ExtractError {
             .status(self.status_code())
             .body(Full::new(Bytes::from(self.to_string())))
             .expect("extract error response builder should be infallible")
-    }
-}
-
-/// Raw HTTP request body bytes injected into the Bus for body-aware routes.
-///
-/// Populated automatically when using `.post_body()`, `.put_body()`, or `.patch_body()`.
-/// Access inside a transition via `bus.read::<HttpRequestBody>()`.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use ranvier_http::prelude::*;
-///
-/// // In a transition:
-/// let body_bytes = bus.read::<HttpRequestBody>()
-///     .map(|b| b.as_bytes())
-///     .unwrap_or_default();
-/// ```
-#[derive(Debug, Clone)]
-pub struct HttpRequestBody(pub Bytes);
-
-impl HttpRequestBody {
-    /// Create a new HttpRequestBody from raw bytes.
-    pub fn new(bytes: Bytes) -> Self {
-        Self(bytes)
-    }
-
-    /// Access the raw bytes.
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-
-    /// Parse the body as JSON.
-    pub fn parse_json<T: serde::de::DeserializeOwned>(&self) -> Result<T, ExtractError> {
-        serde_json::from_slice(&self.0).map_err(|e| ExtractError::InvalidJson(e.to_string()))
     }
 }
 
@@ -216,86 +180,6 @@ where
             .ok_or(ExtractError::MissingPathParams)?;
         let value = parse_path_map(params.as_map())?;
         Ok(Path(value))
-    }
-}
-
-/// A multipart/form-data extractor.
-pub struct Multipart {
-    inner: multer::Multipart<'static>,
-}
-
-impl Multipart {
-    /// Yields the next field from the multipart stream.
-    pub async fn next_field(&mut self) -> Result<Option<MultipartField>, ExtractError> {
-        self.inner
-            .next_field()
-            .await
-            .map(|opt| opt.map(MultipartField))
-            .map_err(|e| ExtractError::Multipart(e.to_string()))
-    }
-}
-
-/// A field within a multipart/form-data stream.
-pub struct MultipartField(multer::Field<'static>);
-
-impl MultipartField {
-    /// The name of the field.
-    pub fn name(&self) -> Option<&str> {
-        self.0.name()
-    }
-
-    /// The filename of the field.
-    pub fn file_name(&self) -> Option<&str> {
-        self.0.file_name()
-    }
-
-    /// The content-type of the field.
-    pub fn content_type(&self) -> Option<&str> {
-        self.0.content_type().map(|c| c.as_ref())
-    }
-
-    /// Read the field content as bytes.
-    pub async fn bytes(self) -> Result<Bytes, ExtractError> {
-        self.0
-            .bytes()
-            .await
-            .map_err(|e| ExtractError::Multipart(e.to_string()))
-    }
-
-    /// Read the field content as text.
-    pub async fn text(self) -> Result<String, ExtractError> {
-        self.0
-            .text()
-            .await
-            .map_err(|e| ExtractError::Multipart(e.to_string()))
-    }
-}
-
-#[async_trait]
-impl<B> FromRequest<B> for Multipart
-where
-    B: Body<Data = Bytes> + Send + Unpin + 'static,
-    B::Error: std::fmt::Display + Send + Sync + 'static,
-{
-    async fn from_request(req: &mut Request<B>) -> Result<Self, ExtractError> {
-        let content_type = req
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|ct| ct.to_str().ok())
-            .ok_or(ExtractError::MissingContentType)?;
-
-        let boundary = multer::parse_boundary(content_type).map_err(|_| ExtractError::InvalidContentType)?;
-
-        // Collect the body bytes to avoid lifetime issues with req
-        let body_bytes = BodyExt::collect(req.body_mut())
-            .await
-            .map_err(|e| ExtractError::BodyRead(e.to_string()))?
-            .to_bytes();
-
-        let stream = futures_util::stream::once(async move { Ok::<Bytes, std::io::Error>(body_bytes) });
-
-        let multipart = multer::Multipart::new(stream, boundary);
-        Ok(Multipart { inner: multipart })
     }
 }
 
@@ -404,8 +288,6 @@ fn collect_validation_errors(
         }
     }
 }
-
-use futures_util::StreamExt;
 
 #[cfg(test)]
 mod tests {
@@ -655,41 +537,5 @@ mod tests {
             json["fields"]["token"][0],
             "token_prefix: token must start with tok_"
         );
-    }
-
-    #[tokio::test]
-    async fn extract_multipart_fields() {
-        let boundary = "boundary";
-        let body_content = format!(
-            "--{boundary}\r\n\
-             Content-Disposition: form-data; name=\"field1\"\r\n\
-             \r\n\
-             value1\r\n\
-             --{boundary}\r\n\
-             Content-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r\n\
-             Content-Type: text/plain\r\n\
-             \r\n\
-             file content\r\n\
-             --{boundary}--\r\n"
-        );
-
-        let mut req = Request::builder()
-            .header(CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
-            .body(Full::new(Bytes::from(body_content)))
-            .expect("request build");
-
-        let mut multipart = Multipart::from_request(&mut req).await.expect("extract");
-
-        let field1 = multipart.next_field().await.expect("field1").unwrap();
-        assert_eq!(field1.name(), Some("field1"));
-        assert_eq!(field1.text().await.expect("text"), "value1");
-
-        let file_field = multipart.next_field().await.expect("file").unwrap();
-        assert_eq!(file_field.name(), Some("file"));
-        assert_eq!(file_field.file_name(), Some("test.txt"));
-        assert_eq!(file_field.content_type(), Some("text/plain"));
-        assert_eq!(file_field.text().await.expect("text"), "file content");
-
-        assert!(multipart.next_field().await.expect("none").is_none());
     }
 }

@@ -1,0 +1,37 @@
+warning: use of deprecated trait `static_gen::StaticNode`: Legacy trait kept for backward compatibility. Use StaticAxon instead.
+  --> core\src\lib.rs:19:71
+   |
+19 |     StaticAxon, StaticBuildConfig, StaticBuildResult, StaticManifest, StaticNode, StaticStateEntry,
+   |                                                                       ^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated function `static_gen::read_json_file`: Internal API
+  --> core\src\lib.rs:20:5
+   |
+20 |     read_json_file, write_json_file,
+   |     ^^^^^^^^^^^^^^
+
+warning: use of deprecated function `static_gen::write_json_file`: Internal API
+  --> core\src\lib.rs:20:21
+   |
+20 |     read_json_file, write_json_file,
+   |                     ^^^^^^^^^^^^^^^
+
+warning: `ranvier-core` (lib) generated 3 warnings
+    Checking ranvier-runtime v1.0.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\runtime)
+    Checking complex-schematic v0.1.0 (F:\project\ranvier\ranvier-workspace\ranvier\examples\complex-schematic)
+error[E0063]: missing field `compensation_node_id` in initializer of `Node`
+  --> examples\complex-schematic\src\main.rs:77:21
+   |
+77 |     let fail_node = Node {
+   |                     ^^^^ missing `compensation_node_id`
+
+error[E0063]: missing field `compensation_node_id` in initializer of `Node`
+   --> examples\complex-schematic\src\main.rs:101:25
+    |
+101 |     let subgraph_node = Node {
+    |                         ^^^^ missing `compensation_node_id`
+
+For more information about this error, try `rustc --explain E0063`.
+error: could not compile `complex-schematic` (bin "complex-schematic") due to 2 previous errors
