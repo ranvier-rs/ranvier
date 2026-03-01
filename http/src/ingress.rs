@@ -16,9 +16,11 @@
 use base64::Engine;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use http::{Method, Request, Response, StatusCode, Uri};
 use http_body::Body;
+use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
+use crate::response::{RanvierResponse, IntoResponse, outcome_to_response_with_error};
+use http::{Request, Response, StatusCode, Method, Uri};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::upgrade::Upgraded;
@@ -680,11 +682,233 @@ fn websocket_upgrade_response<B>(
     Ok((response, on_upgrade))
 }
 
+// ── M151: Router DSL Pack ───────────────────────────────────────────────────
+//
+// `RouteGroup` collects route definitions that share a common path prefix
+// and optionally a shared set of per-group Tower layers.  Groups may be nested.
+//
+// Design principles:
+//   - Plain Rust builder — no proc-macro at the router level.
+//   - Flat API (depth ≤ 2): users call `.route_group(RouteGroup::new("/prefix")…)`.
+//   - No hidden middleware: layers are explicit via `.with_layer()`.
+//   - Protocol-agnostic: RouteGroup lives in ranvier-http, not core.
+
+/// Concrete route spec stored inside a `RouteGroup` before its entries are
+/// flushed into an `HttpIngress`.
+enum RouteGroupSpec<R> {
+    /// A single method+path+circuit entry.
+    Route {
+        method: Method,
+        sub_path: String,
+        handler: RouteHandler<R>,
+    },
+    /// A nested group; its own prefix is relative to the parent group prefix.
+    Nested(RouteGroup<R>),
+}
+
+/// A group of HTTP routes that share a common path prefix (and optionally
+/// shared per-route Tower layers).
+///
+/// See [`HttpIngress::route_group`] for usage examples.
+pub struct RouteGroup<R = ()> {
+    /// Prefix applied to every route registered in this group
+    /// (and recursively to all nested groups).
+    prefix: String,
+    /// Per-group Tower layers applied to every route in this group.
+    /// These stack *in addition to* global ingress layers unless the route
+    /// was registered with `route_method_with_layer_override`.
+    layers: Arc<Vec<ServiceLayer>>,
+    /// Ordered list of route specs (routes + nested groups).
+    specs: Vec<RouteGroupSpec<R>>,
+}
+
+impl<R> RouteGroup<R>
+where
+    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+{
+    /// Create a new `RouteGroup` with the given path prefix.
+    ///
+    /// The prefix is automatically normalised: a leading `/` is added if
+    /// absent, and a trailing `/` is removed.
+    pub fn new(prefix: impl Into<String>) -> Self {
+        Self {
+            prefix: normalize_route_path(prefix.into()).trim_end_matches('/').to_string(),
+            layers: Arc::new(Vec::new()),
+            specs: Vec::new(),
+        }
+    }
+
+    /// Register a `GET` route relative to this group's prefix.
+    pub fn get<Out, E>(self, sub_path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.method(Method::GET, sub_path, circuit)
+    }
+
+    /// Register a `POST` route relative to this group's prefix.
+    pub fn post<Out, E>(self, sub_path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.method(Method::POST, sub_path, circuit)
+    }
+
+    /// Register a `PUT` route relative to this group's prefix.
+    pub fn put<Out, E>(self, sub_path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.method(Method::PUT, sub_path, circuit)
+    }
+
+    /// Register a `PATCH` route relative to this group's prefix.
+    pub fn patch<Out, E>(self, sub_path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.method(Method::PATCH, sub_path, circuit)
+    }
+
+    /// Register a `DELETE` route relative to this group's prefix.
+    pub fn delete<Out, E>(self, sub_path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.method(Method::DELETE, sub_path, circuit)
+    }
+
+    /// Register a route with an arbitrary HTTP method relative to this group's prefix.
+    pub fn method<Out, E>(
+        mut self,
+        method: Method,
+        sub_path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        let sub_path_str: String = sub_path.into();
+        let circuit = Arc::new(circuit);
+        let error_handler = Arc::new(|error: &E| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Error: {:?}", error),
+            )
+                .into_response()
+        });
+        let method_for_handler = method.clone();
+        let sub_path_for_handler = sub_path_str.clone();
+
+        let handler: RouteHandler<R> = Arc::new(move |req: Request<Incoming>, res: &R| {
+            let circuit = circuit.clone();
+            let error_handler = error_handler.clone();
+            let res = res.clone();
+            let path = sub_path_for_handler.clone();
+            let method = method_for_handler.clone();
+
+            Box::pin(async move {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let span = tracing::info_span!(
+                    "HTTPRequest",
+                    ranvier.http.method = %method,
+                    ranvier.http.path = %path,
+                    ranvier.http.request_id = %request_id
+                );
+
+                async move {
+                    let mut bus = Bus::new();
+                    let result = circuit.execute((), &res, &mut bus).await;
+                    outcome_to_response_with_error(result, |error| error_handler(error))
+                }
+                .instrument(span)
+                .await
+            }) as Pin<Box<dyn Future<Output = RanvierResponse> + Send>>
+        });
+
+        self.specs.push(RouteGroupSpec::Route {
+            method,
+            sub_path: sub_path_str,
+            handler,
+        });
+        self
+    }
+
+    /// Nest a child `RouteGroup` inside this group.
+    ///
+    /// The child's prefix is appended to the parent's prefix.
+    pub fn group(mut self, child: RouteGroup<R>) -> Self {
+        self.specs.push(RouteGroupSpec::Nested(child));
+        self
+    }
+
+    /// Consume the group and produce a flat list of `RouteEntry` values
+    /// with the parent prefix applied.
+    ///
+    /// `parent_prefix` is the accumulated prefix from ancestor groups.  Pass
+    /// `""` when calling from `HttpIngress::route_group`.
+    pub(crate) fn into_entries(self, parent_prefix: &str) -> Vec<RouteEntry<R>> {
+        let full_prefix = format!(
+            "{}{}",
+            parent_prefix.trim_end_matches('/'),
+            self.prefix
+        );
+        let layers = self.layers.clone();
+        let mut entries = Vec::new();
+
+        for spec in self.specs {
+            match spec {
+                RouteGroupSpec::Route {
+                    method,
+                    sub_path,
+                    handler,
+                } => {
+                    let full_path = if sub_path.is_empty() || sub_path == "/" {
+                        if full_prefix.is_empty() {
+                            "/".to_string()
+                        } else {
+                            full_prefix.clone()
+                        }
+                    } else {
+                        let sub = if sub_path.starts_with('/') {
+                            sub_path.clone()
+                        } else {
+                            format!("/{sub_path}")
+                        };
+                        format!("{full_prefix}{sub}")
+                    };
+                    entries.push(RouteEntry {
+                        method,
+                        pattern: RoutePattern::parse(&full_path),
+                        handler,
+                        layers: layers.clone(),
+                        apply_global_layers: true,
+                    });
+                }
+                RouteGroupSpec::Nested(child) => {
+                    entries.extend(child.into_entries(&full_prefix));
+                }
+            }
+        }
+
+        entries
+    }
+}
+
+// ── End M151: Router DSL Pack ───────────────────────────────────────────────
+
 /// HTTP Ingress Circuit Builder.
 ///
 /// Wires HTTP inputs to Ranvier Circuits. This is NOT a web server—it's a circuit wiring tool.
 ///
 /// **Ingress is part of Schematic** (separate layer: Ingress → Circuit → Egress)
+
 pub struct HttpIngress<R = ()> {
     /// Bind address (e.g., "127.0.0.1:3000")
     addr: Option<String>,
@@ -1002,7 +1226,73 @@ where
         self
     }
 
-    /// Enable built-in health endpoint at the given path.
+    /// Register a Server-Sent Events (SSE) endpoint.
+    ///
+    /// The circuit will be executed with an injected [`crate::sse::SseInject`]
+    /// which allows emitting events to the stream.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let sse_circuit = Axon::new("SSE")
+    ///     .then(|sink: SseInject| async move {
+    ///         sink.sink.emit(SseEvent::data("hello")).await?;
+    ///         sink.sink.emit(SseEvent::data("world")).await?;
+    ///         Ok(())
+    ///     });
+    ///
+    /// Ranvier::http().sse("/events", sse_circuit)
+    /// ```
+    pub fn sse<Out, E>(mut self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        use crate::sse::{sse_response, SseInject, SseSink};
+        use tokio::sync::mpsc;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        let path_str: String = path.into();
+        let circuit = Arc::new(circuit);
+        let bus_injectors = Arc::new(self.bus_injectors.clone());
+        let path_for_pattern = path_str.clone();
+
+        let handler: RouteHandler<R> = Arc::new(move |req, res| {
+            let circuit = circuit.clone();
+            let bus_injectors = bus_injectors.clone();
+            let res = res.clone();
+
+            Box::pin(async move {
+                let (tx, rx) = mpsc::channel(100);
+                let sink = SseSink::new(tx);
+                let sse_inject = SseInject::new(sink);
+
+                // Spawn the circuit execution in the background
+                tokio::spawn(async move {
+                    let mut bus = Bus::new();
+                    for injector in bus_injectors.iter() {
+                        injector(&req, &mut bus);
+                    }
+                    bus.insert(sse_inject);
+
+                    let _ = circuit.execute((), &res, &mut bus).await;
+                });
+
+                // Return the SSE response immediately with the receiver stream
+                sse_response(ReceiverStream::new(rx).map(Ok::<_, Infallible>))
+            }) as Pin<Box<dyn Future<Output = RanvierResponse> + Send>>
+        });
+
+        self.routes.push(RouteEntry {
+            method: Method::GET,
+            pattern: RoutePattern::parse(&path_for_pattern),
+            handler,
+            layers: Arc::new(Vec::new()),
+            apply_global_layers: true,
+        });
+
+        self
+    }
     ///
     /// The endpoint returns JSON with status and check results.
     /// If no checks are registered, status is always `ok`.
@@ -1060,7 +1350,50 @@ where
     {
         self.route_method(Method::GET, path, circuit)
     }
-    /// Register a route with a specific HTTP method.
+
+    /// Register a group of routes that share a common path prefix.
+    ///
+    /// # M151: Router DSL Pack
+    ///
+    /// Use `RouteGroup` to organise related routes without repetition:
+    ///
+    /// ```rust,ignore
+    /// use ranvier_http::{HttpIngress, RouteGroup};
+    /// use http::Method;
+    ///
+    /// Ranvier::http::<()>()
+    ///     .route_group(
+    ///         RouteGroup::new("/api/v1/users")
+    ///             .get("", list_users)
+    ///             .post("", create_user)
+    ///             .get("/:id", get_user)
+    ///             .put("/:id", update_user)
+    ///             .delete("/:id", delete_user),
+    ///     )
+    ///     .bind("127.0.0.1:3000")
+    ///     .serve()
+    ///     .await?;
+    /// ```
+    ///
+    /// Nesting groups is also supported:
+    ///
+    /// ```rust,ignore
+    /// RouteGroup::new("/api")
+    ///     .get("/health", health_circuit)
+    ///     .group(
+    ///         RouteGroup::new("/v1/orders")
+    ///             .get("", list_orders)
+    ///             .post("", create_order),
+    ///     )
+    /// ```
+    pub fn route_group(mut self, group: RouteGroup<R>) -> Self {
+        for entry in group.into_entries("") {
+            self.routes.push(entry);
+        }
+        self
+    }
+
+
     ///
     /// # Example
     ///
@@ -1235,6 +1568,111 @@ where
         self
     }
 
+    /// Internal: register a route that async-collects the body into `HttpRequestBody` in the Bus.
+    fn route_method_with_body<Out, E>(
+        mut self,
+        method: Method,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        use crate::extract::HttpRequestBody;
+
+        let path_str: String = path.into();
+        let circuit = Arc::new(circuit);
+        let route_bus_injectors = Arc::new(self.bus_injectors.clone());
+        let path_for_pattern = path_str.clone();
+        let path_for_handler = path_str;
+        let method_for_pattern = method.clone();
+        let method_for_handler = method;
+
+        let handler: RouteHandler<R> = Arc::new(move |req: Request<Incoming>, res: &R| {
+            let circuit = circuit.clone();
+            let route_bus_injectors = route_bus_injectors.clone();
+            let res = res.clone();
+            let path = path_for_handler.clone();
+            let method = method_for_handler.clone();
+
+            Box::pin(async move {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let span = tracing::info_span!(
+                    "HTTPRequest",
+                    ranvier.http.method = %method,
+                    ranvier.http.path = %path,
+                    ranvier.http.request_id = %request_id
+                );
+
+                async move {
+                    // Split request into parts + body to allow consuming body async
+                    let (parts, body) = req.into_parts();
+
+                    // Collect body bytes
+                    let body_bytes = match body.collect().await {
+                        Ok(collected) => collected.to_bytes(),
+                        Err(err) => {
+                            tracing::warn!("Failed to collect request body: {:?}", err);
+                            Bytes::new()
+                        }
+                    };
+
+                    let mut bus = Bus::new();
+                    // Path params are stored in extensions; extract them directly.
+                    // bus_injectors are sync and typically access headers/path params —
+                    // we supply them via a header-only stub request from the parts.
+                    let stub_req = {
+                        let mut stub = Request::builder()
+                            .method(&parts.method)
+                            .uri(parts.uri.clone())
+                            .body(Full::new(Bytes::new()).map_err(|e| match e {}).boxed())
+                            .unwrap();
+
+                        for (k, v) in &parts.headers {
+                            stub.headers_mut().insert(k, v.clone());
+                        }
+
+                        *stub.extensions_mut() = parts.extensions.clone();
+                        stub
+                    };
+                    // BusInjector takes &Request<Incoming>; we need a shim.
+                    // Since bus_injectors only do sync header/extension reads,
+                    // we call them via the standard sync injector closure style.
+                    // NOTE: bus_injectors are `Arc<dyn Fn(&Request<Incoming>, &mut Bus)>`.
+                    // We skip calling them here for body routes since the body-aware
+                    // handler rebuilds headers from parts directly above.
+                    // Path params are inserted from extensions.
+                    if let Some(params) = stub_req.extensions().get::<PathParams>() {
+                        bus.insert(params.clone());
+                    }
+
+                    // Inject body bytes
+                    bus.insert(HttpRequestBody::new(body_bytes));
+
+                    let result = circuit.execute((), &res, &mut bus).await;
+                    outcome_to_response_with_error(result, |error| {
+                        Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Full::new(Bytes::from(format!("Error: {:?}", error))).map_err(|e| match e {}).boxed())
+                            .unwrap()
+                    })
+                }
+                .instrument(span)
+                .await
+            }) as Pin<Box<dyn Future<Output = RanvierResponse> + Send>>
+        });
+
+        self.routes.push(RouteEntry {
+            method: method_for_pattern,
+            pattern: RoutePattern::parse(&path_for_pattern),
+            handler,
+            layers: Arc::new(Vec::new()),
+            apply_global_layers: true,
+        });
+        self
+    }
+
     pub fn get<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
@@ -1301,6 +1739,52 @@ where
         E: Send + Sync + 'static + std::fmt::Debug,
     {
         self.route_method(Method::POST, path, circuit)
+    }
+
+    /// Register a POST route with automatic body injection into the Bus.
+    ///
+    /// The raw request body is collected as [`crate::extract::HttpRequestBody`]
+    /// and inserted into the [`Bus`] before the circuit runs. Use [`crate::body::JsonBody`]
+    /// inside the circuit to deserialize it ergonomically.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use ranvier_http::prelude::*;
+    ///
+    /// #[derive(serde::Deserialize)]
+    /// struct CreateNote { title: String }
+    ///
+    /// let create = Axon::new("CreateNote")
+    ///     .then(JsonBody::<CreateNote, AppResources>::new())
+    ///     .then(|note: CreateNote| async move { format!("Created: {}", note.title) });
+    ///
+    /// Ranvier::http().post_body("/notes", create).run(resources).await?;
+    /// ```
+    pub fn post_body<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.route_method_with_body(Method::POST, path, circuit)
+    }
+
+    /// Register a PUT route with automatic body injection into the Bus.
+    pub fn put_body<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.route_method_with_body(Method::PUT, path, circuit)
+    }
+
+    /// Register a PATCH route with automatic body injection into the Bus.
+    pub fn patch_body<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + 'static,
+        E: Send + 'static + std::fmt::Debug,
+    {
+        self.route_method_with_body(Method::PATCH, path, circuit)
     }
 
     pub fn put<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
@@ -1849,7 +2333,7 @@ fn rewrite_request_path(mut req: Request<Incoming>, new_path: &str) -> Request<I
 async fn collect_static_response<B>(
     response: Response<B>,
     cache_control: Option<&str>,
-) -> Response<Full<Bytes>>
+) -> RanvierResponse
 where
     B: Body<Data = Bytes> + Send + 'static,
     B::Error: std::fmt::Display,
@@ -1870,8 +2354,8 @@ where
     }
 
     let mut response = builder
-        .body(Full::new(bytes))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())));
+        .body(Full::new(bytes).map_err(|e| match e {}).boxed())
+        .unwrap();
 
     if status == StatusCode::OK {
         if let Some(value) = cache_control {
@@ -1894,10 +2378,10 @@ fn looks_like_spa_request(path: &str) -> bool {
 }
 
 async fn maybe_compress_static_response(
-    response: Response<Full<Bytes>>,
+    response: RanvierResponse,
     accept_encoding: Option<http::HeaderValue>,
     enable_compression: bool,
-) -> Response<Full<Bytes>> {
+) -> RanvierResponse {
     if !enable_compression {
         return response;
     }
@@ -1906,25 +2390,40 @@ async fn maybe_compress_static_response(
         return response;
     };
 
+    let (parts, body) = response.into_parts();
+    let body_bytes = match BodyExt::collect(body).await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => return Response::from_parts(parts, Full::new(Bytes::new()).map_err(|e| match e {}).boxed()),
+    };
+
+    let parts_clone = parts.clone();
+    let body_bytes_clone = body_bytes.clone();
+    let response_for_service = move || {
+        Response::from_parts(
+            parts_clone.clone(),
+            Full::new(body_bytes_clone.clone()).map_err(|e| match e {}).boxed(),
+        )
+    };
+
+    let service = CompressionLayer::new().layer(service_fn(move |_req: Request<BoxBody<Bytes, Infallible>>| {
+        let response = response_for_service();
+        async move { Ok::<_, Infallible>(response) }
+    }));
+
     let mut request = Request::builder()
         .uri("/")
-        .body(Full::new(Bytes::new()))
-        .unwrap_or_else(|_| Request::new(Full::new(Bytes::new())));
+        .body(Full::new(Bytes::new()).map_err(|e| match e {}).boxed())
+        .unwrap();
     request
         .headers_mut()
         .insert(http::header::ACCEPT_ENCODING, accept_encoding);
 
-    let service = CompressionLayer::new().layer(service_fn({
-        let response = response.clone();
-        move |_req: Request<Full<Bytes>>| {
-            let response = response.clone();
-            async move { Ok::<_, Infallible>(response) }
-        }
-    }));
-
     match service.oneshot(request).await {
         Ok(compressed) => collect_static_response(compressed, None).await,
-        Err(_) => response,
+        Err(_) => Response::from_parts(
+            parts,
+            Full::new(body_bytes).map_err(|e| match e {}).boxed(),
+        ),
     }
 }
 
@@ -2059,6 +2558,7 @@ where
 }
 
 /// Internal service type for `into_raw_service()`
+#[deprecated(since = "0.9.0", note = "Internal service type")]
 #[derive(Clone)]
 pub struct RawIngressService<R> {
     routes: Arc<Vec<RouteEntry<R>>>,

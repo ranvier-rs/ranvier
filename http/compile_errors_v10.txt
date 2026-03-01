@@ -1,0 +1,183 @@
+warning: use of deprecated trait `static_gen::StaticNode`: Legacy trait kept for backward compatibility. Use StaticAxon instead.
+  --> core\src\lib.rs:17:71
+   |
+17 | ...cManifest, StaticNode, StaticStat...
+   |               ^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated function `static_gen::read_json_file`: Internal API
+  --> core\src\lib.rs:18:5
+   |
+18 |     read_json_file, write_json_file,
+   |     ^^^^^^^^^^^^^^
+
+warning: use of deprecated function `static_gen::write_json_file`: Internal API
+  --> core\src\lib.rs:18:21
+   |
+18 |     read_json_file, write_json_file,
+   |                     ^^^^^^^^^^^^^^^
+
+warning: `ranvier-core` (lib) generated 3 warnings
+    Checking ranvier-http v0.12.0 (F:\project\ranvier\ranvier-workspace\ranvier\http)
+warning: unused imports: `BoxBody` and `UnsyncBoxBody`
+ --> http\src\sse.rs:3:35
+  |
+3 | use http_body_util::combinators::{BoxBody, UnsyncBoxBody};
+  |                                   ^^^^^^^  ^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Full`
+ --> http\src\sse.rs:4:31
+  |
+4 | use http_body_util::{BodyExt, Full};
+  |                               ^^^^
+
+warning: use of deprecated struct `ingress::RawIngressService`: Internal service type
+    --> http\src\ingress.rs:2456:40
+     |
+2456 | impl<R> Service<Request<Incoming>> for RawIngressService<R>
+     |                                        ^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated struct `ingress::RawIngressService`: Internal service type
+    --> http\src\ingress.rs:1933:52
+     |
+1933 |     pub fn into_raw_service(self, resources: R) -> RawIngressService<R> {
+     |                                                    ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated struct `ingress::RawIngressService`: Internal service type
+    --> http\src\ingress.rs:1941:9
+     |
+1941 |         RawIngressService {
+     |         ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated struct `ingress::RawIngressService`: Internal service type
+  --> http\src\test_harness.rs:11:35
+   |
+11 | use crate::ingress::{HttpIngress, RawIngressService};
+   |                                   ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated struct `ingress::RawIngressService`: Internal service type
+  --> http\src\test_harness.rs:43:14
+   |
+43 |     service: RawIngressService<R>,
+   |              ^^^^^^^^^^^^^^^^^
+
+error[E0382]: borrow of moved value: `accept_encoding`
+    --> http\src\ingress.rs:2303:48
+     |
+2265 |     let Some(accept_encoding) = accept_encoding else {
+     |              --------------- move occurs because `accept_encoding` has type `HeaderValue`, which does not implement the `Copy` trait
+...
+2290 |         .insert(http::header::ACCEPT_ENCODING, accept_encoding);
+     |                                                --------------- value moved here
+...
+2303 |         .insert(http::header::ACCEPT_ENCODING, accept_encoding.clone());
+     |                                                ^^^^^^^^^^^^^^^ value borrowed here after move
+     |
+help: consider cloning the value if the performance cost is acceptable
+     |
+2290 |         .insert(http::header::ACCEPT_ENCODING, accept_encoding.clone());
+     |                                                               ++++++++
+
+warning: use of deprecated field `ingress::RawIngressService::routes`: Internal service type
+    --> http\src\ingress.rs:1942:13
+     |
+1942 |             routes,
+     |             ^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::fallback`: Internal service type
+    --> http\src\ingress.rs:1943:13
+     |
+1943 |             fallback,
+     |             ^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::layers`: Internal service type
+    --> http\src\ingress.rs:1944:13
+     |
+1944 |             layers,
+     |             ^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::health`: Internal service type
+    --> http\src\ingress.rs:1945:13
+     |
+1945 |             health,
+     |             ^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::static_assets`: Internal service type
+    --> http\src\ingress.rs:1946:13
+     |
+1946 |             static_assets,
+     |             ^^^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::resources`: Internal service type
+    --> http\src\ingress.rs:1947:13
+     |
+1947 |             resources,
+     |             ^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::routes`: Internal service type
+    --> http\src\ingress.rs:2472:22
+     |
+2472 |         let routes = self.routes.clone();
+     |                      ^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::fallback`: Internal service type
+    --> http\src\ingress.rs:2473:24
+     |
+2473 |         let fallback = self.fallback.clone();
+     |                        ^^^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::layers`: Internal service type
+    --> http\src\ingress.rs:2474:22
+     |
+2474 |         let layers = self.layers.clone();
+     |                      ^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::health`: Internal service type
+    --> http\src\ingress.rs:2475:22
+     |
+2475 |         let health = self.health.clone();
+     |                      ^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::static_assets`: Internal service type
+    --> http\src\ingress.rs:2476:29
+     |
+2476 |         let static_assets = self.static_assets.clone();
+     |                             ^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::resources`: Internal service type
+    --> http\src\ingress.rs:2477:25
+     |
+2477 |         let resources = self.resources.clone();
+     |                         ^^^^^^^^^^^^^^
+
+warning: unused import: `futures_util::StreamExt`
+   --> http\src\extract.rs:406:5
+    |
+406 | use futures_util::StreamExt;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `req`
+   --> http\src\ingress.rs:806:55
+    |
+806 |         let handler: RouteHandler<R> = Arc::new(move |req: Request<Incoming>, res: &R| {
+    |                                                       ^^^ help: if this is intentional, prefix it with an underscore: `_req`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `route_bus_injectors`
+    --> http\src\ingress.rs:1550:17
+     |
+1550 |             let route_bus_injectors = route_bus_injectors.clone();
+     |                 ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_route_bus_injectors`
+
+For more information about this error, try `rustc --explain E0382`.
+warning: `ranvier-http` (lib) generated 22 warnings
+error: could not compile `ranvier-http` (lib) due to 1 previous error; 22 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+warning: `ranvier-http` (lib test) generated 22 warnings (22 duplicates)
+error: could not compile `ranvier-http` (lib test) due to 1 previous error; 22 warnings emitted

@@ -132,7 +132,7 @@ async fn main() -> anyhow::Result<()> {
         email: "alice@example.com".to_string(),
     };
 
-    let result = Axon::<CreateUserRequest, CreateUserRequest, anyhow::Error, AppResources>::start(
+    let result = Axon::<CreateUserRequest, CreateUserRequest, anyhow::Error, AppResources>::new(
         "create_user",
     )
     .then(TxPgNode::new(CreateUser).with_isolation_level(IsolationLevel::ReadCommitted))
@@ -151,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Example 2: Get user by ID
     println!("\n🔍 Looking up user by ID (1)...");
-    let result = Axon::<UserId, UserId, anyhow::Error, AppResources>::start("get_user")
+    let result = Axon::<UserId, UserId, anyhow::Error, AppResources>::new("get_user")
         .then(PgNode::new(GetUserById))
         .execute(UserId(1), &resources, &mut bus)
         .await;
@@ -168,7 +168,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Example 3: List all users
     println!("\n📋 Listing all users...");
-    let result = Axon::<(), (), anyhow::Error, AppResources>::start("list_users")
+    let result = Axon::<(), (), anyhow::Error, AppResources>::new("list_users")
         .then(PgNode::new(ListUsers))
         .execute((), &resources, &mut bus)
         .await;

@@ -1,0 +1,13 @@
+{
+  "name": "ranvier-bench-express",
+  "version": "1.0.0",
+  "description": "Express benchmarks for Ranvier M157",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2"
+  }
+}

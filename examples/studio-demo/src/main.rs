@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Starting Studio Demo...");
 
     // Start with i32 -> i32 identity
-    let info_axon = Axon::<i32, i32, anyhow::Error>::start("Studio Demo Circuit")
+    let info_axon = Axon::<i32, i32, anyhow::Error>::new("Studio Demo Circuit")
         .then(step_one)
         .then(step_two);
 

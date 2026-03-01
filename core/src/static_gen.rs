@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Legacy trait for static graph nodes (kept for backward compatibility)
+#[deprecated(since = "0.9.0", note = "Legacy trait kept for backward compatibility. Use StaticAxon instead.")]
 pub trait StaticNode {
     /// Unique identifier for the node
     fn id(&self) -> &'static str;
@@ -223,6 +224,7 @@ pub struct StaticBuildResult {
 }
 
 /// Write a serializable value to a JSON file.
+#[deprecated(since = "0.9.0", note = "Internal API")]
 pub fn write_json_file<T: Serialize>(path: &Path, value: &T, pretty: bool) -> anyhow::Result<()> {
     let json = if pretty {
         serde_json::to_string_pretty(value)?
@@ -240,6 +242,7 @@ pub fn write_json_file<T: Serialize>(path: &Path, value: &T, pretty: bool) -> an
 }
 
 /// Read a JSON file and deserialize it.
+#[deprecated(since = "0.9.0", note = "Internal API")]
 pub fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> anyhow::Result<T> {
     let content = std::fs::read_to_string(path)?;
     let value = serde_json::from_str(&content)?;

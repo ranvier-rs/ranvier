@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Define Axon: In=String, Out=String
     // We explicitly specify types since start() doesn't take value to infer from
-    let logic_flow = Axon::<String, String, Infallible>::start("Logic Demo")
+    let logic_flow = Axon::<String, String, Infallible>::new("Logic Demo")
         .then(LogNode::new("Start", "info"))
         .then(filter)
         .then(switch);

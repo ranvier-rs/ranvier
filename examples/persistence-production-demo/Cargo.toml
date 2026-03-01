@@ -1,0 +1,17 @@
+[package]
+name = "persistence-production-demo"
+version = "0.1.0"
+edition = "2021"
+description = "M156: Persistence Production Gate — crash recovery and compensation demo"
+
+[[bin]]
+name = "persistence-production-demo"
+path = "src/main.rs"
+
+[dependencies]
+ranvier-runtime = { path = "../../runtime", version = "0.12.0" }
+async-trait      = "0.1"
+anyhow           = "1.0"
+tokio            = { version = "1", features = ["full"] }
+tracing          = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

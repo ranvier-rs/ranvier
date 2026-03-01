@@ -176,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
 
         // 3. Define the Axon for this event kind
         // Note: Axons are light and created per event typically, or reused if stateless.
-        let axon = Axon::<WsMessage, WsMessage, anyhow::Error>::start("ChatFlow")
+        let axon = Axon::<WsMessage, WsMessage, anyhow::Error>::new("ChatFlow")
             .then(ProcessMessage)
             .then(Broadcast);
 

@@ -107,7 +107,7 @@ async fn main() -> anyhow::Result<()> {
     // Construct the Axon
     // Even though the input/output of the Axon is FlowState, the INTERNAL
     // transitions move the variant forward.
-    let axon = Axon::<FlowState, FlowState, anyhow::Error>::start("SecureContentFlow")
+    let axon = Axon::<FlowState, FlowState, anyhow::Error>::new("SecureContentFlow")
         .then(Authenticate)
         .then(FetchContent);
 

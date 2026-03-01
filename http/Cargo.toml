@@ -21,6 +21,7 @@ ranvier-runtime = { workspace = true }
 
 # Async
 tokio = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
 tokio-tungstenite = "0.24"

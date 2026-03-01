@@ -40,7 +40,7 @@ async fn to_string(input: i32) -> Outcome<String, anyhow::Error> {
 // 3. Define Circuits with Routes
 #[route(GET, "/math")]
 async fn math_circuit() -> Axon<(), String, anyhow::Error, MyResources> {
-    Axon::<(), (), anyhow::Error, MyResources>::start("MathCircuit")
+    Axon::<(), (), anyhow::Error, MyResources>::new("MathCircuit")
         .then(init_state)
         .then(multiply_by_res)
         .then(add_three)

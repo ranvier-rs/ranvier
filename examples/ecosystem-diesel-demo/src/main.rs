@@ -272,22 +272,22 @@ async fn main() -> Result<()> {
     let resources = AppResources { pool };
     let mut bus = Bus::new();
 
-    let create = Axon::<CreateUserInput, CreateUserInput, anyhow::Error, AppResources>::start(
+    let create = Axon::<CreateUserInput, CreateUserInput, anyhow::Error, AppResources>::new(
         "diesel.create_user",
     )
     .then(CreateUserTransition);
 
-    let list = Axon::<FetchAllInput, FetchAllInput, anyhow::Error, AppResources>::start(
+    let list = Axon::<FetchAllInput, FetchAllInput, anyhow::Error, AppResources>::new(
         "diesel.list_users",
     )
     .then(ListUsersTransition);
 
-    let update = Axon::<UpdateEmailInput, UpdateEmailInput, anyhow::Error, AppResources>::start(
+    let update = Axon::<UpdateEmailInput, UpdateEmailInput, anyhow::Error, AppResources>::new(
         "diesel.update_user_email",
     )
     .then(UpdateUserEmailTransition);
 
-    let delete = Axon::<DeleteUserInput, DeleteUserInput, anyhow::Error, AppResources>::start(
+    let delete = Axon::<DeleteUserInput, DeleteUserInput, anyhow::Error, AppResources>::new(
         "diesel.delete_user",
     )
     .then(DeleteUserTransition);

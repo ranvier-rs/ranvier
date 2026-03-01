@@ -111,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Starting Axon...");
 
     // 2. Define Axon
-    let axon = Axon::<i32, i32, std::convert::Infallible>::start("CalculationCircuit")
+    let axon = Axon::<i32, i32, std::convert::Infallible>::new("CalculationCircuit")
         .then(AddOne)
         .then(AddOne);
 

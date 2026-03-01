@@ -122,7 +122,7 @@ impl Transition<String, ()> for LogEnd {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Build the Axon (Execution chain)
-    let axon = Axon::<(), (), anyhow::Error>::start("My First Schematic")
+    let axon = Axon::<(), (), anyhow::Error>::new("My First Schematic")
         .then(LogStart)
         .then(ProcessData)
         .then(LogEnd);

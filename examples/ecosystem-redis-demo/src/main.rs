@@ -199,7 +199,7 @@ async fn main() -> Result<()> {
         key_prefix: prefix.clone(),
     };
 
-    let flow = Axon::<SessionRequest, SessionRequest, anyhow::Error, AppResources>::start(
+    let flow = Axon::<SessionRequest, SessionRequest, anyhow::Error, AppResources>::new(
         "redis.session_cache_flow",
     )
     .then(LoadSessionTransition)

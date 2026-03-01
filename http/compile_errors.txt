@@ -1,0 +1,710 @@
+warning: use of deprecated trait `static_gen::StaticNode`: Legacy trait kept for backward compatibility. Use StaticAxon instead.
+  --> core\src\lib.rs:17:71
+   |
+17 | ...cManifest, StaticNode, StaticStat...
+   |               ^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated function `static_gen::read_json_file`: Internal API
+  --> core\src\lib.rs:18:5
+   |
+18 |     read_json_file, write_json_file,
+   |     ^^^^^^^^^^^^^^
+
+warning: use of deprecated function `static_gen::write_json_file`: Internal API
+  --> core\src\lib.rs:18:21
+   |
+18 |     read_json_file, write_json_file,
+   |                     ^^^^^^^^^^^^^^^
+
+warning: `ranvier-core` (lib) generated 3 warnings
+    Checking ranvier-http v0.12.0 (F:\project\ranvier\ranvier-workspace\ranvier\http)
+warning: use of deprecated struct `ingress::RawIngressService`: Internal service type
+    --> http\src\ingress.rs:2448:40
+     |
+2448 | impl<R> Service<Request<Incoming>> for RawIngressService<R>
+     |                                        ^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated struct `ingress::RawIngressService`: Internal service type
+    --> http\src\ingress.rs:1948:52
+     |
+1948 |     pub fn into_raw_service(self, resources: R) -> RawIngressService<R> {
+     |                                                    ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated struct `ingress::RawIngressService`: Internal service type
+    --> http\src\ingress.rs:1956:9
+     |
+1956 |         RawIngressService {
+     |         ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated struct `ingress::RawIngressService`: Internal service type
+  --> http\src\test_harness.rs:11:35
+   |
+11 | use crate::ingress::{HttpIngress, RawIngressService};
+   |                                   ^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated struct `ingress::RawIngressService`: Internal service type
+  --> http\src\test_harness.rs:43:14
+   |
+43 |     service: RawIngressService<R>,
+   |              ^^^^^^^^^^^^^^^^^
+
+error[E0053]: method `into_response` has an incompatible type for trait
+  --> http\src\body.rs:90:31
+   |
+90 |     fn into_response(self) -> Response<Full<Bytes>> {
+   |                               ^^^^^^^^^^^^^^^^^^^^^ expected `BoxBody<bytes::Bytes, Infallible>`, found `http_body_util::Full<bytes::Bytes>`
+   |
+note: type in trait
+  --> http\src\response.rs:8:31
+   |
+ 8 |     fn into_response(self) -> RanvierResponse;
+   |                               ^^^^^^^^^^^^^^^
+   = note: expected signature `fn(JsonBodyError) -> Response<BoxBody<bytes::Bytes, Infallible>>`
+              found signature `fn(JsonBodyError) -> Response<http_body_util::Full<bytes::Bytes>>`
+help: change the output type to match the trait
+   |
+90 -     fn into_response(self) -> Response<Full<Bytes>> {
+90 +     fn into_response(self) -> Response<BoxBody<bytes::Bytes, Infallible>> {
+   |
+
+error[E0053]: method `into_response` has an incompatible type for trait
+  --> http\src\body.rs:90:31
+   |
+90 |     fn into_response(self) -> Response<Full<Bytes>> {
+   |                               ^^^^^^^^^^^^^^^^^^^^^ expected `BoxBody<Bytes, Infallible>`, found `http_body_util::Full<bytes::Bytes>`
+   |
+note: type in trait
+  --> http\src\response.rs:8:31
+   |
+ 8 |     fn into_response(self) -> RanvierResponse;
+   |                               ^^^^^^^^^^^^^^^
+   = note: expected signature `fn(JsonBodyError) -> Response<BoxBody<bytes::Bytes, std::convert::Infallible>>`
+              found signature `fn(JsonBodyError) -> Response<http_body_util::Full<bytes::Bytes>>`
+help: change the output type to match the trait
+   |
+90 -     fn into_response(self) -> Response<Full<Bytes>> {
+90 +     fn into_response(self) -> Response<BoxBody<bytes::Bytes, std::convert::Infallible>> {
+   |
+
+error[E0599]: the method `clone` exists for struct `Response<BoxBody<bytes::Bytes, Infallible>>`, but its trait bounds were not satisfied
+    --> http\src\ingress.rs:2293:33
+     |
+2293 |         let response = response.clone();
+     |                                 ^^^^^ method cannot be called on `Response<BoxBody<bytes::Bytes, Infallible>>` due to unsatisfied trait bounds
+     |
+    ::: C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-1.4.0\src\response.rs:174:1
+     |
+ 174 | pub struct Response<T> {
+     | ---------------------- doesn't satisfy `Response<BoxBody<bytes::Bytes, Infallible>>: Clone`
+     |
+    ::: C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-body-util-0.1.3\src\combinators\box_body.rs:12:1
+     |
+  12 | pub struct BoxBody<D, E> {
+     | ------------------------ doesn't satisfy `BoxBody<bytes::Bytes, Infallible>: Clone`
+     |
+     = note: the following trait bounds were not satisfied:
+             `BoxBody<bytes::Bytes, Infallible>: Clone`
+             which is required by `Response<BoxBody<bytes::Bytes, Infallible>>: Clone`
+
+error[E0308]: `match` arms have incompatible types
+   --> http\src\ingress.rs:165:27
+    |
+163 |               match tokio::time::timeout(timeout, fut).await {
+    |               ---------------------------------------------- `match` arms have incompatible types
+164 |                   Ok(response) => response,
+    |                                   -------- this is found to be of type `Result<Response<BoxBody<bytes::Bytes, Infallible>>, Infallible>`
+165 |                   Err(_) => Ok(Response::builder()
+    |  ___________________________^
+166 | |                     .status(StatusCode::REQUEST_TIMEOUT)
+167 | |                     .body(Full::new(Bytes::from("Request Timeout")))
+168 | |                     .unwrap()),
+    | |______________________________^ expected `Result<Response<BoxBody<..., ...>>, ...>`, found `Result<Response<Full<Bytes>>, _>`
+    |
+    = note: expected enum `Result<Response<BoxBody<bytes::Bytes, Infallible>>, Infallible>`
+               found enum `Result<Response<http_body_util::Full<bytes::Bytes>>, _>`
+
+error[E0308]: mismatched types
+   --> http\src\ingress.rs:223:45
+    |
+223 |     Arc::new(move |service: BoxHttpService| BoxCloneService::new(layer.clone().layer(service)))
+    |                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `BoxBody<bytes::Bytes, Infallible>`, found `http_body_util::Full<bytes::Bytes>`
+    |
+    = note: expected struct `BoxCloneService<_, Response<BoxBody<bytes::Bytes, Infallible>>, _>`
+               found struct `BoxCloneService<_, Response<http_body_util::Full<bytes::Bytes>>, _>`
+
+error[E0308]: mismatched types
+   --> http\src\ingress.rs:812:13
+    |
+812 | /             Box::pin(async move {
+813 | |                 let request_id = uuid::Uuid::new_v4().to_string();
+814 | |                 let span = tracing::info_span!(
+815 | |                     "HTTPRequest",
+...   |
+827 | |                 .await
+828 | |             }) as Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
+    | |_____________________________________________________________________________^ expected `BoxBody<bytes::Bytes, Infallible>`, found `http_body_util::Full<bytes::Bytes>`
+    |
+    = note: expected struct `Pin<Box<(dyn futures_util::Future<Output = Response<BoxBody<bytes::Bytes, Infallible>>> + std::marker::Send + 'static)>>`
+               found struct `Pin<Box<dyn futures_util::Future<Output = Response<http_body_util::Full<bytes::Bytes>>> + std::marker::Send>>`
+
+error[E0609]: no field `resources` on type `HttpIngress<R>`
+    --> http\src\ingress.rs:1210:30
+     |
+1210 |         let resources = self.resources.clone();
+     |                              ^^^^^^^^^ unknown field
+     |
+     = note: available fields are: `addr`, `routes`, `fallback`, `layers`, `on_start` ... and 6 others
+
+error[E0271]: type mismatch resolving `<ReceiverStream<SseEvent> as Stream>::Item == Result<SseEvent, _>`
+    --> http\src\ingress.rs:1236:30
+     |
+1236 |                 sse_response(ReceiverStream::new(rx))
+     |                 ------------ ^^^^^^^^^^^^^^^^^^^^^^^ expected `Result<SseEvent, _>`, found `SseEvent`
+     |                 |
+     |                 required by a bound introduced by this call
+     |
+     = note: expected enum `Result<SseEvent, _>`
+              found struct `SseEvent`
+note: required by a bound in `sse_response`
+    --> http\src\sse.rs:106:15
+     |
+ 104 | pub fn sse_response<S, E>(stream: S) -> RanvierResponse
+     |        ------------ required by a bound in this function
+ 105 | where
+ 106 |     S: Stream<Item = Result<SseEvent, E>> + Send + 'static,
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `sse_response`
+
+error[E0271]: type mismatch resolving `<<... as Layer<...>>::Service as Service<...>>::Response == Response<...>`
+    --> http\src\ingress.rs:1427:44
+     |
+1427 |             Arc::new(vec![to_service_layer(layer)]),
+     |                           ---------------- ^^^^^ expected `Response<Full<Bytes>>`, found `Response<BoxBody<Bytes, Infallible>>`
+     |                           |
+     |                           required by a bound introduced by this call
+     |
+     = note: expected struct `Response<http_body_util::Full<bytes::Bytes>>`
+                found struct `Response<BoxBody<bytes::Bytes, Infallible>>`
+note: required by a bound in `to_service_layer`
+    --> http\src\ingress.rs:217:44
+     |
+ 214 | fn to_service_layer<L>(layer: L) -> ServiceLayer
+     |    ---------------- required by a bound in this function
+...
+ 217 |     L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+     |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `to_service_layer`
+     = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\ranvier_http-1284bf848b724e55.long-type-7714995773140707723.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0271]: type mismatch resolving `<<... as Layer<...>>::Service as Service<...>>::Response == Response<...>`
+    --> http\src\ingress.rs:1460:44
+     |
+1460 |             Arc::new(vec![to_service_layer(layer)]),
+     |                           ---------------- ^^^^^ expected `Response<Full<Bytes>>`, found `Response<BoxBody<Bytes, Infallible>>`
+     |                           |
+     |                           required by a bound introduced by this call
+     |
+     = note: expected struct `Response<http_body_util::Full<bytes::Bytes>>`
+                found struct `Response<BoxBody<bytes::Bytes, Infallible>>`
+note: required by a bound in `to_service_layer`
+    --> http\src\ingress.rs:217:44
+     |
+ 214 | fn to_service_layer<L>(layer: L) -> ServiceLayer
+     |    ---------------- required by a bound in this function
+...
+ 217 |     L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+     |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `to_service_layer`
+     = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\ranvier_http-1284bf848b724e55.long-type-7714995773140707723.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0277]: the trait bound `http::Request<BoxBody<bytes::Bytes, _>>: From<http::response::Parts>` is not satisfied
+    --> http\src\ingress.rs:1597:38
+     |
+1597 | ...                   .into() // Dummy req
+     |                        ^^^^ the trait `From<http::response::Parts>` is not implemented for `http::Request<BoxBody<bytes::Bytes, _>>`
+     |
+     = note: required for `http::response::Parts` to implement `Into<http::Request<BoxBody<bytes::Bytes, _>>>`
+
+warning: use of deprecated field `ingress::RawIngressService::routes`: Internal service type
+    --> http\src\ingress.rs:1957:13
+     |
+1957 |             routes,
+     |             ^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::fallback`: Internal service type
+    --> http\src\ingress.rs:1958:13
+     |
+1958 |             fallback,
+     |             ^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::layers`: Internal service type
+    --> http\src\ingress.rs:1959:13
+     |
+1959 |             layers,
+     |             ^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::health`: Internal service type
+    --> http\src\ingress.rs:1960:13
+     |
+1960 |             health,
+     |             ^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::static_assets`: Internal service type
+    --> http\src\ingress.rs:1961:13
+     |
+1961 |             static_assets,
+     |             ^^^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::resources`: Internal service type
+    --> http\src\ingress.rs:1962:13
+     |
+1962 |             resources,
+     |             ^^^^^^^^^
+
+error[E0308]: mismatched types
+    --> http\src\ingress.rs:2033:24
+     |
+2033 |                       Ok(Response::builder()
+     |  _____________________--_^
+     | |                     |
+     | |                     arguments to this enum variant are incorrect
+2034 | |                         .status(StatusCode::NOT_FOUND)
+2035 | |                         .body(Full::new(Bytes::from("Not Found")))
+2036 | |                         .unwrap())
+     | |_________________________________^ expected `Response<BoxBody<Bytes, Infallible>>`, found `Response<Full<Bytes>>`
+     |
+     = note: expected struct `Response<BoxBody<bytes::Bytes, Infallible>>`
+                found struct `Response<http_body_util::Full<bytes::Bytes>>`
+help: the type constructed contains `Response<http_body_util::Full<bytes::Bytes>>` due to the type of the argument passed
+    --> http\src\ingress.rs:2033:21
+     |
+2033 |                        Ok(Response::builder()
+     |   _____________________^  -
+     |  |________________________|
+2034 | ||                         .status(StatusCode::NOT_FOUND)
+2035 | ||                         .body(Full::new(Bytes::from("Not Found")))
+2036 | ||                         .unwrap())
+     | ||_________________________________-^
+     | |__________________________________|
+     |                                    this argument influences the type of `Ok`
+note: tuple variant defined here
+    --> C:\Users\realwolf\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\result.rs:561:5
+     |
+ 561 |     Ok(#[stable(feature = "rust1", since = "1.0.0")] T),
+     |     ^^
+
+warning: use of deprecated field `ingress::RawIngressService::routes`: Internal service type
+    --> http\src\ingress.rs:2464:22
+     |
+2464 |         let routes = self.routes.clone();
+     |                      ^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::fallback`: Internal service type
+    --> http\src\ingress.rs:2465:24
+     |
+2465 |         let fallback = self.fallback.clone();
+     |                        ^^^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::layers`: Internal service type
+    --> http\src\ingress.rs:2466:22
+     |
+2466 |         let layers = self.layers.clone();
+     |                      ^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::health`: Internal service type
+    --> http\src\ingress.rs:2467:22
+     |
+2467 |         let health = self.health.clone();
+     |                      ^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::static_assets`: Internal service type
+    --> http\src\ingress.rs:2468:29
+     |
+2468 |         let static_assets = self.static_assets.clone();
+     |                             ^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated field `ingress::RawIngressService::resources`: Internal service type
+    --> http\src\ingress.rs:2469:25
+     |
+2469 |         let resources = self.resources.clone();
+     |                         ^^^^^^^^^^^^^^
+
+error[E0277]: the trait bound `SseBody<S>: Body` is not satisfied
+   --> http\src\sse.rs:110:39
+    |
+110 |     let boxed_body = BodyExt::map_err(body, |e| e.into()).boxed();
+    |                      ---------------- ^^^^ unsatisfied trait bound
+    |                      |
+    |                      required by a bound introduced by this call
+    |
+help: the trait `Body` is not implemented for `SseBody<S>`
+   --> http\src\sse.rs:75:1
+    |
+ 75 | pub struct SseBody<S> {
+    | ^^^^^^^^^^^^^^^^^^^^^
+    = help: the following other types implement trait `Body`:
+              &mut T
+              AsyncReadBody<T>
+              BodyStream<B>
+              Box<T>
+              BoxBody<D, E>
+              Collected<B>
+              CompressionBody<B>
+              MapFrame<B, F>
+            and 20 others
+note: required by a bound in `http_body_util::BodyExt::map_err`
+   --> C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-body-util-0.1.3\src\lib.rs:36:20
+    |
+ 36 | pub trait BodyExt: http_body::Body {
+    |                    ^^^^^^^^^^^^^^^ required by this bound in `BodyExt::map_err`
+...
+ 58 |     fn map_err<F, E>(self, f: F) -> MapErr<Self, F>
+    |        ------- required by a bound in this associated function
+
+error[E0282]: type annotations needed
+   --> http\src\sse.rs:110:46
+    |
+110 |     let boxed_body = BodyExt::map_err(body, |e| e.into()).boxed();
+    |                                              ^  - type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+110 |     let boxed_body = BodyExt::map_err(body, |e: /* Type */| e.into()).boxed();
+    |                                               ++++++++++++
+
+error[E0599]: the method `clone` exists for struct `Response<BoxBody<bytes::Bytes, std::convert::Infallible>>`, but its trait bounds were not satisfied
+    --> http\src\ingress.rs:2293:33
+     |
+2293 |         let response = response.clone();
+     |                                 ^^^^^ method cannot be called due to unsatisfied trait bounds
+     |
+    ::: C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-1.4.0\src\response.rs:174:1
+     |
+ 174 | pub struct Response<T> {
+     | ---------------------- doesn't satisfy `_: Clone`
+     |
+    ::: C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-body-util-0.1.3\src\combinators\box_body.rs:12:1
+     |
+  12 | pub struct BoxBody<D, E> {
+     | ------------------------ doesn't satisfy `_: Clone`
+     |
+     = note: the following trait bounds were not satisfied:
+             `BoxBody<bytes::Bytes, std::convert::Infallible>: Clone`
+             which is required by `Response<BoxBody<bytes::Bytes, std::convert::Infallible>>: Clone`
+
+error: lifetime may not live long enough
+   --> http\src\extract.rs:293:31
+    |
+278 |     async fn from_request(req: &mut Request<B>) -> Result<Self, ExtractError> {
+    |                                - lifetime `'life0` defined here
+...
+293 |         Ok(Multipart { inner: multipart })
+    |                               ^^^^^^^^^ this usage requires that `'life0` must outlive `'static`
+
+warning: unused variable: `body`
+   --> http\src\extract.rs:286:13
+    |
+286 |         let body = req.body_mut();
+    |             ^^^^ help: if this is intentional, prefix it with an underscore: `_body`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+error[E0308]: `match` arms have incompatible types
+   --> http\src\ingress.rs:165:27
+    |
+163 |               match tokio::time::timeout(timeout, fut).await {
+    |               ---------------------------------------------- `match` arms have incompatible types
+164 |                   Ok(response) => response,
+    |                                   -------- this is found to be of type `Result<Response<BoxBody<bytes::Bytes, std::convert::Infallible>>, std::convert::Infallible>`
+165 |                   Err(_) => Ok(Response::builder()
+    |  ___________________________^
+166 | |                     .status(StatusCode::REQUEST_TIMEOUT)
+167 | |                     .body(Full::new(Bytes::from("Request Timeout")))
+168 | |                     .unwrap()),
+    | |______________________________^ expected `Result<Response<BoxBody<..., ...>>, ...>`, found `Result<Response<Full<Bytes>>, _>`
+    |
+    = note: expected enum `Result<Response<BoxBody<bytes::Bytes, std::convert::Infallible>>, std::convert::Infallible>`
+               found enum `Result<Response<http_body_util::Full<bytes::Bytes>>, _>`
+
+error[E0308]: mismatched types
+   --> http\src\ingress.rs:223:45
+    |
+223 |     Arc::new(move |service: BoxHttpService| BoxCloneService::new(layer.clone().layer(service)))
+    |                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `BoxBody<Bytes, Infallible>`, found `http_body_util::Full<bytes::Bytes>`
+    |
+    = note: expected struct `BoxCloneService<_, Response<BoxBody<bytes::Bytes, std::convert::Infallible>>, _>`
+               found struct `BoxCloneService<_, Response<http_body_util::Full<bytes::Bytes>>, _>`
+
+error[E0308]: mismatched types
+   --> http\src\ingress.rs:812:13
+    |
+812 | /             Box::pin(async move {
+813 | |                 let request_id = uuid::Uuid::new_v4().to_string();
+814 | |                 let span = tracing::info_span!(
+815 | |                     "HTTPRequest",
+...   |
+827 | |                 .await
+828 | |             }) as Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
+    | |_____________________________________________________________________________^ expected `BoxBody<Bytes, Infallible>`, found `http_body_util::Full<bytes::Bytes>`
+    |
+    = note: expected struct `Pin<Box<(dyn futures_util::Future<Output = Response<BoxBody<bytes::Bytes, std::convert::Infallible>>> + std::marker::Send + 'static)>>`
+               found struct `Pin<Box<dyn futures_util::Future<Output = Response<http_body_util::Full<bytes::Bytes>>> + std::marker::Send>>`
+
+error[E0609]: no field `resources` on type `ingress::HttpIngress<R>`
+    --> http\src\ingress.rs:1210:30
+     |
+1210 |         let resources = self.resources.clone();
+     |                              ^^^^^^^^^ unknown field
+     |
+     = note: available fields are: `addr`, `routes`, `fallback`, `layers`, `on_start` ... and 6 others
+
+error[E0271]: type mismatch resolving `<<... as Layer<...>>::Service as Service<...>>::Response == Response<...>`
+    --> http\src\ingress.rs:1427:44
+     |
+1427 |             Arc::new(vec![to_service_layer(layer)]),
+     |                           ---------------- ^^^^^ expected `Response<Full<Bytes>>`, found `Response<BoxBody<Bytes, Infallible>>`
+     |                           |
+     |                           required by a bound introduced by this call
+     |
+     = note: expected struct `Response<http_body_util::Full<bytes::Bytes>>`
+                found struct `Response<BoxBody<bytes::Bytes, std::convert::Infallible>>`
+note: required by a bound in `to_service_layer`
+    --> http\src\ingress.rs:217:44
+     |
+ 214 | fn to_service_layer<L>(layer: L) -> ServiceLayer
+     |    ---------------- required by a bound in this function
+...
+ 217 |     L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+     |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `to_service_layer`
+     = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\ranvier_http-53e57ce2804a9b4a.long-type-4972186363315782215.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0271]: type mismatch resolving `<<... as Layer<...>>::Service as Service<...>>::Response == Response<...>`
+    --> http\src\ingress.rs:1460:44
+     |
+1460 |             Arc::new(vec![to_service_layer(layer)]),
+     |                           ---------------- ^^^^^ expected `Response<Full<Bytes>>`, found `Response<BoxBody<Bytes, Infallible>>`
+     |                           |
+     |                           required by a bound introduced by this call
+     |
+     = note: expected struct `Response<http_body_util::Full<bytes::Bytes>>`
+                found struct `Response<BoxBody<bytes::Bytes, std::convert::Infallible>>`
+note: required by a bound in `to_service_layer`
+    --> http\src\ingress.rs:217:44
+     |
+ 214 | fn to_service_layer<L>(layer: L) -> ServiceLayer
+     |    ---------------- required by a bound in this function
+...
+ 217 |     L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+     |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `to_service_layer`
+     = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\ranvier_http-53e57ce2804a9b4a.long-type-4972186363315782215.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+Some errors have detailed explanations: E0053, E0271, E0277, E0282, E0308, E0599, E0609.
+For more information about an error, try `rustc --explain E0053`.
+warning: `ranvier-http` (lib) generated 18 warnings
+error: could not compile `ranvier-http` (lib) due to 14 previous errors; 18 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+error[E0308]: mismatched types
+    --> http\src\ingress.rs:2033:24
+     |
+2033 |                       Ok(Response::builder()
+     |  _____________________--_^
+     | |                     |
+     | |                     arguments to this enum variant are incorrect
+2034 | |                         .status(StatusCode::NOT_FOUND)
+2035 | |                         .body(Full::new(Bytes::from("Not Found")))
+2036 | |                         .unwrap())
+     | |_________________________________^ expected `Response<BoxBody<Bytes, Infallible>>`, found `Response<Full<Bytes>>`
+     |
+     = note: expected struct `Response<BoxBody<bytes::Bytes, std::convert::Infallible>>`
+                found struct `Response<http_body_util::Full<bytes::Bytes>>`
+help: the type constructed contains `Response<http_body_util::Full<bytes::Bytes>>` due to the type of the argument passed
+    --> http\src\ingress.rs:2033:21
+     |
+2033 |                        Ok(Response::builder()
+     |   _____________________^  -
+     |  |________________________|
+2034 | ||                         .status(StatusCode::NOT_FOUND)
+2035 | ||                         .body(Full::new(Bytes::from("Not Found")))
+2036 | ||                         .unwrap())
+     | ||_________________________________-^
+     | |__________________________________|
+     |                                    this argument influences the type of `Ok`
+note: tuple variant defined here
+    --> C:\Users\realwolf\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\result.rs:561:5
+     |
+ 561 |     Ok(#[stable(feature = "rust1", since = "1.0.0")] T),
+     |     ^^
+
+error[E0271]: type mismatch resolving `<BoxCloneService<..., ..., ...> as Service<...>>::Response == Response<...>`
+    --> http\src\ingress.rs:2555:20
+     |
+2555 |             .layer(tower::layer::util::Identity::new())
+     |              ----- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Response<Full<Bytes>>`, found `Response<BoxBody<Bytes, Infallible>>`
+     |              |
+     |              required by a bound introduced by this call
+     |
+     = note: expected struct `Response<http_body_util::Full<bytes::Bytes>>`
+                found struct `Response<BoxBody<bytes::Bytes, std::convert::Infallible>>`
+note: required by a bound in `ingress::HttpIngress::<R>::layer`
+    --> http\src\ingress.rs:990:48
+     |
+ 987 |     pub fn layer<L>(mut self, layer: L) -> Self
+     |            ----- required by a bound in this associated function
+...
+ 990 |         L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+     |                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `HttpIngress::<R>::layer`
+     = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\ranvier_http-53e57ce2804a9b4a.long-type-11077248458867588767.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0271]: type mismatch resolving `<BoxCloneService<..., ..., ...> as Service<...>>::Response == Response<...>`
+    --> http\src\ingress.rs:2556:20
+     |
+2556 |             .layer(tower::layer::util::Identity::new());
+     |              ----- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Response<Full<Bytes>>`, found `Response<BoxBody<Bytes, Infallible>>`
+     |              |
+     |              required by a bound introduced by this call
+     |
+     = note: expected struct `Response<http_body_util::Full<bytes::Bytes>>`
+                found struct `Response<BoxBody<bytes::Bytes, std::convert::Infallible>>`
+note: required by a bound in `ingress::HttpIngress::<R>::layer`
+    --> http\src\ingress.rs:990:48
+     |
+ 987 |     pub fn layer<L>(mut self, layer: L) -> Self
+     |            ----- required by a bound in this associated function
+...
+ 990 |         L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+     |                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `HttpIngress::<R>::layer`
+     = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\ranvier_http-53e57ce2804a9b4a.long-type-11077248458867588767.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0271]: type mismatch resolving `<Cors<...> as Service<...>>::Response == Response<...>`
+    --> http\src\ingress.rs:2562:54
+     |
+2562 |         let ingress = HttpIngress::<()>::new().layer(tower_http::cors::CorsLayer::permissive());
+     |                                                ----- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Response<Full<Bytes>>`, found `Response<BoxBody<Bytes, Infallible>>`
+     |                                                |
+     |                                                required by a bound introduced by this call
+     |
+     = note: expected struct `Response<http_body_util::Full<bytes::Bytes>>`
+                found struct `Response<BoxBody<bytes::Bytes, std::convert::Infallible>>`
+note: required by a bound in `ingress::HttpIngress::<R>::layer`
+    --> http\src\ingress.rs:990:48
+     |
+ 987 |     pub fn layer<L>(mut self, layer: L) -> Self
+     |            ----- required by a bound in this associated function
+...
+ 990 |         L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+     |                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `HttpIngress::<R>::layer`
+     = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\ranvier_http-53e57ce2804a9b4a.long-type-8480016887213432567.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0271]: type mismatch resolving `<TraceContextService<...> as Service<...>>::Response == Response<...>`
+    --> http\src\ingress.rs:2782:20
+     |
+2782 |             .layer(TraceContextLayer::new())
+     |              ----- ^^^^^^^^^^^^^^^^^^^^^^^^ expected `Response<Full<Bytes>>`, found `Response<BoxBody<Bytes, Infallible>>`
+     |              |
+     |              required by a bound introduced by this call
+     |
+     = note: expected struct `Response<http_body_util::Full<bytes::Bytes>>`
+                found struct `Response<BoxBody<bytes::Bytes, std::convert::Infallible>>`
+note: required by a bound in `ingress::HttpIngress::<R>::layer`
+    --> http\src\ingress.rs:990:48
+     |
+ 987 |     pub fn layer<L>(mut self, layer: L) -> Self
+     |            ----- required by a bound in this associated function
+...
+ 990 |         L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+     |                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `HttpIngress::<R>::layer`
+     = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\ranvier_http-53e57ce2804a9b4a.long-type-14210291902119272855.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0271]: type mismatch resolving `<HttpMetricsService<...> as Service<...>>::Response == Response<...>`
+    --> http\src\ingress.rs:2783:20
+     |
+2783 |             .layer(HttpMetricsLayer::new(metrics.clone()))
+     |              ----- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Response<Full<Bytes>>`, found `Response<BoxBody<Bytes, Infallible>>`
+     |              |
+     |              required by a bound introduced by this call
+     |
+     = note: expected struct `Response<http_body_util::Full<bytes::Bytes>>`
+                found struct `Response<BoxBody<bytes::Bytes, std::convert::Infallible>>`
+note: required by a bound in `ingress::HttpIngress::<R>::layer`
+    --> http\src\ingress.rs:990:48
+     |
+ 987 |     pub fn layer<L>(mut self, layer: L) -> Self
+     |            ----- required by a bound in this associated function
+...
+ 990 |         L::Service: Service<Request<Incoming>, Response = Response<Full<Bytes>>, Error = Infallible>
+     |                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `HttpIngress::<R>::layer`
+     = note: the full name for the type has been written to 'F:\project\ranvier\ranvier-workspace\ranvier\target\debug\deps\ranvier_http-53e57ce2804a9b4a.long-type-17185101471627793305.txt'
+     = note: consider using `--verbose` to print the full type name to the console
+
+error[E0277]: the trait bound `SseBody<S>: Body` is not satisfied
+   --> http\src\sse.rs:110:39
+    |
+110 |     let boxed_body = BodyExt::map_err(body, |e| e.into()).boxed();
+    |                      ---------------- ^^^^ unsatisfied trait bound
+    |                      |
+    |                      required by a bound introduced by this call
+    |
+help: the trait `Body` is not implemented for `SseBody<S>`
+   --> http\src\sse.rs:75:1
+    |
+ 75 | pub struct SseBody<S> {
+    | ^^^^^^^^^^^^^^^^^^^^^
+note: there are multiple different versions of crate `http_body` in the dependency graph
+   --> C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-body-1.0.1\src\lib.rs:38:1
+    |
+ 38 | pub trait Body {
+    | ^^^^^^^^^^^^^^ this is the expected trait
+    |
+   ::: C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-body-0.4.6\src\lib.rs:48:1
+    |
+ 48 | pub trait Body {
+    | -------------- this is the trait that was imported
+    = help: you can use `cargo tree` to explore your dependency tree
+    = help: the following other types implement trait `Body`:
+              &mut T
+              AsyncReadBody<T>
+              BodyStream<B>
+              Box<T>
+              BoxBody<D, E>
+              Collected<B>
+              CompressionBody<B>
+              MapFrame<B, F>
+            and 20 others
+note: required by a bound in `http_body_util::BodyExt::map_err`
+   --> C:\Users\realwolf\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\http-body-util-0.1.3\src\lib.rs:36:20
+    |
+ 36 | pub trait BodyExt: http_body::Body {
+    |                    ^^^^^^^^^^^^^^^ required by this bound in `BodyExt::map_err`
+...
+ 58 |     fn map_err<F, E>(self, f: F) -> MapErr<Self, F>
+    |        ------- required by a bound in this associated function
+
+warning: variable does not need to be mutable
+   --> http\src\extract.rs:678:13
+    |
+678 |         let mut field1 = multipart.next_field().await.expect("field1").unwrap();
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> http\src\extract.rs:682:13
+    |
+682 |         let mut file_field = multipart.next_field().await.expect("file").unwrap();
+    |             ----^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: `ranvier-http` (lib test) generated 20 warnings (18 duplicates)
+error: could not compile `ranvier-http` (lib test) due to 19 previous errors; 20 warnings emitted
