@@ -144,6 +144,10 @@ pub struct Node {
     /// 소스 코드 위치 (Studio Code↔Node 매핑용)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_location: Option<SourceLocation>,
+    /// Schematic-level Saga compensation routing.
+    /// Points to the node ID that handles compensation for this node.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compensation_node_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

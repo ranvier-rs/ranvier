@@ -126,6 +126,7 @@ where
             metadata: Default::default(),
             bus_capability: None,
             source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            compensation_node_id: None,
         };
 
         let mut schematic = Schematic::new(label);
@@ -177,6 +178,7 @@ where
             metadata: Default::default(),
             bus_capability: bus_capability_schema_from_policy(transition.bus_access_policy()),
             source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            compensation_node_id: None,
         };
 
         let last_node_id = schematic
@@ -280,6 +282,38 @@ where
         }
     }
 
+    /// Attach a compensation transition to the previously added node.
+    /// This establishes a Schematic-level Saga compensation mapping.
+    #[track_caller]
+    pub fn compensate_with<Comp>(mut self, transition: Comp) -> Self
+    where
+        Comp: Transition<Out, (), Resources = Res, Error = E> + Clone + Send + Sync + 'static,
+    {
+        let caller = Location::caller();
+        let comp_node_id = uuid::Uuid::new_v4().to_string();
+
+        let comp_node = Node {
+            id: comp_node_id.clone(),
+            kind: NodeKind::Atom,
+            label: transition.label(),
+            description: transition.description(),
+            input_type: type_name_of::<Out>(),
+            output_type: "void".to_string(),
+            resource_type: type_name_of::<Res>(),
+            metadata: Default::default(),
+            bus_capability: None,
+            source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            compensation_node_id: None,
+        };
+
+        if let Some(last_node) = self.schematic.nodes.last_mut() {
+            last_node.compensation_node_id = Some(comp_node_id.clone());
+        }
+
+        self.schematic.nodes.push(comp_node);
+        self
+    }
+
     /// Add a branch point
     #[track_caller]
     pub fn branch(mut self, branch_id: impl Into<String>, label: &str) -> Self {
@@ -303,6 +337,7 @@ where
             metadata: Default::default(),
             bus_capability: None,
             source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            compensation_node_id: None,
         };
 
         self.schematic.nodes.push(branch_node);
