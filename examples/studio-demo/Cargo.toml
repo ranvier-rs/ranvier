@@ -4,11 +4,11 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 [dependencies]
-ranvier-core = { path = "../../core" }
-ranvier-runtime = { path = "../../runtime" }
+ranvier-core = { workspace = true }
+ranvier-runtime = { workspace = true }
 ranvier-inspector = { workspace = true }
 ranvier-status = { workspace = true }
-ranvier-macros = { path = "../../macros" }
+ranvier-macros = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

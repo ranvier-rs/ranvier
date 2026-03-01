@@ -3130,7 +3130,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier"
-version = "0.14.3"
+version = "1.0.0-rc.1"
 dependencies = [
  "ranvier-auth",
  "ranvier-core",
@@ -3143,7 +3143,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-auth"
-version = "0.14.3"
+version = "1.0.0-rc.1"
 dependencies = [
  "bytes",
  "http 1.4.0",
@@ -3159,7 +3159,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-cluster"
-version = "0.14.3"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-trait",
  "bb8",
@@ -3175,7 +3175,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-core"
-version = "0.14.3"
+version = "1.0.0-rc.1"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -3211,7 +3211,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-grpc"
-version = "0.14.3"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3231,7 +3231,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-guard"
-version = "0.14.3"
+version = "1.0.0-rc.1"
 dependencies = [
  "bytes",
  "http 1.4.0",
@@ -3245,7 +3245,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-http"
-version = "0.14.3"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3285,7 +3285,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-inspector"
-version = "0.14.3"
+version = "1.0.0-rc.1"
 dependencies = [
  "axum 0.7.9",
  "futures",
@@ -3301,7 +3301,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-macros"
-version = "0.14.3"
+version = "1.0.0-rc.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3310,7 +3310,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-observe"
-version = "0.14.3"
+version = "1.0.0-rc.1"
 dependencies = [
  "anyhow",
  "http 1.4.0",
@@ -3326,7 +3326,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-openapi"
-version = "0.14.3"
+version = "1.0.0-rc.1"
 dependencies = [
  "http 1.4.0",
  "ranvier-core",
@@ -3338,7 +3338,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-runtime"
-version = "0.14.3"
+version = "1.0.0-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3371,7 +3371,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-std"
-version = "0.14.3"
+version = "1.0.0-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3388,7 +3388,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-synapse"
-version = "0.14.3"
+version = "1.0.0-rc.1"
 dependencies = [
  "anyhow",
  "chrono",

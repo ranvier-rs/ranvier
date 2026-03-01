@@ -83,7 +83,7 @@ See `examples/README.md` for tiers and additional workflows.
 
 **MSRV**
 
-- Rust `1.85.0` or newer.
+- Rust `1.93.0` or newer.
 
 ---
 

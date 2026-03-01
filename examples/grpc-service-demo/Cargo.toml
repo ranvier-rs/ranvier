@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ranvier-core = { path = "../../core" }
-ranvier-grpc = { path = "../../grpc" }
+ranvier-core = { workspace = true }
+ranvier-grpc = { workspace = true }
 tokio = { version = "1.37", features = ["full"] }
 tonic = "0.12"
 prost = "0.13"

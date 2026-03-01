@@ -4,9 +4,9 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 [dependencies]
-ranvier-core = { path = "../../core" }
-ranvier-runtime = { path = "../../runtime" }
-ranvier-observe = { path = "../../extensions/observe" }
+ranvier-core = { workspace = true }
+ranvier-runtime = { workspace = true }
+ranvier-observe = { workspace = true }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 anyhow = "1.0"

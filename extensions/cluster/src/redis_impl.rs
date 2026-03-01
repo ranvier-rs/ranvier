@@ -1,9 +1,8 @@
-use std::time::Duration;
 use async_trait::async_trait;
 use bb8_redis::{bb8::Pool, RedisConnectionManager};
-use redis::{AsyncCommands, RedisError};
+use redis::AsyncCommands;
 use ranvier_core::cluster::{ClusterBus, ClusterError, DistributedLock};
-use tracing::{debug, error};
+use tracing::debug;
 
 type RedisPool = Pool<RedisConnectionManager>;
 

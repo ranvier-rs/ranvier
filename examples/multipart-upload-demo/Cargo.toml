@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ranvier-core = { path = "../../core" }
-ranvier-http = { path = "../../http", features = ["multer"] }
+ranvier-core = { workspace = true }
+ranvier-http = { workspace = true, features = ["multer"] }
 tokio = { version = "1.37", features = ["full"] }
 anyhow = "1"
 async-trait = "0.1"

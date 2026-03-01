@@ -11,7 +11,7 @@ description = "Security and request-guard layers for Ranvier HTTP ingress"
 
 [dependencies]
 bytes = { workspace = true }
-ranvier-core = { path = "../../core" }
+ranvier-core = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 tower = { workspace = true }

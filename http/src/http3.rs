@@ -49,7 +49,7 @@ impl Http3Config {
 }
 
 /// Runs the HTTP/3 server with the given configuration and Tower service.
-pub async fn serve<S, B>(config: Http3Config, mut service: S) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>
+pub async fn serve<S, B>(config: Http3Config, service: S) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>
 where
     S: Service<Request<Full<Bytes>>, Response = Response<B>> + Clone + Send + 'static,
     S::Future: Send + 'static,
