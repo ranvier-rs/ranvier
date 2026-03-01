@@ -1,0 +1,22 @@
+[package]
+name = "graphql-service-demo"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+ranvier-core.workspace = true
+ranvier-graphql = { path = "../../graphql" }
+ranvier-http.workspace = true
+ranvier-macros.workspace = true
+async-graphql = { version = "7.0.2", features = ["dataloader"] }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+async-trait.workspace = true
+anyhow = "1.0"
+ranvier-runtime.workspace = true
+futures-util.workspace = true

@@ -1056,7 +1056,7 @@ where
     pub fn route<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
-        E: Send + 'static + std::fmt::Debug,
+        E: Send + Sync + 'static + std::fmt::Debug,
     {
         self.route_method(Method::GET, path, circuit)
     }
@@ -1076,7 +1076,7 @@ where
     ) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
-        E: Send + 'static + std::fmt::Debug,
+        E: Send + Sync + 'static + std::fmt::Debug,
     {
         self.route_method_with_error(method, path, circuit, |error| {
             (
@@ -1095,7 +1095,7 @@ where
     ) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
-        E: Send + 'static + std::fmt::Debug,
+        E: Send + Sync + 'static + std::fmt::Debug,
         H: Fn(&E) -> HttpResponse + Send + Sync + 'static,
     {
         self.route_method_with_error_and_layers(
@@ -1117,7 +1117,7 @@ where
     ) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
-        E: Send + 'static + std::fmt::Debug,
+        E: Send + Sync + 'static + std::fmt::Debug,
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
         L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
             + Clone
@@ -1149,7 +1149,7 @@ where
     ) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
-        E: Send + 'static + std::fmt::Debug,
+        E: Send + Sync + 'static + std::fmt::Debug,
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
         L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
             + Clone
@@ -1183,7 +1183,7 @@ where
     ) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
-        E: Send + 'static + std::fmt::Debug,
+        E: Send + Sync + 'static + std::fmt::Debug,
         H: Fn(&E) -> HttpResponse + Send + Sync + 'static,
     {
         let path_str: String = path.into();
@@ -1238,7 +1238,7 @@ where
     pub fn get<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
-        E: Send + 'static + std::fmt::Debug,
+        E: Send + Sync + 'static + std::fmt::Debug,
     {
         self.route_method(Method::GET, path, circuit)
     }
@@ -1251,7 +1251,7 @@ where
     ) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
-        E: Send + 'static + std::fmt::Debug,
+        E: Send + Sync + 'static + std::fmt::Debug,
         H: Fn(&E) -> HttpResponse + Send + Sync + 'static,
     {
         self.route_method_with_error(Method::GET, path, circuit, error_handler)
@@ -1265,7 +1265,7 @@ where
     ) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
-        E: Send + 'static + std::fmt::Debug,
+        E: Send + Sync + 'static + std::fmt::Debug,
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
         L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
             + Clone
@@ -1284,7 +1284,7 @@ where
     ) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
-        E: Send + 'static + std::fmt::Debug,
+        E: Send + Sync + 'static + std::fmt::Debug,
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
         L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
             + Clone
@@ -1298,7 +1298,7 @@ where
     pub fn post<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
-        E: Send + 'static + std::fmt::Debug,
+        E: Send + Sync + 'static + std::fmt::Debug,
     {
         self.route_method(Method::POST, path, circuit)
     }
@@ -1306,7 +1306,7 @@ where
     pub fn put<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
-        E: Send + 'static + std::fmt::Debug,
+        E: Send + Sync + 'static + std::fmt::Debug,
     {
         self.route_method(Method::PUT, path, circuit)
     }
@@ -1314,7 +1314,7 @@ where
     pub fn delete<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
-        E: Send + 'static + std::fmt::Debug,
+        E: Send + Sync + 'static + std::fmt::Debug,
     {
         self.route_method(Method::DELETE, path, circuit)
     }
@@ -1322,7 +1322,7 @@ where
     pub fn patch<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
-        E: Send + 'static + std::fmt::Debug,
+        E: Send + Sync + 'static + std::fmt::Debug,
     {
         self.route_method(Method::PATCH, path, circuit)
     }
@@ -1340,7 +1340,7 @@ where
     pub fn fallback<Out, E>(mut self, circuit: Axon<(), Out, E, R>) -> Self
     where
         Out: IntoResponse + Send + Sync + 'static,
-        E: Send + 'static + std::fmt::Debug,
+        E: Send + Sync + 'static + std::fmt::Debug,
     {
         let circuit = Arc::new(circuit);
         let fallback_bus_injectors = Arc::new(self.bus_injectors.clone());
@@ -1362,7 +1362,7 @@ where
                     for injector in fallback_bus_injectors.iter() {
                         injector(&parts, &mut bus);
                     }
-                    let result = circuit.execute((), &res, &mut bus).await;
+                    let result: ranvier_core::Outcome<Out, E> = circuit.execute((), &res, &mut bus).await;
 
                     match result {
                         Outcome::Next(output) => {

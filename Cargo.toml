@@ -52,7 +52,10 @@ members = [
     "examples/sse-streaming-demo",
     "examples/multipart-upload-demo",
     "grpc",
-    "examples/grpc-service-demo", "extensions/cluster",
+    "examples/grpc-service-demo",
+    "extensions/cluster",
+    "graphql",
+    "examples/graphql-service-demo",
 ]
 
 [workspace.package]

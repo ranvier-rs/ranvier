@@ -1,0 +1,86 @@
+warning: unused import: `DEFAULT_BODY_LIMIT`
+  --> http\src\extract\multipart.rs:21:40
+   |
+21 | use super::{ExtractError, FromRequest, DEFAULT_BODY_LIMIT};
+   |                                        ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `serde_json::Value`
+  --> http\src\ingress.rs:32:5
+   |
+32 | use serde_json::Value;
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Response` and `header::CONTENT_TYPE`
+ --> http\src\sse.rs:2:12
+  |
+2 | use http::{header::CONTENT_TYPE, Response};
+  |            ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^
+
+warning: unused imports: `BodyExt` and `StreamBody`
+ --> http\src\sse.rs:3:22
+  |
+3 | use http_body_util::{StreamBody, BodyExt};
+  |                      ^^^^^^^^^^  ^^^^^^^
+
+warning: unused import: `StreamExt`
+ --> http\src\sse.rs:7:36
+  |
+7 | use futures_util::stream::{Stream, StreamExt};
+  |                                    ^^^^^^^^^
+
+warning: unused variable: `parts`
+    --> http\src\ingress.rs:1426:59
+     |
+1426 |             let handler: RouteHandler<R> = Arc::new(move |parts, _res| {
+     |                                                           ^^^^^ help: if this is intentional, prefix it with an underscore: `_parts`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `registry`
+    --> http\src\ingress.rs:1427:21
+     |
+1427 |                 let registry = registry.clone();
+     |                     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_registry`
+
+warning: variable does not need to be mutable
+    --> http\src\ingress.rs:1598:25
+     |
+1598 | ...   let mut res = (entry.handler)(parts, &resources).await;
+     |           ----^^^
+     |           |
+     |           help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> http\src\ingress.rs:1612:25
+     |
+1612 |                     let mut res = route_service.oneshot(req).await;
+     |                         ----^^^
+     |                         |
+     |                         help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> http\src\ingress.rs:1632:21
+     |
+1632 |                 let mut fallback_res = if let Some(ref fb) = fallback {
+     |                     ----^^^^^^^^^^^^
+     |                     |
+     |                     help: remove this `mut`
+
+warning: `ranvier-http` (lib) generated 10 warnings (run `cargo fix --lib -p ranvier-http` to apply 10 suggestions)
+   Compiling ranvier-graphql v1.0.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\graphql)
+warning: unused import: `async_graphql::futures_util::StreamExt`
+ --> graphql\src\ingress.rs:2:5
+  |
+2 | use async_graphql::futures_util::StreamExt;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ranvier-graphql` (lib) generated 1 warning (run `cargo fix --lib -p ranvier-graphql` to apply 1 suggestion)
+   Compiling graphql-service-demo v1.0.0-rc.1 (F:\project\ranvier\ranvier-workspace\ranvier\examples\graphql-service-demo)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.70s
+     Running `target\debug\graphql-service-demo.exe`

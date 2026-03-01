@@ -45,7 +45,7 @@ where
     B: Send + 'static,
     In: Send + Sync + 'static,
     Out: Send + Sync + 'static,
-    E: Send + 'static + std::fmt::Debug,
+    E: Send + Sync + 'static + std::fmt::Debug,
     F: Fn(Request<B>, &mut Bus) -> In + Clone + Send + Sync + 'static,
     Res: ranvier_core::transition::ResourceRequirement + Send + Sync + 'static,
 {
