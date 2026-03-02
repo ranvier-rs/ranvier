@@ -34,6 +34,7 @@ impl ReplayEngine {
         let current_node_id = match &event {
             TimelineEvent::NodeEnter { node_id, .. } => Some(node_id.clone()),
             TimelineEvent::NodeExit { node_id, .. } => Some(node_id.clone()),
+            TimelineEvent::NodePaused { node_id, .. } => Some(node_id.clone()),
             TimelineEvent::Branchtaken { .. } => None, // Branches happen "between" nodes conceptually or part of outcome
         };
 
@@ -66,7 +67,7 @@ impl ReplayEngine {
         let mut active_node = None;
         for i in (0..self.timeline.events.len()).rev() {
             match &self.timeline.events[i] {
-                TimelineEvent::NodeEnter { node_id, .. } => {
+                TimelineEvent::NodeEnter { node_id, .. } | TimelineEvent::NodePaused { node_id, .. } => {
                     // Quick check if this node was exited later
                     let mut exited = false;
                     for j in (i + 1)..self.timeline.events.len() {

@@ -16,6 +16,11 @@ pub enum TimelineEvent {
         duration_ms: u64,
         timestamp: u64,
     },
+    /// Execution paused at a node (debugger)
+    NodePaused {
+        node_id: String,
+        timestamp: u64,
+    },
     /// A branch decision was made
     Branchtaken { branch_id: String, timestamp: u64 },
 }
@@ -40,6 +45,7 @@ impl Timeline {
         self.events.sort_by_key(|e| match e {
             TimelineEvent::NodeEnter { timestamp, .. } => *timestamp,
             TimelineEvent::NodeExit { timestamp, .. } => *timestamp,
+            TimelineEvent::NodePaused { timestamp, .. } => *timestamp,
             TimelineEvent::Branchtaken { timestamp, .. } => *timestamp,
         });
     }

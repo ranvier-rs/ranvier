@@ -251,6 +251,34 @@ where
                         .last()
                         .unwrap_or("unknown");
 
+                    // Debug pausing
+                    let should_pause = if let Some(debug) = bus.read::<ranvier_core::debug::DebugControl>() {
+                        debug.should_pause(&timeline_node_id)
+                    } else {
+                        false
+                    };
+
+                    if should_pause {
+                        let trace_id = persistence_trace_id(bus);
+                        tracing::event!(
+                            target: "ranvier.debugger",
+                            tracing::Level::INFO,
+                            trace_id = %trace_id,
+                            node_id = %timeline_node_id,
+                            "Node paused"
+                        );
+
+                        if let Some(timeline) = bus.read_mut::<Timeline>() {
+                            timeline.push(TimelineEvent::NodePaused {
+                                node_id: timeline_node_id.clone(),
+                                timestamp: now_ms(),
+                            });
+                        }
+                        if let Some(debug) = bus.read::<ranvier_core::debug::DebugControl>() {
+                            debug.wait().await;
+                        }
+                    }
+
                     let enter_ts = now_ms();
                     if let Some(timeline) = bus.read_mut::<Timeline>() {
                         timeline.push(TimelineEvent::NodeEnter {
@@ -415,6 +443,34 @@ where
                         .split("::")
                         .last()
                         .unwrap_or("unknown");
+
+                    // Debug pausing
+                    let should_pause = if let Some(debug) = bus.read::<ranvier_core::debug::DebugControl>() {
+                        debug.should_pause(&timeline_node_id)
+                    } else {
+                        false
+                    };
+
+                    if should_pause {
+                        let trace_id = persistence_trace_id(bus);
+                        tracing::event!(
+                            target: "ranvier.debugger",
+                            tracing::Level::INFO,
+                            trace_id = %trace_id,
+                            node_id = %timeline_node_id,
+                            "Node paused (compensation)"
+                        );
+
+                        if let Some(timeline) = bus.read_mut::<Timeline>() {
+                            timeline.push(TimelineEvent::NodePaused {
+                                node_id: timeline_node_id.clone(),
+                                timestamp: now_ms(),
+                            });
+                        }
+                        if let Some(debug) = bus.read::<ranvier_core::debug::DebugControl>() {
+                            debug.wait().await;
+                        }
+                    }
 
                     let enter_ts = now_ms();
                     if let Some(timeline) = bus.read_mut::<Timeline>() {

@@ -91,6 +91,9 @@ pub fn projections_from_timeline(
                     "error_category": if descriptor.is_fault { Some("runtime") } else { None::<&str> }
                 }));
             }
+            TimelineEvent::NodePaused { .. } => {
+                // Ignore pause events for static projection
+            }
             TimelineEvent::Branchtaken { .. } => {
                 branch_event_count += 1;
             }

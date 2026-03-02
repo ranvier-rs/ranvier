@@ -8,9 +8,11 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use ranvier_core::TimelineEvent;
 use ranvier_core::schematic::{NodeKind, Schematic};
+use ranvier_core::debug::{DebugControl, DebugState};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::fs;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -352,6 +354,9 @@ impl Inspector {
         let mut app = Router::new()
             .route("/schematic", get(get_schematic))
             .route("/trace/public", get(get_public_projection))
+            .route("/debug/resume/:trace_id", get(debug_resume))
+            .route("/debug/step/:trace_id", get(debug_step))
+            .route("/debug/pause/:trace_id", get(debug_pause))
             .layer(CorsLayer::permissive());
 
         if self.surface_policy.expose_internal {
@@ -540,6 +545,58 @@ fn is_attribute_bag_key(key: &str) -> bool {
     lowered == "attributes" || lowered.ends_with("_attributes")
 }
 
+
+async fn debug_resume(
+    AxPath(trace_id): AxPath<String>,
+) -> impl IntoResponse {
+    if let Some(debug) = get_debug_control_for_trace(&trace_id) {
+        debug.resume();
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+async fn debug_step(
+    AxPath(trace_id): AxPath<String>,
+) -> impl IntoResponse {
+    if let Some(debug) = get_debug_control_for_trace(&trace_id) {
+        debug.step();
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+async fn debug_pause(
+    AxPath(trace_id): AxPath<String>,
+) -> impl IntoResponse {
+    if let Some(debug) = get_debug_control_for_trace(&trace_id) {
+        debug.pause();
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+static DEBUG_REGISTRY: OnceLock<Arc<Mutex<HashMap<String, DebugControl>>>> = OnceLock::new();
+
+fn get_debug_registry() -> Arc<Mutex<HashMap<String, DebugControl>>> {
+    DEBUG_REGISTRY.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()
+}
+
+pub fn get_debug_control_for_trace(trace_id: &str) -> Option<DebugControl> {
+    get_debug_registry().lock().unwrap().get(trace_id).cloned()
+}
+
+pub fn register_debug_control(trace_id: String, control: DebugControl) {
+    get_debug_registry().lock().unwrap().insert(trace_id, control);
+}
+
+pub fn unregister_debug_control(trace_id: &str) {
+    get_debug_registry().lock().unwrap().remove(trace_id);
+}
+
 #[derive(Clone)]
 struct InspectorState {
     schematic: Arc<Mutex<Schematic>>,
@@ -563,6 +620,23 @@ where
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let metadata = event.metadata();
+        if metadata.target() == "ranvier.debugger" {
+             // Extract fields for debugger event
+             let mut fields = HashMap::new();
+             let mut visitor = FieldVisitor { fields: &mut fields };
+             event.record(&mut visitor);
+
+             if let (Some(trace_id), Some(node_id)) = (fields.get("trace_id"), fields.get("node_id")) {
+                 let msg = serde_json::json!({
+                     "type": "node_paused",
+                     "trace_id": trace_id,
+                     "node_id": node_id
+                 }).to_string();
+                 let _ = get_sender().send(msg);
+             }
+             return;
+        }
+
         if metadata.target().starts_with("ranvier") {
             // Simple JSON serialization of the event
             // In a real impl, we'd use a visitor to extract fields
@@ -575,12 +649,10 @@ where
         }
     }
 
-    // Using on_enter/exit for Span tracking would be better for Node visualization
     fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
         if let Some(span) = ctx.span(id) {
             if span.name() == "Node" {
                 // Send Node Enter Event
-                // We need extensions to really get data, but name is a start
                 let msg = format!(
                     "{{\"type\": \"node_enter\", \"name\": \"{}\"}}",
                     span.name()
@@ -588,6 +660,21 @@ where
                 let _ = get_sender().send(msg);
             }
         }
+    }
+}
+
+struct FieldVisitor<'a> {
+    fields: &'a mut HashMap<String, String>,
+}
+
+impl<'a> tracing::field::Visit for FieldVisitor<'a> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.fields
+            .insert(field.name().to_string(), format!("{:?}", value));
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.fields.insert(field.name().to_string(), value.to_string());
     }
 }
 

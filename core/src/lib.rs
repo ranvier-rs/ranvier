@@ -1,5 +1,6 @@
 pub mod bus;
 pub mod cluster;
+pub mod debug;
 pub mod event;
 pub mod metadata;
 pub mod outcome;
@@ -23,6 +24,7 @@ pub use static_gen::{
 // Prelude module for convenient imports
 pub mod prelude {
     pub use crate::bus::{Bus, BusAccessError, BusAccessPolicy, BusTypeRef};
+    pub use crate::debug::{DebugControl, DebugState};
     pub use crate::event::{EventSink, EventSource};
     pub use crate::metadata::StepMetadata;
     pub use crate::outcome::{BranchId, NodeId, Outcome};
