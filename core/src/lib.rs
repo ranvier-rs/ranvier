@@ -2,6 +2,7 @@ pub mod bus;
 pub mod cluster;
 pub mod debug;
 pub mod event;
+pub mod iam;
 pub mod metadata;
 pub mod outcome;
 pub mod policy;
@@ -27,6 +28,7 @@ pub mod prelude {
     pub use crate::bus::{Bus, BusAccessError, BusAccessPolicy, BusTypeRef};
     pub use crate::debug::{DebugControl, DebugState};
     pub use crate::event::{DeadLetter, DlqPolicy, DlqReader, DlqSink, EventSink, EventSource};
+    pub use crate::iam::{IamError, IamHandle, IamIdentity, IamPolicy, IamToken, IamVerifier};
     pub use crate::policy::{DynamicPolicy, PolicyRegistry};
     pub use crate::metadata::StepMetadata;
     pub use crate::outcome::{BranchId, NodeId, Outcome};

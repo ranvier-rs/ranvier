@@ -129,6 +129,8 @@ pub struct Axon<In, Out, E, Res = ()> {
     pub dynamic_saga_policy: Option<DynamicPolicy<SagaPolicy>>,
     /// Registry for Saga compensation handlers
     pub saga_compensation_registry: Arc<std::sync::RwLock<ranvier_core::saga::SagaCompensationRegistry<E, Res>>>,
+    /// Optional IAM handle for identity verification at the Schematic boundary
+    pub iam_handle: Option<ranvier_core::iam::IamHandle>,
 }
 
 /// Schematic export request derived from command-line args/env.
@@ -152,6 +154,7 @@ impl<In, Out, E, Res> Clone for Axon<In, Out, E, Res> {
             saga_policy: self.saga_policy.clone(),
             dynamic_saga_policy: self.dynamic_saga_policy.clone(),
             saga_compensation_registry: self.saga_compensation_registry.clone(),
+            iam_handle: self.iam_handle.clone(),
         }
     }
 }
@@ -213,6 +216,7 @@ where
             saga_policy: SagaPolicy::default(),
             dynamic_saga_policy: None,
             saga_compensation_registry: Arc::new(std::sync::RwLock::new(ranvier_core::saga::SagaCompensationRegistry::new())),
+            iam_handle: None,
         }
     }
 }
@@ -286,6 +290,25 @@ where
     /// current value is read at each execution, overriding the static `saga_policy`.
     pub fn with_dynamic_saga_policy(mut self, dynamic: DynamicPolicy<SagaPolicy>) -> Self {
         self.dynamic_saga_policy = Some(dynamic);
+        self
+    }
+
+    /// Set an IAM policy and verifier for identity verification at the Axon boundary.
+    ///
+    /// When set, `execute()` will:
+    /// 1. Read `IamToken` from the Bus (injected by the HTTP layer or test harness)
+    /// 2. Verify the token using the provided verifier
+    /// 3. Enforce the policy against the verified identity
+    /// 4. Insert the resulting `IamIdentity` into the Bus for downstream Transitions
+    pub fn with_iam(
+        mut self,
+        policy: ranvier_core::iam::IamPolicy,
+        verifier: impl ranvier_core::iam::IamVerifier + 'static,
+    ) -> Self {
+        self.iam_handle = Some(ranvier_core::iam::IamHandle::new(
+            policy,
+            Arc::new(verifier),
+        ));
         self
     }
 }
@@ -364,6 +387,7 @@ where
             saga_policy,
             dynamic_saga_policy,
             saga_compensation_registry,
+            iam_handle,
         } = self;
 
         // Update Schematic
@@ -494,6 +518,7 @@ where
             saga_policy,
             dynamic_saga_policy,
             saga_compensation_registry,
+            iam_handle,
         }
     }
 
@@ -526,6 +551,7 @@ where
             saga_policy,
             dynamic_saga_policy,
             saga_compensation_registry,
+            iam_handle,
         } = self;
 
         // 1. Add Primary Node
@@ -698,6 +724,7 @@ where
             saga_policy,
             dynamic_saga_policy,
             saga_compensation_registry,
+            iam_handle,
         }
     }
 
@@ -795,6 +822,52 @@ where
                     return Outcome::emit("execution.skipped.lock_error", Some(serde_json::json!({
                         "error": e.to_string()
                     })));
+                }
+            }
+        }
+
+        // ── IAM Boundary Check ────────────────────────────────────
+        if let Some(iam) = &self.iam_handle {
+            use ranvier_core::iam::{IamPolicy, IamToken, enforce_policy};
+
+            if matches!(iam.policy, IamPolicy::None) {
+                // No verification required — skip
+            } else {
+                let token = bus
+                    .read::<IamToken>()
+                    .map(|t| t.0.clone());
+
+                match token {
+                    Some(raw_token) => {
+                        match iam.verifier.verify(&raw_token).await {
+                            Ok(identity) => {
+                                if let Err(e) = enforce_policy(&iam.policy, &identity) {
+                                    tracing::warn!(
+                                        policy = ?iam.policy,
+                                        subject = %identity.subject,
+                                        "IAM policy enforcement failed: {}",
+                                        e
+                                    );
+                                    return Outcome::emit("iam.policy_denied", Some(serde_json::json!({
+                                        "error": e.to_string(),
+                                        "subject": identity.subject,
+                                    })));
+                                }
+                                // Insert verified identity into Bus for downstream access
+                                bus.insert(identity);
+                            }
+                            Err(e) => {
+                                tracing::warn!("IAM token verification failed: {}", e);
+                                return Outcome::emit("iam.verification_failed", Some(serde_json::json!({
+                                    "error": e.to_string()
+                                })));
+                            }
+                        }
+                    }
+                    None => {
+                        tracing::warn!("IAM policy requires token but none found in Bus");
+                        return Outcome::emit("iam.missing_token", None);
+                    }
                 }
             }
         }
@@ -3156,6 +3229,162 @@ mod tests {
         let mut bus2 = Bus::new();
         let _outcome2 = axon.execute(10, &(), &mut bus2).await;
         assert!(bus2.read::<SagaStack>().is_some(), "SagaStack should exist when saga is enabled");
+    }
+
+    // ── IAM Boundary Tests ──────────────────────────────────────
+
+    mod iam_tests {
+        use super::*;
+        use ranvier_core::iam::{
+            IamError, IamIdentity, IamPolicy, IamToken, IamVerifier,
+        };
+
+        /// Mock IamVerifier that returns a fixed identity.
+        #[derive(Clone)]
+        struct MockVerifier {
+            identity: IamIdentity,
+            should_fail: bool,
+        }
+
+        #[async_trait]
+        impl IamVerifier for MockVerifier {
+            async fn verify(&self, _token: &str) -> Result<IamIdentity, IamError> {
+                if self.should_fail {
+                    Err(IamError::InvalidToken("mock verification failure".into()))
+                } else {
+                    Ok(self.identity.clone())
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn iam_require_identity_passes_with_valid_token() {
+            let verifier = MockVerifier {
+                identity: IamIdentity::new("alice").with_role("user"),
+                should_fail: false,
+            };
+
+            let axon = Axon::<i32, i32, TestInfallible>::new("IamTest")
+                .with_iam(IamPolicy::RequireIdentity, verifier)
+                .then(AddOne);
+
+            let mut bus = Bus::new();
+            bus.insert(IamToken("valid-token".to_string()));
+            let outcome = axon.execute(10, &(), &mut bus).await;
+
+            assert!(matches!(outcome, Outcome::Next(11)));
+            // Verify IamIdentity was injected into Bus
+            let identity = bus.read::<IamIdentity>().expect("IamIdentity should be in Bus");
+            assert_eq!(identity.subject, "alice");
+        }
+
+        #[tokio::test]
+        async fn iam_require_identity_rejects_missing_token() {
+            let verifier = MockVerifier {
+                identity: IamIdentity::new("ignored"),
+                should_fail: false,
+            };
+
+            let axon = Axon::<i32, i32, TestInfallible>::new("IamNoToken")
+                .with_iam(IamPolicy::RequireIdentity, verifier)
+                .then(AddOne);
+
+            let mut bus = Bus::new();
+            // No IamToken inserted
+            let outcome = axon.execute(10, &(), &mut bus).await;
+
+            // Should emit missing_token event
+            match &outcome {
+                Outcome::Emit(label, _) => {
+                    assert_eq!(label, "iam.missing_token");
+                }
+                other => panic!("Expected Emit(iam.missing_token), got {:?}", other),
+            }
+        }
+
+        #[tokio::test]
+        async fn iam_rejects_failed_verification() {
+            let verifier = MockVerifier {
+                identity: IamIdentity::new("ignored"),
+                should_fail: true,
+            };
+
+            let axon = Axon::<i32, i32, TestInfallible>::new("IamBadToken")
+                .with_iam(IamPolicy::RequireIdentity, verifier)
+                .then(AddOne);
+
+            let mut bus = Bus::new();
+            bus.insert(IamToken("bad-token".to_string()));
+            let outcome = axon.execute(10, &(), &mut bus).await;
+
+            match &outcome {
+                Outcome::Emit(label, _) => {
+                    assert_eq!(label, "iam.verification_failed");
+                }
+                other => panic!("Expected Emit(iam.verification_failed), got {:?}", other),
+            }
+        }
+
+        #[tokio::test]
+        async fn iam_require_role_passes_with_matching_role() {
+            let verifier = MockVerifier {
+                identity: IamIdentity::new("bob")
+                    .with_role("admin")
+                    .with_role("user"),
+                should_fail: false,
+            };
+
+            let axon = Axon::<i32, i32, TestInfallible>::new("IamRole")
+                .with_iam(IamPolicy::RequireRole("admin".into()), verifier)
+                .then(AddOne);
+
+            let mut bus = Bus::new();
+            bus.insert(IamToken("token".to_string()));
+            let outcome = axon.execute(5, &(), &mut bus).await;
+
+            assert!(matches!(outcome, Outcome::Next(6)));
+        }
+
+        #[tokio::test]
+        async fn iam_require_role_denies_without_role() {
+            let verifier = MockVerifier {
+                identity: IamIdentity::new("carol").with_role("user"),
+                should_fail: false,
+            };
+
+            let axon = Axon::<i32, i32, TestInfallible>::new("IamRoleDeny")
+                .with_iam(IamPolicy::RequireRole("admin".into()), verifier)
+                .then(AddOne);
+
+            let mut bus = Bus::new();
+            bus.insert(IamToken("token".to_string()));
+            let outcome = axon.execute(5, &(), &mut bus).await;
+
+            match &outcome {
+                Outcome::Emit(label, _) => {
+                    assert_eq!(label, "iam.policy_denied");
+                }
+                other => panic!("Expected Emit(iam.policy_denied), got {:?}", other),
+            }
+        }
+
+        #[tokio::test]
+        async fn iam_policy_none_skips_verification() {
+            let verifier = MockVerifier {
+                identity: IamIdentity::new("ignored"),
+                should_fail: true, // would fail if actually called
+            };
+
+            let axon = Axon::<i32, i32, TestInfallible>::new("IamNone")
+                .with_iam(IamPolicy::None, verifier)
+                .then(AddOne);
+
+            let mut bus = Bus::new();
+            // No token needed when policy is None
+            let outcome = axon.execute(10, &(), &mut bus).await;
+
+            assert!(matches!(outcome, Outcome::Next(11)));
+        }
     }
 }
 

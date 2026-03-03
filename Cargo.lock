@@ -3790,6 +3790,8 @@ dependencies = [
 name = "ranvier-auth"
 version = "1.0.0-rc.1"
 dependencies = [
+ "async-trait",
+ "base64 0.21.7",
  "bytes",
  "http 1.4.0",
  "http-body-util",

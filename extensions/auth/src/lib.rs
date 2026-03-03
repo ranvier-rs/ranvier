@@ -444,11 +444,14 @@ fn auth_error_response(
         .expect("auth error response should be infallible")
 }
 
+pub mod oidc;
+
 pub mod prelude {
     pub use crate::{
         ApiKeyAuthLayer, AuthContext, AuthPolicy, AuthScheme, BearerAuthLayer, RequireRoleLayer,
         auth_context, inject_auth_context,
     };
+    pub use crate::oidc::OidcVerifier;
 }
 
 #[cfg(test)]

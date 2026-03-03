@@ -18,8 +18,10 @@ tower = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 jsonwebtoken = "9"
+async-trait = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+base64 = "0.21"
 
