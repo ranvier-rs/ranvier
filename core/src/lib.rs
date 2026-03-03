@@ -30,7 +30,7 @@ pub mod prelude {
     pub use crate::metadata::StepMetadata;
     pub use crate::outcome::{BranchId, NodeId, Outcome};
     pub use crate::saga::{SagaCompensationRegistry, SagaPolicy, SagaStack, SagaTask};
-    pub use crate::schematic::{Edge, Node, NodeKind, Schematic};
+    pub use crate::schematic::{Edge, Node, NodeKind, Schematic, SchemaMigrationMapper};
     pub use crate::timeline::{Timeline, TimelineEvent};
     pub use crate::transition::Transition;
 }

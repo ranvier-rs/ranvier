@@ -207,8 +207,17 @@ pub enum MigrationStrategy {
     ResumeFromStart,
 }
 
+/// Trait for transforming workflow payload between schema versions.
+///
+/// Implement this to define custom payload transformations when migrating
+/// in-flight workflows across schematic versions.
+pub trait SchemaMigrationMapper: Send + Sync {
+    /// Transform the old state payload into the new version's expected format.
+    fn map_state(&self, old_state: &serde_json::Value) -> anyhow::Result<serde_json::Value>;
+}
+
 /// A snapshot migration definition indicating how to move state from one schema version to another.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SnapshotMigration {
     /// Optional human-readable name for this migration.
     pub name: Option<String>,
@@ -221,6 +230,22 @@ pub struct SnapshotMigration {
     /// Node-specific migration strategies, keyed by the active node ID in the old version.
     #[serde(skip_serializing_if = "HashMap::is_empty", default)]
     pub node_mapping: HashMap<String, MigrationStrategy>,
+    /// Optional payload mapper for transforming state between versions.
+    #[serde(skip)]
+    pub payload_mapper: Option<std::sync::Arc<dyn SchemaMigrationMapper>>,
+}
+
+impl std::fmt::Debug for SnapshotMigration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SnapshotMigration")
+            .field("name", &self.name)
+            .field("from_version", &self.from_version)
+            .field("to_version", &self.to_version)
+            .field("default_strategy", &self.default_strategy)
+            .field("node_mapping", &self.node_mapping)
+            .field("payload_mapper", &self.payload_mapper.as_ref().map(|_| ".."))
+            .finish()
+    }
 }
 
 /// A registry of available snapshot migrations for a specific circuit.
@@ -244,10 +269,50 @@ impl MigrationRegistry {
         self.migrations.push(migration);
     }
 
-    /// Finds a migration path from `from_version` to `to_version`.
-    /// Currently only supports direct (one-hop) migrations.
+    /// Finds a direct migration from `from_version` to `to_version`.
     pub fn find_migration(&self, from: &str, to: &str) -> Option<&SnapshotMigration> {
         self.migrations.iter().find(|m| m.from_version == from && m.to_version == to)
+    }
+
+    /// Finds a multi-hop migration path from `from_version` to `to_version`.
+    ///
+    /// Returns an ordered list of migrations to apply sequentially.
+    /// Uses BFS to find the shortest path. Returns `None` if no path exists.
+    pub fn find_migration_path(&self, from: &str, to: &str) -> Option<Vec<&SnapshotMigration>> {
+        if from == to {
+            return Some(Vec::new());
+        }
+        // Direct hop
+        if let Some(direct) = self.find_migration(from, to) {
+            return Some(vec![direct]);
+        }
+        // BFS for multi-hop
+        let mut queue: std::collections::VecDeque<(String, Vec<usize>)> = std::collections::VecDeque::new();
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        visited.insert(from.to_string());
+        for (i, m) in self.migrations.iter().enumerate() {
+            if m.from_version == from {
+                visited.insert(m.to_version.clone());
+                if m.to_version == to {
+                    return Some(vec![&self.migrations[i]]);
+                }
+                queue.push_back((m.to_version.clone(), vec![i]));
+            }
+        }
+        while let Some((current, path)) = queue.pop_front() {
+            for (i, m) in self.migrations.iter().enumerate() {
+                if m.from_version == current && !visited.contains(&m.to_version) {
+                    let mut new_path = path.clone();
+                    new_path.push(i);
+                    if m.to_version == to {
+                        return Some(new_path.iter().map(|&idx| &self.migrations[idx]).collect());
+                    }
+                    visited.insert(m.to_version.clone());
+                    queue.push_back((m.to_version.clone(), new_path));
+                }
+            }
+        }
+        None
     }
 }
 
@@ -327,6 +392,7 @@ mod tests {
             to_version: "2.0".to_string(),
             default_strategy: MigrationStrategy::Fail,
             node_mapping: HashMap::new(),
+            payload_mapper: None,
         };
         registry.register(migration);
 
@@ -336,5 +402,46 @@ mod tests {
 
         let not_found = registry.find_migration("1.0", "3.0");
         assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_multi_hop_migration_path() {
+        let mut registry = MigrationRegistry::new("test-circuit");
+        registry.register(SnapshotMigration {
+            name: Some("v1→v2".to_string()),
+            from_version: "1.0".to_string(),
+            to_version: "2.0".to_string(),
+            default_strategy: MigrationStrategy::ResumeFromStart,
+            node_mapping: HashMap::new(),
+            payload_mapper: None,
+        });
+        registry.register(SnapshotMigration {
+            name: Some("v2→v3".to_string()),
+            from_version: "2.0".to_string(),
+            to_version: "3.0".to_string(),
+            default_strategy: MigrationStrategy::ResumeFromStart,
+            node_mapping: HashMap::new(),
+            payload_mapper: None,
+        });
+
+        // Direct hop
+        let path = registry.find_migration_path("1.0", "2.0").unwrap();
+        assert_eq!(path.len(), 1);
+
+        // Multi-hop
+        let path = registry.find_migration_path("1.0", "3.0").unwrap();
+        assert_eq!(path.len(), 2);
+        assert_eq!(path[0].from_version, "1.0");
+        assert_eq!(path[0].to_version, "2.0");
+        assert_eq!(path[1].from_version, "2.0");
+        assert_eq!(path[1].to_version, "3.0");
+
+        // Same version (no-op)
+        let path = registry.find_migration_path("1.0", "1.0").unwrap();
+        assert!(path.is_empty());
+
+        // No path
+        let path = registry.find_migration_path("1.0", "4.0");
+        assert!(path.is_none());
     }
 }

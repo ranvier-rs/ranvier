@@ -1,4 +1,7 @@
+use anyhow::{Result, anyhow};
+use ranvier_core::schematic::MigrationRegistry;
 use ranvier_core::timeline::{Timeline, TimelineEvent};
+use crate::persistence::{PersistenceStore, PersistedTrace, PersistenceEnvelope};
 
 /// ReplayEngine reconstructs the execution state from a Timeline.
 /// It creates a "virtual" cursor that moves through the circuit based on recorded events.
@@ -87,6 +90,118 @@ impl ReplayEngine {
             self.next_step()
         } else {
             self.fast_forward_to_end()
+        }
+    }
+}
+
+/// Result of an event-sourcing replay operation.
+#[derive(Debug, Clone)]
+pub struct ReplayRecoveryResult {
+    /// The trace that was replayed.
+    pub trace_id: String,
+    /// The original schematic version of the persisted trace.
+    pub original_version: String,
+    /// The target schematic version after migration.
+    pub target_version: String,
+    /// Ordered migration hops applied (from → to).
+    pub migration_hops: Vec<(String, String)>,
+    /// The last known node ID from the persisted events.
+    pub last_node_id: Option<String>,
+    /// The recovered (and potentially mapped) payload.
+    pub recovered_payload: Option<serde_json::Value>,
+    /// The step to resume from.
+    pub resume_from_step: u64,
+}
+
+/// Replays a persisted trace through migration mappers, recovering state
+/// for resumption under a newer schematic version.
+///
+/// This is the core event-sourcing replay function for M172-RQ2. It:
+/// 1. Loads the persisted trace from the store
+/// 2. Finds a migration path (single or multi-hop) using the registry
+/// 3. Applies each migration's payload mapper sequentially
+/// 4. Returns a `ReplayRecoveryResult` with the recovered state
+pub async fn replay_and_recover(
+    store: &dyn PersistenceStore,
+    trace_id: &str,
+    target_version: &str,
+    registry: &MigrationRegistry,
+) -> Result<ReplayRecoveryResult> {
+    let trace = store.load(trace_id).await?
+        .ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
+
+    let original_version = trace.schematic_version.clone();
+    if original_version == target_version {
+        // No migration needed — return current state as-is
+        let last_event = trace.events.last();
+        return Ok(ReplayRecoveryResult {
+            trace_id: trace_id.to_string(),
+            original_version: original_version.clone(),
+            target_version: target_version.to_string(),
+            migration_hops: Vec::new(),
+            last_node_id: last_event.and_then(|e| e.node_id.clone()),
+            recovered_payload: last_event.and_then(|e| e.payload.clone()),
+            resume_from_step: last_event.map(|e| e.step.saturating_add(1)).unwrap_or(0),
+        });
+    }
+
+    let path = registry.find_migration_path(&original_version, target_version)
+        .ok_or_else(|| anyhow!(
+            "no migration path from {} to {} for circuit {}",
+            original_version, target_version, registry.circuit_id
+        ))?;
+
+    if path.is_empty() {
+        return Err(anyhow!("empty migration path from {} to {}", original_version, target_version));
+    }
+
+    // Start with the last persisted payload
+    let last_event = trace.events.last();
+    let mut current_payload = last_event.and_then(|e| e.payload.clone());
+    let last_node_id = last_event.and_then(|e| e.node_id.clone());
+    let resume_step = last_event.map(|e| e.step.saturating_add(1)).unwrap_or(0);
+
+    let mut hops = Vec::with_capacity(path.len());
+
+    // Apply each migration hop's payload mapper sequentially
+    for migration in &path {
+        hops.push((migration.from_version.clone(), migration.to_version.clone()));
+
+        if let (Some(mapper), Some(payload)) = (&migration.payload_mapper, &current_payload) {
+            current_payload = Some(mapper.map_state(payload)?);
+        }
+        // If no mapper, payload passes through unchanged
+    }
+
+    Ok(ReplayRecoveryResult {
+        trace_id: trace_id.to_string(),
+        original_version,
+        target_version: target_version.to_string(),
+        migration_hops: hops,
+        last_node_id,
+        recovered_payload: current_payload,
+        resume_from_step: resume_step,
+    })
+}
+
+/// Validates that a migration path exists and all mappers can transform a
+/// sample payload without error. Useful as a pre-deployment check.
+pub async fn validate_migration_path(
+    store: &dyn PersistenceStore,
+    trace_id: &str,
+    target_version: &str,
+    registry: &MigrationRegistry,
+) -> Result<bool> {
+    match replay_and_recover(store, trace_id, target_version, registry).await {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            tracing::warn!(
+                trace_id = %trace_id,
+                target_version = %target_version,
+                error = %e,
+                "Migration path validation failed"
+            );
+            Ok(false)
         }
     }
 }

@@ -792,7 +792,7 @@ where
         let migration_registry = bus.read::<ranvier_core::schematic::MigrationRegistry>().cloned();
         
         let persistence_start_step = if let Some(handle) = persistence_handle.as_ref() {
-            let (mut start_step, trace_version, intervention, last_node_id, last_payload) = load_persistence_version(handle, &trace_id).await;
+            let (mut start_step, trace_version, intervention, last_node_id, mut last_payload) = load_persistence_version(handle, &trace_id).await;
             
             if let Some(interv) = intervention {
                 tracing::info!(
@@ -847,17 +847,64 @@ where
                         current_version = %version,
                         "Version mismatch detected during resumption"
                     );
-                    
-                    let migration = migration_registry
+
+                    // Try multi-hop migration path first, fall back to direct lookup
+                    let migration_path = migration_registry
                         .as_ref()
-                        .and_then(|r| r.find_migration(&old_version, &version));
-                    
+                        .and_then(|r| r.find_migration_path(&old_version, &version));
+
+                    let (final_migration, mapped_payload) = if let Some(path) = migration_path {
+                        if path.is_empty() {
+                            (None, last_payload.clone())
+                        } else {
+                            // Apply payload mappers along the migration chain
+                            let mut payload = last_payload.clone();
+                            for hop in &path {
+                                if let (Some(mapper), Some(p)) = (&hop.payload_mapper, payload.as_ref()) {
+                                    match mapper.map_state(p) {
+                                        Ok(mapped) => payload = Some(mapped),
+                                        Err(e) => {
+                                            tracing::error!(
+                                                trace_id = %trace_id,
+                                                from = %hop.from_version,
+                                                to = %hop.to_version,
+                                                error = %e,
+                                                "Payload migration mapper failed"
+                                            );
+                                            return Outcome::emit("execution.resumption.payload_migration_failed", Some(serde_json::json!({
+                                                "trace_id": trace_id,
+                                                "from": hop.from_version,
+                                                "to": hop.to_version,
+                                                "error": e.to_string()
+                                            })));
+                                        }
+                                    }
+                                }
+                            }
+                            let hops: Vec<String> = path.iter().map(|h| format!("{}->{}", h.from_version, h.to_version)).collect();
+                            tracing::info!(trace_id = %trace_id, hops = ?hops, "Applied multi-hop migration path");
+                            (path.last().copied(), payload)
+                        }
+                    } else {
+                        (None, last_payload.clone())
+                    };
+
+                    // Use the final migration in the path to determine strategy
+                    let migration = final_migration.or_else(|| {
+                        migration_registry.as_ref().and_then(|r| r.find_migration(&old_version, &version))
+                    });
+
+                    // Update last_payload with mapped version
+                    if mapped_payload.is_some() {
+                        last_payload = mapped_payload;
+                    }
+
                     let strategy = if let (Some(m), Some(node_id)) = (migration, last_node_id.as_ref()) {
                         m.node_mapping.get(node_id).cloned().unwrap_or(m.default_strategy.clone())
                     } else {
                         migration.map(|m| m.default_strategy.clone()).unwrap_or(ranvier_core::schematic::MigrationStrategy::Fail)
                     };
-                    
+
                     match strategy {
                         ranvier_core::schematic::MigrationStrategy::ResumeFromStart => {
                             tracing::info!(trace_id = %trace_id, "Applying ResumeFromStart migration strategy");
@@ -2675,6 +2722,7 @@ mod tests {
             to_version: "1.0".to_string(),
             default_strategy: ranvier_core::schematic::MigrationStrategy::ResumeFromStart,
             node_mapping: std::collections::HashMap::new(),
+            payload_mapper: None,
         });
 
         let mut bus = Bus::new();

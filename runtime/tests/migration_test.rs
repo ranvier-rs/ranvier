@@ -1,7 +1,8 @@
 use ranvier_core::prelude::*;
-use ranvier_core::schematic::{MigrationRegistry, SnapshotMigration, MigrationStrategy};
+use ranvier_core::schematic::{MigrationRegistry, SnapshotMigration, MigrationStrategy, SchemaMigrationMapper};
 use ranvier_runtime::Axon;
 use ranvier_runtime::persistence::{InMemoryPersistenceStore, PersistenceHandle};
+use ranvier_runtime::replay::replay_and_recover;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -74,6 +75,7 @@ async fn test_migration_resume_from_start() {
         to_version: "v1.1".to_string(),
         default_strategy: MigrationStrategy::ResumeFromStart,
         node_mapping: std::collections::HashMap::new(),
+        payload_mapper: None,
     });
 
     let mut bus_v11 = Bus::new();
@@ -173,6 +175,7 @@ async fn test_migration_migrate_active_node() {
         to_version: "v1.1".to_string(),
         default_strategy: MigrationStrategy::Fail,
         node_mapping: mapping,
+        payload_mapper: None,
     });
 
     let mut bus_v11 = Bus::new();
@@ -228,6 +231,7 @@ async fn test_migration_fallback_to_node() {
             m.insert(node1_id, MigrationStrategy::FallbackToNode(node2_v11_id));
             m
         },
+        payload_mapper: None,
     });
 
     let mut bus_v11 = Bus::new();
@@ -242,5 +246,195 @@ async fn test_migration_fallback_to_node() {
     {
         let count = *counter_v11.count.lock().await;
         assert_eq!(count, 1);
+    }
+}
+
+// --- Multi-hop migration and event-sourcing replay tests ---
+
+/// Mapper that renames a field: { "user_id": N } → { "user_id": "u-N" }
+struct UserIdToStringMapper;
+impl SchemaMigrationMapper for UserIdToStringMapper {
+    fn map_state(&self, old: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        let mut v = old.clone();
+        if let Some(uid) = v.get("user_id").and_then(|v| v.as_u64()) {
+            v["user_id"] = serde_json::json!(format!("u-{}", uid));
+        }
+        Ok(v)
+    }
+}
+
+/// Mapper that adds a "migrated" flag.
+struct AddMigratedFlagMapper;
+impl SchemaMigrationMapper for AddMigratedFlagMapper {
+    fn map_state(&self, old: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        let mut v = old.clone();
+        v["migrated"] = serde_json::json!(true);
+        Ok(v)
+    }
+}
+
+#[tokio::test]
+async fn test_multi_hop_migration_v10_to_v12_with_payload_evolution() {
+    let store = InMemoryPersistenceStore::new();
+    let handle = PersistenceHandle::from_store(store.clone());
+
+    // Prime a v1.0 trace with payload { "user_id": 42 }
+    let counter = StepCounter { count: Arc::new(Mutex::new(0)) };
+    let axon_v10 = Axon::<u32, u32, TestError, ()>::new("MultiHopTest")
+        .with_version("v1.0")
+        .then(counter.clone());
+
+    let node1_id = axon_v10.schematic.nodes[1].id.clone();
+
+    ranvier_runtime::axon::persist_execution_event(
+        &handle, "trace-multihop", "MultiHopTest", "v1.0", 1,
+        Some(node1_id.clone()), "Next",
+        Some(serde_json::json!({ "user_id": 42 })),
+    ).await;
+
+    // Register multi-hop migration: v1.0 → v1.1 → v1.2
+    let mut registry = MigrationRegistry::new("MultiHopTest");
+
+    // v1.0 → v1.1: Convert user_id from int to string
+    registry.register(SnapshotMigration {
+        name: Some("v1.0 to v1.1: user_id int→string".to_string()),
+        from_version: "v1.0".to_string(),
+        to_version: "v1.1".to_string(),
+        default_strategy: MigrationStrategy::ResumeFromStart,
+        node_mapping: std::collections::HashMap::new(),
+        payload_mapper: Some(Arc::new(UserIdToStringMapper)),
+    });
+
+    // v1.1 → v1.2: Add migrated flag
+    registry.register(SnapshotMigration {
+        name: Some("v1.1 to v1.2: add migrated flag".to_string()),
+        from_version: "v1.1".to_string(),
+        to_version: "v1.2".to_string(),
+        default_strategy: MigrationStrategy::ResumeFromStart,
+        node_mapping: std::collections::HashMap::new(),
+        payload_mapper: Some(Arc::new(AddMigratedFlagMapper)),
+    });
+
+    // Use replay_and_recover to verify multi-hop
+    let result = replay_and_recover(&store, "trace-multihop", "v1.2", &registry).await.unwrap();
+
+    assert_eq!(result.original_version, "v1.0");
+    assert_eq!(result.target_version, "v1.2");
+    assert_eq!(result.migration_hops.len(), 2);
+    assert_eq!(result.migration_hops[0], ("v1.0".to_string(), "v1.1".to_string()));
+    assert_eq!(result.migration_hops[1], ("v1.1".to_string(), "v1.2".to_string()));
+
+    // Verify payload was transformed through both mappers
+    let payload = result.recovered_payload.unwrap();
+    assert_eq!(payload["user_id"], serde_json::json!("u-42"));
+    assert_eq!(payload["migrated"], serde_json::json!(true));
+}
+
+#[tokio::test]
+async fn test_replay_and_recover_no_migration_needed() {
+    let store = InMemoryPersistenceStore::new();
+    let handle = PersistenceHandle::from_store(store.clone());
+
+    let counter = StepCounter { count: Arc::new(Mutex::new(0)) };
+    let axon = Axon::<u32, u32, TestError, ()>::new("SameVersionTest")
+        .with_version("v2.0")
+        .then(counter.clone());
+
+    ranvier_runtime::axon::persist_execution_event(
+        &handle, "trace-same", "SameVersionTest", "v2.0", 1,
+        Some(axon.schematic.nodes[1].id.clone()), "Next",
+        Some(serde_json::json!(100)),
+    ).await;
+
+    let registry = MigrationRegistry::new("SameVersionTest");
+    let result = replay_and_recover(&store, "trace-same", "v2.0", &registry).await.unwrap();
+
+    assert_eq!(result.original_version, "v2.0");
+    assert_eq!(result.target_version, "v2.0");
+    assert!(result.migration_hops.is_empty());
+    assert_eq!(result.recovered_payload.unwrap(), serde_json::json!(100));
+}
+
+#[tokio::test]
+async fn test_replay_and_recover_no_path_fails() {
+    let store = InMemoryPersistenceStore::new();
+    let handle = PersistenceHandle::from_store(store.clone());
+
+    let counter = StepCounter { count: Arc::new(Mutex::new(0)) };
+    let axon = Axon::<u32, u32, TestError, ()>::new("NoPathTest")
+        .with_version("v1.0")
+        .then(counter.clone());
+
+    ranvier_runtime::axon::persist_execution_event(
+        &handle, "trace-nopath", "NoPathTest", "v1.0", 1,
+        Some(axon.schematic.nodes[1].id.clone()), "Next",
+        Some(serde_json::json!(1)),
+    ).await;
+
+    let registry = MigrationRegistry::new("NoPathTest");
+    // No migrations registered; requesting v3.0 should fail
+    let result = replay_and_recover(&store, "trace-nopath", "v3.0", &registry).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("no migration path"));
+}
+
+#[tokio::test]
+async fn test_multi_hop_axon_execution_with_payload_mapping() {
+    let store = InMemoryPersistenceStore::new();
+    let handle = PersistenceHandle::from_store(store.clone());
+
+    // Prime v1.0 trace
+    let counter_v10 = StepCounter { count: Arc::new(Mutex::new(0)) };
+    let axon_v10 = Axon::<u32, u32, TestError, ()>::new("AxonMultiHop")
+        .with_version("v1.0")
+        .then(counter_v10.clone());
+
+    let node1_id = axon_v10.schematic.nodes[1].id.clone();
+
+    ranvier_runtime::axon::persist_execution_event(
+        &handle, "trace-axon-mh", "AxonMultiHop", "v1.0", 1,
+        Some(node1_id.clone()), "Next",
+        Some(serde_json::json!({ "user_id": 99 })),
+    ).await;
+
+    // Build v1.2 axon
+    let counter_v12 = StepCounter { count: Arc::new(Mutex::new(0)) };
+    let axon_v12 = Axon::<u32, u32, TestError, ()>::new("AxonMultiHop")
+        .with_version("v1.2")
+        .then(counter_v12.clone())
+        .then(counter_v12.clone())
+        .then(counter_v12.clone());
+
+    // Register multi-hop: v1.0 → v1.1 → v1.2
+    let mut registry = MigrationRegistry::new("AxonMultiHop");
+    registry.register(SnapshotMigration {
+        name: Some("v1.0→v1.1".to_string()),
+        from_version: "v1.0".to_string(),
+        to_version: "v1.1".to_string(),
+        default_strategy: MigrationStrategy::ResumeFromStart,
+        node_mapping: std::collections::HashMap::new(),
+        payload_mapper: Some(Arc::new(UserIdToStringMapper)),
+    });
+    registry.register(SnapshotMigration {
+        name: Some("v1.1→v1.2".to_string()),
+        from_version: "v1.1".to_string(),
+        to_version: "v1.2".to_string(),
+        default_strategy: MigrationStrategy::ResumeFromStart,
+        node_mapping: std::collections::HashMap::new(),
+        payload_mapper: Some(Arc::new(AddMigratedFlagMapper)),
+    });
+
+    let mut bus = Bus::new();
+    bus.insert(handle.clone());
+    bus.insert(ranvier_runtime::persistence::PersistenceTraceId::new("trace-axon-mh"));
+    bus.insert(registry);
+
+    // Execute v1.2; should apply multi-hop migration and ResumeFromStart
+    let _ = axon_v12.execute(0, &(), &mut bus).await;
+
+    // All 3 v1.2 steps should have run (ResumeFromStart means start_step=0)
+    {
+        let count = *counter_v12.count.lock().await;
+        assert_eq!(count, 3);
     }
 }
