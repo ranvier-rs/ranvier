@@ -40,6 +40,7 @@ pub trait DlqSink: Send + Sync {
     async fn store_dead_letter(
         &self,
         workflow_id: &str,
+        circuit_label: &str,
         node_id: &str,
         error_msg: &str,
         payload: &[u8],

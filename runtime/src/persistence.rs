@@ -20,6 +20,7 @@ pub struct PersistenceEnvelope {
     pub circuit: String,
     pub schematic_version: String,
     pub step: u64,
+    pub node_id: Option<String>,
     pub outcome_kind: String,
     pub timestamp_ms: u64,
     pub payload_hash: Option<String>,

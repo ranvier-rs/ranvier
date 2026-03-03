@@ -18,6 +18,7 @@ pub mod http_metrics;
 pub mod http_trace;
 pub mod metrics;
 pub mod business;
+pub mod dlq_file;
 
 pub use http_metrics::{HttpMetrics, HttpMetricsLayer, HttpMetricsSnapshot, ResponseStatus};
 pub use http_trace::{
@@ -25,6 +26,7 @@ pub use http_trace::{
 };
 pub use metrics::{Counter, Gauge, Histogram, MetricsRegistry};
 pub use business::SliTracker;
+pub use dlq_file::FileDlqSink;
 
 /// OTLP transport preset for trace export.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

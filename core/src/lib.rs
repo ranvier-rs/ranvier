@@ -5,6 +5,7 @@ pub mod event;
 pub mod metadata;
 pub mod outcome;
 pub mod policy;
+pub mod saga;
 pub mod schematic;
 pub mod static_gen;
 pub mod synapse;
@@ -28,6 +29,7 @@ pub mod prelude {
     pub use crate::event::{EventSink, EventSource};
     pub use crate::metadata::StepMetadata;
     pub use crate::outcome::{BranchId, NodeId, Outcome};
+    pub use crate::saga::{SagaCompensationRegistry, SagaPolicy, SagaStack, SagaTask};
     pub use crate::schematic::{Edge, Node, NodeKind, Schematic};
     pub use crate::timeline::{Timeline, TimelineEvent};
     pub use crate::transition::Transition;

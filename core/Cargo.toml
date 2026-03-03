@@ -16,6 +16,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait.workspace = true
 futures-core = { workspace = true }
+futures-util = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow = { workspace = true }
