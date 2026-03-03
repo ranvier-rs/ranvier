@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use serde::{Serialize, Deserialize};
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
@@ -24,27 +25,27 @@ struct AppResources {
 
 impl ResourceRequirement for AppResources {}
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct CreateUserInput {
     username: String,
     email: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct UpdateEmailInput {
     id: i32,
     email: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct DeleteUserInput {
     id: i32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct FetchAllInput;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct UserSummary {
     id: i32,
     username: String,
@@ -97,7 +98,7 @@ struct CreateUserTransition;
 
 #[async_trait]
 impl Transition<CreateUserInput, UserSummary> for CreateUserTransition {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = AppResources;
 
     async fn run(
@@ -110,7 +111,7 @@ impl Transition<CreateUserInput, UserSummary> for CreateUserTransition {
         let username = input.username;
         let email = input.email;
         let created = run_blocking(move || {
-            let mut conn = pool.get().map_err(anyhow::Error::from)?;
+            let mut conn = pool.get().map_err(String::from)?;
             let insert = NewUser {
                 username: &username,
                 email: &email,
@@ -118,20 +119,20 @@ impl Transition<CreateUserInput, UserSummary> for CreateUserTransition {
             diesel::insert_into(users::table)
                 .values(&insert)
                 .execute(&mut conn)
-                .map_err(anyhow::Error::from)?;
+                .map_err(String::from)?;
 
             use self::users::dsl;
             let row = dsl::users
                 .order(dsl::id.desc())
                 .first::<UserRow>(&mut conn)
-                .map_err(anyhow::Error::from)?;
+                .map_err(String::from)?;
             Ok(UserSummary::from(row))
         })
         .await;
 
         match created {
             Ok(user) => Outcome::Next(user),
-            Err(err) => Outcome::Fault(err),
+            Err(err) => Outcome::Fault(err.to_string()),
         }
     }
 }
@@ -141,7 +142,7 @@ struct UpdateUserEmailTransition;
 
 #[async_trait]
 impl Transition<UpdateEmailInput, UserSummary> for UpdateUserEmailTransition {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = AppResources;
 
     async fn run(
@@ -156,11 +157,11 @@ impl Transition<UpdateEmailInput, UserSummary> for UpdateUserEmailTransition {
         let updated = run_blocking(move || {
             use self::users::dsl;
 
-            let mut conn = pool.get().map_err(anyhow::Error::from)?;
+            let mut conn = pool.get().map_err(String::from)?;
             let affected = diesel::update(dsl::users.filter(dsl::id.eq(user_id)))
                 .set(UpdateUserEmail { email: &next_email })
                 .execute(&mut conn)
-                .map_err(anyhow::Error::from)?;
+                .map_err(String::from)?;
             if affected == 0 {
                 return Err(anyhow!("user id={} not found", user_id));
             }
@@ -168,14 +169,14 @@ impl Transition<UpdateEmailInput, UserSummary> for UpdateUserEmailTransition {
             let row = dsl::users
                 .find(user_id)
                 .first::<UserRow>(&mut conn)
-                .map_err(anyhow::Error::from)?;
+                .map_err(String::from)?;
             Ok(UserSummary::from(row))
         })
         .await;
 
         match updated {
             Ok(user) => Outcome::Next(user),
-            Err(err) => Outcome::Fault(err),
+            Err(err) => Outcome::Fault(err.to_string()),
         }
     }
 }
@@ -185,7 +186,7 @@ struct DeleteUserTransition;
 
 #[async_trait]
 impl Transition<DeleteUserInput, i32> for DeleteUserTransition {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = AppResources;
 
     async fn run(
@@ -199,10 +200,10 @@ impl Transition<DeleteUserInput, i32> for DeleteUserTransition {
         let deleted = run_blocking(move || {
             use self::users::dsl;
 
-            let mut conn = pool.get().map_err(anyhow::Error::from)?;
+            let mut conn = pool.get().map_err(String::from)?;
             let affected = diesel::delete(dsl::users.filter(dsl::id.eq(user_id)))
                 .execute(&mut conn)
-                .map_err(anyhow::Error::from)?;
+                .map_err(String::from)?;
             if affected == 0 {
                 return Err(anyhow!("user id={} not found", user_id));
             }
@@ -212,7 +213,7 @@ impl Transition<DeleteUserInput, i32> for DeleteUserTransition {
 
         match deleted {
             Ok(id) => Outcome::Next(id),
-            Err(err) => Outcome::Fault(err),
+            Err(err) => Outcome::Fault(err.to_string()),
         }
     }
 }
@@ -222,7 +223,7 @@ struct ListUsersTransition;
 
 #[async_trait]
 impl Transition<FetchAllInput, Vec<UserSummary>> for ListUsersTransition {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = AppResources;
 
     async fn run(
@@ -235,18 +236,18 @@ impl Transition<FetchAllInput, Vec<UserSummary>> for ListUsersTransition {
         let listed = run_blocking(move || {
             use self::users::dsl;
 
-            let mut conn = pool.get().map_err(anyhow::Error::from)?;
+            let mut conn = pool.get().map_err(String::from)?;
             let rows = dsl::users
                 .order(dsl::id.asc())
                 .load::<UserRow>(&mut conn)
-                .map_err(anyhow::Error::from)?;
+                .map_err(String::from)?;
             Ok(rows.into_iter().map(UserSummary::from).collect())
         })
         .await;
 
         match listed {
             Ok(users) => Outcome::Next(users),
-            Err(err) => Outcome::Fault(err),
+            Err(err) => Outcome::Fault(err.to_string()),
         }
     }
 }
@@ -272,22 +273,22 @@ async fn main() -> Result<()> {
     let resources = AppResources { pool };
     let mut bus = Bus::new();
 
-    let create = Axon::<CreateUserInput, CreateUserInput, anyhow::Error, AppResources>::new(
+    let create = Axon::<CreateUserInput, CreateUserInput, String, AppResources>::new(
         "diesel.create_user",
     )
     .then(CreateUserTransition);
 
-    let list = Axon::<FetchAllInput, FetchAllInput, anyhow::Error, AppResources>::new(
+    let list = Axon::<FetchAllInput, FetchAllInput, String, AppResources>::new(
         "diesel.list_users",
     )
     .then(ListUsersTransition);
 
-    let update = Axon::<UpdateEmailInput, UpdateEmailInput, anyhow::Error, AppResources>::new(
+    let update = Axon::<UpdateEmailInput, UpdateEmailInput, String, AppResources>::new(
         "diesel.update_user_email",
     )
     .then(UpdateUserEmailTransition);
 
-    let delete = Axon::<DeleteUserInput, DeleteUserInput, anyhow::Error, AppResources>::new(
+    let delete = Axon::<DeleteUserInput, DeleteUserInput, String, AppResources>::new(
         "diesel.delete_user",
     )
     .then(DeleteUserTransition);
@@ -326,7 +327,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let before: Outcome<Vec<UserSummary>, anyhow::Error> =
+    let before: Outcome<Vec<UserSummary>, String> =
         list.execute(FetchAllInput, &resources, &mut bus).await;
     if let Outcome::Next(users) = &before {
         println!("list(before): {} users", users.len());
@@ -353,7 +354,7 @@ async fn main() -> Result<()> {
         println!("deleted id={}", id);
     }
 
-    let after: Outcome<Vec<UserSummary>, anyhow::Error> =
+    let after: Outcome<Vec<UserSummary>, String> =
         list.execute(FetchAllInput, &resources, &mut bus).await;
     match after {
         Outcome::Next(users) => {

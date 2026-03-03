@@ -85,7 +85,7 @@ impl EventSource<WsMessage> for MockWebSocket {
 
 #[async_trait]
 impl EventSink<String> for MockWebSocket {
-    type Error = anyhow::Error;
+    type Error = Infallible;
 
     async fn send_event(&self, event: String) -> Result<(), Self::Error> {
         println!("[Sink] Sending to client: {}", event);
@@ -104,7 +104,7 @@ struct ProcessMessage;
 
 #[async_trait]
 impl Transition<WsMessage, ChatEvent> for ProcessMessage {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = ();
 
     async fn run(
@@ -134,7 +134,7 @@ struct Broadcast;
 
 #[async_trait]
 impl Transition<ChatEvent, String> for Broadcast {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = ();
 
     async fn run(
@@ -176,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
 
         // 3. Define the Axon for this event kind
         // Note: Axons are light and created per event typically, or reused if stateless.
-        let axon = Axon::<WsMessage, WsMessage, anyhow::Error>::new("ChatFlow")
+        let axon = Axon::<WsMessage, WsMessage, String>::new("ChatFlow")
             .then(ProcessMessage)
             .then(Broadcast);
 
@@ -192,7 +192,7 @@ async fn main() -> anyhow::Result<()> {
             Outcome::Branch(_id, _val) => {
                 println!("Branched (not handled in this loop demo)");
             }
-            Outcome::Fault(e) => eprintln!("Axon Error: {}", e),
+            Outcome::Fault(e.to_string()) => eprintln!("Axon Error: {}", e),
             _ => {}
         }
     }

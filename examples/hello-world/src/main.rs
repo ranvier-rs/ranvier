@@ -24,13 +24,13 @@ use ranvier_runtime::Axon;
 
 /// First Transition: Generate greeting message
 #[transition]
-async fn greet(_state: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, anyhow::Error> {
+async fn greet(_state: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, String> {
     Outcome::Next("Hello, Ranvier!".to_string())
 }
 
 /// Second Transition: Add emoji to message
 #[transition]
-async fn exclaim(state: String, _resources: &(), _bus: &mut Bus) -> Outcome<String, anyhow::Error> {
+async fn exclaim(state: String, _resources: &(), _bus: &mut Bus) -> Outcome<String, String> {
     Outcome::Next(format!("{} 🚀", state))
 }
 
@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
     //    This is the "what to do" - depth = 1
     //    Note: Axon::new("label") creates an identity Axon<T, T, E>
     //          We start with () and transform to String via transitions
-    let hello = Axon::<(), (), anyhow::Error>::new("HelloWorld")
+    let hello = Axon::<(), (), String>::new("HelloWorld")
         .then(greet)
         .then(exclaim);
 

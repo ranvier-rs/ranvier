@@ -5,7 +5,7 @@ use ranvier_runtime::Axon;
 use std::time::Duration;
 use tokio::time::{interval, Interval};
 use async_trait::async_trait;
-use std::convert::Infallible;
+use String;
 use futures_core::stream::Stream;
 use std::pin::Pin;
 

@@ -723,6 +723,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bytes-utils"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dafe3a8757b027e2be6e4e5601ed563c55989fcf1546e933c66c8eb3a058d35"
+dependencies = [
+ "bytes",
+ "either",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -916,6 +926,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
+name = "cookie-factory"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9885fa71e26b8ab7855e2ec7cae6e9b380edff76cd052e07c683a0319d51b3a2"
+dependencies = [
+ "futures",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -966,6 +985,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19d374276b40fb8bbdee95aef7c7fa6b5316ec764510eb64b8dd0e2ed0d7e7f5"
 
 [[package]]
+name = "crc16"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "338089f42c427b86394a5ee60ff321da23a5c89c9d89514c829687b26359fcff"
+
+[[package]]
 name = "crc32fast"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1010,6 +1035,17 @@ checksum = "6b50826342786a51a89e2da3a28f1c32b06e387201bc2d19791f622c673706b1"
 dependencies = [
  "cast",
  "itertools 0.10.5",
+]
+
+[[package]]
+name = "cron"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eee8b2b4516038bc0f1d3c9934bcb4a13dd316e04abbc63c96757a6d75978532"
+dependencies = [
+ "chrono",
+ "nom",
+ "once_cell",
 ]
 
 [[package]]
@@ -1618,6 +1654,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "float-cmp"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "flume"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1668,6 +1713,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fred"
+version = "8.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b8e3a1339ed45ad8fde94530c4bdcbd5f371a3c6bd3bf57682923792830aa37"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bytes",
+ "bytes-utils",
+ "crossbeam-queue",
+ "float-cmp",
+ "futures",
+ "log",
+ "parking_lot",
+ "rand 0.8.5",
+ "redis-protocol",
+ "semver",
+ "socket2 0.5.10",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "url",
+ "urlencoding",
 ]
 
 [[package]]
@@ -1863,7 +1934,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "graphql-service-demo"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "async-graphql",
@@ -2785,6 +2856,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "minimal-lexical"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2867,6 +2944,16 @@ dependencies = [
  "log",
  "rand 0.8.5",
  "signatory",
+]
+
+[[package]]
+name = "nom"
+version = "7.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
+dependencies = [
+ "memchr",
+ "minimal-lexical",
 ]
 
 [[package]]
@@ -3759,7 +3846,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "ranvier-auth",
  "ranvier-core",
@@ -3772,7 +3859,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-audit"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3788,7 +3875,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-auth"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "base64 0.21.7",
@@ -3806,7 +3893,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-cluster"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "bb8",
@@ -3821,8 +3908,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ranvier-compliance"
+version = "0.15.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "ranvier-core"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -3840,7 +3936,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-db"
-version = "0.1.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3861,7 +3957,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-graphql"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "async-graphql",
  "async-trait",
@@ -3874,7 +3970,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-grpc"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3894,7 +3990,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-guard"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "bytes",
  "http 1.4.0",
@@ -3908,7 +4004,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-http"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3948,7 +4044,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-inspector"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "axum 0.7.9",
@@ -3964,8 +4060,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ranvier-job"
+version = "0.15.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "cron",
+ "futures",
+ "ranvier-core",
+ "ranvier-runtime",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "ranvier-macros"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3973,8 +4085,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ranvier-multitenancy"
+version = "0.15.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "http 1.4.0",
+ "ranvier-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower 0.5.3",
+]
+
+[[package]]
 name = "ranvier-observe"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3996,7 +4122,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-openapi"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "http 1.4.0",
  "ranvier-core",
@@ -4007,8 +4133,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ranvier-redis"
+version = "0.15.0"
+dependencies = [
+ "async-trait",
+ "fred",
+ "ranvier-core",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ranvier-runtime"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4030,8 +4168,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "ranvier-session"
+version = "0.15.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "http 1.4.0",
+ "http-body-util",
+ "ranvier-core",
+ "ranvier-runtime",
+ "redis 0.27.6",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower 0.5.3",
+ "uuid",
+]
+
+[[package]]
 name = "ranvier-status"
-version = "0.1.1"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4045,7 +4203,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-std"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4062,7 +4220,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-synapse"
-version = "1.0.0-rc.1"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4152,6 +4310,20 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
+]
+
+[[package]]
+name = "redis-protocol"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c31deddf734dc0a39d3112e73490e88b61a05e83e074d211f348404cee4d2c6"
+dependencies = [
+ "bytes",
+ "bytes-utils",
+ "cookie-factory",
+ "crc16",
+ "log",
+ "nom",
 ]
 
 [[package]]
@@ -5836,6 +6008,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

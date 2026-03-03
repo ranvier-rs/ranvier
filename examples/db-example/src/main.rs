@@ -28,7 +28,7 @@ pub struct User {
 }
 
 /// User creation request
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateUserRequest {
     pub username: String,
     pub email: String,
@@ -42,7 +42,7 @@ pub struct GetUserById;
 
 #[async_trait]
 impl DbTransition<UserId, User> for GetUserById {
-    type Error = anyhow::Error;
+    type Error = Infallible;
 
     async fn run(&self, input: UserId, pool: &sqlx::PgPool) -> QueryResult<User> {
         sqlx::query_as::<_, User>("SELECT id, username, email, created_at FROM users WHERE id = $1")
@@ -59,7 +59,7 @@ pub struct CreateUser;
 
 #[async_trait]
 impl DbTransition<CreateUserRequest, User> for CreateUser {
-    type Error = anyhow::Error;
+    type Error = Infallible;
 
     async fn run(&self, input: CreateUserRequest, pool: &sqlx::PgPool) -> QueryResult<User> {
         sqlx::query_as::<_, User>(
@@ -79,7 +79,7 @@ pub struct ListUsers;
 
 #[async_trait]
 impl DbTransition<(), Vec<User>> for ListUsers {
-    type Error = anyhow::Error;
+    type Error = Infallible;
 
     async fn run(&self, _input: (), pool: &sqlx::PgPool) -> QueryResult<Vec<User>> {
         sqlx::query_as::<_, User>("SELECT id, username, email, created_at FROM users ORDER BY id")
@@ -132,7 +132,7 @@ async fn main() -> anyhow::Result<()> {
         email: "alice@example.com".to_string(),
     };
 
-    let result = Axon::<CreateUserRequest, CreateUserRequest, anyhow::Error, AppResources>::new(
+    let result = Axon::<CreateUserRequest, CreateUserRequest, String, AppResources>::new(
         "create_user",
     )
     .then(TxPgNode::new(CreateUser).with_isolation_level(IsolationLevel::ReadCommitted))
@@ -143,7 +143,7 @@ async fn main() -> anyhow::Result<()> {
         Outcome::Next(user) => {
             println!("✅ User created: {} ({})", user.username, user.email);
         }
-        Outcome::Fault(e) => {
+        Outcome::Fault(e.to_string()) => {
             println!("❌ Failed to create user: {:?}", e);
         }
         _ => {}
@@ -151,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Example 2: Get user by ID
     println!("\n🔍 Looking up user by ID (1)...");
-    let result = Axon::<UserId, UserId, anyhow::Error, AppResources>::new("get_user")
+    let result = Axon::<UserId, UserId, String, AppResources>::new("get_user")
         .then(PgNode::new(GetUserById))
         .execute(UserId(1), &resources, &mut bus)
         .await;
@@ -160,7 +160,7 @@ async fn main() -> anyhow::Result<()> {
         Outcome::Next(user) => {
             println!("✅ Found user: {} (ID: {})", user.username, user.id);
         }
-        Outcome::Fault(e) => {
+        Outcome::Fault(e.to_string()) => {
             println!("❌ Failed to get user: {:?}", e);
         }
         _ => {}
@@ -168,7 +168,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Example 3: List all users
     println!("\n📋 Listing all users...");
-    let result = Axon::<(), (), anyhow::Error, AppResources>::new("list_users")
+    let result = Axon::<(), (), String, AppResources>::new("list_users")
         .then(PgNode::new(ListUsers))
         .execute((), &resources, &mut bus)
         .await;
@@ -180,7 +180,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("   - {} ({}) [ID: {}]", user.username, user.email, user.id);
             }
         }
-        Outcome::Fault(e) => {
+        Outcome::Fault(e.to_string()) => {
             println!("❌ Failed to list users: {:?}", e);
         }
         _ => {}

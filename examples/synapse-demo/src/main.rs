@@ -20,7 +20,7 @@ struct PostgresSynapse {
 impl Synapse for PostgresSynapse {
     type Input = u32; // User ID
     type Output = Option<User>;
-    type Error = String;
+    type Error = Infallible;
 
     async fn call(&self, user_id: Self::Input) -> Result<Self::Output, Self::Error> {
         println!(
@@ -68,7 +68,7 @@ impl GetUserNode {
             }
             Err(e) => {
                 println!("[Node] Fault: {}", e);
-                // Outcome::Fault(e)
+                // Outcome::Fault(e.to_string())
             }
         }
         Ok(())

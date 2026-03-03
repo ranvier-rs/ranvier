@@ -266,7 +266,7 @@ struct SeedIndexTransition;
 
 #[async_trait]
 impl Transition<SearchInput, SearchInput> for SeedIndexTransition {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = AppResources;
 
     async fn run(
@@ -278,7 +278,7 @@ impl Transition<SearchInput, SearchInput> for SeedIndexTransition {
         let seeded = async {
             ensure_index(resources).await?;
             seed_documents(resources).await?;
-            Ok::<(), anyhow::Error>(())
+            Ok::<(), String>(())
         }
         .await;
 
@@ -294,7 +294,7 @@ struct SearchTransition;
 
 #[async_trait]
 impl Transition<SearchInput, SearchOutput> for SearchTransition {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = AppResources;
 
     async fn run(
@@ -360,7 +360,7 @@ async fn main() -> Result<()> {
     };
 
     let axon =
-        Axon::<SearchInput, SearchInput, anyhow::Error, AppResources>::new("meili.search_flow")
+        Axon::<SearchInput, SearchInput, String, AppResources>::new("meili.search_flow")
             .then(SeedIndexTransition)
             .then(SearchTransition);
 

@@ -25,7 +25,7 @@ struct Authenticate;
 
 #[async_trait]
 impl Transition<LoginInput, UserContext> for Authenticate {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = ();
 
     async fn run(
@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
     // 1. Build the Linear Axon
     // Axon currently builds the 'Happy Path' automatically
     let mut axon =
-        Axon::<LoginInput, LoginInput, anyhow::Error>::new("StartFlow").then(Authenticate);
+        Axon::<LoginInput, LoginInput, String>::new("StartFlow").then(Authenticate);
 
     // 2. Start Manual Schematic Enhancement
     // Since Axon's Builder doesn't yet support auto-extraction of Branches,

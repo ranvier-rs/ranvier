@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::{Serialize, Deserialize};
 use ranvier_core::prelude::*;
 use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
@@ -15,27 +16,27 @@ struct AppResources {
 
 impl ResourceRequirement for AppResources {}
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct CreateUserInput {
     username: String,
     email: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct UpdateEmailInput {
     id: i32,
     email: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct DeleteUserInput {
     id: i32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct FetchAllInput;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct UserSummary {
     id: i32,
     username: String,
@@ -106,7 +107,7 @@ struct CreateUserTransition;
 
 #[async_trait]
 impl Transition<CreateUserInput, UserSummary> for CreateUserTransition {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = AppResources;
 
     async fn run(
@@ -122,7 +123,7 @@ impl Transition<CreateUserInput, UserSummary> for CreateUserTransition {
         }
         .insert(&resources.db)
         .await
-        .map_err(anyhow::Error::from);
+        .map_err(|e| e.to_string());
 
         match model {
             Ok(model) => Outcome::Next(UserSummary {
@@ -130,7 +131,7 @@ impl Transition<CreateUserInput, UserSummary> for CreateUserTransition {
                 username: model.username,
                 email: model.email,
             }),
-            Err(err) => Outcome::Fault(err),
+            Err(err) => Outcome::Fault(err.to_string()),
         }
     }
 }
@@ -140,7 +141,7 @@ struct UpdateUserEmailTransition;
 
 #[async_trait]
 impl Transition<UpdateEmailInput, UserSummary> for UpdateUserEmailTransition {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = AppResources;
 
     async fn run(
@@ -152,12 +153,12 @@ impl Transition<UpdateEmailInput, UserSummary> for UpdateUserEmailTransition {
         let found = user::Entity::find_by_id(input.id)
             .one(&resources.db)
             .await
-            .map_err(anyhow::Error::from);
+            .map_err(|e| e.to_string());
 
         let model = match found {
             Ok(Some(model)) => model,
             Ok(None) => return Outcome::Fault(anyhow::anyhow!("user id={} not found", input.id)),
-            Err(err) => return Outcome::Fault(err),
+            Err(err) => return Outcome::Fault(err.to_string()),
         };
 
         let mut active: user::ActiveModel = model.into();
@@ -166,7 +167,7 @@ impl Transition<UpdateEmailInput, UserSummary> for UpdateUserEmailTransition {
         let updated = active
             .update(&resources.db)
             .await
-            .map_err(anyhow::Error::from);
+            .map_err(|e| e.to_string());
 
         match updated {
             Ok(updated) => Outcome::Next(UserSummary {
@@ -174,7 +175,7 @@ impl Transition<UpdateEmailInput, UserSummary> for UpdateUserEmailTransition {
                 username: updated.username,
                 email: updated.email,
             }),
-            Err(err) => Outcome::Fault(err),
+            Err(err) => Outcome::Fault(err.to_string()),
         }
     }
 }
@@ -184,7 +185,7 @@ struct DeleteUserTransition;
 
 #[async_trait]
 impl Transition<DeleteUserInput, i32> for DeleteUserTransition {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = AppResources;
 
     async fn run(
@@ -196,20 +197,20 @@ impl Transition<DeleteUserInput, i32> for DeleteUserTransition {
         let found = user::Entity::find_by_id(input.id)
             .one(&resources.db)
             .await
-            .map_err(anyhow::Error::from);
+            .map_err(|e| e.to_string());
 
         let model = match found {
             Ok(Some(model)) => model,
             Ok(None) => return Outcome::Fault(anyhow::anyhow!("user id={} not found", input.id)),
-            Err(err) => return Outcome::Fault(err),
+            Err(err) => return Outcome::Fault(err.to_string()),
         };
 
         let deleted_id = model.id;
-        let deleted = model.delete(&resources.db).await.map_err(anyhow::Error::from);
+        let deleted = model.delete(&resources.db).await.map_err(|e| e.to_string());
 
         match deleted {
             Ok(_) => Outcome::Next(deleted_id),
-            Err(err) => Outcome::Fault(err),
+            Err(err) => Outcome::Fault(err.to_string()),
         }
     }
 }
@@ -219,7 +220,7 @@ struct ListUsersTransition;
 
 #[async_trait]
 impl Transition<FetchAllInput, Vec<UserSummary>> for ListUsersTransition {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = AppResources;
 
     async fn run(
@@ -231,7 +232,7 @@ impl Transition<FetchAllInput, Vec<UserSummary>> for ListUsersTransition {
         let rows = user::Entity::find()
             .all(&resources.db)
             .await
-            .map_err(anyhow::Error::from);
+            .map_err(|e| e.to_string());
 
         match rows {
             Ok(rows) => {
@@ -245,7 +246,7 @@ impl Transition<FetchAllInput, Vec<UserSummary>> for ListUsersTransition {
                     .collect();
                 Outcome::Next(users)
             }
-            Err(err) => Outcome::Fault(err),
+            Err(err) => Outcome::Fault(err.to_string()),
         }
     }
 }
@@ -263,22 +264,22 @@ async fn main() -> Result<()> {
     let resources = AppResources { db };
     let mut bus = Bus::new();
 
-    let create = Axon::<CreateUserInput, CreateUserInput, anyhow::Error, AppResources>::new(
+    let create = Axon::<CreateUserInput, CreateUserInput, String, AppResources>::new(
         "seaorm.create_user",
     )
     .then(CreateUserTransition);
 
-    let list = Axon::<FetchAllInput, FetchAllInput, anyhow::Error, AppResources>::new(
+    let list = Axon::<FetchAllInput, FetchAllInput, String, AppResources>::new(
         "seaorm.list_users",
     )
     .then(ListUsersTransition);
 
-    let update = Axon::<UpdateEmailInput, UpdateEmailInput, anyhow::Error, AppResources>::new(
+    let update = Axon::<UpdateEmailInput, UpdateEmailInput, String, AppResources>::new(
         "seaorm.update_user_email",
     )
     .then(UpdateUserEmailTransition);
 
-    let delete = Axon::<DeleteUserInput, DeleteUserInput, anyhow::Error, AppResources>::new(
+    let delete = Axon::<DeleteUserInput, DeleteUserInput, String, AppResources>::new(
         "seaorm.delete_user",
     )
     .then(DeleteUserTransition);
@@ -317,7 +318,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let before: Outcome<Vec<UserSummary>, anyhow::Error> =
+    let before: Outcome<Vec<UserSummary>, String> =
         list.execute(FetchAllInput, &resources, &mut bus).await;
     if let Outcome::Next(users) = &before {
         println!("list(before): {} users", users.len());
@@ -344,7 +345,7 @@ async fn main() -> Result<()> {
         println!("deleted id={}", id);
     }
 
-    let after: Outcome<Vec<UserSummary>, anyhow::Error> =
+    let after: Outcome<Vec<UserSummary>, String> =
         list.execute(FetchAllInput, &resources, &mut bus).await;
     match after {
         Outcome::Next(users) => {

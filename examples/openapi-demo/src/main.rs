@@ -1,4 +1,4 @@
-use std::convert::Infallible;
+use String;
 
 use hyper::body::Incoming;
 use ranvier_core::prelude::*;

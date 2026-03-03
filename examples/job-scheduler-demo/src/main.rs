@@ -9,7 +9,7 @@ use tracing::{info, Level};
 
 /// A dummy transition that simulates a periodic health check.
 #[transition]
-async fn health_check(_state: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, anyhow::Error> {
+async fn health_check(_state: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, String> {
     info!("Running routine health check...");
     tokio::time::sleep(Duration::from_millis(100)).await;
     Outcome::Next("Health Check OK".to_string())
@@ -17,7 +17,7 @@ async fn health_check(_state: (), _resources: &(), _bus: &mut Bus) -> Outcome<St
 
 /// A dummy transition that simulates a background database cleanup job.
 #[transition]
-async fn cleanup_job(_state: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, anyhow::Error> {
+async fn cleanup_job(_state: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, String> {
     info!("Starting database cleanup...");
     tokio::time::sleep(Duration::from_millis(500)).await;
     Outcome::Next("Cleanup complete".to_string())
@@ -37,14 +37,14 @@ async fn main() -> anyhow::Result<()> {
     let shutdown_token = scheduler.shutdown_token();
 
     // 1. Register an interval-based health check job (every 2 seconds)
-    let health_axon = Axon::<(), (), anyhow::Error>::new("HealthCheck").then(health_check);
+    let health_axon = Axon::<(), (), String>::new("HealthCheck").then(health_check);
     let health_trigger = Trigger::interval(Duration::from_secs(2));
     let health_job = AxonJob::new("health-check-1", health_trigger, health_axon, (), ());
     
     scheduler.add_job(health_job).await;
 
     // 2. Register a cron-based cleanup job (every 5 seconds)
-    let cleanup_axon = Axon::<(), (), anyhow::Error>::new("CleanupTask").then(cleanup_job);
+    let cleanup_axon = Axon::<(), (), String>::new("CleanupTask").then(cleanup_job);
     // Standard 6-part cron: sec min hour dom month dow
     let cleanup_trigger = Trigger::cron("*/5 * * * * *")?;
     let cleanup_job_task = AxonJob::new("cleanup-db", cleanup_trigger, cleanup_axon, (), ());

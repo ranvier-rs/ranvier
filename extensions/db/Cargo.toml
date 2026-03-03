@@ -1,6 +1,10 @@
 [package]
 name = "ranvier-db"
-version = "0.1.0"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 [dependencies]
@@ -40,7 +44,7 @@ futures-util = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
-ranvier-runtime = { path = "../../runtime", version = "1.0.0-rc.1" }
+ranvier-runtime = { workspace = true }
 
 [[bench]]
 name = "db_query_latency"

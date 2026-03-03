@@ -1055,8 +1055,8 @@ where
     /// Register a route with GET method.
     pub fn route<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
     where
-        Out: IntoResponse + Send + Sync + 'static,
-        E: Send + Sync + 'static + std::fmt::Debug,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
         self.route_method(Method::GET, path, circuit)
     }
@@ -1075,8 +1075,8 @@ where
         circuit: Axon<(), Out, E, R>,
     ) -> Self
     where
-        Out: IntoResponse + Send + Sync + 'static,
-        E: Send + Sync + 'static + std::fmt::Debug,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
         self.route_method_with_error(method, path, circuit, |error| {
             (
@@ -1094,8 +1094,8 @@ where
         error_handler: H,
     ) -> Self
     where
-        Out: IntoResponse + Send + Sync + 'static,
-        E: Send + Sync + 'static + std::fmt::Debug,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
         H: Fn(&E) -> HttpResponse + Send + Sync + 'static,
     {
         self.route_method_with_error_and_layers(
@@ -1116,8 +1116,8 @@ where
         layer: L,
     ) -> Self
     where
-        Out: IntoResponse + Send + Sync + 'static,
-        E: Send + Sync + 'static + std::fmt::Debug,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
         L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
             + Clone
@@ -1148,8 +1148,8 @@ where
         layer: L,
     ) -> Self
     where
-        Out: IntoResponse + Send + Sync + 'static,
-        E: Send + Sync + 'static + std::fmt::Debug,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
         L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
             + Clone
@@ -1182,8 +1182,8 @@ where
         apply_global_layers: bool,
     ) -> Self
     where
-        Out: IntoResponse + Send + Sync + 'static,
-        E: Send + Sync + 'static + std::fmt::Debug,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
         H: Fn(&E) -> HttpResponse + Send + Sync + 'static,
     {
         let path_str: String = path.into();
@@ -1237,8 +1237,8 @@ where
 
     pub fn get<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
     where
-        Out: IntoResponse + Send + Sync + 'static,
-        E: Send + Sync + 'static + std::fmt::Debug,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
         self.route_method(Method::GET, path, circuit)
     }
@@ -1250,8 +1250,8 @@ where
         error_handler: H,
     ) -> Self
     where
-        Out: IntoResponse + Send + Sync + 'static,
-        E: Send + Sync + 'static + std::fmt::Debug,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
         H: Fn(&E) -> HttpResponse + Send + Sync + 'static,
     {
         self.route_method_with_error(Method::GET, path, circuit, error_handler)
@@ -1264,8 +1264,8 @@ where
         layer: L,
     ) -> Self
     where
-        Out: IntoResponse + Send + Sync + 'static,
-        E: Send + Sync + 'static + std::fmt::Debug,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
         L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
             + Clone
@@ -1283,8 +1283,8 @@ where
         layer: L,
     ) -> Self
     where
-        Out: IntoResponse + Send + Sync + 'static,
-        E: Send + Sync + 'static + std::fmt::Debug,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
         L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
         L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
             + Clone
@@ -1297,32 +1297,32 @@ where
 
     pub fn post<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
     where
-        Out: IntoResponse + Send + Sync + 'static,
-        E: Send + Sync + 'static + std::fmt::Debug,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
         self.route_method(Method::POST, path, circuit)
     }
 
     pub fn put<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
     where
-        Out: IntoResponse + Send + Sync + 'static,
-        E: Send + Sync + 'static + std::fmt::Debug,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
         self.route_method(Method::PUT, path, circuit)
     }
 
     pub fn delete<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
     where
-        Out: IntoResponse + Send + Sync + 'static,
-        E: Send + Sync + 'static + std::fmt::Debug,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
         self.route_method(Method::DELETE, path, circuit)
     }
 
     pub fn patch<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
     where
-        Out: IntoResponse + Send + Sync + 'static,
-        E: Send + Sync + 'static + std::fmt::Debug,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
         self.route_method(Method::PATCH, path, circuit)
     }
@@ -1339,8 +1339,8 @@ where
     /// ```
     pub fn fallback<Out, E>(mut self, circuit: Axon<(), Out, E, R>) -> Self
     where
-        Out: IntoResponse + Send + Sync + 'static,
-        E: Send + Sync + 'static + std::fmt::Debug,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
         let circuit = Arc::new(circuit);
         let fallback_bus_injectors = Arc::new(self.bus_injectors.clone());

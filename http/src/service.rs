@@ -43,9 +43,9 @@ impl<In, Out, E, F, Res> RanvierService<In, Out, E, F, Res> {
 impl<B, In, Out, E, F, Res> Service<Request<B>> for RanvierService<In, Out, E, F, Res>
 where
     B: Send + 'static,
-    In: Send + Sync + 'static,
-    Out: Send + Sync + 'static,
-    E: Send + Sync + 'static + std::fmt::Debug,
+    In: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+    Out: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+    E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     F: Fn(Request<B>, &mut Bus) -> In + Clone + Send + Sync + 'static,
     Res: ranvier_core::transition::ResourceRequirement + Send + Sync + 'static,
 {

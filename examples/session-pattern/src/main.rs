@@ -63,7 +63,7 @@ struct LoadSession;
 
 #[async_trait]
 impl Transition<String, String> for LoadSession {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = ();
 
     async fn run(
@@ -107,7 +107,7 @@ struct RequireAuth;
 
 #[async_trait]
 impl Transition<String, String> for RequireAuth {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = ();
 
     async fn run(
@@ -137,7 +137,7 @@ struct UserProfile;
 
 #[async_trait]
 impl Transition<String, String> for UserProfile {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = ();
 
     async fn run(
@@ -170,7 +170,7 @@ async fn main() -> anyhow::Result<()> {
     println!("--- Case 1: Valid Session ---");
     let req_valid = "GET /profile (Cookie: sid=valid_sid_123)".to_string();
 
-    let axon = Axon::<String, String, anyhow::Error>::new("SecureProfileFlow")
+    let axon = Axon::<String, String, String>::new("SecureProfileFlow")
         .then(LoadSession)
         .then(RequireAuth)
         .then(UserProfile);
@@ -184,7 +184,7 @@ async fn main() -> anyhow::Result<()> {
     match result {
         Outcome::Next(profile) => println!("Success: {}", profile),
         Outcome::Branch(route, _) => println!("Redirected: {}", route),
-        Outcome::Fault(e) => println!("Error: {:?}", e),
+        Outcome::Fault(e.to_string()) => println!("Error: {:?}", e),
         _ => {}
     }
 
@@ -192,7 +192,7 @@ async fn main() -> anyhow::Result<()> {
     println!("\n--- Case 2: No/Invalid Session ---");
     let req_invalid = "GET /profile (No Cookie)".to_string();
 
-    let axon2 = Axon::<String, String, anyhow::Error>::new("SecureProfileFlow")
+    let axon2 = Axon::<String, String, String>::new("SecureProfileFlow")
         .then(LoadSession)
         .then(RequireAuth)
         .then(UserProfile);
@@ -207,7 +207,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("Redirected to '{}': {}", route, r);
             }
         }
-        Outcome::Fault(e) => println!("Error: {:?}", e),
+        Outcome::Fault(e.to_string()) => println!("Error: {:?}", e),
         _ => {}
     }
 

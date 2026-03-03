@@ -48,6 +48,20 @@ pub trait DistributedLock: Send + Sync {
     async fn extend(&self, key: &str, extra_ttl_ms: u64) -> Result<(), ClusterError>;
 }
 
+/// Interface for distributed key-value storage.
+/// Supports basic get/put/delete operations with optional TTL.
+#[async_trait]
+pub trait DistributedStore: Send + Sync {
+    /// Retrieves a value by key.
+    async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, ClusterError>;
+
+    /// Stores a value with an optional TTL in milliseconds.
+    async fn put(&self, key: &str, value: &[u8], ttl_ms: Option<u64>) -> Result<(), ClusterError>;
+
+    /// Deletes a key from the store.
+    async fn delete(&self, key: &str) -> Result<(), ClusterError>;
+}
+
 /// Interface for a distributed message bus.
 /// Facilitates inter-node coordination, such as state synchronization or cluster-wide events.
 #[async_trait]

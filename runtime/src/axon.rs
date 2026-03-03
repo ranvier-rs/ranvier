@@ -1114,8 +1114,11 @@ where
             } {
                     tracing::info!(trace_id = %trace_id, node_id = %task.node_id, "Compensating step: {}", task.node_label);
                     
-                    let registry = self.saga_compensation_registry.read().unwrap();
-                    if let Some(handler) = registry.get(&task.node_id) {
+                    let handler = {
+                        let registry = self.saga_compensation_registry.read().unwrap();
+                        registry.get(&task.node_id)
+                    };
+                    if let Some(handler) = handler {
                         let res = handler(task.input_snapshot, resources, bus).await;
                         if let Outcome::Fault(e) = res {
                             tracing::error!(trace_id = %trace_id, node_id = %task.node_id, "Saga compensation FAILED: {:?}", e);

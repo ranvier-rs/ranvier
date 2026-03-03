@@ -39,7 +39,7 @@ struct Authenticate;
 
 #[async_trait]
 impl Transition<FlowState, FlowState> for Authenticate {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = ();
 
     async fn run(
@@ -74,7 +74,7 @@ struct FetchContent;
 
 #[async_trait]
 impl Transition<FlowState, FlowState> for FetchContent {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = ();
 
     async fn run(
@@ -107,7 +107,7 @@ async fn main() -> anyhow::Result<()> {
     // Construct the Axon
     // Even though the input/output of the Axon is FlowState, the INTERNAL
     // transitions move the variant forward.
-    let axon = Axon::<FlowState, FlowState, anyhow::Error>::new("SecureContentFlow")
+    let axon = Axon::<FlowState, FlowState, String>::new("SecureContentFlow")
         .then(Authenticate)
         .then(FetchContent);
 
@@ -122,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("Success! Final Data: {}", data);
             }
         }
-        Outcome::Fault(e) => println!("Error: {}", e),
+        Outcome::Fault(e.to_string()) => println!("Error: {}", e),
         _ => {}
     }
 
@@ -130,7 +130,7 @@ async fn main() -> anyhow::Result<()> {
     println!("\n--- Case 2: Forbidden Path ---");
     let input2 = FlowState::RequestReceived("/forbidden".to_string());
     match axon.execute(input2, &(), &mut bus).await {
-        Outcome::Fault(e) => println!("Caught expected error: {}", e),
+        Outcome::Fault(e.to_string()) => println!("Caught expected error: {}", e),
         other => println!("Unexpected result: {:?}", other),
     }
 

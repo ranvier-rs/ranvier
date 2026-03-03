@@ -96,7 +96,7 @@ pub struct LandingPageAxon;
 
 impl StaticAxon for LandingPageAxon {
     type Output = LandingState;
-    type Error = anyhow::Error;
+    type Error = Infallible;
 
     fn name(&self) -> &'static str {
         "landing_page"
@@ -149,7 +149,7 @@ pub struct PricingPageAxon;
 
 impl StaticAxon for PricingPageAxon {
     type Output = PricingState;
-    type Error = anyhow::Error;
+    type Error = Infallible;
 
     fn name(&self) -> &'static str {
         "pricing_page"
@@ -216,7 +216,7 @@ pub struct DocsIndexAxon;
 
 impl StaticAxon for DocsIndexAxon {
     type Output = DocsIndexState;
-    type Error = anyhow::Error;
+    type Error = Infallible;
 
     fn name(&self) -> &'static str {
         "docs_index"
@@ -299,7 +299,7 @@ impl StaticAxon for DocsIndexAxon {
 // ============================================================
 
 /// Registry of all static axons in this project
-fn get_static_axons() -> Vec<Box<dyn StaticAxon<Output = serde_json::Value, Error = anyhow::Error>>>
+fn get_static_axons() -> Vec<Box<dyn StaticAxon<Output = serde_json::Value, Error = String>>>
 {
     vec![
         Box::new(ValueAxon::new(LandingPageAxon)),
@@ -338,7 +338,7 @@ where
                     .map_err(|e| anyhow::anyhow!("Serialization failed: {}", e))?;
                 Ok(Outcome::Next(value))
             }
-            Outcome::Fault(e) => Ok(Outcome::Fault(e)),
+            Outcome::Fault(e.to_string()) => Ok(Outcome::Fault(e.to_string())),
             _ => Ok(Outcome::Next(serde_json::json!({}))),
         }
     }
@@ -371,7 +371,7 @@ fn run_static_build(output_dir: &str) -> Result<()> {
 
                 manifest.add_state(name, file_name);
             }
-            Ok(Outcome::Fault(e)) => {
+            Ok(Outcome::Fault(e.to_string())) => {
                 eprintln!("     ❌ Fault: {:?}", e);
             }
             Ok(_) => {

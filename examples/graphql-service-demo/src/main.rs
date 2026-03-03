@@ -8,7 +8,7 @@ use ranvier_graphql::GraphQLIngress;
 use async_graphql::dataloader::{DataLoader, Loader};
 
 // Define the Shared Type for Axon errors.
-type WorkflowAxon = Axon<(), String, anyhow::Error, ()>;
+type WorkflowAxon = Axon<(), String, String, ()>;
 
 #[derive(Default)]
 struct QueryRoot;
@@ -29,7 +29,7 @@ pub struct UserLoader;
 
 impl Loader<String> for UserLoader {
     type Value = String;
-    type Error = Arc<anyhow::Error>;
+    type Error = Arc<String>;
 
     async fn load(&self, keys: &[String]) -> Result<HashMap<String, Self::Value>, Self::Error> {
         let mut map = HashMap::new();
@@ -80,7 +80,7 @@ pub struct StartWorkflow;
 
 #[async_trait]
 impl Transition<(), String> for StartWorkflow {
-    type Error = anyhow::Error;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     // 1. Build the Execution Chain
-    let axon = Axon::<(), (), anyhow::Error>::start("GraphQL Demo Workflow")
+    let axon = Axon::<(), (), String>::start("GraphQL Demo Workflow")
         .then(StartWorkflow);
         
     let axon = Arc::new(axon);

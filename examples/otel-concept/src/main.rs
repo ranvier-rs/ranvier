@@ -51,7 +51,7 @@ struct Authenticate;
 
 #[async_trait]
 impl Transition<HttpRequest, AuthUser> for Authenticate {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = ();
 
     async fn run(
@@ -83,7 +83,7 @@ struct HandleRequest;
 
 #[async_trait]
 impl Transition<AuthUser, HttpResponse> for HandleRequest {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = ();
 
     async fn run(
@@ -119,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
     // Provide a name for each span
     // 2. Define Axon with Tracing Wrappers
     // Provide a name for each span
-    let axon = Axon::<HttpRequest, HttpRequest, anyhow::Error>::new("HttpTransaction")
+    let axon = Axon::<HttpRequest, HttpRequest, String>::new("HttpTransaction")
         .then(Traced::new(Authenticate, "Authenticate"))
         .then(Traced::new(HandleRequest, "HandleRequest"));
 
@@ -134,7 +134,7 @@ async fn main() -> anyhow::Result<()> {
         Outcome::Next(res) => {
             println!("\n[Result] Status: {}, Body: {}", res.status, res.body);
         }
-        Outcome::Fault(e) => {
+        Outcome::Fault(e.to_string()) => {
             println!("\n[Result] Fault: {:?}", e);
         }
         _ => println!("\n[Result] Other outcome"),

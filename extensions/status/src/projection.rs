@@ -97,6 +97,12 @@ pub fn projections_from_timeline(
             TimelineEvent::Branchtaken { .. } => {
                 branch_event_count += 1;
             }
+            TimelineEvent::NodeRetry { .. } => {
+                // Retry events tracked for completeness; no projection impact
+            }
+            TimelineEvent::DlqExhausted { .. } => {
+                fault_count += 1;
+            }
         }
     }
     branch_count = branch_count.max(branch_event_count);

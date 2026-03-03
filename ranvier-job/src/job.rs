@@ -48,9 +48,9 @@ impl<In, Out, E, Res> AxonJob<In, Out, E, Res> {
 #[async_trait]
 impl<In, Out, E, Res> Job for AxonJob<In, Out, E, Res>
 where
-    In: Send + Sync + Clone + 'static,
-    Out: Send + Sync + 'static,
-    E: Send + Sync + 'static,
+    In: Send + Sync + Clone + serde::Serialize + serde::de::DeserializeOwned + 'static,
+    Out: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+    E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     Res: ResourceRequirement + Send + Sync + 'static,
 {
     fn id(&self) -> &str {

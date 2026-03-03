@@ -1,17 +1,19 @@
 [package]
 name = "ranvier-session"
-version = "0.7.0"
-edition = "2024"
-authors = ["ranvier"]
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/cellaxon/ranvier"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Session management and caching support for the Ranvier Typed Decision Engine framework."
 categories = ["asynchronous", "web-programming"]
 keywords = ["session", "cache", "redis", "middleware"]
 
 [dependencies]
-ranvier-core = { path = "../../core", version = "0.12.0" }
-ranvier-runtime = { path = "../../runtime", version = "0.12.0" }
+ranvier-core = { workspace = true }
+ranvier-runtime = { workspace = true }
 tokio = { version = "1.43", features = ["full"] }
 tower = "0.5"
 http = "1.1"

@@ -18,7 +18,7 @@ struct VisitorInfo {
 
 /// Transition that reads and updates the visitor info from the session.
 #[transition]
-async fn visit_counter(_state: (), _resources: &(), bus: &mut Bus) -> Outcome<String, anyhow::Error> {
+async fn visit_counter(_state: (), _resources: &(), bus: &mut Bus) -> Outcome<String, String> {
     // Extract the session from the Bus (it was injected by the `bus_injector`)
     let session_opt = bus.get::<Session>().ok();
     
@@ -55,7 +55,7 @@ async fn visit_counter(_state: (), _resources: &(), bus: &mut Bus) -> Outcome<St
 
 /// A reset transition to clear the session data.
 #[transition]
-async fn reset_session(_state: (), _resources: &(), bus: &mut Bus) -> Outcome<String, anyhow::Error> {
+async fn reset_session(_state: (), _resources: &(), bus: &mut Bus) -> Outcome<String, String> {
     if let Some(session) = bus.get::<Session>().ok() {
         session.destroy().await;
         Outcome::Next("Session destroyed. Visit / again to start a new session!".to_string())
@@ -73,7 +73,7 @@ fn format_success(msg: String) -> Response<Full<Bytes>> {
         .unwrap()
 }
 
-fn handle_error(err: &anyhow::Error) -> Response<Full<Bytes>> {
+fn handle_error(err: &String) -> Response<Full<Bytes>> {
     Response::builder()
         .status(500)
         .body(Full::new(Bytes::from(format!("Internal Error: {}", err))))
@@ -92,10 +92,10 @@ async fn main() -> anyhow::Result<()> {
     let store = MemoryStore::new();
 
     // 2. Build our standard Axons
-    let visit_axon = Axon::<(), (), anyhow::Error>::new("VisitCounter")
+    let visit_axon = Axon::<(), (), String>::new("VisitCounter")
         .then(visit_counter);
         
-    let reset_axon = Axon::<(), (), anyhow::Error>::new("ResetSession")
+    let reset_axon = Axon::<(), (), String>::new("ResetSession")
         .then(reset_session);
 
     // 3. Build the HTTP Ingress

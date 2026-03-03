@@ -10,12 +10,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 #[transition]
-async fn step_one(input: i32) -> Outcome<i32, anyhow::Error> {
+async fn step_one(input: i32) -> Outcome<i32, String> {
     Outcome::Next(input + 10)
 }
 
 #[transition]
-async fn step_two(input: i32) -> Outcome<String, anyhow::Error> {
+async fn step_two(input: i32) -> Outcome<String, String> {
     Outcome::Next(format!("Result: {}", input))
 }
 
@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Starting Studio Demo...");
 
     // Start with i32 -> i32 identity
-    let info_axon = Axon::<i32, i32, anyhow::Error>::new("Studio Demo Circuit")
+    let info_axon = Axon::<i32, i32, String>::new("Studio Demo Circuit")
         .then(step_one)
         .then(step_two);
 

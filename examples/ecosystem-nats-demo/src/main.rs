@@ -47,14 +47,14 @@ struct NatsSubjectSink {
 
 #[async_trait]
 impl EventSink<String> for NatsSubjectSink {
-    type Error = anyhow::Error;
+    type Error = Infallible;
 
     async fn send_event(&self, event: String) -> Result<(), Self::Error> {
         self.client
             .publish(self.subject.clone(), Bytes::from(event))
             .await
-            .map_err(anyhow::Error::from)?;
-        self.client.flush().await.map_err(anyhow::Error::from)?;
+            .map_err(String::from)?;
+        self.client.flush().await.map_err(String::from)?;
         Ok(())
     }
 }
@@ -70,7 +70,7 @@ struct ParseEventTransition;
 
 #[async_trait]
 impl Transition<String, ParsedEvent> for ParseEventTransition {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = AppResources;
 
     async fn run(
@@ -95,7 +95,7 @@ struct ProjectToSinkTransition;
 
 #[async_trait]
 impl Transition<ParsedEvent, String> for ProjectToSinkTransition {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = AppResources;
 
     async fn run(
@@ -156,7 +156,7 @@ async fn main() -> Result<()> {
         subject: outbound_subject.clone(),
     };
 
-    let axon = Axon::<String, String, anyhow::Error, AppResources>::new("nats.pub_sub_pipeline")
+    let axon = Axon::<String, String, String, AppResources>::new("nats.pub_sub_pipeline")
         .then(ParseEventTransition)
         .then(ProjectToSinkTransition);
 

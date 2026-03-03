@@ -14,7 +14,7 @@ struct AddOne;
 
 #[async_trait]
 impl Transition<i32, i32> for AddOne {
-    type Error = std::convert::Infallible;
+    type Error = Infallible;
     type Resources = ();
 
     // Optional: Add tracing to inner logic too
@@ -111,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Starting Axon...");
 
     // 2. Define Axon
-    let axon = Axon::<i32, i32, std::convert::Infallible>::new("CalculationCircuit")
+    let axon = Axon::<i32, i32, String>::new("CalculationCircuit")
         .then(AddOne)
         .then(AddOne);
 

@@ -62,7 +62,7 @@ struct LoadSessionTransition;
 
 #[async_trait]
 impl Transition<SessionRequest, SessionContext> for LoadSessionTransition {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = AppResources;
 
     async fn run(
@@ -110,7 +110,7 @@ struct CacheResponseTransition;
 
 #[async_trait]
 impl Transition<SessionContext, ResponsePayload> for CacheResponseTransition {
-    type Error = anyhow::Error;
+    type Error = Infallible;
     type Resources = AppResources;
 
     async fn run(
@@ -132,7 +132,7 @@ impl Transition<SessionContext, ResponsePayload> for CacheResponseTransition {
             route_slot(&input.route)
         );
 
-        let cached: Result<Option<String>> = redis.get(&cache_key).await.map_err(anyhow::Error::from);
+        let cached: Result<Option<String>> = redis.get(&cache_key).await.map_err(String::from);
         let cached = match cached {
             Ok(value) => value,
             Err(err) => return Outcome::Fault(err),
@@ -199,7 +199,7 @@ async fn main() -> Result<()> {
         key_prefix: prefix.clone(),
     };
 
-    let flow = Axon::<SessionRequest, SessionRequest, anyhow::Error, AppResources>::new(
+    let flow = Axon::<SessionRequest, SessionRequest, String, AppResources>::new(
         "redis.session_cache_flow",
     )
     .then(LoadSessionTransition)

@@ -16,7 +16,7 @@ struct Ping;
 
 #[async_trait]
 impl Transition<(), &'static str> for Ping {
-    type Error = std::convert::Infallible;
+    type Error = Infallible;
     type Resources = AppResources;
 
     async fn run(
@@ -35,7 +35,7 @@ struct MetricsSnapshot;
 
 #[async_trait]
 impl Transition<(), String> for MetricsSnapshot {
-    type Error = std::convert::Infallible;
+    type Error = Infallible;
     type Resources = AppResources;
 
     async fn run(
@@ -57,8 +57,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         metrics: metrics.clone(),
     };
 
-    let ping = Axon::<(), (), std::convert::Infallible, AppResources>::new("Ping").then(Ping);
-    let metrics_route = Axon::<(), (), std::convert::Infallible, AppResources>::new("Metrics")
+    let ping = Axon::<(), (), String, AppResources>::new("Ping").then(Ping);
+    let metrics_route = Axon::<(), (), String, AppResources>::new("Metrics")
         .then(MetricsSnapshot);
 
     println!("observe-http-demo listening on http://127.0.0.1:3140");

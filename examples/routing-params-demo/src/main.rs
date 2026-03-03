@@ -42,7 +42,7 @@ async fn order_route(
     _state: (),
     _resources: &(),
     _bus: &mut Bus,
-) -> Outcome<String, anyhow::Error> {
+) -> Outcome<String, String> {
     Outcome::Next("route:/orders/:id".to_string())
 }
 
@@ -51,7 +51,7 @@ async fn asset_route(
     _state: (),
     _resources: &(),
     _bus: &mut Bus,
-) -> Outcome<String, anyhow::Error> {
+) -> Outcome<String, String> {
     Outcome::Next("route:/assets/*path".to_string())
 }
 
@@ -60,20 +60,20 @@ async fn not_found_route(
     _state: (),
     _resources: &(),
     _bus: &mut Bus,
-) -> Outcome<String, anyhow::Error> {
+) -> Outcome<String, String> {
     Outcome::Next("route:fallback".to_string())
 }
 
-fn order_circuit() -> Axon<(), String, anyhow::Error> {
-    Axon::<(), (), anyhow::Error>::new("OrderRoute").then(order_route)
+fn order_circuit() -> Axon<(), String, String> {
+    Axon::<(), (), String>::new("OrderRoute").then(order_route)
 }
 
-fn asset_circuit() -> Axon<(), String, anyhow::Error> {
-    Axon::<(), (), anyhow::Error>::new("AssetRoute").then(asset_route)
+fn asset_circuit() -> Axon<(), String, String> {
+    Axon::<(), (), String>::new("AssetRoute").then(asset_route)
 }
 
-fn fallback_circuit() -> Axon<(), String, anyhow::Error> {
-    Axon::<(), (), anyhow::Error>::new("FallbackRoute").then(not_found_route)
+fn fallback_circuit() -> Axon<(), String, String> {
+    Axon::<(), (), String>::new("FallbackRoute").then(not_found_route)
 }
 
 #[transition]
