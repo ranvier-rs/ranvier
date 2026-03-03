@@ -10,12 +10,20 @@ use axum::{
 };
 use ranvier_core::TimelineEvent;
 use ranvier_core::schematic::{NodeKind, Schematic};
-use ranvier_core::debug::{DebugControl, DebugState};
+use ranvier_core::prelude::{DebugControl, DebugState};
 use serde_json::Value;
+use serde::Deserialize;
+use async_trait::async_trait;
 use std::collections::{HashSet, HashMap};
 use std::fs;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
+
+#[async_trait]
+pub trait StateInspector: Send + Sync {
+    async fn get_state(&self, trace_id: &str) -> Option<Value>;
+    async fn force_resume(&self, trace_id: &str, target_node: &str, payload_override: Option<Value>) -> Result<(), String>;
+}
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 use tracing::{Event, Id, Subscriber};
@@ -213,6 +221,7 @@ pub struct Inspector {
     surface_policy: SurfacePolicy,
     auth_policy: AuthPolicy,
     redaction_policy: TelemetryRedactionPolicy,
+    state_inspector: Option<Arc<dyn StateInspector>>,
 }
 
 impl Inspector {
@@ -232,7 +241,13 @@ impl Inspector {
             surface_policy: SurfacePolicy::for_mode(InspectorMode::Dev),
             auth_policy: AuthPolicy::default(),
             redaction_policy: TelemetryRedactionPolicy::from_env(),
+            state_inspector: None,
         }
+    }
+
+    pub fn with_state_inspector(mut self, inspector: Arc<dyn StateInspector>) -> Self {
+        self.state_inspector = Some(inspector);
+        self
     }
 
     /// Attach a read-only public projection artifact.
@@ -349,6 +364,7 @@ impl Inspector {
             internal_projection_path: self.internal_projection_path.clone(),
             auth_policy: self.auth_policy,
             redaction_policy: self.redaction_policy.clone(),
+            state_inspector: self.state_inspector,
         };
 
         let mut app = Router::new()
@@ -357,6 +373,8 @@ impl Inspector {
             .route("/debug/resume/:trace_id", get(debug_resume))
             .route("/debug/step/:trace_id", get(debug_step))
             .route("/debug/pause/:trace_id", get(debug_pause))
+            .route("/api/v1/state/:trace_id", get(api_get_state))
+            .route("/api/v1/state/:trace_id/resume", axum::routing::post(api_post_resume))
             .layer(CorsLayer::permissive());
 
         if self.surface_policy.expose_internal {
@@ -579,6 +597,41 @@ async fn debug_pause(
     }
 }
 
+async fn api_get_state(
+    AxPath(trace_id): AxPath<String>,
+    State(state): State<InspectorState>,
+) -> impl IntoResponse {
+    if let Some(inspector) = state.state_inspector.as_ref() {
+        if let Some(val) = inspector.get_state(&trace_id).await {
+            return Json(val).into_response();
+        }
+    }
+    StatusCode::NOT_FOUND.into_response()
+}
+
+#[derive(Deserialize)]
+struct ResumePayload {
+    target_node: String,
+    #[allow(dead_code)]
+    force: bool,
+    payload_override: Option<Value>,
+}
+
+async fn api_post_resume(
+    AxPath(trace_id): AxPath<String>,
+    State(state): State<InspectorState>,
+    Json(payload): Json<ResumePayload>,
+) -> impl IntoResponse {
+    if let Some(inspector) = state.state_inspector.as_ref() {
+        match inspector.force_resume(&trace_id, &payload.target_node, payload.payload_override).await {
+            Ok(_) => StatusCode::OK.into_response(),
+            Err(e) => (StatusCode::BAD_REQUEST, e).into_response()
+        }
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "State inspector not configured").into_response()
+    }
+}
+
 static DEBUG_REGISTRY: OnceLock<Arc<Mutex<HashMap<String, DebugControl>>>> = OnceLock::new();
 
 fn get_debug_registry() -> Arc<Mutex<HashMap<String, DebugControl>>> {
@@ -606,6 +659,7 @@ struct InspectorState {
     internal_projection_path: Option<String>,
     auth_policy: AuthPolicy,
     redaction_policy: TelemetryRedactionPolicy,
+    state_inspector: Option<Arc<dyn StateInspector>>,
 }
 
 pub fn layer() -> InspectorLayer {

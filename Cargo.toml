@@ -47,6 +47,7 @@ members = [
     "extensions/openapi",
     "extensions/observe",
     "extensions/inspector",
+    "extensions/audit",
     "examples/flat-api-demo",
     "examples/studio-demo",
     "examples/sse-streaming-demo",
@@ -81,6 +82,7 @@ ranvier-guard = { path = "extensions/guard", version = "1.0.0-rc.1" }
 ranvier-openapi = { path = "extensions/openapi", version = "1.0.0-rc.1" }
 ranvier-observe = { path = "extensions/observe", version = "1.0.0-rc.1" }
 ranvier-inspector = { path = "extensions/inspector", version = "1.0.0-rc.1" }
+ranvier-audit = { path = "extensions/audit", version = "1.0.0-rc.1" }
 ranvier-std = { path = "std", version = "1.0.0-rc.1" }
 ranvier-macros = { path = "macros", version = "1.0.0-rc.1" }
 ranvier-grpc = { path = "grpc", version = "1.0.0-rc.1" }

@@ -62,36 +62,82 @@ impl ReplayEngine {
     /// Fast-forwards the replay cursor to the last active (entered but not exited) node.
     /// This is useful for active intervention where we want to resume execution at the exact stalled point.
     pub fn fast_forward_to_active(&mut self) -> Option<ReplayFrame> {
-        // Simple linear scan from the end to find the last NodeEnter without a corresponding NodeExit
-        // In a real optimized system, this might use an index maintained during timeline generation.
-        let mut active_node = None;
+        let mut exited_nodes = std::collections::HashSet::new();
+        let mut active_index = None;
+        
         for i in (0..self.timeline.events.len()).rev() {
             match &self.timeline.events[i] {
+                TimelineEvent::NodeExit { node_id, .. } => {
+                    exited_nodes.insert(node_id.clone());
+                }
                 TimelineEvent::NodeEnter { node_id, .. } | TimelineEvent::NodePaused { node_id, .. } => {
-                    // Quick check if this node was exited later
-                    let mut exited = false;
-                    for j in (i + 1)..self.timeline.events.len() {
-                        if let TimelineEvent::NodeExit { node_id: exit_id, .. } = &self.timeline.events[j] {
-                            if exit_id == node_id {
-                                exited = true;
-                                break;
-                            }
-                        }
-                    }
-                    if !exited {
-                        active_node = Some(i);
+                    if !exited_nodes.contains(node_id) {
+                        active_index = Some(i);
                         break;
+                    } else {
+                        exited_nodes.remove(node_id);
                     }
                 }
                 _ => {}
             }
         }
 
-        if let Some(index) = active_node {
+        if let Some(index) = active_index {
             self.cursor = index;
             self.next_step()
         } else {
             self.fast_forward_to_end()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ranvier_core::timeline::{Timeline, TimelineEvent};
+
+    fn test_event(node_id: &str, enter: bool) -> TimelineEvent {
+        if enter {
+            TimelineEvent::NodeEnter {
+                node_id: node_id.to_string(),
+                node_label: node_id.to_string(),
+                timestamp: 0,
+            }
+        } else {
+            TimelineEvent::NodeExit {
+                node_id: node_id.to_string(),
+                outcome_type: "Next".to_string(),
+                duration_ms: 0,
+                timestamp: 0,
+            }
+        }
+    }
+
+    #[test]
+    fn test_replay_fast_forward_to_active() {
+        let mut timeline = Timeline::new();
+        timeline.push(test_event("A", true));
+        timeline.push(test_event("A", false));
+        timeline.push(test_event("B", true));
+        timeline.push(test_event("B", false));
+        timeline.push(test_event("C", true)); // Stalled at C
+
+        let mut engine = ReplayEngine::new(timeline);
+        let frame = engine.fast_forward_to_active().unwrap();
+        assert_eq!(frame.current_node_id, Some("C".to_string()));
+    }
+
+    #[test]
+    fn test_replay_with_repeated_nodes() {
+        let mut timeline = Timeline::new();
+        timeline.push(test_event("A", true));
+        timeline.push(test_event("A", false));
+        timeline.push(test_event("A", true)); // Stalled at second A
+
+        let mut engine = ReplayEngine::new(timeline);
+        let frame = engine.fast_forward_to_active().unwrap();
+        assert_eq!(frame.current_node_id, Some("A".to_string()));
+        // After fast-forwarding to index 2, calling next_step increments cursor to 3.
+        assert_eq!(engine.cursor, 3);
     }
 }

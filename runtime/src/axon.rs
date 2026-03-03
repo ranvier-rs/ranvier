@@ -16,6 +16,7 @@ use crate::persistence::{
     CompensationIdempotencyHandle, CompensationRetryPolicy, CompletionState,
     PersistenceAutoComplete, PersistenceEnvelope, PersistenceHandle, PersistenceTraceId,
 };
+use async_trait::async_trait;
 use ranvier_core::bus::Bus;
 use ranvier_core::outcome::Outcome;
 use ranvier_core::schematic::{
@@ -23,6 +24,9 @@ use ranvier_core::schematic::{
 };
 use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_core::transition::Transition;
+use serde::{Serialize, de::DeserializeOwned};
+use ranvier_audit::{AuditSink, AuditEvent};
+use serde_json::Value;
 use std::any::type_name;
 use std::ffi::OsString;
 use std::fs;
@@ -57,6 +61,13 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub type Executor<In, Out, E, Res> =
     Arc<dyn for<'a> Fn(In, &'a Res, &'a mut Bus) -> BoxFuture<'a, Outcome<Out, E>> + Send + Sync>;
 
+/// Manual intervention jump command injected into the Bus.
+#[derive(Debug, Clone)]
+pub struct ManualJump {
+    pub target_node: String,
+    pub payload_override: Option<Value>,
+}
+
 /// Helper to extract a readable type name from a type.
 fn type_name_of<T: ?Sized>() -> String {
     let full = type_name::<T>();
@@ -89,6 +100,10 @@ pub struct Axon<In, Out, E, Res = ()> {
     executor: Executor<In, Out, E, Res>,
     /// How this Axon is executed across the cluster
     pub execution_mode: ExecutionMode,
+    /// Optional persistence store for state inspection
+    pub persistence_store: Option<Arc<dyn crate::persistence::PersistenceStore>>,
+    /// Optional audit sink for tamper-evident logging of interventions
+    pub audit_sink: Option<Arc<dyn AuditSink>>,
 }
 
 /// Schematic export request derived from command-line args/env.
@@ -104,14 +119,16 @@ impl<In, Out, E, Res> Clone for Axon<In, Out, E, Res> {
             schematic: self.schematic.clone(),
             executor: self.executor.clone(),
             execution_mode: self.execution_mode.clone(),
+            persistence_store: self.persistence_store.clone(),
+            audit_sink: self.audit_sink.clone(),
         }
     }
 }
 
 impl<In, E, Res> Axon<In, In, E, Res>
 where
-    In: Send + Sync + 'static,
-    E: Send + Sync + std::fmt::Debug + 'static,
+    In: Send + Sync + Serialize + DeserializeOwned + 'static,
+    E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
     Res: ranvier_core::transition::ResourceRequirement,
 {
     /// Create a new Axon flow with the given label.
@@ -157,6 +174,8 @@ where
             schematic,
             executor,
             execution_mode: ExecutionMode::Local,
+            persistence_store: None,
+            audit_sink: None,
         }
     }
 
@@ -165,13 +184,75 @@ where
         self.execution_mode = mode;
         self
     }
+
+    /// Attach a persistence store to enable state inspection via the Inspector.
+    pub fn with_persistence_store<S>(mut self, store: S) -> Self
+    where
+        S: crate::persistence::PersistenceStore + 'static,
+    {
+        self.persistence_store = Some(Arc::new(store));
+        self
+    }
+
+    /// Attach an audit sink for tamper-evident logging.
+    pub fn with_audit_sink<S>(mut self, sink: S) -> Self
+    where
+        S: AuditSink + 'static,
+    {
+        self.audit_sink = Some(Arc::new(sink));
+        self
+    }
+}
+
+#[async_trait]
+impl<In, Out, E, Res> ranvier_inspector::StateInspector for Axon<In, Out, E, Res>
+where
+    In: Send + Sync + Serialize + DeserializeOwned + 'static,
+    Out: Send + Sync + Serialize + DeserializeOwned + 'static,
+    E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
+    Res: ranvier_core::transition::ResourceRequirement,
+{
+    async fn get_state(&self, trace_id: &str) -> Option<serde_json::Value> {
+        let store = self.persistence_store.as_ref()?;
+        let trace = store.load(trace_id).await.ok().flatten()?;
+        Some(serde_json::to_value(trace).unwrap_or(serde_json::Value::Null))
+    }
+
+    async fn force_resume(&self, trace_id: &str, target_node: &str, payload_override: Option<Value>) -> Result<(), String> {
+        let store = self.persistence_store.as_ref().ok_or("No persistence store attached to Axon")?;
+        
+        let intervention = crate::persistence::Intervention {
+            target_node: target_node.to_string(),
+            payload_override,
+            timestamp_ms: now_ms(),
+        };
+
+        store.save_intervention(trace_id, intervention)
+            .await
+            .map_err(|e| format!("Failed to save intervention: {}", e))?;
+
+        if let Some(sink) = self.audit_sink.as_ref() {
+            let event = AuditEvent::new(
+                uuid::Uuid::new_v4().to_string(),
+                "Inspector".to_string(),
+                "ForceResume".to_string(),
+                trace_id.to_string(),
+            )
+            .with_metadata("target_node", target_node);
+            
+            let _ = sink.append(&event).await;
+        }
+
+        tracing::info!(trace_id = %trace_id, target_node = %target_node, "Force resume requested via Inspector");
+        Ok(())
+    }
 }
 
 impl<In, Out, E, Res> Axon<In, Out, E, Res>
 where
-    In: Send + Sync + 'static,
-    Out: Send + Sync + 'static,
-    E: Send + Sync + std::fmt::Debug + 'static,
+    In: Send + Sync + Serialize + DeserializeOwned + 'static,
+    Out: Send + Sync + Serialize + DeserializeOwned + 'static,
+    E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
     Res: ranvier_core::transition::ResourceRequirement,
 {
     /// Chain a transition to this Axon.
@@ -180,7 +261,7 @@ where
     #[track_caller]
     pub fn then<Next, Trans>(self, transition: Trans) -> Axon<In, Next, E, Res>
     where
-        Next: Send + Sync + 'static,
+        Next: Send + Sync + Serialize + DeserializeOwned + 'static,
         Trans: Transition<Out, Next, Resources = Res, Error = E> + Clone + Send + Sync + 'static,
     {
         let caller = Location::caller();
@@ -189,6 +270,8 @@ where
             mut schematic,
             executor: prev_executor,
             execution_mode,
+            persistence_store,
+            audit_sink,
         } = self;
 
         // Update Schematic
@@ -235,6 +318,37 @@ where
                 let transition_bus_policy = bus_policy_for_exec.clone();
 
                 Box::pin(async move {
+                    // Check for manual intervention jump
+                    if let Some(jump) = bus.read::<ManualJump>() {
+                        if jump.target_node == timeline_node_id || jump.target_node == timeline_node_label {
+                            tracing::info!(
+                                node_id = %timeline_node_id,
+                                node_label = %timeline_node_label,
+                                "Manual jump target reached; skipping previous steps"
+                            );
+
+                            let state = if let Some(ow) = jump.payload_override.clone() {
+                                match serde_json::from_value::<Out>(ow) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        tracing::error!("Payload override deserialization failed: {}", e);
+                                        return Outcome::emit("execution.jump.payload_error", Some(serde_json::json!({"error": e.to_string()})))
+                                            .map(|_: ()| unreachable!());
+                                    }
+                                }
+                            } else {
+                                // Default back to the provided input if this is an identity jump or types match
+                                // For now, treat missing payload on a mid-flow jump as an avoidable error if Possible.
+                                // In a better implementation, we'd try to load the last persisted Out for the previous step.
+                                return Outcome::emit("execution.jump.missing_payload", Some(serde_json::json!({"node_id": timeline_node_id})))
+                                    .map(|_: ()| unreachable!());
+                            };
+                            
+                            // Skip prev() and continue with trans.run(state, ...)
+                            return trans.run(state, res, bus).await;
+                        }
+                    }
+
                     // Run previous step
                     let prev_result = prev(input, res, bus).await;
 
@@ -335,6 +449,8 @@ where
             schematic,
             executor: next_executor,
             execution_mode,
+            persistence_store,
+            audit_sink,
         }
     }
 
@@ -350,7 +466,7 @@ where
     ) -> Axon<In, Next, E, Res>
     where
         Out: Clone,
-        Next: Send + Sync + 'static,
+        Next: Send + Sync + Serialize + DeserializeOwned + 'static,
         Trans: Transition<Out, Next, Resources = Res, Error = E> + Clone + Send + Sync + 'static,
         Comp: Transition<Out, (), Resources = Res, Error = E> + Clone + Send + Sync + 'static,
 {
@@ -359,6 +475,8 @@ where
             mut schematic,
             executor: prev_executor,
             execution_mode,
+            persistence_store,
+            audit_sink,
         } = self;
 
         // 1. Add Primary Node
@@ -428,6 +546,34 @@ where
                 let transition_bus_policy = bus_policy_for_exec.clone();
 
                 Box::pin(async move {
+                    // Check for manual intervention jump
+                    if let Some(jump) = bus.read::<ManualJump>() {
+                        if jump.target_node == timeline_node_id || jump.target_node == timeline_node_label {
+                            tracing::info!(
+                                node_id = %timeline_node_id,
+                                node_label = %timeline_node_label,
+                                "Manual jump target reached (compensated); skipping previous steps"
+                            );
+
+                            let state = if let Some(ow) = jump.payload_override.clone() {
+                                match serde_json::from_value::<Out>(ow) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        tracing::error!("Payload override deserialization failed: {}", e);
+                                        return Outcome::emit("execution.jump.payload_error", Some(serde_json::json!({"error": e.to_string()})))
+                                            .map(|_: ()| unreachable!());
+                                    }
+                                }
+                            } else {
+                                return Outcome::emit("execution.jump.missing_payload", Some(serde_json::json!({"node_id": timeline_node_id})))
+                                    .map(|_: ()| unreachable!());
+                            };
+                            
+                            // Skip prev() and continue with trans.run(state, ...)
+                            return trans.run(state, res, bus).await;
+                        }
+                    }
+
                     // Run previous step
                     let prev_result = prev(input, res, bus).await;
 
@@ -539,6 +685,8 @@ where
             schematic,
             executor: next_executor,
             execution_mode,
+            persistence_store,
+            audit_sink,
         }
     }
 
@@ -646,9 +794,98 @@ where
         let compensation_handle = bus.read::<CompensationHandle>().cloned();
         let compensation_retry_policy = compensation_retry_policy(bus);
         let compensation_idempotency = bus.read::<CompensationIdempotencyHandle>().cloned();
+        let version = self.schematic.schema_version.clone();
+        let migration_registry = bus.read::<ranvier_core::schematic::MigrationRegistry>().cloned();
+        
         let persistence_start_step = if let Some(handle) = persistence_handle.as_ref() {
-            let start_step = next_persistence_step(handle, &trace_id).await;
-            persist_execution_event(handle, &trace_id, &label, start_step, "Enter").await;
+            let (mut start_step, trace_version, intervention) = load_persistence_version(handle, &trace_id).await;
+            
+            if let Some(interv) = intervention {
+                tracing::info!(
+                    trace_id = %trace_id,
+                    target_node = %interv.target_node,
+                    "Applying manual intervention command"
+                );
+                
+                // Find the step index for the target node
+                if let Some(target_idx) = self.schematic.nodes.iter().position(|n| n.id == interv.target_node || n.label == interv.target_node) {
+                    tracing::info!(
+                        trace_id = %trace_id,
+                        target_node = %interv.target_node,
+                        target_step = target_idx,
+                        "Intervention: Jumping to target node"
+                    );
+                    start_step = target_idx as u64;
+
+                    // Inject ManualJump into the bus so executors can handle skipping/payload overrides
+                    bus.insert(ManualJump {
+                        target_node: interv.target_node.clone(),
+                        payload_override: interv.payload_override.clone(),
+                    });
+
+                    // Log audit event for intervention application
+                    if let Some(sink) = self.audit_sink.as_ref() {
+                        let event = AuditEvent::new(
+                            uuid::Uuid::new_v4().to_string(),
+                            "System".to_string(),
+                            "ApplyIntervention".to_string(),
+                            trace_id.to_string(),
+                        )
+                        .with_metadata("target_node", interv.target_node.clone())
+                        .with_metadata("target_step", target_idx);
+                        
+                        let _ = sink.append(&event).await;
+                    }
+                } else {
+                    tracing::warn!(
+                        trace_id = %trace_id,
+                        target_node = %interv.target_node,
+                        "Intervention target node not found in schematic; ignoring jump"
+                    );
+                }
+            }
+            
+            if let Some(old_version) = trace_version {
+                if old_version != version {
+                    tracing::info!(
+                        trace_id = %trace_id,
+                        old_version = %old_version,
+                        current_version = %version,
+                        "Version mismatch detected during resumption"
+                    );
+                    
+                    let strategy = migration_registry
+                        .as_ref()
+                        .and_then(|r| r.find_migration(&old_version, &version))
+                        .map(|m| m.default_strategy.clone())
+                        .unwrap_or(ranvier_core::schematic::MigrationStrategy::Fail);
+                    
+                    match strategy {
+                        ranvier_core::schematic::MigrationStrategy::ResumeFromStart => {
+                            tracing::info!(trace_id = %trace_id, "Applying ResumeFromStart migration strategy");
+                            start_step = 0;
+                        }
+                        ranvier_core::schematic::MigrationStrategy::Fail => {
+                            tracing::error!(trace_id = %trace_id, "Version mismatch: no migration path found. Failing resumption.");
+                            return Outcome::emit("execution.resumption.version_mismatch_failed", Some(serde_json::json!({
+                                "trace_id": trace_id,
+                                "old_version": old_version,
+                                "current_version": version
+                            })));
+                        }
+                        _ => {
+                            // TODO: Support MigrateActiveNode and FallbackToNode
+                            tracing::error!(trace_id = %trace_id, "Unsupported migration strategy: {:?}", strategy);
+                             return Outcome::emit("execution.resumption.unsupported_migration", Some(serde_json::json!({
+                                "trace_id": trace_id,
+                                "strategy": format!("{:?}", strategy)
+                            })));
+                        }
+                    }
+                }
+            }
+
+            persist_execution_event(handle, &trace_id, &label, &version, start_step, "Enter", None).await;
             Some(start_step)
         } else {
             None
@@ -706,8 +943,10 @@ where
                 handle,
                 &trace_id,
                 &label,
+                &version,
                 fault_step,
                 outcome_kind_name(&outcome),
+                Some(outcome.to_json_value()),
             )
             .await;
 
@@ -736,8 +975,10 @@ where
                         handle,
                         &trace_id,
                         &label,
+                        &version,
                         fault_step.saturating_add(1),
                         "Compensated",
+                        None,
                     )
                     .await;
                     completion = CompletionState::Compensated;
@@ -772,11 +1013,13 @@ where
         }
 
         let schematic = self.schematic.clone();
+        let axon_inspector = Arc::new(self.clone());
         tokio::spawn(async move {
             if let Err(e) = ranvier_inspector::Inspector::new(schematic, port)
                 .with_projection_files_from_env()
                 .with_mode_from_env()
                 .with_auth_policy_from_env()
+                .with_state_inspector(axon_inspector)
                 .serve()
                 .await
             {
@@ -1023,22 +1266,32 @@ fn compensation_retry_policy(bus: &Bus) -> CompensationRetryPolicy {
         .unwrap_or_default()
 }
 
-async fn next_persistence_step(handle: &PersistenceHandle, trace_id: &str) -> u64 {
+async fn load_persistence_version(
+    handle: &PersistenceHandle,
+    trace_id: &str,
+) -> (u64, Option<String>, Option<crate::persistence::Intervention>) {
     let store = handle.store();
     match store.load(trace_id).await {
-        Ok(Some(trace)) => trace
-            .events
-            .last()
-            .map(|event| event.step.saturating_add(1))
-            .unwrap_or(0),
-        Ok(None) => 0,
+        Ok(Some(trace)) => {
+            let next_step = trace
+                .events
+                .last()
+                .map(|event| event.step.saturating_add(1))
+                .unwrap_or(0);
+            (
+                next_step,
+                Some(trace.schematic_version),
+                trace.interventions.last().cloned(),
+            )
+        }
+        Ok(None) => (0, None, None),
         Err(err) => {
             tracing::warn!(
                 trace_id = %trace_id,
                 error = %err,
                 "Failed to load persistence trace; falling back to step=0"
             );
-            0
+            (0, None, None)
         }
     }
 }
@@ -1047,17 +1300,21 @@ async fn persist_execution_event(
     handle: &PersistenceHandle,
     trace_id: &str,
     circuit: &str,
+    schematic_version: &str,
     step: u64,
     outcome_kind: &str,
+    payload: Option<serde_json::Value>,
 ) {
     let store = handle.store();
     let envelope = PersistenceEnvelope {
         trace_id: trace_id.to_string(),
         circuit: circuit.to_string(),
+        schematic_version: schematic_version.to_string(),
         step,
         outcome_kind: outcome_kind.to_string(),
         timestamp_ms: now_ms(),
         payload_hash: None,
+        payload,
     };
 
     if let Err(err) = store.append(envelope).await {
@@ -1482,6 +1739,68 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use uuid::Uuid;
+    use serde::{Deserialize, Serialize};
+    use ranvier_audit::{AuditSink, AuditEvent, AuditError};
+
+    struct MockAuditSink {
+        events: Arc<Mutex<Vec<AuditEvent>>>,
+    }
+
+    #[async_trait]
+    impl AuditSink for MockAuditSink {
+        async fn append(&self, event: &AuditEvent) -> Result<(), AuditError> {
+            self.events.lock().await.push(event.clone());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_logs_audit_events_for_intervention() {
+        use ranvier_inspector::StateInspector;
+
+        let trace_id = "test-audit-trace";
+        let store_impl = InMemoryPersistenceStore::new();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = MockAuditSink { events: events.clone() };
+
+        let axon = Axon::<i32, i32, TestInfallible>::start("AuditTest")
+            .then(AddOne)
+            .with_persistence_store(store_impl.clone())
+            .with_audit_sink(sink);
+
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(Arc::new(store_impl.clone())));
+        bus.insert(PersistenceTraceId::new(trace_id));
+        let target_node_id = axon.schematic.nodes[0].id.clone();
+
+        // 0. Pre-requisite: Save an initial trace state so intervention has a target to attach to
+        store_impl.append(crate::persistence::PersistenceEnvelope {
+            trace_id: trace_id.to_string(),
+            circuit: "AuditTest".to_string(),
+            schematic_version: "v1.0".to_string(),
+            step: 0,
+            outcome_kind: "Next".to_string(),
+            timestamp_ms: 0,
+            payload_hash: None,
+            payload: None,
+        }).await.unwrap();
+
+        // 1. Trigger force_resume (should log ForceResume)
+        axon.force_resume(trace_id, &target_node_id, None).await.unwrap();
+
+        // 2. Execute (should log ApplyIntervention)
+        axon.execute(10, &(), &mut bus).await;
+
+        let recorded = events.lock().await;
+        assert_eq!(recorded.len(), 2, "Should have 2 audit events: ForceResume and ApplyIntervention");
+        assert_eq!(recorded[0].action, "ForceResume");
+        assert_eq!(recorded[0].target, trace_id);
+        assert_eq!(recorded[1].action, "ApplyIntervention");
+        assert_eq!(recorded[1].target, trace_id);
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    pub enum TestInfallible {}
 
     #[test]
     fn inspector_enabled_flag_matrix() {
@@ -1546,7 +1865,7 @@ mod tests {
 
     #[async_trait]
     impl Transition<i32, i32> for AddOne {
-        type Error = std::convert::Infallible;
+        type Error = TestInfallible;
         type Resources = ();
 
         async fn run(
@@ -1564,7 +1883,7 @@ mod tests {
 
     #[async_trait]
     impl Transition<i32, i32> for AlwaysFault {
-        type Error = &'static str;
+        type Error = String;
         type Resources = ();
 
         async fn run(
@@ -1573,7 +1892,7 @@ mod tests {
             _resources: &Self::Resources,
             _bus: &mut Bus,
         ) -> Outcome<i32, Self::Error> {
-            Outcome::Fault("boom")
+            Outcome::Fault("boom".to_string())
         }
     }
 
@@ -1671,7 +1990,7 @@ mod tests {
         bus.insert(PersistenceHandle::from_arc(store_dyn));
         bus.insert(PersistenceTraceId::new("trace-success"));
 
-        let axon = Axon::<i32, i32, std::convert::Infallible>::start("PersistSuccess").then(AddOne);
+        let axon = Axon::<i32, i32, TestInfallible>::start("PersistSuccess").then(AddOne);
         let outcome = axon.execute(41, &(), &mut bus).await;
         assert!(matches!(outcome, Outcome::Next(42)));
 
@@ -1691,9 +2010,9 @@ mod tests {
         bus.insert(PersistenceHandle::from_arc(store_dyn));
         bus.insert(PersistenceTraceId::new("trace-fault"));
 
-        let axon = Axon::<i32, i32, &'static str>::start("PersistFault").then(AlwaysFault);
+        let axon = Axon::<i32, i32, String>::start("PersistFault").then(AlwaysFault);
         let outcome = axon.execute(41, &(), &mut bus).await;
-        assert!(matches!(outcome, Outcome::Fault("boom")));
+        assert!(matches!(outcome, Outcome::Fault(msg) if msg == "boom"));
 
         let persisted = store_impl.load("trace-fault").await.unwrap().unwrap();
         assert_eq!(persisted.events.len(), 2);
@@ -1712,7 +2031,7 @@ mod tests {
         bus.insert(PersistenceAutoComplete(false));
 
         let axon =
-            Axon::<i32, i32, std::convert::Infallible>::start("PersistNoComplete").then(AddOne);
+            Axon::<i32, i32, TestInfallible>::start("PersistNoComplete").then(AddOne);
         let outcome = axon.execute(1, &(), &mut bus).await;
         assert!(matches!(outcome, Outcome::Next(2)));
 
@@ -1736,9 +2055,9 @@ mod tests {
         bus.insert(PersistenceTraceId::new("trace-compensated"));
         bus.insert(CompensationHandle::from_hook(compensation));
 
-        let axon = Axon::<i32, i32, &'static str>::start("CompensatedFault").then(AlwaysFault);
+        let axon = Axon::<i32, i32, String>::start("CompensatedFault").then(AlwaysFault);
         let outcome = axon.execute(7, &(), &mut bus).await;
-        assert!(matches!(outcome, Outcome::Fault("boom")));
+        assert!(matches!(outcome, Outcome::Fault(msg) if msg == "boom"));
 
         let persisted = store_impl.load("trace-compensated").await.unwrap().unwrap();
         assert_eq!(persisted.events.len(), 3);
@@ -1768,9 +2087,9 @@ mod tests {
         bus.insert(PersistenceTraceId::new("trace-compensation-failed"));
         bus.insert(CompensationHandle::from_hook(compensation));
 
-        let axon = Axon::<i32, i32, &'static str>::start("CompensationFails").then(AlwaysFault);
+        let axon = Axon::<i32, i32, String>::start("CompensationFails").then(AlwaysFault);
         let outcome = axon.execute(7, &(), &mut bus).await;
-        assert!(matches!(outcome, Outcome::Fault("boom")));
+        assert!(matches!(outcome, Outcome::Fault(msg) if msg == "boom"));
 
         let persisted = store_impl
             .load("trace-compensation-failed")
@@ -1805,9 +2124,9 @@ mod tests {
             backoff_ms: 0,
         });
 
-        let axon = Axon::<i32, i32, &'static str>::start("CompensationRetry").then(AlwaysFault);
+        let axon = Axon::<i32, i32, String>::start("CompensationRetry").then(AlwaysFault);
         let outcome = axon.execute(7, &(), &mut bus).await;
-        assert!(matches!(outcome, Outcome::Fault("boom")));
+        assert!(matches!(outcome, Outcome::Fault(msg) if msg == "boom"));
 
         let persisted = store_impl
             .load("trace-retry-success")
@@ -1843,12 +2162,12 @@ mod tests {
         bus.insert(CompensationIdempotencyHandle::from_store(idempotency));
 
         let axon =
-            Axon::<i32, i32, &'static str>::start("CompensationIdempotency").then(AlwaysFault);
+            Axon::<i32, i32, String>::start("CompensationIdempotency").then(AlwaysFault);
 
         let outcome1 = axon.execute(7, &(), &mut bus).await;
         let outcome2 = axon.execute(8, &(), &mut bus).await;
-        assert!(matches!(outcome1, Outcome::Fault("boom")));
-        assert!(matches!(outcome2, Outcome::Fault("boom")));
+        assert!(matches!(outcome1, Outcome::Fault(msg) if msg == "boom"));
+        assert!(matches!(outcome2, Outcome::Fault(msg) if msg == "boom"));
 
         let persisted = store_impl.load("trace-idempotent").await.unwrap().unwrap();
         assert_eq!(persisted.completion, None);
@@ -1883,9 +2202,9 @@ mod tests {
         bus.insert(CompensationIdempotencyHandle::from_store(idempotency));
 
         let axon =
-            Axon::<i32, i32, &'static str>::start("IdempotencyStoreFailure").then(AlwaysFault);
+            Axon::<i32, i32, String>::start("IdempotencyStoreFailure").then(AlwaysFault);
         let outcome = axon.execute(9, &(), &mut bus).await;
-        assert!(matches!(outcome, Outcome::Fault("boom")));
+        assert!(matches!(outcome, Outcome::Fault(msg) if msg == "boom"));
 
         let persisted = store_impl
             .load("trace-idempotency-store-failure")
@@ -1921,5 +2240,140 @@ mod tests {
             }
             other => panic!("expected fault, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn execute_fails_on_version_mismatch_without_migration() {
+        let store_impl = Arc::new(InMemoryPersistenceStore::new());
+        let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
+        
+        let trace_id = "v-mismatch";
+        // Create an existing trace with an older version
+        let old_envelope = crate::persistence::PersistenceEnvelope {
+            trace_id: trace_id.to_string(),
+            circuit: "TestCircuit".to_string(),
+            schematic_version: "0.9".to_string(),
+            step: 0,
+            outcome_kind: "Enter".to_string(),
+            timestamp_ms: 0,
+            payload_hash: None,
+            payload: None,
+        };
+        store_impl.append(old_envelope).await.unwrap();
+
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(store_dyn));
+        bus.insert(PersistenceTraceId::new(trace_id));
+
+        // Current axon is version 1.0
+        let axon = Axon::<i32, i32, TestInfallible>::new("TestCircuit").then(AddOne);
+        let outcome = axon.execute(10, &(), &mut bus).await;
+
+        if let Outcome::Emit(kind, _) = outcome {
+            assert_eq!(kind, "execution.resumption.version_mismatch_failed");
+        } else {
+            panic!("Expected version mismatch emission, got {:?}", outcome);
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_resumes_from_start_on_migration_strategy() {
+        let store_impl = Arc::new(InMemoryPersistenceStore::new());
+        let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
+        
+        let trace_id = "v-migration";
+        // Create an existing trace with an older version at step 5
+        let old_envelope = crate::persistence::PersistenceEnvelope {
+            trace_id: trace_id.to_string(),
+            circuit: "TestCircuit".to_string(),
+            schematic_version: "0.9".to_string(),
+            step: 5,
+            outcome_kind: "Next".to_string(),
+            timestamp_ms: 0,
+            payload_hash: None,
+            payload: None,
+        };
+        store_impl.append(old_envelope).await.unwrap();
+
+        let mut registry = ranvier_core::schematic::MigrationRegistry::new("TestCircuit");
+        registry.register(ranvier_core::schematic::SnapshotMigration {
+            name: Some("v0.9 to v1.0".to_string()),
+            from_version: "0.9".to_string(),
+            to_version: "1.0".to_string(),
+            default_strategy: ranvier_core::schematic::MigrationStrategy::ResumeFromStart,
+            node_mapping: std::collections::HashMap::new(),
+        });
+
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(store_dyn));
+        bus.insert(PersistenceTraceId::new(trace_id));
+        bus.insert(registry);
+
+        let axon = Axon::<i32, i32, TestInfallible>::new("TestCircuit").then(AddOne);
+        let outcome = axon.execute(10, &(), &mut bus).await;
+
+        // Should have resumed from start (step 0), resulting in 11
+        assert!(matches!(outcome, Outcome::Next(11)));
+        
+        // Verify new event has current version
+        let persisted = store_impl.load(trace_id).await.unwrap().unwrap();
+        assert_eq!(persisted.schematic_version, "1.0");
+    }
+
+    #[tokio::test]
+    async fn execute_applies_manual_intervention_jump_and_payload() {
+        let store_impl = Arc::new(InMemoryPersistenceStore::new());
+        let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
+        
+        let trace_id = "intervention-test";
+        // 1. Run a normal trace part-way
+        let axon = Axon::<i32, i32, TestInfallible>::new("TestCircuit")
+            .then(AddOne)
+            .then(AddOne);
+            
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(store_dyn));
+        bus.insert(PersistenceTraceId::new(trace_id));
+        
+        // Save an intervention: Jump to the second 'AddOne' node (which has the label 'AddOne')
+        // with a payload override of 100.
+        // The first node is 'AddOne', the second is ALSO 'AddOne'. 
+        // Schematic position: 0=Ingress, 1=AddOne, 2=AddOne
+        let _target_node_label = "AddOne"; 
+        // To be precise, let's find the ID of the second node.
+        let target_node_id = axon.schematic.nodes[2].id.clone();
+
+        // Pre-seed an initial trace entry so save_intervention doesn't fail
+        store_impl.append(crate::persistence::PersistenceEnvelope {
+            trace_id: trace_id.to_string(),
+            circuit: "TestCircuit".to_string(),
+            schematic_version: "1.0".to_string(),
+            step: 0,
+            outcome_kind: "Enter".to_string(),
+            timestamp_ms: 0,
+            payload_hash: None,
+            payload: None,
+        }).await.unwrap();
+        
+        store_impl.save_intervention(trace_id, crate::persistence::Intervention {
+            target_node: target_node_id.clone(),
+            payload_override: Some(serde_json::json!(100)),
+            timestamp_ms: 0,
+        }).await.unwrap();
+
+        // 2. Execute. It should skip the first AddOne and use 100 for the second AddOne.
+        // Result should be 100 + 1 = 101.
+        let outcome = axon.execute(10, &(), &mut bus).await;
+        
+        match outcome {
+            Outcome::Next(val) => assert_eq!(val, 101, "Should have used payload 100 and added 1"),
+            other => panic!("Expected Outcome::Next(101), got {:?}", other),
+        }
+
+        // Verify the jump was logged in trace
+        let persisted = store_impl.load(trace_id).await.unwrap().unwrap();
+        // The last event should be from the jump target's execution.
+        assert_eq!(persisted.interventions.len(), 1);
+        assert_eq!(persisted.interventions[0].target_node, target_node_id);
     }
 }

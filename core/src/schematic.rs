@@ -203,11 +203,15 @@ pub enum MigrationStrategy {
     MigrateActiveNode { old_node_id: String, new_node_id: String },
     /// Resume from a specific fallback node.
     FallbackToNode(String),
+    /// Abandon current state and resume from the Ingress node of the new version.
+    ResumeFromStart,
 }
 
 /// A snapshot migration definition indicating how to move state from one schema version to another.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotMigration {
+    /// Optional human-readable name for this migration.
+    pub name: Option<String>,
     /// The unique identifier of the old schematic version.
     pub from_version: String,
     /// The unique identifier of the new schematic version.
@@ -217,6 +221,34 @@ pub struct SnapshotMigration {
     /// Node-specific migration strategies, keyed by the active node ID in the old version.
     #[serde(skip_serializing_if = "HashMap::is_empty", default)]
     pub node_mapping: HashMap<String, MigrationStrategy>,
+}
+
+/// A registry of available snapshot migrations for a specific circuit.
+///
+/// Use this to look up how to move from a persisted version to the currently running version.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MigrationRegistry {
+    pub circuit_id: String,
+    pub migrations: Vec<SnapshotMigration>,
+}
+
+impl MigrationRegistry {
+    pub fn new(circuit_id: impl Into<String>) -> Self {
+        Self {
+            circuit_id: circuit_id.into(),
+            migrations: Vec::new(),
+        }
+    }
+
+    pub fn register(&mut self, migration: SnapshotMigration) {
+        self.migrations.push(migration);
+    }
+
+    /// Finds a migration path from `from_version` to `to_version`.
+    /// Currently only supports direct (one-hop) migrations.
+    pub fn find_migration(&self, from: &str, to: &str) -> Option<&SnapshotMigration> {
+        self.migrations.iter().find(|m| m.from_version == from && m.to_version == to)
+    }
 }
 
 #[cfg(test)]
@@ -284,5 +316,25 @@ mod tests {
         assert!(!is_supported_schema_version("2.0"));
         assert!(!is_supported_schema_version(""));
         assert!(!is_supported_schema_version("invalid"));
+    }
+
+    #[test]
+    fn test_migration_registry_lookup() {
+        let mut registry = MigrationRegistry::new("test-circuit");
+        let migration = SnapshotMigration {
+            name: Some("v1 to v2".to_string()),
+            from_version: "1.0".to_string(),
+            to_version: "2.0".to_string(),
+            default_strategy: MigrationStrategy::Fail,
+            node_mapping: HashMap::new(),
+        };
+        registry.register(migration);
+
+        let found = registry.find_migration("1.0", "2.0");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, Some("v1 to v2".to_string()));
+
+        let not_found = registry.find_migration("1.0", "3.0");
+        assert!(not_found.is_none());
     }
 }

@@ -1,5 +1,6 @@
 use crate::Axon;
 use ranvier_core::{Bus, Outcome, transition::ResourceRequirement};
+use serde::{Serialize, de::DeserializeOwned};
 use std::any::Any;
 
 /// Lightweight helper for Axon unit tests.
@@ -59,9 +60,9 @@ where
         input: In,
     ) -> Outcome<Out, E>
     where
-        In: Send + Sync + 'static,
-        Out: Send + Sync + 'static,
-        E: Send + Sync + std::fmt::Debug + 'static,
+        In: Send + Sync + Serialize + DeserializeOwned + 'static,
+        Out: Send + Sync + Serialize + DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
     {
         axon.execute(input, &self.resources, &mut self.bus).await
     }
@@ -71,7 +72,10 @@ where
 mod tests {
     use super::*;
     use ranvier_core::{Outcome, Transition};
-    use std::convert::Infallible;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub enum TestInfallible {}
 
     #[derive(Clone)]
     struct MockResources {
@@ -85,7 +89,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Transition<usize, usize> for SumWithBus {
-        type Error = Infallible;
+        type Error = TestInfallible;
         type Resources = MockResources;
 
         async fn run(
@@ -101,7 +105,7 @@ mod tests {
 
     #[tokio::test]
     async fn testkit_executes_with_mocked_resources_and_bus_values() {
-        let axon = Axon::<usize, usize, Infallible, MockResources>::new("Sum").then(SumWithBus);
+        let axon = Axon::<usize, usize, TestInfallible, MockResources>::new("Sum").then(SumWithBus);
         let mut kit = AxonTestKit::new(MockResources { offset: 7 });
         kit.insert(5usize);
 

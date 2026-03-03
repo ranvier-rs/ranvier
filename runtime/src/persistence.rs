@@ -18,10 +18,20 @@ use tokio::sync::RwLock;
 pub struct PersistenceEnvelope {
     pub trace_id: String,
     pub circuit: String,
+    pub schematic_version: String,
     pub step: u64,
     pub outcome_kind: String,
     pub timestamp_ms: u64,
     pub payload_hash: Option<String>,
+    pub payload: Option<serde_json::Value>,
+}
+
+/// Manual intervention command for a trace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Intervention {
+    pub target_node: String,
+    pub payload_override: Option<serde_json::Value>,
+    pub timestamp_ms: u64,
 }
 
 /// Final completion state tracked for a persisted trace.
@@ -59,7 +69,10 @@ fn completion_state_from_wire(value: &str) -> Result<CompletionState> {
 pub struct PersistedTrace {
     pub trace_id: String,
     pub circuit: String,
+    /// The schematic version of the last appended event.
+    pub schematic_version: String,
     pub events: Vec<PersistenceEnvelope>,
+    pub interventions: Vec<Intervention>,
     pub resumed_from_step: Option<u64>,
     pub completion: Option<CompletionState>,
 }
@@ -440,6 +453,7 @@ pub trait PersistenceStore: Send + Sync {
     async fn load(&self, trace_id: &str) -> Result<Option<PersistedTrace>>;
     async fn resume(&self, trace_id: &str, resume_from_step: u64) -> Result<ResumeCursor>;
     async fn complete(&self, trace_id: &str, completion: CompletionState) -> Result<()>;
+    async fn save_intervention(&self, trace_id: &str, intervention: Intervention) -> Result<()>;
 }
 
 /// Bus-insertable persistence handle used by runtime execution hooks.
@@ -497,10 +511,14 @@ impl PersistenceStore for InMemoryPersistenceStore {
             .or_insert_with(|| PersistedTrace {
                 trace_id: envelope.trace_id.clone(),
                 circuit: envelope.circuit.clone(),
+                schematic_version: envelope.schematic_version.clone(),
                 events: Vec::new(),
+                interventions: Vec::new(),
                 resumed_from_step: None,
                 completion: None,
             });
+
+        entry.schematic_version = envelope.schematic_version.clone();
 
         if entry.circuit != envelope.circuit {
             return Err(anyhow!(
@@ -546,6 +564,18 @@ impl PersistenceStore for InMemoryPersistenceStore {
         trace.completion = Some(completion);
         Ok(())
     }
+
+    async fn save_intervention(&self, trace_id: &str, intervention: Intervention) -> Result<()> {
+        let mut guard = self.inner.write().await;
+        let trace = guard
+            .get_mut(trace_id)
+            .ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
+        
+        // If trace is completed, we might want to "un-complete" it for resumption if it's a force resume
+        // For now, just add the intervention.
+        trace.interventions.push(intervention);
+        Ok(())
+    }
 }
 
 #[cfg(feature = "persistence-postgres")]
@@ -554,6 +584,7 @@ pub struct PostgresPersistenceStore {
     pool: sqlx::Pool<sqlx::Postgres>,
     events_table: String,
     state_table: String,
+    interventions_table: String,
 }
 
 #[cfg(feature = "persistence-postgres")]
@@ -561,10 +592,12 @@ pub struct PostgresPersistenceStore {
 struct PostgresEventRow {
     trace_id: String,
     circuit: String,
+    schematic_version: String,
     step: i64,
     outcome_kind: String,
     timestamp_ms: i64,
     payload_hash: Option<String>,
+    payload: Option<serde_json::Value>,
 }
 
 #[cfg(feature = "persistence-postgres")]
@@ -572,8 +605,18 @@ struct PostgresEventRow {
 struct PostgresStateRow {
     trace_id: String,
     circuit: String,
+    schematic_version: String,
     resumed_from_step: Option<i64>,
     completion: Option<String>,
+}
+
+#[cfg(feature = "persistence-postgres")]
+#[derive(sqlx::FromRow)]
+struct PostgresInterventionRow {
+    trace_id: String,
+    target_node: String,
+    payload_override: Option<serde_json::Value>,
+    timestamp_ms: i64,
 }
 
 #[cfg(feature = "persistence-postgres")]
@@ -594,6 +637,7 @@ impl PostgresPersistenceStore {
             pool,
             events_table: format!("{}_events", prefix),
             state_table: format!("{}_state", prefix),
+            interventions_table: format!("{}_interventions", prefix),
         }
     }
 
@@ -603,6 +647,7 @@ impl PostgresPersistenceStore {
             "CREATE TABLE IF NOT EXISTS {} (
                 trace_id TEXT PRIMARY KEY,
                 circuit TEXT NOT NULL,
+                schematic_version TEXT NOT NULL,
                 resumed_from_step BIGINT NULL,
                 completion TEXT NULL
             )",
@@ -614,15 +659,31 @@ impl PostgresPersistenceStore {
             "CREATE TABLE IF NOT EXISTS {} (
                 trace_id TEXT NOT NULL,
                 circuit TEXT NOT NULL,
+                schematic_version TEXT NOT NULL,
                 step BIGINT NOT NULL,
                 outcome_kind TEXT NOT NULL,
                 timestamp_ms BIGINT NOT NULL,
                 payload_hash TEXT NULL,
+                payload JSONB NULL,
                 PRIMARY KEY (trace_id, step)
             )",
             self.events_table
         );
         sqlx::query(&create_events).execute(&self.pool).await?;
+
+        let create_interventions = format!(
+            "CREATE TABLE IF NOT EXISTS {} (
+                trace_id TEXT NOT NULL,
+                target_node TEXT NOT NULL,
+                payload_override JSONB NULL,
+                timestamp_ms BIGINT NOT NULL,
+                FOREIGN KEY (trace_id) REFERENCES {} (trace_id)
+            )",
+            self.interventions_table,
+            self.state_table
+        );
+        sqlx::query(&create_interventions).execute(&self.pool).await?;
+
         Ok(())
     }
 }
@@ -632,14 +693,15 @@ impl PostgresPersistenceStore {
 impl PersistenceStore for PostgresPersistenceStore {
     async fn append(&self, envelope: PersistenceEnvelope) -> Result<()> {
         let insert_state = format!(
-            "INSERT INTO {} (trace_id, circuit, resumed_from_step, completion)
-             VALUES ($1, $2, NULL, NULL)
-             ON CONFLICT (trace_id) DO NOTHING",
+            "INSERT INTO {} (trace_id, circuit, schematic_version, resumed_from_step, completion)
+             VALUES ($1, $2, $3, NULL, NULL)
+             ON CONFLICT (trace_id) DO UPDATE SET schematic_version = $3",
             self.state_table
         );
         sqlx::query(&insert_state)
             .bind(&envelope.trace_id)
             .bind(&envelope.circuit)
+            .bind(&envelope.schematic_version)
             .execute(&self.pool)
             .await?;
 
@@ -676,17 +738,19 @@ impl PersistenceStore for PostgresPersistenceStore {
         let step_i64 = i64::try_from(envelope.step)?;
         let ts_i64 = i64::try_from(envelope.timestamp_ms)?;
         let insert_event = format!(
-            "INSERT INTO {} (trace_id, circuit, step, outcome_kind, timestamp_ms, payload_hash)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO {} (trace_id, circuit, schematic_version, step, outcome_kind, timestamp_ms, payload_hash, payload)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             self.events_table
         );
         sqlx::query(&insert_event)
             .bind(&envelope.trace_id)
             .bind(&envelope.circuit)
+            .bind(&envelope.schematic_version)
             .bind(step_i64)
             .bind(&envelope.outcome_kind)
             .bind(ts_i64)
             .bind(&envelope.payload_hash)
+            .bind(&envelope.payload)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -694,7 +758,7 @@ impl PersistenceStore for PostgresPersistenceStore {
 
     async fn load(&self, trace_id: &str) -> Result<Option<PersistedTrace>> {
         let state_query = format!(
-            "SELECT trace_id, circuit, resumed_from_step, completion
+            "SELECT trace_id, circuit, schematic_version, resumed_from_step, completion
              FROM {}
              WHERE trace_id = $1",
             self.state_table
@@ -708,7 +772,7 @@ impl PersistenceStore for PostgresPersistenceStore {
         };
 
         let events_query = format!(
-            "SELECT trace_id, circuit, step, outcome_kind, timestamp_ms, payload_hash
+            "SELECT trace_id, circuit, schematic_version, step, outcome_kind, timestamp_ms, payload_hash, payload
              FROM {}
              WHERE trace_id = $1
              ORDER BY step ASC",
@@ -724,10 +788,12 @@ impl PersistenceStore for PostgresPersistenceStore {
             events.push(PersistenceEnvelope {
                 trace_id: row.trace_id,
                 circuit: row.circuit,
+                schematic_version: row.schematic_version,
                 step: u64::try_from(row.step)?,
                 outcome_kind: row.outcome_kind,
                 timestamp_ms: u64::try_from(row.timestamp_ms)?,
                 payload_hash: row.payload_hash,
+                payload: row.payload,
             });
         }
 
@@ -736,10 +802,33 @@ impl PersistenceStore for PostgresPersistenceStore {
             None => None,
         };
 
+        let interventions_query = format!(
+            "SELECT trace_id, target_node, payload_override, timestamp_ms
+             FROM {}
+             WHERE trace_id = $1
+             ORDER BY timestamp_ms ASC",
+            self.interventions_table
+        );
+        let intervention_rows: Vec<PostgresInterventionRow> = sqlx::query_as(&interventions_query)
+            .bind(trace_id)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut interventions = Vec::with_capacity(intervention_rows.len());
+        for row in intervention_rows {
+            interventions.push(Intervention {
+                target_node: row.target_node,
+                payload_override: row.payload_override,
+                timestamp_ms: u64::try_from(row.timestamp_ms)?,
+            });
+        }
+
         Ok(Some(PersistedTrace {
             trace_id: state.trace_id,
             circuit: state.circuit,
+            schematic_version: state.schematic_version,
             events,
+            interventions,
             resumed_from_step: state.resumed_from_step.map(u64::try_from).transpose()?,
             completion,
         }))
@@ -783,6 +872,23 @@ impl PersistenceStore for PostgresPersistenceStore {
         if rows == 0 {
             return Err(anyhow!("trace_id {} not found", trace_id));
         }
+        Ok(())
+    }
+
+    async fn save_intervention(&self, trace_id: &str, intervention: Intervention) -> Result<()> {
+        let ts_i64 = i64::try_from(intervention.timestamp_ms)?;
+        let query = format!(
+            "INSERT INTO {} (trace_id, target_node, payload_override, timestamp_ms)
+             VALUES ($1, $2, $3, $4)",
+            self.interventions_table
+        );
+        sqlx::query(&query)
+            .bind(trace_id)
+            .bind(&intervention.target_node)
+            .bind(&intervention.payload_override)
+            .bind(ts_i64)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 }
@@ -851,10 +957,14 @@ impl PersistenceStore for RedisPersistenceStore {
             .unwrap_or_else(|| PersistedTrace {
                 trace_id: envelope.trace_id.clone(),
                 circuit: envelope.circuit.clone(),
+                schematic_version: envelope.schematic_version.clone(),
                 events: Vec::new(),
+                interventions: Vec::new(),
                 resumed_from_step: None,
                 completion: None,
             });
+
+        trace.schematic_version = envelope.schematic_version.clone();
 
         if trace.circuit != envelope.circuit {
             return Err(anyhow!(
@@ -910,6 +1020,16 @@ impl PersistenceStore for RedisPersistenceStore {
         self.write_trace(&trace).await?;
         Ok(())
     }
+
+    async fn save_intervention(&self, trace_id: &str, intervention: Intervention) -> Result<()> {
+        let mut trace = self
+            .load(trace_id)
+            .await?
+            .ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
+        trace.interventions.push(intervention);
+        self.write_trace(&trace).await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -922,10 +1042,12 @@ mod tests {
         PersistenceEnvelope {
             trace_id: "trace-1".to_string(),
             circuit: "OrderCircuit".to_string(),
+            schematic_version: "1.0".to_string(),
             step,
             outcome_kind: outcome_kind.to_string(),
             timestamp_ms: 1_700_000_000_000 + step,
             payload_hash: Some(format!("hash-{}", step)),
+            payload: None,
         }
     }
 
