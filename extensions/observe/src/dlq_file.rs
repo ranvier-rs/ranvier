@@ -1,8 +1,8 @@
 use async_trait::async_trait;
-use ranvier_core::event::DlqSink;
+use ranvier_core::event::{DeadLetter, DlqReader, DlqSink};
 use std::path::{Path, PathBuf};
-use tokio::fs::{OpenOptions, create_dir_all};
-use tokio::io::AsyncWriteExt;
+use tokio::fs::{self, OpenOptions, create_dir_all};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use chrono::Utc;
 
 /// A file-based DLQ sink that stores failed events as JSON lines.
@@ -58,5 +58,72 @@ impl DlqSink for FileDlqSink {
         file.flush().await.map_err(|e| e.to_string())?;
 
         Ok(())
+    }
+}
+
+#[async_trait]
+impl DlqReader for FileDlqSink {
+    async fn list_dead_letters(
+        &self,
+        workflow_filter: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<DeadLetter>, String> {
+        let mut entries = Vec::new();
+        let mut read_dir = fs::read_dir(&self.storage_dir)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        while let Some(entry) = read_dir.next_entry().await.map_err(|e| e.to_string())? {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+
+            let file = fs::File::open(&path).await.map_err(|e| e.to_string())?;
+            let reader = BufReader::new(file);
+            let mut lines = reader.lines();
+
+            while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+                if let Ok(dl) = serde_json::from_str::<DeadLetter>(&line) {
+                    if let Some(filter) = workflow_filter {
+                        if dl.workflow_id != filter {
+                            continue;
+                        }
+                    }
+                    entries.push(dl);
+                    if entries.len() >= limit {
+                        return Ok(entries);
+                    }
+                }
+            }
+        }
+
+        // Sort newest first
+        entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        Ok(entries)
+    }
+
+    async fn count_dead_letters(&self) -> Result<u64, String> {
+        let mut count = 0u64;
+        let mut read_dir = fs::read_dir(&self.storage_dir)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        while let Some(entry) = read_dir.next_entry().await.map_err(|e| e.to_string())? {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+
+            let file = fs::File::open(&path).await.map_err(|e| e.to_string())?;
+            let reader = BufReader::new(file);
+            let mut lines = reader.lines();
+
+            while let Some(_) = lines.next_line().await.map_err(|e| e.to_string())? {
+                count += 1;
+            }
+        }
+
+        Ok(count)
     }
 }

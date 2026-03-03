@@ -46,3 +46,28 @@ pub trait DlqSink: Send + Sync {
         payload: &[u8],
     ) -> Result<(), String>;
 }
+
+/// A single dead letter entry retrieved from the DLQ.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeadLetter {
+    pub timestamp: String,
+    pub workflow_id: String,
+    pub circuit_label: String,
+    pub node_id: String,
+    pub error: String,
+    pub payload_base64: String,
+}
+
+/// Read-side interface for querying the Dead Letter Queue.
+#[async_trait]
+pub trait DlqReader: Send + Sync {
+    /// List dead letters, optionally filtered by workflow_id.
+    async fn list_dead_letters(
+        &self,
+        workflow_filter: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<DeadLetter>, String>;
+
+    /// Count dead letters in the queue.
+    async fn count_dead_letters(&self) -> Result<u64, String>;
+}

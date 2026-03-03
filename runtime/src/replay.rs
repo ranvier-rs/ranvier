@@ -38,6 +38,8 @@ impl ReplayEngine {
             TimelineEvent::NodeEnter { node_id, .. } => Some(node_id.clone()),
             TimelineEvent::NodeExit { node_id, .. } => Some(node_id.clone()),
             TimelineEvent::NodePaused { node_id, .. } => Some(node_id.clone()),
+            TimelineEvent::NodeRetry { node_id, .. } => Some(node_id.clone()),
+            TimelineEvent::DlqExhausted { node_id, .. } => Some(node_id.clone()),
             TimelineEvent::Branchtaken { .. } => None, // Branches happen "between" nodes conceptually or part of outcome
         };
 

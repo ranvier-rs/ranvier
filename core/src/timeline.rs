@@ -23,6 +23,20 @@ pub enum TimelineEvent {
     },
     /// A branch decision was made
     Branchtaken { branch_id: String, timestamp: u64 },
+    /// A faulted node is being retried (DLQ RetryThenDlq policy)
+    NodeRetry {
+        node_id: String,
+        attempt: u32,
+        max_attempts: u32,
+        backoff_ms: u64,
+        timestamp: u64,
+    },
+    /// All retry attempts exhausted; event sent to Dead Letter Queue
+    DlqExhausted {
+        node_id: String,
+        total_attempts: u32,
+        timestamp: u64,
+    },
 }
 
 /// A sequential record of an execution session.
@@ -47,6 +61,8 @@ impl Timeline {
             TimelineEvent::NodeExit { timestamp, .. } => *timestamp,
             TimelineEvent::NodePaused { timestamp, .. } => *timestamp,
             TimelineEvent::Branchtaken { timestamp, .. } => *timestamp,
+            TimelineEvent::NodeRetry { timestamp, .. } => *timestamp,
+            TimelineEvent::DlqExhausted { timestamp, .. } => *timestamp,
         });
     }
 }

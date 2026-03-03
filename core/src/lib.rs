@@ -26,7 +26,8 @@ pub use static_gen::{
 pub mod prelude {
     pub use crate::bus::{Bus, BusAccessError, BusAccessPolicy, BusTypeRef};
     pub use crate::debug::{DebugControl, DebugState};
-    pub use crate::event::{EventSink, EventSource};
+    pub use crate::event::{DeadLetter, DlqPolicy, DlqReader, DlqSink, EventSink, EventSource};
+    pub use crate::policy::{DynamicPolicy, PolicyRegistry};
     pub use crate::metadata::StepMetadata;
     pub use crate::outcome::{BranchId, NodeId, Outcome};
     pub use crate::saga::{SagaCompensationRegistry, SagaPolicy, SagaStack, SagaTask};

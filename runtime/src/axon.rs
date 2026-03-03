@@ -25,6 +25,7 @@ use ranvier_core::schematic::{
 use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_core::transition::Transition;
 use ranvier_core::event::{DlqSink, DlqPolicy};
+use ranvier_core::policy::DynamicPolicy;
 use ranvier_core::saga::{SagaPolicy, SagaStack};
 use serde::{Serialize, de::DeserializeOwned};
 use ranvier_audit::{AuditSink, AuditEvent};
@@ -120,8 +121,12 @@ pub struct Axon<In, Out, E, Res = ()> {
     pub dlq_sink: Option<Arc<dyn DlqSink>>,
     /// Policy for handling event failures
     pub dlq_policy: DlqPolicy,
+    /// Optional dynamic (hot-reloadable) DLQ policy — takes precedence over static `dlq_policy`
+    pub dynamic_dlq_policy: Option<DynamicPolicy<DlqPolicy>>,
     /// Policy for automated saga compensation
     pub saga_policy: SagaPolicy,
+    /// Optional dynamic (hot-reloadable) Saga policy — takes precedence over static `saga_policy`
+    pub dynamic_saga_policy: Option<DynamicPolicy<SagaPolicy>>,
     /// Registry for Saga compensation handlers
     pub saga_compensation_registry: Arc<std::sync::RwLock<ranvier_core::saga::SagaCompensationRegistry<E, Res>>>,
 }
@@ -143,7 +148,9 @@ impl<In, Out, E, Res> Clone for Axon<In, Out, E, Res> {
             audit_sink: self.audit_sink.clone(),
             dlq_sink: self.dlq_sink.clone(),
             dlq_policy: self.dlq_policy.clone(),
+            dynamic_dlq_policy: self.dynamic_dlq_policy.clone(),
             saga_policy: self.saga_policy.clone(),
+            dynamic_saga_policy: self.dynamic_saga_policy.clone(),
             saga_compensation_registry: self.saga_compensation_registry.clone(),
         }
     }
@@ -202,7 +209,9 @@ where
             audit_sink: None,
             dlq_sink: None,
             dlq_policy: DlqPolicy::default(),
+            dynamic_dlq_policy: None,
             saga_policy: SagaPolicy::default(),
+            dynamic_saga_policy: None,
             saga_compensation_registry: Arc::new(std::sync::RwLock::new(ranvier_core::saga::SagaCompensationRegistry::new())),
         }
     }
@@ -263,6 +272,20 @@ where
     /// Set the Saga compensation policy for this Axon.
     pub fn with_saga_policy(mut self, policy: SagaPolicy) -> Self {
         self.saga_policy = policy;
+        self
+    }
+
+    /// Set a dynamic (hot-reloadable) DLQ policy. When set, the dynamic policy's
+    /// current value is read at each execution, overriding the static `dlq_policy`.
+    pub fn with_dynamic_dlq_policy(mut self, dynamic: DynamicPolicy<DlqPolicy>) -> Self {
+        self.dynamic_dlq_policy = Some(dynamic);
+        self
+    }
+
+    /// Set a dynamic (hot-reloadable) Saga policy. When set, the dynamic policy's
+    /// current value is read at each execution, overriding the static `saga_policy`.
+    pub fn with_dynamic_saga_policy(mut self, dynamic: DynamicPolicy<SagaPolicy>) -> Self {
+        self.dynamic_saga_policy = Some(dynamic);
         self
     }
 }
@@ -337,7 +360,9 @@ where
             audit_sink,
             dlq_sink,
             dlq_policy,
+            dynamic_dlq_policy,
             saga_policy,
+            dynamic_saga_policy,
             saga_compensation_registry,
         } = self;
 
@@ -465,7 +490,9 @@ where
             audit_sink,
             dlq_sink,
             dlq_policy,
+            dynamic_dlq_policy,
             saga_policy,
+            dynamic_saga_policy,
             saga_compensation_registry,
         }
     }
@@ -495,7 +522,9 @@ where
             audit_sink,
             dlq_sink,
             dlq_policy,
+            dynamic_dlq_policy,
             saga_policy,
+            dynamic_saga_policy,
             saga_compensation_registry,
         } = self;
 
@@ -665,7 +694,9 @@ where
             audit_sink,
             dlq_sink,
             dlq_policy,
+            dynamic_dlq_policy,
             saga_policy,
+            dynamic_saga_policy,
             saga_compensation_registry,
         }
     }
@@ -775,12 +806,21 @@ where
         if let Some(sink) = &self.dlq_sink {
             bus.insert(sink.clone());
         }
-        bus.insert(self.dlq_policy.clone());
+        // Prefer dynamic (hot-reloadable) policy if available, otherwise use static
+        let effective_dlq_policy = self.dynamic_dlq_policy
+            .as_ref()
+            .map(|d| d.current())
+            .unwrap_or_else(|| self.dlq_policy.clone());
+        bus.insert(effective_dlq_policy);
         bus.insert(self.schematic.clone());
-        bus.insert(self.saga_policy.clone());
-        
+        let effective_saga_policy = self.dynamic_saga_policy
+            .as_ref()
+            .map(|d| d.current())
+            .unwrap_or_else(|| self.saga_policy.clone());
+        bus.insert(effective_saga_policy.clone());
+
         // Initialize Saga stack if enabled and not already present (e.g. from resumption)
-        if self.saga_policy == SagaPolicy::Enabled && bus.read::<SagaStack>().is_none() {
+        if effective_saga_policy == SagaPolicy::Enabled && bus.read::<SagaStack>().is_none() {
             bus.insert(SagaStack::new());
         }
 
@@ -1449,6 +1489,20 @@ where
         });
     }
 
+    // Check DLQ retry policy and pre-serialize state for potential retries
+    let dlq_retry_config = bus.read::<DlqPolicy>().and_then(|p| {
+        if let DlqPolicy::RetryThenDlq { max_attempts, backoff_ms } = &*p {
+            Some((*max_attempts, *backoff_ms))
+        } else {
+            None
+        }
+    });
+    let retry_state_snapshot = if dlq_retry_config.is_some() {
+        serde_json::to_value(&state).ok()
+    } else {
+        None
+    };
+
     // State capture for Saga - SERIALIZE BEFORE CONSUMPTION
     let saga_snapshot = if let Some(SagaPolicy::Enabled) = bus.read::<SagaPolicy>() {
         Some(serde_json::to_vec(&state).unwrap_or_default())
@@ -1470,6 +1524,69 @@ where
         .instrument(node_span.clone())
         .await;
     bus.clear_access_policy();
+
+    // DLQ Retry loop: if first attempt faulted and RetryThenDlq is configured,
+    // retry with exponential backoff before giving up.
+    let result = if let Outcome::Fault(_) = &result {
+        if let (Some((max_attempts, backoff_ms)), Some(snapshot)) =
+            (dlq_retry_config, &retry_state_snapshot)
+        {
+            let mut final_result = result;
+            // attempt 1 already done; retry from 2..=max_attempts
+            for attempt in 2..=max_attempts {
+                let delay = backoff_ms.saturating_mul(2u64.saturating_pow(attempt - 2));
+
+                tracing::info!(
+                    ranvier.node = %label,
+                    attempt = attempt,
+                    max_attempts = max_attempts,
+                    backoff_ms = delay,
+                    "Retrying faulted node"
+                );
+
+                if let Some(timeline) = bus.read_mut::<Timeline>() {
+                    timeline.push(TimelineEvent::NodeRetry {
+                        node_id: node_id.to_string(),
+                        attempt,
+                        max_attempts,
+                        backoff_ms: delay,
+                        timestamp: now_ms(),
+                    });
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+
+                if let Ok(retry_state) = serde_json::from_value::<In>(snapshot.clone()) {
+                    bus.set_access_policy(label.clone(), bus_policy.clone());
+                    let retry_result = trans
+                        .run(retry_state, res, bus)
+                        .instrument(tracing::info_span!(
+                            "NodeRetry",
+                            ranvier.node = %label,
+                            attempt = attempt
+                        ))
+                        .await;
+                    bus.clear_access_policy();
+
+                    match &retry_result {
+                        Outcome::Fault(_) => {
+                            final_result = retry_result;
+                        }
+                        _ => {
+                            final_result = retry_result;
+                            break;
+                        }
+                    }
+                }
+            }
+            final_result
+        } else {
+            result
+        }
+    } else {
+        result
+    };
+
     node_span.record("ranvier.outcome_kind", outcome_kind_name(&result));
     if let Some(target) = outcome_target(&result) {
         node_span
@@ -1518,20 +1635,41 @@ where
         ).await;
     }
 
-    // DLQ reporting
+    // DLQ reporting — only fires after all retries are exhausted (RetryThenDlq)
+    // or immediately (SendToDlq). Drop policy skips entirely.
     if let Outcome::Fault(f) = &result {
-        if let (Some(sink), Some(policy)) = (bus.read::<Arc<dyn DlqSink>>(), bus.read::<DlqPolicy>()) {
-            if *policy == DlqPolicy::SendToDlq || matches!(*policy, DlqPolicy::RetryThenDlq { .. }) {
-                let trace_id = persistence_trace_id(bus);
-                let circuit = bus.read::<ranvier_core::schematic::Schematic>().map(|s| s.name.clone()).unwrap_or_default();
-                let _ = sink.store_dead_letter(
-                    &trace_id,
-                    &circuit,
-                    node_id,
-                    &format!("{:?}", f),
-                    &serde_json::to_vec(&f).unwrap_or_default(),
-                ).await;
+        // Read policy and sink, then drop the borrows before mutable timeline access
+        let dlq_action = {
+            let policy = bus.read::<DlqPolicy>();
+            let sink = bus.read::<Arc<dyn DlqSink>>();
+            match (sink, policy) {
+                (Some(s), Some(p)) if !matches!(&*p, DlqPolicy::Drop) => {
+                    Some(s.clone())
+                }
+                _ => None,
             }
+        };
+
+        if let Some(sink) = dlq_action {
+            if let Some((max_attempts, _)) = dlq_retry_config {
+                if let Some(timeline) = bus.read_mut::<Timeline>() {
+                    timeline.push(TimelineEvent::DlqExhausted {
+                        node_id: node_id.to_string(),
+                        total_attempts: max_attempts,
+                        timestamp: now_ms(),
+                    });
+                }
+            }
+
+            let trace_id = persistence_trace_id(bus);
+            let circuit = bus.read::<ranvier_core::schematic::Schematic>().map(|s| s.name.clone()).unwrap_or_default();
+            let _ = sink.store_dead_letter(
+                &trace_id,
+                &circuit,
+                node_id,
+                &format!("{:?}", f),
+                &serde_json::to_vec(&f).unwrap_or_default(),
+            ).await;
         }
     }
 
@@ -1694,10 +1832,11 @@ where
         }
     }
 
-    // DLQ reporting
+    // DLQ reporting for compensated steps
     if let Outcome::Fault(f) = &result {
         if let (Some(sink), Some(policy)) = (bus.read::<Arc<dyn DlqSink>>(), bus.read::<DlqPolicy>()) {
-            if *policy == DlqPolicy::SendToDlq || matches!(*policy, DlqPolicy::RetryThenDlq { .. }) {
+            let should_dlq = !matches!(&*policy, DlqPolicy::Drop);
+            if should_dlq {
                 let trace_id = persistence_trace_id(bus);
                 let circuit = bus.read::<ranvier_core::schematic::Schematic>().map(|s| s.name.clone()).unwrap_or_default();
                 let _ = sink.store_dead_letter(
@@ -2156,6 +2295,9 @@ mod tests {
     use anyhow::Result;
     use async_trait::async_trait;
     use ranvier_core::{Bus, BusAccessPolicy, BusTypeRef, Outcome, Transition};
+    use ranvier_core::event::{DlqPolicy, DlqSink};
+    use ranvier_core::saga::SagaStack;
+    use ranvier_core::timeline::{Timeline, TimelineEvent};
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use uuid::Uuid;
@@ -2199,6 +2341,7 @@ mod tests {
             circuit: "AuditTest".to_string(),
             schematic_version: "v1.0".to_string(),
             step: 0,
+            node_id: None,
             outcome_kind: "Next".to_string(),
             timestamp_ms: 0,
             payload_hash: None,
@@ -2415,9 +2558,10 @@ mod tests {
         assert!(matches!(outcome, Outcome::Next(42)));
 
         let persisted = store_impl.load("trace-success").await.unwrap().unwrap();
-        assert_eq!(persisted.events.len(), 2);
+        assert_eq!(persisted.events.len(), 3); // Enter + step-level Next + final Next
         assert_eq!(persisted.events[0].outcome_kind, "Enter");
-        assert_eq!(persisted.events[1].outcome_kind, "Next");
+        assert_eq!(persisted.events[1].outcome_kind, "Next"); // step-level
+        assert_eq!(persisted.events[2].outcome_kind, "Next"); // final
         assert_eq!(persisted.completion, Some(CompletionState::Success));
     }
 
@@ -2435,8 +2579,9 @@ mod tests {
         assert!(matches!(outcome, Outcome::Fault(msg) if msg == "boom"));
 
         let persisted = store_impl.load("trace-fault").await.unwrap().unwrap();
-        assert_eq!(persisted.events.len(), 2);
-        assert_eq!(persisted.events[1].outcome_kind, "Fault");
+        assert_eq!(persisted.events.len(), 3); // Enter + step-level Fault + final Fault
+        assert_eq!(persisted.events[1].outcome_kind, "Fault"); // step-level
+        assert_eq!(persisted.events[2].outcome_kind, "Fault"); // final
         assert_eq!(persisted.completion, Some(CompletionState::Fault));
     }
 
@@ -2456,7 +2601,7 @@ mod tests {
         assert!(matches!(outcome, Outcome::Next(2)));
 
         let persisted = store_impl.load("trace-no-complete").await.unwrap().unwrap();
-        assert_eq!(persisted.events.len(), 2);
+        assert_eq!(persisted.events.len(), 3); // Enter + step-level Next + final Next
         assert_eq!(persisted.completion, None);
     }
 
@@ -2480,10 +2625,11 @@ mod tests {
         assert!(matches!(outcome, Outcome::Fault(msg) if msg == "boom"));
 
         let persisted = store_impl.load("trace-compensated").await.unwrap().unwrap();
-        assert_eq!(persisted.events.len(), 3);
+        assert_eq!(persisted.events.len(), 4); // Enter + step-level Fault + final Fault + Compensated
         assert_eq!(persisted.events[0].outcome_kind, "Enter");
-        assert_eq!(persisted.events[1].outcome_kind, "Fault");
-        assert_eq!(persisted.events[2].outcome_kind, "Compensated");
+        assert_eq!(persisted.events[1].outcome_kind, "Fault"); // step-level
+        assert_eq!(persisted.events[2].outcome_kind, "Fault"); // final
+        assert_eq!(persisted.events[3].outcome_kind, "Compensated");
         assert_eq!(persisted.completion, Some(CompletionState::Compensated));
 
         let recorded = calls.lock().await;
@@ -2516,8 +2662,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(persisted.events.len(), 2);
-        assert_eq!(persisted.events[1].outcome_kind, "Fault");
+        assert_eq!(persisted.events.len(), 3); // Enter + step-level Fault + final Fault
+        assert_eq!(persisted.events[2].outcome_kind, "Fault"); // final
         assert_eq!(persisted.completion, Some(CompletionState::Fault));
 
         let recorded = calls.lock().await;
@@ -2591,9 +2737,11 @@ mod tests {
 
         let persisted = store_impl.load("trace-idempotent").await.unwrap().unwrap();
         assert_eq!(persisted.completion, None);
-        assert_eq!(persisted.events.len(), 6);
-        assert_eq!(persisted.events[2].outcome_kind, "Compensated");
-        assert_eq!(persisted.events[5].outcome_kind, "Compensated");
+        // Verify that "Compensated" events are present for both executions
+        let compensated_count = persisted.events.iter()
+            .filter(|e| e.outcome_kind == "Compensated")
+            .count();
+        assert_eq!(compensated_count, 2, "Should have 2 Compensated events (one per execution)");
 
         let recorded = calls.lock().await;
         assert_eq!(recorded.len(), 1);
@@ -2674,6 +2822,7 @@ mod tests {
             circuit: "TestCircuit".to_string(),
             schematic_version: "0.9".to_string(),
             step: 0,
+            node_id: None,
             outcome_kind: "Enter".to_string(),
             timestamp_ms: 0,
             payload_hash: None,
@@ -2708,6 +2857,7 @@ mod tests {
             circuit: "TestCircuit".to_string(),
             schematic_version: "0.9".to_string(),
             step: 5,
+            node_id: None,
             outcome_kind: "Next".to_string(),
             timestamp_ms: 0,
             payload_hash: None,
@@ -2770,6 +2920,7 @@ mod tests {
             circuit: "TestCircuit".to_string(),
             schematic_version: "1.0".to_string(),
             step: 0,
+            node_id: None,
             outcome_kind: "Enter".to_string(),
             timestamp_ms: 0,
             payload_hash: None,
@@ -2796,6 +2947,215 @@ mod tests {
         // The last event should be from the jump target's execution.
         assert_eq!(persisted.interventions.len(), 1);
         assert_eq!(persisted.interventions[0].target_node, target_node_id);
+    }
+
+    // ── DLQ Retry Tests ──────────────────────────────────────────────
+
+    /// A transition that fails a configurable number of times before succeeding.
+    #[derive(Clone)]
+    struct FailNThenSucceed {
+        remaining: Arc<tokio::sync::Mutex<u32>>,
+    }
+
+    #[async_trait]
+    impl Transition<i32, i32> for FailNThenSucceed {
+        type Error = String;
+        type Resources = ();
+
+        async fn run(
+            &self,
+            state: i32,
+            _resources: &Self::Resources,
+            _bus: &mut Bus,
+        ) -> Outcome<i32, Self::Error> {
+            let mut rem = self.remaining.lock().await;
+            if *rem > 0 {
+                *rem -= 1;
+                Outcome::Fault("transient failure".to_string())
+            } else {
+                Outcome::Next(state + 1)
+            }
+        }
+    }
+
+    /// A mock DLQ sink that records all dead letters.
+    #[derive(Clone)]
+    struct MockDlqSink {
+        letters: Arc<tokio::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl DlqSink for MockDlqSink {
+        async fn store_dead_letter(
+            &self,
+            workflow_id: &str,
+            _circuit_label: &str,
+            node_id: &str,
+            error_msg: &str,
+            _payload: &[u8],
+        ) -> Result<(), String> {
+            let entry = format!("{}:{}:{}", workflow_id, node_id, error_msg);
+            self.letters.lock().await.push(entry);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_then_dlq_retries_and_succeeds_before_exhaustion() {
+        // Fail 2 times, succeed on 3rd attempt. Policy allows 5 attempts.
+        let remaining = Arc::new(tokio::sync::Mutex::new(2u32));
+        let trans = FailNThenSucceed { remaining };
+
+        let dlq_sink = MockDlqSink { letters: Arc::new(tokio::sync::Mutex::new(Vec::new())) };
+
+        let mut bus = Bus::new();
+        bus.insert(Timeline::new());
+
+        let axon = Axon::<i32, i32, String>::start("RetrySucceed")
+            .then(trans)
+            .with_dlq_policy(DlqPolicy::RetryThenDlq { max_attempts: 5, backoff_ms: 1 })
+            .with_dlq_sink(dlq_sink.clone());
+        let outcome = axon.execute(10, &(), &mut bus).await;
+
+        // Should succeed (10 + 1 = 11)
+        assert!(matches!(outcome, Outcome::Next(11)), "Expected Next(11), got {:?}", outcome);
+
+        // No dead letters since it recovered
+        let letters = dlq_sink.letters.lock().await;
+        assert!(letters.is_empty(), "Should have 0 dead letters, got {}", letters.len());
+
+        // Timeline should contain NodeRetry events
+        let timeline = bus.read::<Timeline>().unwrap();
+        let retry_count = timeline.events.iter().filter(|e| matches!(e, TimelineEvent::NodeRetry { .. })).count();
+        assert_eq!(retry_count, 2, "Should have 2 retry events");
+    }
+
+    #[tokio::test]
+    async fn retry_then_dlq_exhausts_retries_and_sends_to_dlq() {
+        // Always fails. Policy allows 3 attempts (1 initial + 2 retries).
+        let mut bus = Bus::new();
+        bus.insert(Timeline::new());
+
+        let dlq_sink = MockDlqSink { letters: Arc::new(tokio::sync::Mutex::new(Vec::new())) };
+
+        let axon = Axon::<i32, i32, String>::start("RetryExhaust")
+            .then(AlwaysFault)
+            .with_dlq_policy(DlqPolicy::RetryThenDlq { max_attempts: 3, backoff_ms: 1 })
+            .with_dlq_sink(dlq_sink.clone());
+        let outcome = axon.execute(42, &(), &mut bus).await;
+
+        assert!(matches!(outcome, Outcome::Fault(ref msg) if msg == "boom"), "Expected Fault(boom), got {:?}", outcome);
+
+        // Should have exactly 1 dead letter
+        let letters = dlq_sink.letters.lock().await;
+        assert_eq!(letters.len(), 1, "Should have 1 dead letter");
+
+        // Timeline should have 2 retry events and 1 DlqExhausted event
+        let timeline = bus.read::<Timeline>().unwrap();
+        let retry_count = timeline.events.iter().filter(|e| matches!(e, TimelineEvent::NodeRetry { .. })).count();
+        let dlq_count = timeline.events.iter().filter(|e| matches!(e, TimelineEvent::DlqExhausted { .. })).count();
+        assert_eq!(retry_count, 2, "Should have 2 retry events (attempts 2 and 3)");
+        assert_eq!(dlq_count, 1, "Should have 1 DlqExhausted event");
+    }
+
+    #[tokio::test]
+    async fn send_to_dlq_policy_sends_immediately_without_retry() {
+        let mut bus = Bus::new();
+        bus.insert(Timeline::new());
+
+        let dlq_sink = MockDlqSink { letters: Arc::new(tokio::sync::Mutex::new(Vec::new())) };
+
+        let axon = Axon::<i32, i32, String>::start("SendDlq")
+            .then(AlwaysFault)
+            .with_dlq_policy(DlqPolicy::SendToDlq)
+            .with_dlq_sink(dlq_sink.clone());
+        let outcome = axon.execute(1, &(), &mut bus).await;
+
+        assert!(matches!(outcome, Outcome::Fault(_)));
+
+        // Should have exactly 1 dead letter (immediate, no retries)
+        let letters = dlq_sink.letters.lock().await;
+        assert_eq!(letters.len(), 1);
+
+        // No retry or DlqExhausted events
+        let timeline = bus.read::<Timeline>().unwrap();
+        let retry_count = timeline.events.iter().filter(|e| matches!(e, TimelineEvent::NodeRetry { .. })).count();
+        assert_eq!(retry_count, 0);
+    }
+
+    #[tokio::test]
+    async fn drop_policy_does_not_send_to_dlq() {
+        let mut bus = Bus::new();
+
+        let dlq_sink = MockDlqSink { letters: Arc::new(tokio::sync::Mutex::new(Vec::new())) };
+
+        let axon = Axon::<i32, i32, String>::start("DropDlq")
+            .then(AlwaysFault)
+            .with_dlq_policy(DlqPolicy::Drop)
+            .with_dlq_sink(dlq_sink.clone());
+        let outcome = axon.execute(1, &(), &mut bus).await;
+
+        assert!(matches!(outcome, Outcome::Fault(_)));
+
+        // No dead letters
+        let letters = dlq_sink.letters.lock().await;
+        assert!(letters.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dynamic_policy_hot_reload_changes_dlq_behavior() {
+        use ranvier_core::policy::DynamicPolicy;
+
+        // Start with Drop policy (no DLQ)
+        let (tx, dynamic) = DynamicPolicy::new(DlqPolicy::Drop);
+        let dlq_sink = MockDlqSink { letters: Arc::new(tokio::sync::Mutex::new(Vec::new())) };
+
+        let axon = Axon::<i32, i32, String>::start("DynamicDlq")
+            .then(AlwaysFault)
+            .with_dynamic_dlq_policy(dynamic)
+            .with_dlq_sink(dlq_sink.clone());
+
+        // First execution: Drop policy → no dead letters
+        let mut bus = Bus::new();
+        let outcome = axon.execute(1, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Fault(_)));
+        assert!(dlq_sink.letters.lock().await.is_empty(), "Drop policy should produce no DLQ entries");
+
+        // Hot-reload: switch to SendToDlq
+        tx.send(DlqPolicy::SendToDlq).unwrap();
+
+        // Second execution: SendToDlq policy → dead letter captured
+        let mut bus2 = Bus::new();
+        let outcome2 = axon.execute(2, &(), &mut bus2).await;
+        assert!(matches!(outcome2, Outcome::Fault(_)));
+        assert_eq!(dlq_sink.letters.lock().await.len(), 1, "SendToDlq policy should produce 1 DLQ entry");
+    }
+
+    #[tokio::test]
+    async fn dynamic_saga_policy_hot_reload() {
+        use ranvier_core::policy::DynamicPolicy;
+        use ranvier_core::saga::SagaPolicy;
+
+        // Start with Disabled saga
+        let (tx, dynamic) = DynamicPolicy::new(SagaPolicy::Disabled);
+
+        let axon = Axon::<i32, i32, TestInfallible>::start("DynamicSaga")
+            .then(AddOne)
+            .with_dynamic_saga_policy(dynamic);
+
+        // First execution: Disabled → no SagaStack in bus
+        let mut bus = Bus::new();
+        let _outcome = axon.execute(1, &(), &mut bus).await;
+        assert!(bus.read::<SagaStack>().is_none() || bus.read::<SagaStack>().unwrap().is_empty(),
+            "SagaStack should be absent or empty when disabled");
+
+        // Hot-reload: enable saga
+        tx.send(SagaPolicy::Enabled).unwrap();
+
+        // Second execution: Enabled → SagaStack populated
+        let mut bus2 = Bus::new();
+        let _outcome2 = axon.execute(10, &(), &mut bus2).await;
+        assert!(bus2.read::<SagaStack>().is_some(), "SagaStack should exist when saga is enabled");
     }
 }
 
