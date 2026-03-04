@@ -37,6 +37,10 @@ pub enum ExtractError {
     InvalidPath(String),
     #[error("failed to encode path params: {0}")]
     PathEncode(String),
+    #[error("missing header: {0}")]
+    MissingHeader(String),
+    #[error("invalid header value: {0}")]
+    InvalidHeader(String),
     #[cfg(feature = "validation")]
     #[error("validation failed")]
     ValidationFailed(ValidationErrorBody),
@@ -118,6 +122,87 @@ pub struct Path<T>(pub T);
 impl<T> Path<T> {
     pub fn into_inner(self) -> T {
         self.0
+    }
+}
+
+/// Extract a single HTTP header value as a string.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ranvier_http::extract::Header;
+///
+/// let Header(auth) = Header::from_name("authorization", &mut req).await?;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Header(pub String);
+
+impl Header {
+    /// Extract a header by name from a request (non-trait convenience).
+    pub fn from_parts(name: &str, parts: &http::request::Parts) -> Result<Self, ExtractError> {
+        let value = parts
+            .headers
+            .get(name)
+            .ok_or_else(|| ExtractError::MissingHeader(name.to_string()))?;
+        let s = value
+            .to_str()
+            .map_err(|e| ExtractError::InvalidHeader(e.to_string()))?;
+        Ok(Header(s.to_string()))
+    }
+
+    /// Get the inner string value.
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+/// Extract all cookies from the `Cookie` header as key-value pairs.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ranvier_http::extract::CookieJar;
+///
+/// let jar = CookieJar::from_parts(&parts);
+/// if let Some(session) = jar.get("session_id") {
+///     // ...
+/// }
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct CookieJar {
+    cookies: HashMap<String, String>,
+}
+
+impl CookieJar {
+    /// Parse cookies from request parts.
+    pub fn from_parts(parts: &http::request::Parts) -> Self {
+        let mut cookies = HashMap::new();
+        if let Some(header) = parts.headers.get(http::header::COOKIE) {
+            if let Ok(value) = header.to_str() {
+                for pair in value.split(';') {
+                    let pair = pair.trim();
+                    if let Some((key, val)) = pair.split_once('=') {
+                        cookies.insert(key.trim().to_string(), val.trim().to_string());
+                    }
+                }
+            }
+        }
+        CookieJar { cookies }
+    }
+
+    /// Get a cookie value by name.
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.cookies.get(name).map(|s| s.as_str())
+    }
+
+    /// Check if a cookie exists.
+    pub fn contains(&self, name: &str) -> bool {
+        self.cookies.contains_key(name)
+    }
+
+    /// Iterate over all cookies.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.cookies.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
 }
 

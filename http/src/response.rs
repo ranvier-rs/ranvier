@@ -25,6 +25,46 @@ pub fn json_error_response(status: StatusCode, message: impl Into<String>) -> Ht
         .expect("response builder should be infallible")
 }
 
+/// HTML response wrapper.
+///
+/// Wraps a string body with `Content-Type: text/html; charset=utf-8`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// Outcome::next(Html("<h1>Hello</h1>".to_string()))
+/// ```
+#[derive(Debug, Clone)]
+pub struct Html(pub String);
+
+impl IntoResponse for Html {
+    fn into_response(self) -> HttpResponse {
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "text/html; charset=utf-8")
+            .body(
+                Full::new(Bytes::from(self.0))
+                    .map_err(|never| match never {})
+                    .boxed(),
+            )
+            .expect("response builder should be infallible")
+    }
+}
+
+impl IntoResponse for (StatusCode, Html) {
+    fn into_response(self) -> HttpResponse {
+        Response::builder()
+            .status(self.0)
+            .header(CONTENT_TYPE, "text/html; charset=utf-8")
+            .body(
+                Full::new(Bytes::from((self.1).0))
+                    .map_err(|never| match never {})
+                    .boxed(),
+            )
+            .expect("response builder should be infallible")
+    }
+}
+
 impl IntoResponse for HttpResponse {
     fn into_response(self) -> HttpResponse {
         self

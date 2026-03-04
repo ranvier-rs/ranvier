@@ -35,13 +35,13 @@ pub mod sse;
 pub mod http3;
 pub mod test_harness;
 
-pub use extract::{DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Json, Path, Query};
+pub use extract::{CookieJar, DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Header, Json, Path, Query};
 pub use ingress::{
     HttpIngress, HttpRouteDescriptor, PathParams, Ranvier, WebSocketConnection, WebSocketError,
     WebSocketEvent, WebSocketSessionContext,
 };
 pub use response::{
-    HttpResponse, IntoResponse, json_error_response, outcome_to_response,
+    Html, HttpResponse, IntoResponse, json_error_response, outcome_to_response,
     outcome_to_response_with_error,
 };
 pub use service::RanvierService;
@@ -50,13 +50,13 @@ pub use test_harness::{TestApp, TestHarnessError, TestRequest, TestResponse};
 
 /// Prelude module for convenient imports
 pub mod prelude {
-    pub use crate::extract::{DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Json, Path, Query};
+    pub use crate::extract::{CookieJar, DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Header, Json, Path, Query};
     pub use crate::ingress::{
         HttpIngress, HttpRouteDescriptor, PathParams, Ranvier, WebSocketConnection, WebSocketError,
         WebSocketEvent, WebSocketSessionContext,
     };
     pub use crate::response::{
-        HttpResponse, IntoResponse, json_error_response, outcome_to_response,
+        Html, HttpResponse, IntoResponse, json_error_response, outcome_to_response,
         outcome_to_response_with_error,
     };
     pub use crate::service::RanvierService;
