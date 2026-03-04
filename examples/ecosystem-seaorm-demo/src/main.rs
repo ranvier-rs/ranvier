@@ -107,7 +107,7 @@ struct CreateUserTransition;
 
 #[async_trait]
 impl Transition<CreateUserInput, UserSummary> for CreateUserTransition {
-    type Error = Infallible;
+    type Error = String;
     type Resources = AppResources;
 
     async fn run(
@@ -141,7 +141,7 @@ struct UpdateUserEmailTransition;
 
 #[async_trait]
 impl Transition<UpdateEmailInput, UserSummary> for UpdateUserEmailTransition {
-    type Error = Infallible;
+    type Error = String;
     type Resources = AppResources;
 
     async fn run(
@@ -157,8 +157,8 @@ impl Transition<UpdateEmailInput, UserSummary> for UpdateUserEmailTransition {
 
         let model = match found {
             Ok(Some(model)) => model,
-            Ok(None) => return Outcome::Fault(anyhow::anyhow!("user id={} not found", input.id)),
-            Err(err) => return Outcome::Fault(err.to_string()),
+            Ok(None) => return Outcome::Fault(format!("user id={} not found", input.id)),
+            Err(err) => return Outcome::Fault(err),
         };
 
         let mut active: user::ActiveModel = model.into();
@@ -185,7 +185,7 @@ struct DeleteUserTransition;
 
 #[async_trait]
 impl Transition<DeleteUserInput, i32> for DeleteUserTransition {
-    type Error = Infallible;
+    type Error = String;
     type Resources = AppResources;
 
     async fn run(
@@ -201,8 +201,8 @@ impl Transition<DeleteUserInput, i32> for DeleteUserTransition {
 
         let model = match found {
             Ok(Some(model)) => model,
-            Ok(None) => return Outcome::Fault(anyhow::anyhow!("user id={} not found", input.id)),
-            Err(err) => return Outcome::Fault(err.to_string()),
+            Ok(None) => return Outcome::Fault(format!("user id={} not found", input.id)),
+            Err(err) => return Outcome::Fault(err),
         };
 
         let deleted_id = model.id;
@@ -220,7 +220,7 @@ struct ListUsersTransition;
 
 #[async_trait]
 impl Transition<FetchAllInput, Vec<UserSummary>> for ListUsersTransition {
-    type Error = Infallible;
+    type Error = String;
     type Resources = AppResources;
 
     async fn run(

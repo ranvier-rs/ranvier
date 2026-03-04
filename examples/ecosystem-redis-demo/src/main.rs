@@ -15,13 +15,13 @@ struct AppResources {
 
 impl ResourceRequirement for AppResources {}
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct SessionRequest {
     sid: String,
     route: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct SessionContext {
     sid: String,
     route: String,
@@ -34,7 +34,7 @@ struct UserSession {
     roles: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct ResponsePayload {
     sid: String,
     route: String,
@@ -62,7 +62,7 @@ struct LoadSessionTransition;
 
 #[async_trait]
 impl Transition<SessionRequest, SessionContext> for LoadSessionTransition {
-    type Error = Infallible;
+    type Error = String;
     type Resources = AppResources;
 
     async fn run(
@@ -100,7 +100,7 @@ impl Transition<SessionRequest, SessionContext> for LoadSessionTransition {
                     route: input.route,
                 })
             }
-            Err(err) => Outcome::Fault(err),
+            Err(err) => Outcome::Fault(err.to_string()),
         }
     }
 }
@@ -110,7 +110,7 @@ struct CacheResponseTransition;
 
 #[async_trait]
 impl Transition<SessionContext, ResponsePayload> for CacheResponseTransition {
-    type Error = Infallible;
+    type Error = String;
     type Resources = AppResources;
 
     async fn run(
@@ -121,7 +121,7 @@ impl Transition<SessionContext, ResponsePayload> for CacheResponseTransition {
     ) -> Outcome<ResponsePayload, Self::Error> {
         let session = match bus.read::<UserSession>().cloned() {
             Some(value) => value,
-            None => return Outcome::Fault(anyhow!("session missing in Bus")),
+            None => return Outcome::Fault("session missing in Bus".to_string()),
         };
 
         let mut redis = resources.redis.clone();
@@ -132,7 +132,7 @@ impl Transition<SessionContext, ResponsePayload> for CacheResponseTransition {
             route_slot(&input.route)
         );
 
-        let cached: Result<Option<String>> = redis.get(&cache_key).await.map_err(String::from);
+        let cached: Result<Option<String>, String> = redis.get(&cache_key).await.map_err(|e| e.to_string());
         let cached = match cached {
             Ok(value) => value,
             Err(err) => return Outcome::Fault(err),
@@ -167,7 +167,7 @@ impl Transition<SessionContext, ResponsePayload> for CacheResponseTransition {
                 body,
                 cache_hit: false,
             }),
-            Err(err) => Outcome::Fault(err),
+            Err(err) => Outcome::Fault(err.to_string()),
         }
     }
 }
