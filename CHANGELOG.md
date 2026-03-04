@@ -7,12 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.0.0] — 2026-05
+## [0.16.0] — 2026-03
 
 ### Summary
 
-**Ranvier 1.0 — Stable Release.**
-The first production-stable release of Ranvier, marking the completion of the 0.x development cycle. All 23 crates are published with a strict SemVer 1.0 contract: no breaking changes in 1.x minor/patch releases.
+**Ranvier 0.16 — 1.0 Stable Release Preparation.**
+API surface audit, CI hardening, community ecosystem documentation, and release preparation. All 23 crates version-synchronized at 0.16.0.
 
 ### Removed
 - `static_gen::StaticNode` — use `StaticAxon` instead (deprecated since 0.14)
@@ -28,7 +28,7 @@ The first production-stable release of Ranvier, marking the completion of the 0.
 - Plugin architecture design document
 - Ecosystem integration guide (10 patterns)
 - CI Architecture documentation
-- Migration guide: 0.15 → 1.0
+- Migration guide: 0.15 → 0.16
 
 ---
 

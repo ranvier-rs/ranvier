@@ -1,12 +1,12 @@
-# Migration Guide: 0.15 → 1.0
+# Migration Guide: 0.15 → 0.16
 
-This guide covers all changes needed when upgrading from Ranvier 0.15.x to 1.0.
+This guide covers all changes needed when upgrading from Ranvier 0.15.x to 0.16.
 
 ---
 
 ## Quick Summary
 
-Ranvier 1.0 is primarily a **stability release**. The API has been frozen since v0.10 and no major breaking changes are introduced. The upgrade is straightforward for most users.
+Ranvier 0.16 is primarily a **stability release**. The API has been frozen since v0.10 and no major breaking changes are introduced. The upgrade is straightforward for most users.
 
 **Required changes:**
 1. Update version numbers in `Cargo.toml`
@@ -29,16 +29,16 @@ ranvier-core = "0.15"
 ranvier-runtime = "0.15"
 ranvier-http = "0.15"
 
-# After (1.0)
-ranvier-core = "1.0"
-ranvier-runtime = "1.0"
-ranvier-http = "1.0"
+# After (0.16.x)
+ranvier-core = "0.16"
+ranvier-runtime = "0.16"
+ranvier-http = "0.16"
 ```
 
 If you use `ranvier-kit` (the convenience facade), updating it alone is sufficient:
 
 ```toml
-ranvier-kit = "1.0"
+ranvier-kit = "0.16"
 ```
 
 ---
@@ -116,7 +116,7 @@ impl Transition<(), String> for MyTransition {
 
 ## Step 4: Rust Edition
 
-Ranvier 1.0 requires **Rust 1.93.0+** with **Edition 2024**. Update your `Cargo.toml`:
+Ranvier 0.16 requires **Rust 1.93.0+** with **Edition 2024**. Update your `Cargo.toml`:
 
 ```toml
 [package]
@@ -154,9 +154,9 @@ workspace = true
 
 ## Extension Crate Compatibility
 
-All extension crates are version-synchronized. When upgrading, update all `ranvier-*` dependencies to 1.0 simultaneously.
+All extension crates are version-synchronized. When upgrading, update all `ranvier-*` dependencies to 0.16 simultaneously.
 
-| Crate | 0.15 → 1.0 Changes |
+| Crate | 0.15 → 0.16 Changes |
 |---|---|
 | `ranvier-core` | Deprecated items removed |
 | `ranvier-runtime` | No API changes |
