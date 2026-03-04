@@ -6,7 +6,7 @@ use ranvier_core::prelude::*;
 use ranvier_http::prelude::*;
 use ranvier_macros::transition;
 use ranvier_runtime::Axon;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::TcpListener as StdTcpListener;
 use std::time::Duration;
@@ -30,7 +30,7 @@ struct CreateOrder {
     qty: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 enum DemoRouteError {
     Unauthorized,
     Missing,

@@ -1,5 +1,3 @@
-use String;
-
 use hyper::body::Incoming;
 use ranvier_core::prelude::*;
 use ranvier_http::prelude::*;
@@ -13,7 +11,7 @@ struct GetUser;
 
 #[async_trait::async_trait]
 impl Transition<(), CreateUserResponse> for GetUser {
-    type Error = Infallible;
+    type Error = String;
     type Resources = DocsResources;
 
     async fn run(
@@ -34,7 +32,7 @@ struct CreateUser;
 
 #[async_trait::async_trait]
 impl Transition<(), CreateUserResponse> for CreateUser {
-    type Error = Infallible;
+    type Error = String;
     type Resources = DocsResources;
 
     async fn run(
@@ -55,7 +53,7 @@ struct ServeOpenApi;
 
 #[async_trait::async_trait]
 impl Transition<(), serde_json::Value> for ServeOpenApi {
-    type Error = Infallible;
+    type Error = String;
     type Resources = DocsResources;
 
     async fn run(
@@ -73,7 +71,7 @@ struct ServeDocs;
 
 #[async_trait::async_trait]
 impl Transition<(), String> for ServeDocs {
-    type Error = Infallible;
+    type Error = String;
     type Resources = DocsResources;
 
     async fn run(
@@ -125,11 +123,11 @@ impl ranvier_core::transition::ResourceRequirement for DocsResources {}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let get_user = Axon::<(), (), Infallible, DocsResources>::new("GetUser").then(GetUser);
-    let create_user = Axon::<(), (), Infallible, DocsResources>::new("CreateUser").then(CreateUser);
+    let get_user = Axon::<(), (), String, DocsResources>::new("GetUser").then(GetUser);
+    let create_user = Axon::<(), (), String, DocsResources>::new("CreateUser").then(CreateUser);
     let openapi_route =
-        Axon::<(), (), Infallible, DocsResources>::new("ServeOpenApi").then(ServeOpenApi);
-    let docs_route = Axon::<(), (), Infallible, DocsResources>::new("ServeDocs").then(ServeDocs);
+        Axon::<(), (), String, DocsResources>::new("ServeOpenApi").then(ServeOpenApi);
+    let docs_route = Axon::<(), (), String, DocsResources>::new("ServeDocs").then(ServeDocs);
 
     let ingress = Ranvier::http::<DocsResources>()
         .bind("127.0.0.1:3111")
