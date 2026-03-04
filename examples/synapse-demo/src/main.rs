@@ -1,3 +1,17 @@
+//! # Synapse Integration Pattern
+//!
+//! Shows how to use the Synapse trait to integrate external services with type-safe error handling.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p synapse-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - Synapse trait for external integrations
+//! - Type-safe Input/Output/Error contracts
+//! - Async service calls with simulated latency
+
 use anyhow::Result;
 use async_trait::async_trait;
 use ranvier_core::synapse::Synapse;

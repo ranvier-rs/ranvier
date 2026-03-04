@@ -1,3 +1,17 @@
+//! # SeaORM Integration
+//!
+//! Full CRUD demo with SeaORM showing migrations, entity models, and Axon-based database operations.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p ecosystem-seaorm-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - SeaORM entities and migrations
+//! - DatabaseConnection as shared resource
+//! - Create/Read/Update/Delete flows via Axon transitions
+
 use anyhow::Result;
 use async_trait::async_trait;
 use ranvier_core::prelude::*;

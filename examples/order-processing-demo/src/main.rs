@@ -1,3 +1,17 @@
+//! # Order Processing Pipeline
+//!
+//! Complete order fulfillment flow demonstrating validation, inventory, payment, and shipping in a multi-step Axon chain.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p order-processing-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - Multi-step Axon chains with `.then()` composition
+//! - Synapse-based external service integrations
+//! - Branch outcomes for payment/inventory failures
+
 mod domain;
 mod nodes;
 mod synapses;

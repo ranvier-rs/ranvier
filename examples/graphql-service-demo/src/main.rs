@@ -1,3 +1,17 @@
+//! # GraphQL Service Demo
+//!
+//! Demonstrates async-graphql integration with Ranvier, including DataLoader, mutations, and subscriptions.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p graphql-service-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - GraphQL schema with queries, mutations, and subscriptions
+//! - DataLoader pattern for efficient batched loading
+//! - Axon workflow triggering from GraphQL mutations
+
 use async_graphql::dataloader::{DataLoader, Loader};
 use async_graphql::{Context, Object, Schema};
 use async_trait::async_trait;

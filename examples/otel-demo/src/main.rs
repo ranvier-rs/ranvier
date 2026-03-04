@@ -1,3 +1,17 @@
+//! # OpenTelemetry Integration
+//!
+//! Demonstrates OTLP tracing and metrics export with configurable protocol support.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p otel-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - init_otlp_tracing_with_protocol for trace export
+//! - Custom meter and counter metrics
+//! - Environment-based OTLP configuration
+
 use async_trait::async_trait;
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::{Protocol, WithExportConfig};

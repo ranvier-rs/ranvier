@@ -1,3 +1,17 @@
+//! # Ranvier Studio Inspector Demo
+//!
+//! Demonstrates real-time tracing, schematic export, and timeline projection generation for Studio integration.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p studio-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - Inspector layer for distributed tracing
+//! - Schematic export mode for circuit visualization
+//! - Timeline projections (public/internal trace artifacts)
+
 use ranvier_core::prelude::*;
 use ranvier_core::schematic::Schematic;
 use ranvier_macros::transition;

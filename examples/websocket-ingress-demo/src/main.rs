@@ -1,3 +1,17 @@
+//! # WebSocket Ingress
+//!
+//! Demonstrates WebSocket support with text/binary frame handling and session context.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p websocket-ingress-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - WebSocket route handlers with `/ws/` prefix
+//! - EventSource/EventSink traits for message streaming
+//! - Session context access via Bus
+
 use ranvier_core::event::{EventSink, EventSource};
 use ranvier_http::prelude::*;
 use serde::Serialize;

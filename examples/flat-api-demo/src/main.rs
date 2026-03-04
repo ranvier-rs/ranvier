@@ -1,3 +1,17 @@
+//! # Flat API Macro Demo
+//!
+//! Demonstrates declarative routing and transitions using Ranvier's macro system.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p flat-api-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - `#[transition]` macro for concise transition definitions
+//! - `#[route]` and `ranvier_router!` for automatic router generation
+//! - Resource injection pattern with custom resource types
+
 use anyhow::Result;
 use ranvier_core::prelude::*;
 use ranvier_macros::{ranvier_router, route, transition};

@@ -1,3 +1,17 @@
+//! # Routing and Parameter Extraction
+//!
+//! Demonstrates dynamic routes with path parameters, wildcard routes, extractors, and custom error mappings.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p routing-params-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - Path parameters (`:id`) and wildcard routes (`*path`)
+//! - Request extractors (`Path<T>`, `Query<T>`, `Json<T>`)
+//! - Custom error responses with typed fault handling
+
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use http::Request;

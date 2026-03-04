@@ -1,3 +1,17 @@
+//! # Background Job Scheduler Demo
+//!
+//! Demonstrates scheduling background tasks using interval and cron-based triggers.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p job-scheduler-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - Interval-based job scheduling (every N seconds)
+//! - Cron-based job scheduling with standard 6-part syntax
+//! - Graceful shutdown with Ctrl+C signal handling
+
 use ranvier_core::prelude::*;
 use ranvier_macros::transition;
 use ranvier_runtime::Axon;

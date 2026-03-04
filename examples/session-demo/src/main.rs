@@ -1,3 +1,17 @@
+//! # Session Management Demo
+//!
+//! Demonstrates cookie-based session tracking with in-memory storage and Bus injection.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p session-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - Cookie-based session management with MemoryStore
+//! - SessionLayer Tower middleware integration
+//! - Bus injection pattern for sharing session data
+
 use ranvier_core::prelude::*;
 use ranvier_http::prelude::*;
 use ranvier_macros::transition;

@@ -1,3 +1,17 @@
+//! # Diesel ORM Integration
+//!
+//! Demonstrates Diesel for SQLite database operations with migrations and CRUD workflows.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p ecosystem-diesel-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - r2d2 connection pooling in Resources
+//! - Embedded migrations with diesel_migrations
+//! - Blocking database calls via tokio::task::spawn_blocking
+
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use diesel::prelude::*;

@@ -1,3 +1,17 @@
+//! # OpenAPI Documentation
+//!
+//! Auto-generates OpenAPI 3.0 spec and Swagger UI from Ranvier HTTP routes with schema annotations.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p openapi-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - OpenApiGenerator extracts routes from Ingress
+//! - Schema inference from `FromRequest`/`IntoResponse` types
+//! - Embedded Swagger UI with interactive docs
+
 use hyper::body::Incoming;
 use ranvier_core::prelude::*;
 use ranvier_http::prelude::*;

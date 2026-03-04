@@ -1,3 +1,17 @@
+//! # NATS Event Streaming
+//!
+//! Demonstrates pub/sub event routing with NATS using EventSource and EventSink.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p ecosystem-nats-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - EventSource for consuming NATS subjects
+//! - EventSink for publishing events
+//! - Axon pipeline for event transformation
+
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use bytes::Bytes;

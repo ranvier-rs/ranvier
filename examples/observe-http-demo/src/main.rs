@@ -1,3 +1,17 @@
+//! # HTTP Observability
+//!
+//! Demonstrates HTTP metrics collection and distributed tracing with W3C TraceContext.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p observe-http-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - HttpMetricsLayer for request metrics
+//! - TraceContextLayer for W3C traceparent propagation
+//! - Prometheus-compatible metrics endpoint
+
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_http::prelude::*;

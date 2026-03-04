@@ -1,3 +1,17 @@
+//! # Meilisearch Full-Text Search
+//!
+//! Demonstrates full-text search integration with Meilisearch using REST API.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p ecosystem-meilisearch-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - Index creation and document seeding
+//! - Task polling for async operations
+//! - Search queries within Axon transitions
+
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use ranvier_core::prelude::*;

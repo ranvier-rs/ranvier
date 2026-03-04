@@ -1,3 +1,17 @@
+//! # Server-Sent Events (SSE) Streaming Demo
+//!
+//! Demonstrates real-time event streaming using SSE with a custom EventSource implementation.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p sse-streaming-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - Custom EventSource trait implementation for async event generation
+//! - SSE stream conversion with `from_event_source`
+//! - HTTP SSE endpoint integration with HttpIngress
+
 use async_trait::async_trait;
 use futures_core::stream::Stream;
 use ranvier_core::event::EventSource;

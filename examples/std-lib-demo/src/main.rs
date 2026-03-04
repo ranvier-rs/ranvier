@@ -1,3 +1,17 @@
+//! # Standard Library Demo
+//!
+//! Demonstrates core Ranvier logic nodes (Filter, Switch, Log) with Hyper/Tower integration.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p std-lib-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - FilterNode and SwitchNode for conditional logic
+//! - Hyper/Tower service integration with RanvierService
+//! - HTTP server using low-level Hyper primitives
+
 use http::Request;
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;

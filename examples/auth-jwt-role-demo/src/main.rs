@@ -1,3 +1,17 @@
+//! # JWT Role-Based Auth
+//!
+//! Demonstrates JWT bearer authentication with role-based access control.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p auth-jwt-role-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - BearerAuthLayer for JWT validation
+//! - RequireRoleLayer for role-based guards
+//! - auth_context for extracting claims
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};

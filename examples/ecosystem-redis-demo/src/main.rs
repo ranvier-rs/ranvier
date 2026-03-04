@@ -1,3 +1,17 @@
+//! # Redis Session and Cache
+//!
+//! Demonstrates Redis integration for session storage and response caching with Ranvier transitions.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p ecosystem-redis-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - ConnectionManager as shared resource
+//! - Session loading with automatic fallback creation
+//! - Response caching with TTL and cache-hit detection
+
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use ranvier_core::prelude::*;

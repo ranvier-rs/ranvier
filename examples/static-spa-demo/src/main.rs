@@ -1,3 +1,17 @@
+//! # Static SPA Serving
+//!
+//! Demonstrates serving static files and SPA fallback routing with compression.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p static-spa-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - serve_dir for static assets
+//! - spa_fallback for client-side routing
+//! - compression_layer for efficient delivery
+
 use std::path::PathBuf;
 
 use ranvier_core::prelude::*;

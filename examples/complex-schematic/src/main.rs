@@ -1,3 +1,17 @@
+//! # Complex Schematic Graph
+//!
+//! Shows how to manually enhance Axon schematics with Branch edges, nested subgraphs, and JSON export.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p complex-schematic
+//! ```
+//!
+//! ## Key Concepts
+//! - Manual Schematic node/edge manipulation
+//! - Branch edges for conditional flows
+//! - Nested subgraphs and JSON serialization
+
 use anyhow::Result;
 use async_trait::async_trait;
 use ranvier_core::prelude::*;

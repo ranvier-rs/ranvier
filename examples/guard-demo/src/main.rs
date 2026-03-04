@@ -1,3 +1,17 @@
+//! # Security Guards
+//!
+//! Demonstrates CORS, security headers, and rate limiting using guard layers.
+//!
+//! ## Run
+//! ```bash
+//! cargo run -p guard-demo
+//! ```
+//!
+//! ## Key Concepts
+//! - CorsGuardLayer for CORS policy
+//! - SecurityHeadersLayer for secure defaults
+//! - RateLimitLayer with custom key extraction
+
 use std::time::Duration;
 
 use http::header::HeaderName;

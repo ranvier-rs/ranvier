@@ -1,22 +1,16 @@
-//! gRPC Service Demo for Ranvier.
+//! # gRPC Service Demo
 //!
-//! This example demonstrates how to use `ranvier-grpc` to build a gRPC server
-//! by bridging tonic services to Ranvier's protocol-agnostic core.
+//! Demonstrates the ranvier-grpc API surface including error mapping, response conversion, and metadata context extraction.
 //!
-//! ## Overview
-//!
-//! Since gRPC services typically require `.proto` files and code generation,
-//! this demo uses manually-defined types to illustrate the gRPC ingress pattern
-//! without requiring a build script.
-//!
-//! In production, you would use `tonic-build` to generate service implementations
-//! from `.proto` files and then wire them through `GrpcIngress`.
-//!
-//! ## Usage
-//!
-//! ```sh
+//! ## Run
+//! ```bash
 //! cargo run -p grpc-service-demo
 //! ```
+//!
+//! ## Key Concepts
+//! - GrpcError types and tonic::Status conversion
+//! - IntoGrpcResponse trait for Result types
+//! - GrpcContext for metadata extraction (authorization, request-id)
 
 use ranvier_grpc::error::GrpcError;
 use ranvier_grpc::extract::GrpcContext;
