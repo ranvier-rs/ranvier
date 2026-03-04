@@ -108,8 +108,7 @@ impl DbResources for AppResources {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize PostgreSQL connection pool
-    // In production, use environment variables
+    // SAFETY: demo-only fallback. In production, always set DATABASE_URL env var.
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:password@localhost/ranvier_example".to_string());
 

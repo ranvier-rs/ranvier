@@ -7,7 +7,10 @@ use ranvier_http::prelude::*;
 use ranvier_runtime::Axon;
 use serde::Serialize;
 
-const JWT_SECRET: &str = "ranvier-demo-secret";
+// SAFETY: demo-only fallback. In production, always set JWT_SECRET env var.
+fn jwt_secret() -> String {
+    std::env::var("JWT_SECRET").unwrap_or_else(|_| "ranvier-demo-secret".to_string())
+}
 
 #[derive(Clone)]
 struct AdminGreeting;
@@ -53,7 +56,7 @@ fn issue_demo_admin_token() -> String {
     encode(
         &Header::new(Algorithm::HS256),
         &claims,
-        &EncodingKey::from_secret(JWT_SECRET.as_bytes()),
+        &EncodingKey::from_secret(jwt_secret().as_bytes()),
     )
     .expect("token encode")
 }
@@ -70,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .layer(RequireRoleLayer::new("admin"))
         // Global layers execute in LIFO order on request path.
         // Register role guard first so Bearer auth runs before role evaluation.
-        .layer(BearerAuthLayer::new_hs256(JWT_SECRET).required())
+        .layer(BearerAuthLayer::new_hs256(&jwt_secret()).required())
         .bus_injector(inject_auth_context)
         .get("/admin", secure_admin)
         .run(())
