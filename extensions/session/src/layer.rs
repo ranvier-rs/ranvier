@@ -1,7 +1,5 @@
 use crate::store::{Session, SessionStore};
-use bytes::Bytes;
 use http::{Request, Response, header};
-use http_body_util::Full;
 use ranvier_core::prelude::Bus;
 use std::future::Future;
 use std::pin::Pin;
@@ -63,13 +61,15 @@ pub struct SessionService<S, InnerService> {
     cookie_name: String,
 }
 
-impl<S, InnerService, ReqBody> Service<Request<ReqBody>> for SessionService<S, InnerService>
+impl<S, InnerService, ReqBody, ResBody> Service<Request<ReqBody>>
+    for SessionService<S, InnerService>
 where
     S: SessionStore + Send + Sync + 'static,
     InnerService:
-        Service<Request<ReqBody>, Response = Response<Full<Bytes>>> + Clone + Send + 'static,
+        Service<Request<ReqBody>, Response = Response<ResBody>> + Clone + Send + 'static,
     InnerService::Future: Send + 'static,
     ReqBody: Send + 'static,
+    ResBody: Send + 'static,
 {
     type Response = InnerService::Response;
     type Error = InnerService::Error;
@@ -114,7 +114,7 @@ where
             req.extensions_mut().insert(session.clone());
 
             // 4. Call inner service
-            let mut response: Response<Full<Bytes>> = inner.call(req).await?;
+            let mut response = inner.call(req).await?;
 
             // 5. Check if session was modified/destroyed and act accordingly
             if session.is_destroyed().await {

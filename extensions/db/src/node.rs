@@ -158,7 +158,7 @@ where
     To: Send + Sync + 'static,
     R: DbResources,
 {
-    type Error = anyhow::Error;
+    type Error = String;
     type Resources = R;
 
     async fn run(
@@ -175,8 +175,8 @@ where
 
         match self.inner.run(input, pool).await {
             Ok(result) => Outcome::Next(result),
-            Err(DbError::NoRows) => Outcome::Fault(anyhow::anyhow!("Record not found")),
-            Err(e) => Outcome::Fault(anyhow::anyhow!("Database error: {}", e)),
+            Err(DbError::NoRows) => Outcome::Fault("Record not found".to_string()),
+            Err(e) => Outcome::Fault(format!("Database error: {}", e)),
         }
     }
 }
@@ -259,7 +259,7 @@ where
     To: Send + Sync + 'static,
     R: DbResources,
 {
-    type Error = anyhow::Error;
+    type Error = String;
     type Resources = R;
 
     async fn run(
@@ -274,7 +274,7 @@ where
         let tx = match pool.begin().await {
             Ok(tx) => tx,
             Err(e) => {
-                return Outcome::Fault(anyhow::anyhow!("Failed to begin transaction: {}", e));
+                return Outcome::Fault(format!("Failed to begin transaction: {}", e));
             }
         };
         let mut tx = tx;
@@ -282,7 +282,7 @@ where
         if let Some(level) = self.isolation_level
             && let Err(e) = apply_postgres_isolation_level(&mut tx, level).await
         {
-            return Outcome::Fault(anyhow::anyhow!(
+            return Outcome::Fault(format!(
                 "Failed to set transaction isolation level: {}",
                 e
             ));
@@ -297,21 +297,21 @@ where
             Ok(result) => Outcome::Next(result),
             Err(DbError::NoRows) => {
                 if let Err(e) = tx.rollback().await {
-                    return Outcome::Fault(anyhow::anyhow!("Rollback failed: {}", e));
+                    return Outcome::Fault(format!("Rollback failed: {}", e));
                 }
-                return Outcome::Fault(anyhow::anyhow!("Record not found"));
+                return Outcome::Fault("Record not found".to_string());
             }
             Err(e) => {
                 if let Err(e) = tx.rollback().await {
-                    return Outcome::Fault(anyhow::anyhow!("Rollback failed: {}", e));
+                    return Outcome::Fault(format!("Rollback failed: {}", e));
                 }
-                return Outcome::Fault(anyhow::anyhow!("Database error: {}", e));
+                return Outcome::Fault(format!("Database error: {}", e));
             }
         };
 
         // Commit on success
         if let Err(e) = tx.commit().await {
-            return Outcome::Fault(anyhow::anyhow!("Commit failed: {}", e));
+            return Outcome::Fault(format!("Commit failed: {}", e));
         }
 
         result

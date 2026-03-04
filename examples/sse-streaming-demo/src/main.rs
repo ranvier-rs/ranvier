@@ -39,7 +39,7 @@ struct SseHandler;
 impl Transition<(), Sse<Pin<Box<dyn Stream<Item = Result<SseEvent, Infallible>> + Send + Sync>>>>
     for SseHandler
 {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Starting Ranvier SSE Demo Server on http://127.0.0.1:3000/");
     println!("To test: curl -N http://127.0.0.1:3000/events");
 
-    let handler = Axon::<(), (), Infallible, ()>::new("sse").then(SseHandler);
+    let handler = Axon::<(), (), String, ()>::new("sse").then(SseHandler);
     let app = HttpIngress::new().get("/events", handler);
 
     app.bind("127.0.0.1:3000")

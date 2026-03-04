@@ -25,21 +25,21 @@ use async_trait::async_trait;
 use ranvier_core::event::{EventSink, EventSource};
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
 // ============================================================================
 // 1. Data Types
 // ============================================================================
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct WsMessage {
     id: u64,
     content: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ChatEvent {
     user_id: String,
     message: String,
@@ -86,7 +86,7 @@ impl EventSource<WsMessage> for MockWebSocket {
 
 #[async_trait]
 impl EventSink<String> for MockWebSocket {
-    type Error = Infallible;
+    type Error = String;
 
     async fn send_event(&self, event: String) -> Result<(), Self::Error> {
         println!("[Sink] Sending to client: {}", event);
@@ -105,7 +105,7 @@ struct ProcessMessage;
 
 #[async_trait]
 impl Transition<WsMessage, ChatEvent> for ProcessMessage {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -135,7 +135,7 @@ struct Broadcast;
 
 #[async_trait]
 impl Transition<ChatEvent, String> for Broadcast {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -177,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
 
         // 3. Define the Axon for this event kind
         // Note: Axons are light and created per event typically, or reused if stateless.
-        let axon = Axon::<WsMessage, WsMessage, Infallible>::new("ChatFlow")
+        let axon = Axon::<WsMessage, WsMessage, String>::new("ChatFlow")
             .then(ProcessMessage)
             .then(Broadcast);
 

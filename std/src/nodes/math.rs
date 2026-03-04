@@ -36,7 +36,7 @@ impl<T> Transition<T, T> for MathNode<T>
 where
     T: Num + Clone + Send + Sync + Debug + 'static,
 {
-    type Error = std::convert::Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(

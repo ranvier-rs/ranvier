@@ -15,8 +15,8 @@ impl ranvier_core::transition::ResourceRequirement for AppResources {}
 struct Ping;
 
 #[async_trait]
-impl Transition<(), &'static str> for Ping {
-    type Error = Infallible;
+impl Transition<(), String> for Ping {
+    type Error = String;
     type Resources = AppResources;
 
     async fn run(
@@ -24,9 +24,9 @@ impl Transition<(), &'static str> for Ping {
         _state: (),
         _resources: &Self::Resources,
         _bus: &mut Bus,
-    ) -> Outcome<&'static str, Self::Error> {
+    ) -> Outcome<String, Self::Error> {
         tokio::time::sleep(std::time::Duration::from_millis(15)).await;
-        Outcome::next("pong")
+        Outcome::next("pong".to_string())
     }
 }
 
@@ -35,7 +35,7 @@ struct MetricsSnapshot;
 
 #[async_trait]
 impl Transition<(), String> for MetricsSnapshot {
-    type Error = Infallible;
+    type Error = String;
     type Resources = AppResources;
 
     async fn run(

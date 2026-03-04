@@ -27,7 +27,7 @@ impl<T> Transition<T, T> for RandomBranchNode<T>
 where
     T: Send + Sync + 'static + Clone + Serialize,
 {
-    type Error = std::convert::Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -89,7 +89,7 @@ where
     T: Send + Sync + 'static + Serialize,
     F: Fn(&T) -> bool + Send + Sync + 'static,
 {
-    type Error = std::convert::Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -148,7 +148,7 @@ where
     T: Send + Sync + 'static + Serialize,
     F: Fn(&T) -> String + Send + Sync + 'static,
 {
-    type Error = std::convert::Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(

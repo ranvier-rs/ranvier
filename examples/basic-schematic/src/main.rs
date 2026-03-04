@@ -50,7 +50,6 @@ cargo run --bin basic-schematic
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
-use std::convert::Infallible;
 
 // ============================================================================
 // 1. Define Transitions (Atomic Steps)
@@ -62,7 +61,7 @@ struct LogStart;
 
 #[async_trait]
 impl Transition<(), String> for LogStart {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -82,7 +81,7 @@ struct ProcessData;
 
 #[async_trait]
 impl Transition<String, String> for ProcessData {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -102,7 +101,7 @@ struct LogEnd;
 
 #[async_trait]
 impl Transition<String, ()> for LogEnd {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -123,7 +122,7 @@ impl Transition<String, ()> for LogEnd {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Build the Axon (Execution chain)
-    let axon = Axon::<(), (), Infallible>::new("My First Schematic")
+    let axon = Axon::<(), (), String>::new("My First Schematic")
         .then(LogStart)
         .then(ProcessData)
         .then(LogEnd);

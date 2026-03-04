@@ -3,10 +3,6 @@ use ranvier_http::prelude::*;
 use ranvier_macros::transition;
 use ranvier_runtime::Axon;
 use ranvier_session::prelude::*;
-use ranvier_session::layer::inject_session;
-use bytes::Bytes;
-use http::Response;
-use http_body_util::Full;
 use tracing::{info, Level};
 
 /// A counter state struct that we can store in the session.
@@ -64,20 +60,9 @@ async fn reset_session(_state: (), _resources: &(), bus: &mut Bus) -> Outcome<St
     }
 }
 
-// Map the outcomes to proper HTTP responses
-fn format_success(msg: String) -> Response<Full<Bytes>> {
-    Response::builder()
-        .status(200)
-        .header("content-type", "text/plain")
-        .body(Full::new(Bytes::from(msg)))
-        .unwrap()
-}
-
-fn handle_error(err: &String) -> Response<Full<Bytes>> {
-    Response::builder()
-        .status(500)
-        .body(Full::new(Bytes::from(format!("Internal Error: {}", err))))
-        .unwrap()
+// Map the error outcomes to proper HTTP responses
+fn handle_error(err: &String) -> HttpResponse {
+    (http::StatusCode::INTERNAL_SERVER_ERROR, format!("Internal Error: {}", err)).into_response()
 }
 
 #[tokio::main]
@@ -104,7 +89,11 @@ async fn main() -> anyhow::Result<()> {
         // Use the tower middleware to manage session load + save around requests
         .layer(SessionLayer::new(store).with_cookie_name("ranvier.sid"))
         // Inject the extracted Session into the Bus before Axons execute
-        .bus_injector(inject_session)
+        .bus_injector(|parts: &http::request::Parts, bus: &mut Bus| {
+            if let Some(session) = parts.extensions.get::<Session>() {
+                bus.insert(session.clone());
+            }
+        })
         // Bind the routes
         .route_method_with_error(http::Method::GET, "/", visit_axon, handle_error)
         .route_method_with_error(http::Method::GET, "/reset", reset_axon, handle_error);

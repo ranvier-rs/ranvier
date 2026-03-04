@@ -47,19 +47,19 @@ struct NatsSubjectSink {
 
 #[async_trait]
 impl EventSink<String> for NatsSubjectSink {
-    type Error = Infallible;
+    type Error = String;
 
     async fn send_event(&self, event: String) -> Result<(), Self::Error> {
         self.client
             .publish(self.subject.clone(), Bytes::from(event))
             .await
-            .map_err(String::from)?;
-        self.client.flush().await.map_err(String::from)?;
+            .map_err(|e| e.to_string())?;
+        self.client.flush().await.map_err(|e| e.to_string())?;
         Ok(())
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct ParsedEvent {
     kind: String,
     payload: String,
@@ -70,7 +70,7 @@ struct ParseEventTransition;
 
 #[async_trait]
 impl Transition<String, ParsedEvent> for ParseEventTransition {
-    type Error = Infallible;
+    type Error = String;
     type Resources = AppResources;
 
     async fn run(
@@ -95,7 +95,7 @@ struct ProjectToSinkTransition;
 
 #[async_trait]
 impl Transition<ParsedEvent, String> for ProjectToSinkTransition {
-    type Error = Infallible;
+    type Error = String;
     type Resources = AppResources;
 
     async fn run(
@@ -181,7 +181,7 @@ async fn main() -> Result<()> {
         let mut bus = Bus::new();
         match axon.execute(event, &resources, &mut bus).await {
             Outcome::Next(projected) => {
-                sink.send_event(projected).await?;
+                sink.send_event(projected).await.map_err(|e| anyhow!(e))?;
             }
             other => {
                 return Err(anyhow!("axon execution failed: {:?}", other));

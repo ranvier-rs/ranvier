@@ -5,10 +5,11 @@ use ranvier_runtime::{
     InMemoryPersistenceStore, PersistenceAutoComplete, PersistenceHandle, PersistenceStore,
     PersistenceTraceId,
 };
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct OrderFlowState {
     order_id: String,
     validated: bool,
@@ -20,7 +21,7 @@ struct ValidateOrder;
 
 #[async_trait]
 impl Transition<OrderFlowState, OrderFlowState> for ValidateOrder {
-    type Error = &'static str;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -39,7 +40,7 @@ struct ChargePayment;
 
 #[async_trait]
 impl Transition<OrderFlowState, OrderFlowState> for ChargePayment {
-    type Error = &'static str;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -49,7 +50,7 @@ impl Transition<OrderFlowState, OrderFlowState> for ChargePayment {
         _bus: &mut Bus,
     ) -> Outcome<OrderFlowState, Self::Error> {
         if state.should_fail_payment {
-            return Outcome::Fault("payment_declined");
+            return Outcome::Fault("payment_declined".to_string());
         }
         Outcome::Next(state)
     }
@@ -60,7 +61,7 @@ struct FinalizeOrder;
 
 #[async_trait]
 impl Transition<OrderFlowState, String> for FinalizeOrder {
-    type Error = &'static str;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -74,8 +75,8 @@ impl Transition<OrderFlowState, String> for FinalizeOrder {
     }
 }
 
-fn build_order_axon() -> Axon<OrderFlowState, String, &'static str> {
-    Axon::<OrderFlowState, OrderFlowState, &'static str>::new("OrderRecoveryFlow")
+fn build_order_axon() -> Axon<OrderFlowState, String, String> {
+    Axon::<OrderFlowState, OrderFlowState, String>::new("OrderRecoveryFlow")
         .then(ValidateOrder)
         .then(ChargePayment)
         .then(FinalizeOrder)

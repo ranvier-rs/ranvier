@@ -17,26 +17,26 @@ use ranvier_core::bus::{ConnectionBus, ConnectionId};
 use ranvier_core::prelude::*;
 use ranvier_core::telemetry::Traced;
 use ranvier_runtime::Axon;
-use std::convert::Infallible;
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
 // ============================================================================
 // 1. Data Types
 // ============================================================================
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct HttpRequest {
     path: String,
     _method: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct AuthUser {
     id: String,
     role: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct HttpResponse {
     status: u16,
     body: String,

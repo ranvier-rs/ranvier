@@ -4,7 +4,6 @@ use ranvier_core::prelude::*;
 use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
-use std::convert::Infallible;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, sleep};
 
@@ -18,12 +17,12 @@ struct AppResources {
 
 impl ResourceRequirement for AppResources {}
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct SearchInput {
     query: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct SearchOutput {
     query: String,
     estimated_total_hits: u64,

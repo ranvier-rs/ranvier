@@ -13,14 +13,14 @@ Instead of a simple linear flow, the Axon moves between explicit domain states.
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
-use std::convert::Infallible;
+use serde::{Deserialize, Serialize};
 
 // ============================================================================
 // 1. Define the State Tree
 // ============================================================================
 
 /// Represents the possible states of our application flow.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum FlowState {
     /// Initial state: we have a raw request (e.g. URI)
     RequestReceived(String),
@@ -35,7 +35,7 @@ enum FlowState {
 // ============================================================================
 
 /// Transition: RequestReceived -> Authenticated
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct Authenticate;
 
 #[async_trait]
@@ -70,7 +70,7 @@ impl Transition<FlowState, FlowState> for Authenticate {
 }
 
 /// Transition: Authenticated -> ContentLoaded
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct FetchContent;
 
 #[async_trait]

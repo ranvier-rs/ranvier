@@ -301,7 +301,7 @@ impl StaticAxon for DocsIndexAxon {
 // ============================================================
 
 /// Registry of all static axons in this project
-fn get_static_axons() -> Vec<Box<dyn StaticAxon<Output = serde_json::Value, Error = String>>> {
+fn get_static_axons() -> Vec<Box<dyn StaticAxon<Output = serde_json::Value, Error = Infallible>>> {
     vec![
         Box::new(ValueAxon::new(LandingPageAxon)),
         Box::new(ValueAxon::new(PricingPageAxon)),

@@ -14,7 +14,7 @@ struct AddOne;
 
 #[async_trait]
 impl Transition<i32, i32> for AddOne {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     // Optional: Add tracing to inner logic too
@@ -27,7 +27,7 @@ impl Transition<i32, i32> for AddOne {
         state: i32,
         _resources: &Self::Resources,
         _bus: &mut Bus,
-    ) -> Outcome<i32, Self::Error> {
+    ) -> Outcome<i32, String> {
         tracing::info!("Adding one to {}", state);
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         Outcome::Next(state + 1)

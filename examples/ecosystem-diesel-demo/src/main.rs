@@ -98,7 +98,7 @@ struct CreateUserTransition;
 
 #[async_trait]
 impl Transition<CreateUserInput, UserSummary> for CreateUserTransition {
-    type Error = Infallible;
+    type Error = String;
     type Resources = AppResources;
 
     async fn run(
@@ -111,7 +111,7 @@ impl Transition<CreateUserInput, UserSummary> for CreateUserTransition {
         let username = input.username;
         let email = input.email;
         let created = run_blocking(move || {
-            let mut conn = pool.get().map_err(String::from)?;
+            let mut conn = pool.get().map_err(|e| anyhow!("{}", e))?;
             let insert = NewUser {
                 username: &username,
                 email: &email,
@@ -119,13 +119,13 @@ impl Transition<CreateUserInput, UserSummary> for CreateUserTransition {
             diesel::insert_into(users::table)
                 .values(&insert)
                 .execute(&mut conn)
-                .map_err(String::from)?;
+                .map_err(|e| anyhow!("{}", e))?;
 
             use self::users::dsl;
             let row = dsl::users
                 .order(dsl::id.desc())
                 .first::<UserRow>(&mut conn)
-                .map_err(String::from)?;
+                .map_err(|e| anyhow!("{}", e))?;
             Ok(UserSummary::from(row))
         })
         .await;
@@ -142,7 +142,7 @@ struct UpdateUserEmailTransition;
 
 #[async_trait]
 impl Transition<UpdateEmailInput, UserSummary> for UpdateUserEmailTransition {
-    type Error = Infallible;
+    type Error = String;
     type Resources = AppResources;
 
     async fn run(
@@ -157,11 +157,11 @@ impl Transition<UpdateEmailInput, UserSummary> for UpdateUserEmailTransition {
         let updated = run_blocking(move || {
             use self::users::dsl;
 
-            let mut conn = pool.get().map_err(String::from)?;
+            let mut conn = pool.get().map_err(|e| anyhow!("{}", e))?;
             let affected = diesel::update(dsl::users.filter(dsl::id.eq(user_id)))
                 .set(UpdateUserEmail { email: &next_email })
                 .execute(&mut conn)
-                .map_err(String::from)?;
+                .map_err(|e| anyhow!("{}", e))?;
             if affected == 0 {
                 return Err(anyhow!("user id={} not found", user_id));
             }
@@ -169,7 +169,7 @@ impl Transition<UpdateEmailInput, UserSummary> for UpdateUserEmailTransition {
             let row = dsl::users
                 .find(user_id)
                 .first::<UserRow>(&mut conn)
-                .map_err(String::from)?;
+                .map_err(|e| anyhow!("{}", e))?;
             Ok(UserSummary::from(row))
         })
         .await;
@@ -186,7 +186,7 @@ struct DeleteUserTransition;
 
 #[async_trait]
 impl Transition<DeleteUserInput, i32> for DeleteUserTransition {
-    type Error = Infallible;
+    type Error = String;
     type Resources = AppResources;
 
     async fn run(
@@ -200,10 +200,10 @@ impl Transition<DeleteUserInput, i32> for DeleteUserTransition {
         let deleted = run_blocking(move || {
             use self::users::dsl;
 
-            let mut conn = pool.get().map_err(String::from)?;
+            let mut conn = pool.get().map_err(|e| anyhow!("{}", e))?;
             let affected = diesel::delete(dsl::users.filter(dsl::id.eq(user_id)))
                 .execute(&mut conn)
-                .map_err(String::from)?;
+                .map_err(|e| anyhow!("{}", e))?;
             if affected == 0 {
                 return Err(anyhow!("user id={} not found", user_id));
             }
@@ -223,7 +223,7 @@ struct ListUsersTransition;
 
 #[async_trait]
 impl Transition<FetchAllInput, Vec<UserSummary>> for ListUsersTransition {
-    type Error = Infallible;
+    type Error = String;
     type Resources = AppResources;
 
     async fn run(
@@ -236,11 +236,11 @@ impl Transition<FetchAllInput, Vec<UserSummary>> for ListUsersTransition {
         let listed = run_blocking(move || {
             use self::users::dsl;
 
-            let mut conn = pool.get().map_err(String::from)?;
+            let mut conn = pool.get().map_err(|e| anyhow!("{}", e))?;
             let rows = dsl::users
                 .order(dsl::id.asc())
                 .load::<UserRow>(&mut conn)
-                .map_err(String::from)?;
+                .map_err(|e| anyhow!("{}", e))?;
             Ok(rows.into_iter().map(UserSummary::from).collect())
         })
         .await;

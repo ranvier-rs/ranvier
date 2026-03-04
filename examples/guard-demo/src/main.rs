@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::time::Duration;
 
 use http::header::HeaderName;
@@ -12,7 +11,7 @@ struct PublicHello;
 
 #[async_trait::async_trait]
 impl Transition<(), String> for PublicHello {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -30,7 +29,7 @@ struct BurstHello;
 
 #[async_trait::async_trait]
 impl Transition<(), String> for BurstHello {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -56,8 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         RateLimitPolicy::new(5, Duration::from_secs(60)).key_header(client_header),
     );
 
-    let public = Axon::<(), (), Infallible, ()>::new("PublicHello").then(PublicHello);
-    let burst = Axon::<(), (), Infallible, ()>::new("BurstHello").then(BurstHello);
+    let public = Axon::<(), (), String, ()>::new("PublicHello").then(PublicHello);
+    let burst = Axon::<(), (), String, ()>::new("BurstHello").then(BurstHello);
 
     Ranvier::http::<()>()
         .bind("127.0.0.1:3110")

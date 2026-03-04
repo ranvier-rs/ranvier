@@ -39,7 +39,7 @@ pub struct RouteResponse {
 }
 
 /// Error type for routing
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub enum RouteError {
     NotFound(String),

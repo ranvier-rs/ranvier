@@ -4,7 +4,6 @@ use ranvier_core::prelude::*;
 use ranvier_core::schematic::{Edge, EdgeType, Node, NodeKind};
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
-use std::convert::Infallible;
 
 // --- Data Types ---
 
@@ -26,7 +25,7 @@ struct Authenticate;
 
 #[async_trait]
 impl Transition<LoginInput, UserContext> for Authenticate {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -63,7 +62,7 @@ async fn main() -> Result<()> {
 
     // 1. Build the Linear Axon
     // Axon currently builds the 'Happy Path' automatically
-    let mut axon = Axon::<LoginInput, LoginInput, Infallible>::new("StartFlow").then(Authenticate);
+    let mut axon = Axon::<LoginInput, LoginInput, String>::new("StartFlow").then(Authenticate);
 
     // 2. Start Manual Schematic Enhancement
     // Since Axon's Builder doesn't yet support auto-extraction of Branches,

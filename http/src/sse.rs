@@ -3,6 +3,9 @@ use bytes::Bytes;
 use futures_util::stream::Stream;
 
 use ranvier_core::event::EventSource;
+use serde::de::{self, Deserializer};
+use serde::ser::Serializer;
+use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -81,6 +84,24 @@ impl SseEvent {
 
 pub struct Sse<S> {
     stream: S,
+}
+
+// Stub Serialize/Deserialize implementations for Sse.
+// Sse wraps a live stream so real (de)serialization is not meaningful;
+// these impls exist to satisfy the Axon<In, Out, E> type-parameter bounds
+// that require Serialize + DeserializeOwned on every intermediate type.
+impl<S> Serialize for Sse<S> {
+    fn serialize<Ser: Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
+        serializer.serialize_str("<<Sse stream>>")
+    }
+}
+
+impl<'de, S> Deserialize<'de> for Sse<S> {
+    fn deserialize<D: Deserializer<'de>>(_deserializer: D) -> Result<Self, D::Error> {
+        Err(de::Error::custom(
+            "Sse<S> cannot be deserialized; it wraps a live stream",
+        ))
+    }
 }
 
 impl<S, E> Sse<S>

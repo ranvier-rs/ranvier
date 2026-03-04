@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::path::PathBuf;
 
 use ranvier_core::prelude::*;
@@ -10,7 +9,7 @@ struct ApiPing;
 
 #[async_trait::async_trait]
 impl Transition<(), String> for ApiPing {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -40,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .compression_layer()
         .get(
             "/api/ping",
-            Axon::<(), (), Infallible, ()>::new("ApiPing").then(ApiPing),
+            Axon::<(), (), String, ()>::new("ApiPing").then(ApiPing),
         )
         .run(())
         .await

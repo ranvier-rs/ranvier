@@ -25,7 +25,7 @@ impl StringNode {
 
 #[async_trait]
 impl Transition<String, String> for StringNode {
-    type Error = std::convert::Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(

@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::path::PathBuf;
 
 use ranvier_core::prelude::*;
@@ -11,7 +10,7 @@ struct AcceptOrder;
 
 #[async_trait::async_trait]
 impl Transition<(), serde_json::Value> for AcceptOrder {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -47,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let order_route = Axon::<(), (), Infallible, ()>::new("AcceptOrder").then(AcceptOrder);
+    let order_route = Axon::<(), (), String, ()>::new("AcceptOrder").then(AcceptOrder);
 
     println!("Serving embedded frontend at http://127.0.0.1:3030");
     println!("API endpoint: POST http://127.0.0.1:3030/api/order");

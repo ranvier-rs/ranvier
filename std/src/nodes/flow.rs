@@ -26,7 +26,7 @@ impl<T> Transition<T, T> for DelayNode<T>
 where
     T: Send + Sync + 'static,
 {
-    type Error = std::convert::Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -65,7 +65,7 @@ impl<T> Transition<T, T> for IdentityNode<T>
 where
     T: Send + Sync + 'static,
 {
-    type Error = std::convert::Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(

@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use http::Request;
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
@@ -30,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Define Axon: In=String, Out=String
     // We explicitly specify types since start() doesn't take value to infer from
-    let logic_flow = Axon::<String, String, Infallible>::new("Logic Demo")
+    let logic_flow = Axon::<String, String, String>::new("Logic Demo")
         .then(LogNode::new("Start", "info"))
         .then(filter)
         .then(switch);

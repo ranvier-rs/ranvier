@@ -28,7 +28,7 @@ impl<T> Transition<T, T> for LogNode<T>
 where
     T: Debug + Send + Sync + 'static,
 {
-    type Error = std::convert::Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(

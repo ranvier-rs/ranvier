@@ -42,7 +42,7 @@ pub struct GetUserById;
 
 #[async_trait]
 impl DbTransition<UserId, User> for GetUserById {
-    type Error = Infallible;
+    type Error = DbError;
 
     async fn run(&self, input: UserId, pool: &sqlx::PgPool) -> QueryResult<User> {
         sqlx::query_as::<_, User>("SELECT id, username, email, created_at FROM users WHERE id = $1")
@@ -59,7 +59,7 @@ pub struct CreateUser;
 
 #[async_trait]
 impl DbTransition<CreateUserRequest, User> for CreateUser {
-    type Error = Infallible;
+    type Error = DbError;
 
     async fn run(&self, input: CreateUserRequest, pool: &sqlx::PgPool) -> QueryResult<User> {
         sqlx::query_as::<_, User>(
@@ -79,7 +79,7 @@ pub struct ListUsers;
 
 #[async_trait]
 impl DbTransition<(), Vec<User>> for ListUsers {
-    type Error = Infallible;
+    type Error = DbError;
 
     async fn run(&self, _input: (), pool: &sqlx::PgPool) -> QueryResult<Vec<User>> {
         sqlx::query_as::<_, User>("SELECT id, username, email, created_at FROM users ORDER BY id")
