@@ -776,13 +776,13 @@ where
     /// Enable active intervention endpoints (`/_system/intervene/*`).
     /// These endpoints allow external tooling (like Ranvier Studio) to pause,
     /// inspect, and forcefully resume or re-route in-flight workflow instances.
-    pub fn with_active_intervention(mut self) -> Self {
+    pub fn active_intervention(mut self) -> Self {
         self.active_intervention = true;
         self
     }
 
     /// Attach a policy registry for hot-reloads.
-    pub fn with_policy_registry(mut self, registry: ranvier_core::policy::PolicyRegistry) -> Self {
+    pub fn policy_registry(mut self, registry: ranvier_core::policy::PolicyRegistry) -> Self {
         self.policy_registry = Some(registry);
         self
     }
@@ -1351,6 +1351,62 @@ where
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
         self.route_method(Method::PATCH, path, circuit)
+    }
+
+    pub fn post_with_error<Out, E, H>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        error_handler: H,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+        H: Fn(&E) -> HttpResponse + Send + Sync + 'static,
+    {
+        self.route_method_with_error(Method::POST, path, circuit, error_handler)
+    }
+
+    pub fn put_with_error<Out, E, H>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        error_handler: H,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+        H: Fn(&E) -> HttpResponse + Send + Sync + 'static,
+    {
+        self.route_method_with_error(Method::PUT, path, circuit, error_handler)
+    }
+
+    pub fn delete_with_error<Out, E, H>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        error_handler: H,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+        H: Fn(&E) -> HttpResponse + Send + Sync + 'static,
+    {
+        self.route_method_with_error(Method::DELETE, path, circuit, error_handler)
+    }
+
+    pub fn patch_with_error<Out, E, H>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        error_handler: H,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+        H: Fn(&E) -> HttpResponse + Send + Sync + 'static,
+    {
+        self.route_method_with_error(Method::PATCH, path, circuit, error_handler)
     }
 
     /// Set a fallback circuit for unmatched routes.
