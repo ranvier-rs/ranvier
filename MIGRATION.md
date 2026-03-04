@@ -1,4 +1,142 @@
-# Migration Guide: 0.15 → 0.16
+# Migration Guide
+
+---
+
+# 0.16 → 0.17
+
+This guide covers all changes needed when upgrading from Ranvier 0.16.x to 0.17.
+
+## Quick Summary
+
+Ranvier 0.17 focuses on **Developer Experience & Example Excellence**. It introduces new convenience types, HTTP naming changes, and expanded prelude re-exports. Most changes are additive.
+
+**Required changes:**
+1. Update version numbers in `Cargo.toml`
+2. Rename two `HttpIngress` methods (if used)
+
+**Optional improvements:**
+- Adopt `SimpleAxon`, `TypedAxon`, or `InfallibleAxon` type aliases
+- Use `RanvierError` instead of `String` for error types
+- Use new `Html` response type and `Header`/`CookieJar` extractors
+
+## Step 1: Update Dependencies
+
+```toml
+# Before (0.16.x)
+ranvier-core = "0.16"
+ranvier-runtime = "0.16"
+ranvier-http = "0.16"
+
+# After (0.17.x)
+ranvier-core = "0.17"
+ranvier-runtime = "0.17"
+ranvier-http = "0.17"
+```
+
+## Step 2: HttpIngress Naming Changes (Required)
+
+Two `HttpIngress` methods were renamed to remove the `with_` prefix:
+
+```diff
+ let app = Ranvier::http::<()>()
+-    .with_active_intervention()
+-    .with_policy_registry(registry);
++    .active_intervention()
++    .policy_registry(registry);
+```
+
+## Step 3: Adopt New Axon Aliases (Optional)
+
+v0.17 introduces convenience type aliases in the runtime prelude:
+
+```rust
+use ranvier_runtime::prelude::*;
+
+// Before: explicit generics
+let axon: Axon<String, String, String> = Axon::new("Demo").then(step);
+
+// After: SimpleAxon (Error = String)
+let axon: SimpleAxon<String, String> = Axon::new("Demo").then(step);
+
+// Or: TypedAxon (Error = RanvierError)
+let axon: TypedAxon<String, String> = Axon::new("Demo").then(step);
+
+// Or: InfallibleAxon (Error = Infallible) — for infallible pipelines
+let axon: InfallibleAxon<String, String> = Axon::new("Demo").then(step);
+```
+
+## Step 4: Use RanvierError (Optional)
+
+The core prelude now includes `RanvierError` — a serde-compatible error type:
+
+```rust
+use ranvier_core::prelude::*; // RanvierError now included
+
+impl Transition<Input, Output> for MyNode {
+    type Error = RanvierError; // instead of String
+    type Resources = ();
+
+    async fn run(&self, input: Input, _: &(), _: &mut Bus) -> Outcome<Output, RanvierError> {
+        if invalid {
+            return Outcome::Fault(RanvierError::validation("input is invalid"));
+        }
+        Outcome::Next(output)
+    }
+}
+```
+
+Variants: `Message(String)`, `NotFound(String)`, `Validation(String)`, `Internal(String)`.
+
+## Step 5: New HTTP Features (Optional)
+
+### Html response type
+
+```rust
+use ranvier_http::Html;
+// Returns text/html; charset=utf-8
+Outcome::Next(Html("<h1>Hello</h1>".to_string()))
+```
+
+### Header extractor
+
+```rust
+use ranvier_http::Header;
+let auth: Header = /* extracted from request */;
+```
+
+### CookieJar extractor
+
+```rust
+use ranvier_http::CookieJar;
+let cookies: CookieJar = /* extracted from request */;
+```
+
+### Symmetric error handler methods
+
+```rust
+// New: post_with_error, put_with_error, delete_with_error, patch_with_error
+.post_with_error("/items", create_axon, error_mapper)
+```
+
+## Step 6: Expanded Preludes
+
+**Core prelude additions:**
+- `ResourceRequirement` — was available but not in prelude
+- `EdgeType` — was available but not in prelude
+- `RanvierError` — new error type
+
+**Runtime prelude additions:**
+- `ExecutionMode` — was available but not in prelude
+- `BoxFuture` — was available but not in prelude
+- `SimpleAxon`, `TypedAxon`, `InfallibleAxon` — new type aliases
+
+## Full Change Log
+
+See [Breaking Changes v0.17](../docs/05_dev_plans/breaking_changes_v0_17.md) for the complete list.
+
+---
+
+# 0.15 → 0.16
 
 This guide covers all changes needed when upgrading from Ranvier 0.15.x to 0.16.
 
