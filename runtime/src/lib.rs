@@ -8,7 +8,7 @@ pub mod replay;
 pub mod testkit;
 
 pub mod prelude {
-    pub use crate::axon::{Axon, SchematicExportRequest};
+    pub use crate::axon::{Axon, BoxFuture, ExecutionMode, SchematicExportRequest};
     pub use crate::cluster::{ClusterManager, LeaderElection, LockBasedElection};
     pub use crate::distributed::{
         DistributedError, DistributedLock, DistributedStore, Guard, LockOptions,

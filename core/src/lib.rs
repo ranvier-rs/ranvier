@@ -34,9 +34,9 @@ pub mod prelude {
     pub use crate::outcome::{BranchId, NodeId, Outcome};
     pub use crate::policy::{DynamicPolicy, PolicyRegistry};
     pub use crate::saga::{SagaCompensationRegistry, SagaPolicy, SagaStack, SagaTask};
-    pub use crate::schematic::{Edge, Node, NodeKind, SchemaMigrationMapper, Schematic};
+    pub use crate::schematic::{Edge, EdgeType, Node, NodeKind, SchemaMigrationMapper, Schematic};
     pub use crate::timeline::{Timeline, TimelineEvent};
-    pub use crate::transition::Transition;
+    pub use crate::transition::{ResourceRequirement, Transition};
 }
 
 // Legacy modules removed/deprecated
