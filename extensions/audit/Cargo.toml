@@ -22,3 +22,6 @@ tokio = { workspace = true, features = ["full"] }
 ring = "0.17"
 hex = "0.4"
 tempfile = "3.8"
+
+[lints]
+workspace = true

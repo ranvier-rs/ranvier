@@ -1,7 +1,7 @@
 use async_trait::async_trait;
-use bb8_redis::{bb8::Pool, RedisConnectionManager};
-use redis::AsyncCommands;
+use bb8_redis::{RedisConnectionManager, bb8::Pool};
 use ranvier_core::cluster::{ClusterBus, ClusterError, DistributedLock};
+use redis::AsyncCommands;
 use tracing::debug;
 
 type RedisPool = Pool<RedisConnectionManager>;
@@ -39,7 +39,8 @@ impl DistributedLock for RedisDistributedLock {
             .arg("PX")
             .arg(ttl_ms)
             .query_async(&mut *conn)
-            .await.map_err(|e| ClusterError::Internal(e.to_string()))?;
+            .await
+            .map_err(|e| ClusterError::Internal(e.to_string()))?;
 
         Ok(result.is_some())
     }
@@ -67,11 +68,15 @@ impl DistributedLock for RedisDistributedLock {
             .key(key)
             .arg(&self.node_id)
             .invoke_async(&mut *conn)
-            .await.map_err(|e| ClusterError::Internal(e.to_string()))?;
+            .await
+            .map_err(|e| ClusterError::Internal(e.to_string()))?;
 
         if result == 0 {
             // Either the lock expired or we don't own it
-            debug!("Failed to release lock '{}', not owned by node '{}'", key, self.node_id);
+            debug!(
+                "Failed to release lock '{}', not owned by node '{}'",
+                key, self.node_id
+            );
         }
 
         Ok(())
@@ -100,10 +105,13 @@ impl DistributedLock for RedisDistributedLock {
             .arg(&self.node_id)
             .arg(extra_ttl_ms)
             .invoke_async(&mut *conn)
-            .await.map_err(|e| ClusterError::Internal(e.to_string()))?;
+            .await
+            .map_err(|e| ClusterError::Internal(e.to_string()))?;
 
         if result == 0 {
-            Err(ClusterError::Internal("Lock extend failed or lock not owned".to_string()))
+            Err(ClusterError::Internal(
+                "Lock extend failed or lock not owned".to_string(),
+            ))
         } else {
             Ok(())
         }
@@ -130,7 +138,10 @@ impl ClusterBus for RedisClusterBus {
             .await
             .map_err(|e| ClusterError::ConnectionError(e.to_string()))?;
 
-        let _: () = conn.publish(topic, payload).await.map_err(|e| ClusterError::Internal(e.to_string()))?;
+        let _: () = conn
+            .publish(topic, payload)
+            .await
+            .map_err(|e| ClusterError::Internal(e.to_string()))?;
         Ok(())
     }
 

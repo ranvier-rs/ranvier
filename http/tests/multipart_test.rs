@@ -5,8 +5,8 @@
 use bytes::Bytes;
 use http::Request;
 use http_body_util::Full;
-use ranvier_http::extract::multipart::Multipart;
 use ranvier_http::extract::FromRequest;
+use ranvier_http::extract::multipart::Multipart;
 
 fn multipart_body(boundary: &str, fields: &[(&str, Option<&str>, &[u8])]) -> Vec<u8> {
     let mut body = Vec::new();
@@ -66,10 +66,7 @@ async fn multipart_extracts_text_fields() {
 async fn multipart_extracts_file_uploads() {
     let boundary = "----FileBoundary456";
     let file_data = b"hello world file content";
-    let raw = multipart_body(
-        boundary,
-        &[("document", Some("readme.txt"), file_data)],
-    );
+    let raw = multipart_body(boundary, &[("document", Some("readme.txt"), file_data)]);
 
     let mut req = Request::builder()
         .uri("/upload")

@@ -1,12 +1,12 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use serde::{Serialize, Deserialize};
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
-use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 use ranvier_core::prelude::*;
 use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
+use serde::{Deserialize, Serialize};
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
@@ -273,25 +273,21 @@ async fn main() -> Result<()> {
     let resources = AppResources { pool };
     let mut bus = Bus::new();
 
-    let create = Axon::<CreateUserInput, CreateUserInput, String, AppResources>::new(
-        "diesel.create_user",
-    )
-    .then(CreateUserTransition);
+    let create =
+        Axon::<CreateUserInput, CreateUserInput, String, AppResources>::new("diesel.create_user")
+            .then(CreateUserTransition);
 
-    let list = Axon::<FetchAllInput, FetchAllInput, String, AppResources>::new(
-        "diesel.list_users",
-    )
-    .then(ListUsersTransition);
+    let list = Axon::<FetchAllInput, FetchAllInput, String, AppResources>::new("diesel.list_users")
+        .then(ListUsersTransition);
 
     let update = Axon::<UpdateEmailInput, UpdateEmailInput, String, AppResources>::new(
         "diesel.update_user_email",
     )
     .then(UpdateUserEmailTransition);
 
-    let delete = Axon::<DeleteUserInput, DeleteUserInput, String, AppResources>::new(
-        "diesel.delete_user",
-    )
-    .then(DeleteUserTransition);
+    let delete =
+        Axon::<DeleteUserInput, DeleteUserInput, String, AppResources>::new("diesel.delete_user")
+            .then(DeleteUserTransition);
 
     let alice = create
         .execute(
@@ -319,11 +315,7 @@ async fn main() -> Result<()> {
             println!("created: {}#{}, {}#{}", a.username, a.id, b.username, b.id);
         }
         _ => {
-            return Err(anyhow!(
-                "create failed: alice={:?}, bob={:?}",
-                alice,
-                bob
-            ));
+            return Err(anyhow!("create failed: alice={:?}, bob={:?}", alice, bob));
         }
     }
 
@@ -360,7 +352,10 @@ async fn main() -> Result<()> {
         Outcome::Next(users) => {
             println!("list(after): {} users", users.len());
             for user in users {
-                println!("- id={} username={} email={}", user.id, user.username, user.email);
+                println!(
+                    "- id={} username={} email={}",
+                    user.id, user.username, user.email
+                );
             }
         }
         other => {

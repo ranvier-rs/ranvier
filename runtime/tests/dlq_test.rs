@@ -1,7 +1,7 @@
-use ranvier_core::prelude::*;
 use ranvier_core::event::DlqPolicy;
-use ranvier_runtime::Axon;
+use ranvier_core::prelude::*;
 use ranvier_observe::FileDlqSink;
+use ranvier_runtime::Axon;
 use tempfile::tempdir;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -43,15 +43,18 @@ async fn test_dlq_captures_fault() {
 
     // Verify outcome is fault
     match outcome {
-        Outcome::Fault(FaultError::ExpectedFault) => {},
+        Outcome::Fault(FaultError::ExpectedFault) => {}
         _ => panic!("Expected fault, got {:?}", outcome),
     }
 
     // Check if DLQ file was created and contains the fault
     let mut files = std::fs::read_dir(&dlq_path).unwrap();
-    let entry = files.next().expect("Expected at least one DLQ file").unwrap();
+    let entry = files
+        .next()
+        .expect("Expected at least one DLQ file")
+        .unwrap();
     let content = std::fs::read_to_string(entry.path()).unwrap();
-    
+
     assert!(content.contains("ExpectedFault"));
     assert!(content.contains("DlqTest"));
 }

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::StreamExt;
@@ -7,7 +7,7 @@ use ranvier_core::prelude::*;
 use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 #[derive(Clone)]
 struct AppResources {

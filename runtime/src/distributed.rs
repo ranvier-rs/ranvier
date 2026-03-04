@@ -26,7 +26,7 @@ impl std::error::Error for DistributedError {}
 pub trait DistributedStore: Send + Sync {
     /// Retrieve a value from the store.
     async fn get(&self, domain: &str, key: &str) -> Result<Option<Vec<u8>>, DistributedError>;
-    
+
     /// Set a value in the store, optionally with a time-to-live (in seconds).
     async fn set(
         &self,
@@ -35,7 +35,7 @@ pub trait DistributedStore: Send + Sync {
         value: &[u8],
         ttl_sec: Option<u64>,
     ) -> Result<(), DistributedError>;
-    
+
     /// Delete a value from the store.
     async fn delete(&self, domain: &str, key: &str) -> Result<(), DistributedError>;
 }
@@ -79,10 +79,10 @@ pub trait DistributedLock: Send + Sync {
         resource_key: &str,
         options: LockOptions,
     ) -> Result<Guard, DistributedError>;
-    
+
     /// Release the acquired lock.
     async fn release(&self, guard: Guard) -> Result<(), DistributedError>;
-    
+
     /// Extend the TTL of the currently held lock.
     async fn extend(&self, guard: &Guard, additional_ttl_ms: u64) -> Result<(), DistributedError>;
 }

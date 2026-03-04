@@ -58,8 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     let ping = Axon::<(), (), String, AppResources>::new("Ping").then(Ping);
-    let metrics_route = Axon::<(), (), String, AppResources>::new("Metrics")
-        .then(MetricsSnapshot);
+    let metrics_route = Axon::<(), (), String, AppResources>::new("Metrics").then(MetricsSnapshot);
 
     println!("observe-http-demo listening on http://127.0.0.1:3140");
     println!("try: curl http://127.0.0.1:3140/ping");

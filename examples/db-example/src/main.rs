@@ -132,18 +132,17 @@ async fn main() -> anyhow::Result<()> {
         email: "alice@example.com".to_string(),
     };
 
-    let result = Axon::<CreateUserRequest, CreateUserRequest, String, AppResources>::new(
-        "create_user",
-    )
-    .then(TxPgNode::new(CreateUser).with_isolation_level(IsolationLevel::ReadCommitted))
-    .execute(create_request, &resources, &mut bus)
-    .await;
+    let result =
+        Axon::<CreateUserRequest, CreateUserRequest, String, AppResources>::new("create_user")
+            .then(TxPgNode::new(CreateUser).with_isolation_level(IsolationLevel::ReadCommitted))
+            .execute(create_request, &resources, &mut bus)
+            .await;
 
     match result {
         Outcome::Next(user) => {
             println!("✅ User created: {} ({})", user.username, user.email);
         }
-        Outcome::Fault(e.to_string()) => {
+        Outcome::Fault(e) => {
             println!("❌ Failed to create user: {:?}", e);
         }
         _ => {}
@@ -160,7 +159,7 @@ async fn main() -> anyhow::Result<()> {
         Outcome::Next(user) => {
             println!("✅ Found user: {} (ID: {})", user.username, user.id);
         }
-        Outcome::Fault(e.to_string()) => {
+        Outcome::Fault(e) => {
             println!("❌ Failed to get user: {:?}", e);
         }
         _ => {}
@@ -180,7 +179,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("   - {} ({}) [ID: {}]", user.username, user.email, user.id);
             }
         }
-        Outcome::Fault(e.to_string()) => {
+        Outcome::Fault(e) => {
             println!("❌ Failed to list users: {:?}", e);
         }
         _ => {}

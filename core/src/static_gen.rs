@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Legacy trait for static graph nodes (kept for backward compatibility)
-#[deprecated(since = "0.9.0", note = "Legacy trait kept for backward compatibility. Use StaticAxon instead.")]
+#[deprecated(
+    since = "0.9.0",
+    note = "Legacy trait kept for backward compatibility. Use StaticAxon instead."
+)]
 pub trait StaticNode {
     /// Unique identifier for the node
     fn id(&self) -> &'static str;

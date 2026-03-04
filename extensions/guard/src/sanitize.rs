@@ -98,7 +98,10 @@ mod tests {
     #[test]
     fn header_injection_stripped() {
         assert_eq!(clean_header_value("ok"), "ok");
-        assert_eq!(clean_header_value("value\r\nInjected: header"), "valueInjected: header");
+        assert_eq!(
+            clean_header_value("value\r\nInjected: header"),
+            "valueInjected: header"
+        );
         assert_eq!(clean_header_value("null\0byte"), "nullbyte");
     }
 }

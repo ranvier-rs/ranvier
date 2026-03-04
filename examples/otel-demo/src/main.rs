@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::{Protocol, WithExportConfig};
 use ranvier_core::prelude::*;
-use ranvier_observe::{init_otlp_tracing_with_protocol, init_stdout_tracing, OtlpProtocolPreset};
+use ranvier_observe::{OtlpProtocolPreset, init_otlp_tracing_with_protocol, init_stdout_tracing};
 use ranvier_runtime::Axon;
 use std::str::FromStr;
 use std::time::Duration;

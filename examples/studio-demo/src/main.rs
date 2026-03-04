@@ -3,7 +3,7 @@ use ranvier_core::schematic::Schematic;
 use ranvier_macros::transition;
 use ranvier_runtime::Axon;
 use ranvier_status::{
-    projections_from_timeline, write_projection_files, TimelineProjectionOptions,
+    TimelineProjectionOptions, projections_from_timeline, write_projection_files,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -101,8 +101,8 @@ fn set_env_if_missing(key: &str, value: String) {
 }
 
 fn regenerate_projection_from_timeline(
-    timeline_path: &PathBuf,
-    public_path: &PathBuf,
+    timeline_path: &std::path::Path,
+    public_path: &std::path::Path,
     schematic: &Schematic,
 ) -> anyhow::Result<()> {
     if !timeline_path.exists() {

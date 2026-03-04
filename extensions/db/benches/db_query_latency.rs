@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use ranvier_core::{Bus, Outcome, Transition};
 use ranvier_db::pool::SqlitePool;
 use ranvier_runtime::Axon;
@@ -41,11 +41,9 @@ impl Transition<(), QueryResult> for SelectTransition {
         bus: &mut Bus,
     ) -> Outcome<QueryResult, Self::Error> {
         let pool = bus.read::<SqlitePool>().unwrap();
-        
-        let result = sqlx::query("SELECT 1 as id")
-            .fetch_one(pool.inner())
-            .await;
-            
+
+        let result = sqlx::query("SELECT 1 as id").fetch_one(pool.inner()).await;
+
         match result {
             Ok(row) => {
                 let id: i64 = row.get("id");
@@ -59,11 +57,9 @@ impl Transition<(), QueryResult> for SelectTransition {
 fn bench_db_query_latency(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let axon = Axon::new("db_query_axon").then(SelectTransition).clone();
-    
+
     // Setup in-memory SQLite pool
-    let pool = rt.block_on(async {
-        SqlitePool::new("sqlite::memory:").await.unwrap()
-    });
+    let pool = rt.block_on(async { SqlitePool::new("sqlite::memory:").await.unwrap() });
 
     c.bench_function("db_query_latency_sqlite_mem", |b| {
         b.to_async(&rt).iter(|| async {

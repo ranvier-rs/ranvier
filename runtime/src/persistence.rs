@@ -418,11 +418,9 @@ impl CompensationIdempotencyStore for RedisCompensationIdempotencyStore {
         let mut conn = self.manager.clone();
         let redis_key = self.key(key);
         let inserted: bool = conn.set_nx(&redis_key, "1").await?;
-        if inserted {
-            if let Some(ttl_seconds) = self.ttl_seconds {
-                let ttl_i64 = i64::try_from(ttl_seconds)?;
-                let _: bool = conn.expire(&redis_key, ttl_i64).await?;
-            }
+        if inserted && let Some(ttl_seconds) = self.ttl_seconds {
+            let ttl_i64 = i64::try_from(ttl_seconds)?;
+            let _: bool = conn.expire(&redis_key, ttl_i64).await?;
         }
         Ok(())
     }
@@ -571,7 +569,7 @@ impl PersistenceStore for InMemoryPersistenceStore {
         let trace = guard
             .get_mut(trace_id)
             .ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
-        
+
         // If trace is completed, we might want to "un-complete" it for resumption if it's a force resume
         // For now, just add the intervention.
         trace.interventions.push(intervention);
@@ -614,7 +612,7 @@ struct PostgresStateRow {
 #[cfg(feature = "persistence-postgres")]
 #[derive(sqlx::FromRow)]
 struct PostgresInterventionRow {
-    trace_id: String,
+    _trace_id: String,
     target_node: String,
     payload_override: Option<serde_json::Value>,
     timestamp_ms: i64,
@@ -680,10 +678,11 @@ impl PostgresPersistenceStore {
                 timestamp_ms BIGINT NOT NULL,
                 FOREIGN KEY (trace_id) REFERENCES {} (trace_id)
             )",
-            self.interventions_table,
-            self.state_table
+            self.interventions_table, self.state_table
         );
-        sqlx::query(&create_interventions).execute(&self.pool).await?;
+        sqlx::query(&create_interventions)
+            .execute(&self.pool)
+            .await?;
 
         Ok(())
     }

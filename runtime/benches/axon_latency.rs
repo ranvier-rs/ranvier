@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use ranvier_core::{Bus, Outcome, Transition};
 use ranvier_runtime::Axon;
 use tokio::runtime::Runtime;
@@ -44,7 +44,7 @@ impl Transition<(), SimpleOutput> for FastTransition {
 fn bench_axon_latency(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let axon = Axon::new("fast_axon").then(FastTransition);
-    
+
     // Axon is internally Arc-wrapped executor, no need to Arc it again.
     let axon = axon.clone();
 

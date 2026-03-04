@@ -1,13 +1,12 @@
+use crate::response::{HttpResponse, IntoResponse};
 use bytes::Bytes;
-use http::{header::CONTENT_TYPE, Response};
-use http_body_util::{StreamBody, BodyExt};
+use futures_util::stream::Stream;
+
 use ranvier_core::event::EventSource;
 use std::convert::Infallible;
-use std::time::Duration;
-use futures_util::stream::{Stream, StreamExt};
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use crate::response::{HttpResponse, IntoResponse};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SseEvent {
@@ -106,7 +105,10 @@ where
 {
     type Item = Result<http_body::Frame<Bytes>, E>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<<Self as Stream>::Item>> {
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<<Self as Stream>::Item>> {
         match Pin::new(&mut self.inner).poll_next(cx) {
             Poll::Ready(Some(Ok(event))) => {
                 let serialized = event.serialize();
@@ -157,7 +159,10 @@ where
     }
 }
 
-pub fn from_event_source<E, S, F>(mut source: S, mut mapper: F) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + Sync
+pub fn from_event_source<E, S, F>(
+    mut source: S,
+    mut mapper: F,
+) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + Sync
 where
     S: EventSource<E> + Send + 'static,
     E: Send + 'static,

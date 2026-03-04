@@ -71,11 +71,11 @@ mod tests {
     #[test]
     fn test_sensitive_redaction() {
         let email = Sensitive::new("user@example.com".to_string());
-        
+
         // Debug and Display must be redacted
         assert_eq!(format!("{:?}", email), "[REDACTED]");
         assert_eq!(format!("{}", email), "[REDACTED]");
-        
+
         // Access requires explicit expose
         assert_eq!(email.expose(), "user@example.com");
     }
@@ -83,11 +83,11 @@ mod tests {
     #[test]
     fn test_sensitive_serialization() {
         let password = Sensitive::new("my_secret_pass".to_string());
-        
+
         let json = serde_json::to_string(&password).unwrap();
         // Serialized text transmits the real value
         assert_eq!(json, "\"my_secret_pass\"");
-        
+
         let deserialized: Sensitive<String> = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.expose(), "my_secret_pass");
     }

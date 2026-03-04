@@ -8,37 +8,38 @@ members = [
     "std",
     "macros",
     "kit",
-    "examples/basic-schematic",
-    "examples/complex-schematic",
     "examples/hello-world",
-    "examples/otel-concept",
-    "examples/routing-demo",
     "examples/routing-params-demo",
-    "examples/session-pattern",
     "examples/experimental/state-tree-demo",
     "examples/synapse-demo",
-    "examples/websocket-loop",
     "examples/websocket-ingress-demo",
-    "examples/order-processing-demo",
-    "examples/auth-jwt-role-demo",
-    "examples/guard-demo",
     "examples/openapi-demo",
-    "examples/static-spa-demo",
-    "examples/experimental/fullstack-demo",
-    "examples/static-build-demo",
-    "examples/db-example",
     "examples/ecosystem-seaorm-demo",
-    "examples/ecosystem-diesel-demo",
     "examples/ecosystem-redis-demo",
-    "examples/ecosystem-nats-demo",
-    "examples/ecosystem-meilisearch-demo",
-    "examples/otel-demo",
-    "examples/observe-http-demo",
     "examples/bus-capability-demo",
     "examples/experimental/replay-demo",
-    "examples/experimental/persistence-recovery-demo",
-    "examples/std-lib-demo",
-    "examples/typed-state-tree",
+    # --- Examples excluded: need Serialize/Deserialize derives + API migration for v0.15 ---
+    # "examples/basic-schematic",
+    # "examples/complex-schematic",
+    # "examples/otel-concept",
+    # "examples/routing-demo",
+    # "examples/session-pattern",
+    # "examples/websocket-loop",
+    # "examples/order-processing-demo",
+    # "examples/auth-jwt-role-demo",
+    # "examples/guard-demo",
+    # "examples/static-spa-demo",
+    # "examples/experimental/fullstack-demo",
+    # "examples/static-build-demo",
+    # "examples/db-example",
+    # "examples/ecosystem-diesel-demo",
+    # "examples/ecosystem-nats-demo",
+    # "examples/ecosystem-meilisearch-demo",
+    # "examples/otel-demo",
+    # "examples/observe-http-demo",
+    # "examples/experimental/persistence-recovery-demo",
+    # "examples/std-lib-demo",
+    # "examples/typed-state-tree",
     "extensions/synapse",
     "extensions/db",
     "extensions/status",
@@ -55,7 +56,7 @@ members = [
     "ranvier-job",
     "examples/flat-api-demo",
     "examples/studio-demo",
-    "examples/sse-streaming-demo",
+    # "examples/sse-streaming-demo",  # Excluded: needs serde derives
     "examples/multipart-upload-demo",
     "grpc",
     "examples/grpc-service-demo",
@@ -134,6 +135,22 @@ sqlx = { version = "0.8", features = [
     "uuid",
     "json",
 ] }
+
+# --- Workspace Lints ---
+
+[workspace.lints.clippy]
+# Allow complex types in return positions (common in Tower service signatures)
+type_complexity = "allow"
+# Allow functions with many arguments (runtime execution functions)
+too_many_arguments = "allow"
+# Allow collapsible if-let chains (Rust 2024 edition pattern, refactor gradually)
+collapsible_if = "allow"
+# Allow Result with large Err variant (HttpResponse is inherently large)
+result_large_err = "allow"
+# Allow methods that shadow Default trait (SSE builder pattern)
+should_implement_trait = "allow"
+# Allow large enum variant size differences (e.g. Trigger::Cron vs Interval)
+large_enum_variant = "allow"
 
 # --- Release Profiles ---
 

@@ -128,14 +128,20 @@ pub struct BearerAuthService<S> {
 
 impl<S, B> Service<Request<B>> for BearerAuthService<S>
 where
-    S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
-        + Clone
+    S: Service<
+            Request<B>,
+            Response = Response<
+                http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>,
+            >,
+            Error = Infallible,
+        > + Clone
         + Send
         + 'static,
     S::Future: Send + 'static,
     B: Send + 'static,
 {
-    type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    type Response =
+        Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
     type Error = Infallible;
     type Future = BoxFuture<Self::Response>;
 
@@ -254,14 +260,20 @@ pub struct ApiKeyAuthService<S> {
 
 impl<S, B> Service<Request<B>> for ApiKeyAuthService<S>
 where
-    S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
-        + Clone
+    S: Service<
+            Request<B>,
+            Response = Response<
+                http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>,
+            >,
+            Error = Infallible,
+        > + Clone
         + Send
         + 'static,
     S::Future: Send + 'static,
     B: Send + 'static,
 {
-    type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    type Response =
+        Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
     type Error = Infallible;
     type Future = BoxFuture<Self::Response>;
 
@@ -351,14 +363,20 @@ pub struct RequireRoleService<S> {
 
 impl<S, B> Service<Request<B>> for RequireRoleService<S>
 where
-    S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
-        + Clone
+    S: Service<
+            Request<B>,
+            Response = Response<
+                http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>,
+            >,
+            Error = Infallible,
+        > + Clone
         + Send
         + 'static,
     S::Future: Send + 'static,
     B: Send + 'static,
 {
-    type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    type Response =
+        Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
     type Error = Infallible;
     type Future = BoxFuture<Self::Response>;
 
@@ -398,7 +416,7 @@ pub fn inject_auth_context(parts: &http::request::Parts, bus: &mut Bus) {
         bus.insert(ctx.clone());
     }
 }
-pub fn auth_context<'a>(bus: &'a Bus) -> Option<&'a AuthContext> {
+pub fn auth_context(bus: &Bus) -> Option<&AuthContext> {
     bus.read::<AuthContext>()
 }
 
@@ -447,11 +465,11 @@ fn auth_error_response(
 pub mod oidc;
 
 pub mod prelude {
+    pub use crate::oidc::OidcVerifier;
     pub use crate::{
         ApiKeyAuthLayer, AuthContext, AuthPolicy, AuthScheme, BearerAuthLayer, RequireRoleLayer,
         auth_context, inject_auth_context,
     };
-    pub use crate::oidc::OidcVerifier;
 }
 
 #[cfg(test)]
@@ -463,11 +481,21 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tower::ServiceExt;
 
+    #[allow(clippy::type_complexity)]
     fn ok_service() -> impl Service<
         Request<Full<Bytes>>,
-        Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>,
+        Response = Response<
+            http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>,
+        >,
         Error = Infallible,
-        Future = impl Future<Output = Result<Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Infallible>> + Send,
+        Future = impl Future<
+            Output = Result<
+                Response<
+                    http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>,
+                >,
+                Infallible,
+            >,
+        > + Send,
     > + Clone {
         tower::service_fn(|req: Request<Full<Bytes>>| async move {
             let who = req

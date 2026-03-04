@@ -9,3 +9,6 @@ ranvier-http = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
+
+[lints]
+workspace = true

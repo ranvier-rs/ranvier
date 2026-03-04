@@ -21,3 +21,6 @@ hyper-util = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
 
+
+[lints]
+workspace = true

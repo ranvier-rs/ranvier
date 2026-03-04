@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_core::{Bus, Outcome, Transition};

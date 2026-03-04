@@ -1,7 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
-use serde::{Deserialize, Serialize};
 
 /// Current execution state of the debugger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,7 +13,7 @@ pub enum DebugState {
 }
 
 /// A controller used to manage breakpoints and execution flow for a running Axon.
-/// 
+///
 /// This is typically stored in the `Bus` to allow the Axon runtime to check
 /// for pause-points between node executions.
 #[derive(Clone)]
@@ -71,14 +71,14 @@ impl DebugControl {
     }
 
     /// Check if the current node should trigger a pause.
-    /// 
+    ///
     /// This consumes the internal "pause_next" flag if it was set.
     pub fn should_pause(&self, node_id: &str) -> bool {
         let breakpoints = self.inner.breakpoints.lock().unwrap();
         let mut pause_next = self.inner.pause_next.lock().unwrap();
         let hit_breakpoint = breakpoints.contains(node_id);
         let pause_requested = *pause_next;
-        
+
         if hit_breakpoint || pause_requested {
             *pause_next = false; // Consume the "step" or "pause" request
             true
@@ -95,7 +95,7 @@ impl DebugControl {
     }
 
     /// Check if the current node requires a pause and wait if so.
-    /// 
+    ///
     /// Deprecated in favor of manual should_pause + wait for better event timing.
     pub async fn wait_if_needed(&self, node_id: &str) {
         if self.should_pause(node_id) {

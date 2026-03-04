@@ -13,6 +13,7 @@ Instead of a simple linear flow, the Axon moves between explicit domain states.
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
+use std::convert::Infallible;
 
 // ============================================================================
 // 1. Define the State Tree
@@ -39,7 +40,7 @@ struct Authenticate;
 
 #[async_trait]
 impl Transition<FlowState, FlowState> for Authenticate {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -53,7 +54,7 @@ impl Transition<FlowState, FlowState> for Authenticate {
 
             // Simulation logic
             if uri == "/forbidden" {
-                return Outcome::Fault(anyhow::anyhow!("Access Denied"));
+                return Outcome::Fault("Access Denied".to_string());
             }
 
             Outcome::Next(FlowState::Authenticated {
@@ -61,9 +62,9 @@ impl Transition<FlowState, FlowState> for Authenticate {
                 path: uri,
             })
         } else {
-            Outcome::Fault(anyhow::anyhow!(
-                "Unexpected State: Expected RequestReceived"
-            ))
+            Outcome::Fault(
+                "Unexpected State: Expected RequestReceived".to_string()
+            )
         }
     }
 }
@@ -74,7 +75,7 @@ struct FetchContent;
 
 #[async_trait]
 impl Transition<FlowState, FlowState> for FetchContent {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -91,7 +92,7 @@ impl Transition<FlowState, FlowState> for FetchContent {
                 data: format!("Secret data for {}", path),
             })
         } else {
-            Outcome::Fault(anyhow::anyhow!("Unexpected State: Expected Authenticated"))
+            Outcome::Fault("Unexpected State: Expected Authenticated".to_string())
         }
     }
 }
@@ -122,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("Success! Final Data: {}", data);
             }
         }
-        Outcome::Fault(e.to_string()) => println!("Error: {}", e),
+        Outcome::Fault(e) => println!("Error: {}", e),
         _ => {}
     }
 
@@ -130,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
     println!("\n--- Case 2: Forbidden Path ---");
     let input2 = FlowState::RequestReceived("/forbidden".to_string());
     match axon.execute(input2, &(), &mut bus).await {
-        Outcome::Fault(e.to_string()) => println!("Caught expected error: {}", e),
+        Outcome::Fault(e) => println!("Caught expected error: {}", e),
         other => println!("Unexpected result: {:?}", other),
     }
 

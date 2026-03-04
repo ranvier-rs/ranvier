@@ -3,11 +3,11 @@
 #[cfg(test)]
 mod tests {
     use ranvier_grpc::error::GrpcError;
-    use ranvier_grpc::extract::{extract_metadata, GrpcContext};
+    use ranvier_grpc::extract::{GrpcContext, extract_metadata};
     use ranvier_grpc::response::IntoGrpcResponse;
     use ranvier_grpc::stream;
-    use tonic::metadata::MetadataMap;
     use tonic::Status;
+    use tonic::metadata::MetadataMap;
 
     // -----------------------------------------------------------------------
     // Error mapping tests
@@ -16,16 +16,40 @@ mod tests {
     #[test]
     fn grpc_error_maps_to_correct_status_codes() {
         let cases: Vec<(GrpcError, tonic::Code)> = vec![
-            (GrpcError::InvalidArgument("bad".into()), tonic::Code::InvalidArgument),
+            (
+                GrpcError::InvalidArgument("bad".into()),
+                tonic::Code::InvalidArgument,
+            ),
             (GrpcError::NotFound("missing".into()), tonic::Code::NotFound),
-            (GrpcError::PermissionDenied("no".into()), tonic::Code::PermissionDenied),
-            (GrpcError::Unauthenticated("who".into()), tonic::Code::Unauthenticated),
+            (
+                GrpcError::PermissionDenied("no".into()),
+                tonic::Code::PermissionDenied,
+            ),
+            (
+                GrpcError::Unauthenticated("who".into()),
+                tonic::Code::Unauthenticated,
+            ),
             (GrpcError::Internal("oops".into()), tonic::Code::Internal),
-            (GrpcError::Unimplemented("todo".into()), tonic::Code::Unimplemented),
-            (GrpcError::Unavailable("down".into()), tonic::Code::Unavailable),
-            (GrpcError::DeadlineExceeded("slow".into()), tonic::Code::DeadlineExceeded),
-            (GrpcError::AlreadyExists("dup".into()), tonic::Code::AlreadyExists),
-            (GrpcError::FailedPrecondition("pre".into()), tonic::Code::FailedPrecondition),
+            (
+                GrpcError::Unimplemented("todo".into()),
+                tonic::Code::Unimplemented,
+            ),
+            (
+                GrpcError::Unavailable("down".into()),
+                tonic::Code::Unavailable,
+            ),
+            (
+                GrpcError::DeadlineExceeded("slow".into()),
+                tonic::Code::DeadlineExceeded,
+            ),
+            (
+                GrpcError::AlreadyExists("dup".into()),
+                tonic::Code::AlreadyExists,
+            ),
+            (
+                GrpcError::FailedPrecondition("pre".into()),
+                tonic::Code::FailedPrecondition,
+            ),
         ];
 
         for (error, expected_code) in cases {

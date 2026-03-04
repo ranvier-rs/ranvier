@@ -1,11 +1,12 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 #[derive(Clone)]
 struct AppResources {
@@ -106,9 +107,7 @@ async fn wait_task(resources: &AppResources, task_uid: u64) -> Result<()> {
                         format!(
                             "code={} message={}",
                             err.code.clone().unwrap_or_else(|| "unknown".to_string()),
-                            err.message
-                                .clone()
-                                .unwrap_or_else(|| "unknown".to_string())
+                            err.message.clone().unwrap_or_else(|| "unknown".to_string())
                         )
                     })
                     .unwrap_or_else(|| "none".to_string());
@@ -194,7 +193,10 @@ async fn seed_documents(resources: &AppResources) -> Result<()> {
         },
     ];
 
-    let url = format!("{}/indexes/{}/documents", resources.base_url, resources.index_uid);
+    let url = format!(
+        "{}/indexes/{}/documents",
+        resources.base_url, resources.index_uid
+    );
     let response = with_auth(resources.client.post(url), &resources.api_key)
         .json(&docs)
         .send()
@@ -215,7 +217,10 @@ async fn seed_documents(resources: &AppResources) -> Result<()> {
 }
 
 async fn search_documents(resources: &AppResources, query: &str) -> Result<SearchResponse> {
-    let url = format!("{}/indexes/{}/search", resources.base_url, resources.index_uid);
+    let url = format!(
+        "{}/indexes/{}/search",
+        resources.base_url, resources.index_uid
+    );
     let response = with_auth(resources.client.post(url), &resources.api_key)
         .json(&serde_json::json!({
             "q": query,
@@ -266,7 +271,7 @@ struct SeedIndexTransition;
 
 #[async_trait]
 impl Transition<SearchInput, SearchInput> for SeedIndexTransition {
-    type Error = Infallible;
+    type Error = String;
     type Resources = AppResources;
 
     async fn run(
@@ -276,8 +281,8 @@ impl Transition<SearchInput, SearchInput> for SeedIndexTransition {
         _bus: &mut Bus,
     ) -> Outcome<SearchInput, Self::Error> {
         let seeded = async {
-            ensure_index(resources).await?;
-            seed_documents(resources).await?;
+            ensure_index(resources).await.map_err(|e| e.to_string())?;
+            seed_documents(resources).await.map_err(|e| e.to_string())?;
             Ok::<(), String>(())
         }
         .await;
@@ -294,7 +299,7 @@ struct SearchTransition;
 
 #[async_trait]
 impl Transition<SearchInput, SearchOutput> for SearchTransition {
-    type Error = Infallible;
+    type Error = String;
     type Resources = AppResources;
 
     async fn run(
@@ -310,7 +315,7 @@ impl Transition<SearchInput, SearchOutput> for SearchTransition {
                 estimated_total_hits: response.estimated_total_hits.unwrap_or(0),
                 hits: response.hits,
             }),
-            Err(err) => Outcome::Fault(err),
+            Err(err) => Outcome::Fault(err.to_string()),
         }
     }
 }
@@ -327,12 +332,9 @@ async fn main() -> Result<()> {
         .timeout(Duration::from_secs(5))
         .build()?;
 
-    let health = with_auth(
-        client.get(format!("{}/health", base_url)),
-        &api_key,
-    )
-    .send()
-    .await;
+    let health = with_auth(client.get(format!("{}/health", base_url)), &api_key)
+        .send()
+        .await;
 
     match health {
         Ok(response) if response.status().is_success() => {}
@@ -359,10 +361,9 @@ async fn main() -> Result<()> {
         index_uid: format!("m132_books_{}", now_ms()),
     };
 
-    let axon =
-        Axon::<SearchInput, SearchInput, String, AppResources>::new("meili.search_flow")
-            .then(SeedIndexTransition)
-            .then(SearchTransition);
+    let axon = Axon::<SearchInput, SearchInput, String, AppResources>::new("meili.search_flow")
+        .then(SeedIndexTransition)
+        .then(SearchTransition);
 
     let mut bus = Bus::new();
     let outcome = axon
@@ -382,10 +383,7 @@ async fn main() -> Result<()> {
                 output.query, output.estimated_total_hits
             );
             for hit in output.hits {
-                println!(
-                    "hit id={} title={} tags={:?}",
-                    hit.id, hit.title, hit.tags
-                );
+                println!("hit id={} title={} tags={:?}", hit.id, hit.title, hit.tags);
             }
         }
         other => {

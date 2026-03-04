@@ -279,13 +279,13 @@ where
         };
         let mut tx = tx;
 
-        if let Some(level) = self.isolation_level {
-            if let Err(e) = apply_postgres_isolation_level(&mut tx, level).await {
-                return Outcome::Fault(anyhow::anyhow!(
-                    "Failed to set transaction isolation level: {}",
-                    e
-                ));
-            }
+        if let Some(level) = self.isolation_level
+            && let Err(e) = apply_postgres_isolation_level(&mut tx, level).await
+        {
+            return Outcome::Fault(anyhow::anyhow!(
+                "Failed to set transaction isolation level: {}",
+                e
+            ));
         }
 
         // Execute the transition with the transaction

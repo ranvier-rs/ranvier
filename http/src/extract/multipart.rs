@@ -18,7 +18,7 @@
 //! }
 //! ```
 
-use super::{ExtractError, FromRequest, DEFAULT_BODY_LIMIT};
+use super::{ExtractError, FromRequest};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::stream::Stream;
@@ -62,10 +62,9 @@ where
                     Poll::Pending
                 }
             }
-            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            )))),
+            Poll::Ready(Some(Err(e))) => {
+                Poll::Ready(Some(Err(std::io::Error::other(e.to_string()))))
+            }
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }
@@ -183,9 +182,7 @@ impl Multipart {
     }
 
     /// Convenience: extract only the text fields, ignoring file uploads.
-    pub async fn collect_text_fields(
-        &mut self,
-    ) -> Result<Vec<(String, String)>, ExtractError> {
+    pub async fn collect_text_fields(&mut self) -> Result<Vec<(String, String)>, ExtractError> {
         let (text, _) = self.collect_all().await?;
         Ok(text)
     }
@@ -214,8 +211,9 @@ where
             .and_then(|val| val.to_str().ok())
             .ok_or_else(|| ExtractError::MultipartError("missing content-type header".into()))?;
 
-        let boundary = multer::parse_boundary(content_type)
-            .map_err(|_| ExtractError::MultipartError("no multipart boundary found in content-type".into()))?;
+        let boundary = multer::parse_boundary(content_type).map_err(|_| {
+            ExtractError::MultipartError("no multipart boundary found in content-type".into())
+        })?;
 
         // Take the body out of the request so we own it ('static lifetime).
         let body = std::mem::take(req.body_mut());
@@ -224,8 +222,7 @@ where
             .whole_stream(DEFAULT_MULTIPART_LIMIT as u64)
             .per_field(DEFAULT_FIELD_LIMIT as u64);
 
-        let constraints = multer::Constraints::new()
-            .size_limit(size_limit);
+        let constraints = multer::Constraints::new().size_limit(size_limit);
 
         let stream = BodyStream { inner: body };
         let inner = MulterMultipart::with_constraints(stream, boundary, constraints);

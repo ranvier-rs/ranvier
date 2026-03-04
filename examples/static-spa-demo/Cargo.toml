@@ -10,3 +10,6 @@ ranvier-http = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 
+
+[lints]
+workspace = true

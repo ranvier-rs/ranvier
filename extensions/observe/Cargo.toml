@@ -26,3 +26,5 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true }
 base64 = "0.21"
+[lints]
+workspace = true

@@ -17,10 +17,7 @@ pub enum TimelineEvent {
         timestamp: u64,
     },
     /// Execution paused at a node (debugger)
-    NodePaused {
-        node_id: String,
-        timestamp: u64,
-    },
+    NodePaused { node_id: String, timestamp: u64 },
     /// A branch decision was made
     Branchtaken { branch_id: String, timestamp: u64 },
     /// A faulted node is being retried (DLQ RetryThenDlq policy)

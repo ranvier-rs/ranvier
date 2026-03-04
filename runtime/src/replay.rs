@@ -1,7 +1,7 @@
+use crate::persistence::PersistenceStore;
 use anyhow::{Result, anyhow};
 use ranvier_core::schematic::MigrationRegistry;
 use ranvier_core::timeline::{Timeline, TimelineEvent};
-use crate::persistence::{PersistenceStore, PersistedTrace, PersistenceEnvelope};
 
 /// ReplayEngine reconstructs the execution state from a Timeline.
 /// It creates a "virtual" cursor that moves through the circuit based on recorded events.
@@ -69,13 +69,14 @@ impl ReplayEngine {
     pub fn fast_forward_to_active(&mut self) -> Option<ReplayFrame> {
         let mut exited_nodes = std::collections::HashSet::new();
         let mut active_index = None;
-        
+
         for i in (0..self.timeline.events.len()).rev() {
             match &self.timeline.events[i] {
                 TimelineEvent::NodeExit { node_id, .. } => {
                     exited_nodes.insert(node_id.clone());
                 }
-                TimelineEvent::NodeEnter { node_id, .. } | TimelineEvent::NodePaused { node_id, .. } => {
+                TimelineEvent::NodeEnter { node_id, .. }
+                | TimelineEvent::NodePaused { node_id, .. } => {
                     if !exited_nodes.contains(node_id) {
                         active_index = Some(i);
                         break;
@@ -129,7 +130,9 @@ pub async fn replay_and_recover(
     target_version: &str,
     registry: &MigrationRegistry,
 ) -> Result<ReplayRecoveryResult> {
-    let trace = store.load(trace_id).await?
+    let trace = store
+        .load(trace_id)
+        .await?
         .ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
 
     let original_version = trace.schematic_version.clone();
@@ -147,14 +150,23 @@ pub async fn replay_and_recover(
         });
     }
 
-    let path = registry.find_migration_path(&original_version, target_version)
-        .ok_or_else(|| anyhow!(
-            "no migration path from {} to {} for circuit {}",
-            original_version, target_version, registry.circuit_id
-        ))?;
+    let path = registry
+        .find_migration_path(&original_version, target_version)
+        .ok_or_else(|| {
+            anyhow!(
+                "no migration path from {} to {} for circuit {}",
+                original_version,
+                target_version,
+                registry.circuit_id
+            )
+        })?;
 
     if path.is_empty() {
-        return Err(anyhow!("empty migration path from {} to {}", original_version, target_version));
+        return Err(anyhow!(
+            "empty migration path from {} to {}",
+            original_version,
+            target_version
+        ));
     }
 
     // Start with the last persisted payload

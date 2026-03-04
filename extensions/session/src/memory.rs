@@ -36,11 +36,11 @@ impl SessionStore for MemoryStore {
     async fn save(&self, session: &Session) -> anyhow::Result<()> {
         let mut store = self.sessions.write().await;
         let mut session_inner = session.clone().into_inner().await;
-        
+
         // Clear modified/destroyed flags before saving
         session_inner.is_destroyed = false;
         session_inner.is_modified = false;
-        
+
         store.insert(session_inner.id.clone(), session_inner);
         Ok(())
     }

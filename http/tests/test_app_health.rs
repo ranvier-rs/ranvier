@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use http::StatusCode;
 use ranvier_core::{Bus, Outcome, Transition};
 use ranvier_http::prelude::*;
@@ -10,8 +8,8 @@ use serde::Deserialize;
 struct TextTransition(&'static str);
 
 #[async_trait::async_trait]
-impl Transition<(), &'static str> for TextTransition {
-    type Error = Infallible;
+impl Transition<(), String> for TextTransition {
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -19,8 +17,8 @@ impl Transition<(), &'static str> for TextTransition {
         _state: (),
         _resources: &Self::Resources,
         _bus: &mut Bus,
-    ) -> Outcome<&'static str, Self::Error> {
-        Outcome::next(self.0)
+    ) -> Outcome<String, Self::Error> {
+        Outcome::next(self.0.to_string())
     }
 }
 
@@ -42,7 +40,7 @@ struct HealthCheckPayload {
 async fn test_app_hello_world_flow() {
     let ingress = Ranvier::http::<()>().get(
         "/",
-        Axon::<(), (), Infallible, ()>::new("HelloWorld").then(TextTransition("hello-world")),
+        Axon::<(), (), String, ()>::new("HelloWorld").then(TextTransition("hello-world")),
     );
 
     let app = TestApp::new(ingress, ());
@@ -59,7 +57,7 @@ async fn test_app_hello_world_flow() {
 async fn test_app_routing_path_match_flow() {
     let ingress = Ranvier::http::<()>().get(
         "/orders/:id",
-        Axon::<(), (), Infallible, ()>::new("OrderById").then(TextTransition("order-found")),
+        Axon::<(), (), String, ()>::new("OrderById").then(TextTransition("order-found")),
     );
 
     let app = TestApp::new(ingress, ());
@@ -77,9 +75,9 @@ async fn test_app_fallback_flow() {
     let ingress = Ranvier::http::<()>()
         .get(
             "/known",
-            Axon::<(), (), Infallible, ()>::new("Known").then(TextTransition("known-route")),
+            Axon::<(), (), String, ()>::new("Known").then(TextTransition("known-route")),
         )
-        .fallback(Axon::<(), (), Infallible, ()>::new("Fallback").then(TextTransition("missing")));
+        .fallback(Axon::<(), (), String, ()>::new("Fallback").then(TextTransition("missing")));
 
     let app = TestApp::new(ingress, ());
     let response = app

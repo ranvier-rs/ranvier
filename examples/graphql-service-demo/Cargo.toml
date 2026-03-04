@@ -20,3 +20,6 @@ async-trait.workspace = true
 anyhow = "1.0"
 ranvier-runtime.workspace = true
 futures-util.workspace = true
+
+[lints]
+workspace = true

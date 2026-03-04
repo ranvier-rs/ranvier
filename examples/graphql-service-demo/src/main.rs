@@ -1,11 +1,11 @@
-use async_graphql::{Object, Schema, Context};
+use async_graphql::dataloader::{DataLoader, Loader};
+use async_graphql::{Context, Object, Schema};
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
-use ranvier_runtime::Axon;
-use std::sync::Arc;
-use std::collections::HashMap;
 use ranvier_graphql::GraphQLIngress;
-use async_graphql::dataloader::{DataLoader, Loader};
+use ranvier_runtime::Axon;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 // Define the Shared Type for Axon errors.
 type WorkflowAxon = Axon<(), String, String, ()>;
@@ -21,7 +21,10 @@ impl QueryRoot {
 
     async fn user(&self, ctx: &Context<'_>, id: String) -> async_graphql::Result<Option<String>> {
         let loader = ctx.data::<DataLoader<UserLoader>>()?;
-        loader.load_one(id).await.map_err(|e| async_graphql::Error::new(e.to_string()))
+        loader
+            .load_one(id)
+            .await
+            .map_err(|e| async_graphql::Error::new(e.to_string()))
     }
 }
 
@@ -47,8 +50,10 @@ struct MutationRoot;
 impl MutationRoot {
     async fn trigger_workflow(&self, ctx: &Context<'_>) -> async_graphql::Result<String> {
         // Retrieve Axon from Context
-        let axon = ctx.data::<Arc<WorkflowAxon>>().expect("Axon not found in context");
-        
+        let axon = ctx
+            .data::<Arc<WorkflowAxon>>()
+            .expect("Axon not found in context");
+
         let mut bus = Bus::new();
         let result = axon.execute((), &(), &mut bus).await;
 
@@ -94,15 +99,13 @@ impl Transition<(), String> for StartWorkflow {
     }
 }
 
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     // 1. Build the Execution Chain
-    let axon = Axon::<(), (), String>::start("GraphQL Demo Workflow")
-        .then(StartWorkflow);
-        
+    let axon = Axon::<(), (), String>::start("GraphQL Demo Workflow").then(StartWorkflow);
+
     let axon = Arc::new(axon);
 
     // 2. Build the GraphQL schema, injecting Axon into the context data
@@ -116,35 +119,41 @@ async fn main() -> anyhow::Result<()> {
     let graphql_ingress = GraphQLIngress::new(schema);
 
     tracing::info!("GraphQL schema generated and ready.");
-    
+
     // 4. Test Demo internally
     tracing::info!("--- Testing Mutation ---");
-    let req = async_graphql::Request::new(r#"
+    let req = async_graphql::Request::new(
+        r#"
         mutation {
             triggerWorkflow
         }
-    "#);
-    
+    "#,
+    );
+
     let res = graphql_ingress.execute(req).await;
     tracing::info!("Mutation Response: {:?}", res);
 
     tracing::info!("--- Testing Query with DataLoader ---");
-    let req_user = async_graphql::Request::new(r#"
+    let req_user = async_graphql::Request::new(
+        r#"
         query {
             u1: user(id: "1")
             u2: user(id: "2")
         }
-    "#);
+    "#,
+    );
     let res_user = graphql_ingress.execute(req_user).await;
     tracing::info!("DataLoader Query Response: {:?}", res_user);
 
     tracing::info!("--- Testing Subscription ---");
-    let sub_req = async_graphql::Request::new(r#"
+    let sub_req = async_graphql::Request::new(
+        r#"
         subscription {
             workflowEvents
         }
-    "#);
-    
+    "#,
+    );
+
     use futures_util::StreamExt;
     let mut stream = graphql_ingress.execute_stream(sub_req);
     while let Some(res) = stream.next().await {

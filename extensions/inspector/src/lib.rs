@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use axum::{
     Json, Router,
     extract::{
@@ -8,13 +9,11 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use ranvier_core::TimelineEvent;
+use ranvier_core::prelude::DebugControl;
 use ranvier_core::schematic::{NodeKind, Schematic};
-use ranvier_core::prelude::{DebugControl, DebugState};
-use serde_json::Value;
 use serde::Deserialize;
-use async_trait::async_trait;
-use std::collections::{HashSet, HashMap};
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -22,7 +21,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 #[async_trait]
 pub trait StateInspector: Send + Sync {
     async fn get_state(&self, trace_id: &str) -> Option<Value>;
-    async fn force_resume(&self, trace_id: &str, target_node: &str, payload_override: Option<Value>) -> Result<(), String>;
+    async fn force_resume(
+        &self,
+        trace_id: &str,
+        target_node: &str,
+        payload_override: Option<Value>,
+    ) -> Result<(), String>;
 }
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
@@ -374,7 +378,10 @@ impl Inspector {
             .route("/debug/step/:trace_id", get(debug_step))
             .route("/debug/pause/:trace_id", get(debug_pause))
             .route("/api/v1/state/:trace_id", get(api_get_state))
-            .route("/api/v1/state/:trace_id/resume", axum::routing::post(api_post_resume))
+            .route(
+                "/api/v1/state/:trace_id/resume",
+                axum::routing::post(api_post_resume),
+            )
             .layer(CorsLayer::permissive());
 
         if self.surface_policy.expose_internal {
@@ -563,10 +570,7 @@ fn is_attribute_bag_key(key: &str) -> bool {
     lowered == "attributes" || lowered.ends_with("_attributes")
 }
 
-
-async fn debug_resume(
-    AxPath(trace_id): AxPath<String>,
-) -> impl IntoResponse {
+async fn debug_resume(AxPath(trace_id): AxPath<String>) -> impl IntoResponse {
     if let Some(debug) = get_debug_control_for_trace(&trace_id) {
         debug.resume();
         StatusCode::OK
@@ -575,9 +579,7 @@ async fn debug_resume(
     }
 }
 
-async fn debug_step(
-    AxPath(trace_id): AxPath<String>,
-) -> impl IntoResponse {
+async fn debug_step(AxPath(trace_id): AxPath<String>) -> impl IntoResponse {
     if let Some(debug) = get_debug_control_for_trace(&trace_id) {
         debug.step();
         StatusCode::OK
@@ -586,9 +588,7 @@ async fn debug_step(
     }
 }
 
-async fn debug_pause(
-    AxPath(trace_id): AxPath<String>,
-) -> impl IntoResponse {
+async fn debug_pause(AxPath(trace_id): AxPath<String>) -> impl IntoResponse {
     if let Some(debug) = get_debug_control_for_trace(&trace_id) {
         debug.pause();
         StatusCode::OK
@@ -601,10 +601,10 @@ async fn api_get_state(
     AxPath(trace_id): AxPath<String>,
     State(state): State<InspectorState>,
 ) -> impl IntoResponse {
-    if let Some(inspector) = state.state_inspector.as_ref() {
-        if let Some(val) = inspector.get_state(&trace_id).await {
-            return Json(val).into_response();
-        }
+    if let Some(inspector) = state.state_inspector.as_ref()
+        && let Some(val) = inspector.get_state(&trace_id).await
+    {
+        return Json(val).into_response();
     }
     StatusCode::NOT_FOUND.into_response()
 }
@@ -623,19 +623,28 @@ async fn api_post_resume(
     Json(payload): Json<ResumePayload>,
 ) -> impl IntoResponse {
     if let Some(inspector) = state.state_inspector.as_ref() {
-        match inspector.force_resume(&trace_id, &payload.target_node, payload.payload_override).await {
+        match inspector
+            .force_resume(&trace_id, &payload.target_node, payload.payload_override)
+            .await
+        {
             Ok(_) => StatusCode::OK.into_response(),
-            Err(e) => (StatusCode::BAD_REQUEST, e).into_response()
+            Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
         }
     } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "State inspector not configured").into_response()
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "State inspector not configured",
+        )
+            .into_response()
     }
 }
 
 static DEBUG_REGISTRY: OnceLock<Arc<Mutex<HashMap<String, DebugControl>>>> = OnceLock::new();
 
 fn get_debug_registry() -> Arc<Mutex<HashMap<String, DebugControl>>> {
-    DEBUG_REGISTRY.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()
+    DEBUG_REGISTRY
+        .get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+        .clone()
 }
 
 pub fn get_debug_control_for_trace(trace_id: &str) -> Option<DebugControl> {
@@ -643,7 +652,10 @@ pub fn get_debug_control_for_trace(trace_id: &str) -> Option<DebugControl> {
 }
 
 pub fn register_debug_control(trace_id: String, control: DebugControl) {
-    get_debug_registry().lock().unwrap().insert(trace_id, control);
+    get_debug_registry()
+        .lock()
+        .unwrap()
+        .insert(trace_id, control);
 }
 
 pub fn unregister_debug_control(trace_id: &str) {
@@ -675,20 +687,24 @@ where
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let metadata = event.metadata();
         if metadata.target() == "ranvier.debugger" {
-             // Extract fields for debugger event
-             let mut fields = HashMap::new();
-             let mut visitor = FieldVisitor { fields: &mut fields };
-             event.record(&mut visitor);
+            // Extract fields for debugger event
+            let mut fields = HashMap::new();
+            let mut visitor = FieldVisitor {
+                fields: &mut fields,
+            };
+            event.record(&mut visitor);
 
-             if let (Some(trace_id), Some(node_id)) = (fields.get("trace_id"), fields.get("node_id")) {
-                 let msg = serde_json::json!({
-                     "type": "node_paused",
-                     "trace_id": trace_id,
-                     "node_id": node_id
-                 }).to_string();
-                 let _ = get_sender().send(msg);
-             }
-             return;
+            if let (Some(trace_id), Some(node_id)) = (fields.get("trace_id"), fields.get("node_id"))
+            {
+                let msg = serde_json::json!({
+                    "type": "node_paused",
+                    "trace_id": trace_id,
+                    "node_id": node_id
+                })
+                .to_string();
+                let _ = get_sender().send(msg);
+            }
+            return;
         }
 
         if metadata.target().starts_with("ranvier") {
@@ -704,15 +720,15 @@ where
     }
 
     fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
-        if let Some(span) = ctx.span(id) {
-            if span.name() == "Node" {
-                // Send Node Enter Event
-                let msg = format!(
-                    "{{\"type\": \"node_enter\", \"name\": \"{}\"}}",
-                    span.name()
-                );
-                let _ = get_sender().send(msg);
-            }
+        if let Some(span) = ctx.span(id)
+            && span.name() == "Node"
+        {
+            // Send Node Enter Event
+            let msg = format!(
+                "{{\"type\": \"node_enter\", \"name\": \"{}\"}}",
+                span.name()
+            );
+            let _ = get_sender().send(msg);
         }
     }
 }
@@ -728,7 +744,8 @@ impl<'a> tracing::field::Visit for FieldVisitor<'a> {
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        self.fields.insert(field.name().to_string(), value.to_string());
+        self.fields
+            .insert(field.name().to_string(), value.to_string());
     }
 }
 
@@ -746,14 +763,14 @@ async fn get_public_projection(
     State(state): State<InspectorState>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     ensure_public_access(&headers, &state.auth_policy)?;
-    if let Some(path) = &state.public_projection_path {
-        if let Ok(v) = read_projection_file(path) {
-            return Ok(Json(apply_projection_redaction(
-                v,
-                ProjectionSurface::Public,
-                &state.redaction_policy,
-            )));
-        }
+    if let Some(path) = &state.public_projection_path
+        && let Ok(v) = read_projection_file(path)
+    {
+        return Ok(Json(apply_projection_redaction(
+            v,
+            ProjectionSurface::Public,
+            &state.redaction_policy,
+        )));
     }
 
     let projection = state
@@ -774,14 +791,14 @@ async fn get_internal_projection(
     State(state): State<InspectorState>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     ensure_internal_access(&headers, &state.auth_policy)?;
-    if let Some(path) = &state.internal_projection_path {
-        if let Ok(v) = read_projection_file(path) {
-            return Ok(Json(apply_projection_redaction(
-                v,
-                ProjectionSurface::Internal,
-                &state.redaction_policy,
-            )));
-        }
+    if let Some(path) = &state.internal_projection_path
+        && let Ok(v) = read_projection_file(path)
+    {
+        return Ok(Json(apply_projection_redaction(
+            v,
+            ProjectionSurface::Internal,
+            &state.redaction_policy,
+        )));
     }
 
     let projection = state
@@ -806,10 +823,10 @@ fn inspector_envelope(kind: &'static str, data: Value) -> Json<Value> {
 }
 
 fn load_internal_projection_value(state: &InspectorState) -> Value {
-    if let Some(path) = &state.internal_projection_path {
-        if let Ok(v) = read_projection_file(path) {
-            return v;
-        }
+    if let Some(path) = &state.internal_projection_path
+        && let Ok(v) = read_projection_file(path)
+    {
+        return v;
     }
     state
         .internal_projection
@@ -1191,9 +1208,15 @@ mod tests {
 
     #[test]
     fn strict_mode_filters_attribute_bag_by_allowlist() {
-        let mut policy = TelemetryRedactionPolicy::default();
-        policy.mode_override = Some(RedactionMode::Strict);
-        policy.allow_keys.insert("ranvier.circuit".to_string());
+        let policy = TelemetryRedactionPolicy {
+            mode_override: Some(RedactionMode::Strict),
+            allow_keys: {
+                let mut keys = std::collections::HashSet::new();
+                keys.insert("ranvier.circuit".to_string());
+                keys
+            },
+            ..Default::default()
+        };
 
         let src = serde_json::json!({
             "attributes": {

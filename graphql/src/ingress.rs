@@ -1,5 +1,4 @@
-use async_graphql::{ObjectType, Schema, SubscriptionType, Request, Response};
-use async_graphql::futures_util::StreamExt;
+use async_graphql::{ObjectType, Request, Response, Schema, SubscriptionType};
 
 /// An ingress adapter that bridges `async-graphql` execution to Ranvier Axon circuits.
 pub struct GraphQLIngress<Query, Mutation, Subscription> {
@@ -23,7 +22,10 @@ where
     }
 
     /// Executes a GraphQL subscription request, returning a stream of Responses.
-    pub fn execute_stream(&self, request: Request) -> impl async_graphql::futures_util::Stream<Item = Response> {
+    pub fn execute_stream(
+        &self,
+        request: Request,
+    ) -> impl async_graphql::futures_util::Stream<Item = Response> {
         self.schema.execute_stream(request)
     }
 
@@ -31,7 +33,7 @@ where
     pub fn playground(endpoint: &str) -> String {
         async_graphql::http::playground_source(
             async_graphql::http::GraphQLPlaygroundConfig::new(endpoint)
-                .subscription_endpoint(endpoint)
+                .subscription_endpoint(endpoint),
         )
     }
 }

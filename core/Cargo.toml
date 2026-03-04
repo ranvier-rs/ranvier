@@ -26,3 +26,6 @@ ahash = "0.8"
 # HTTP-related functionality now lives in ranvier-http
 
 
+
+[lints]
+workspace = true

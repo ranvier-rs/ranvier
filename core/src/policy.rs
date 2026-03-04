@@ -1,7 +1,7 @@
+use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{watch, RwLock};
-use std::any::Any;
+use tokio::sync::{RwLock, watch};
 
 /// A dynamic wrapper around a policy value that can be updated in real-time.
 ///
@@ -46,7 +46,7 @@ impl PolicyRegistry {
     {
         let name = name.into();
         let (tx, dp) = DynamicPolicy::new(initial);
-        
+
         let mut guard = self.policies.write().await;
         guard.insert(name, Box::new(tx));
         dp
@@ -58,17 +58,19 @@ impl PolicyRegistry {
         P: Clone + Send + Sync + 'static,
     {
         let guard = self.policies.read().await;
-        let sender_any = guard.get(name)
+        let sender_any = guard
+            .get(name)
             .ok_or_else(|| anyhow::anyhow!("Policy '{}' not found in registry", name))?;
-        
-        let sender = sender_any.downcast_ref::<watch::Sender<P>>()
+
+        let sender = sender_any
+            .downcast_ref::<watch::Sender<P>>()
             .ok_or_else(|| anyhow::anyhow!("Type mismatch for policy '{}'", name))?;
-        
+
         sender.send(new_value)?;
         Ok(())
     }
 
-    /// Get a handle to a dynamic policy. 
+    /// Get a handle to a dynamic policy.
     /// Note: This typically requires knowing the name and type.
     pub async fn get_sender<P>(&self, name: &str) -> Option<watch::Sender<P>>
     where

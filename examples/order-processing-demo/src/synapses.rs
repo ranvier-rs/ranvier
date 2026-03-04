@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use ranvier_core::synapse::Synapse;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 // --- Inventory Synapse ---
 pub struct InventorySynapse {

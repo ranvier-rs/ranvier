@@ -13,3 +13,6 @@ async-trait = { workspace = true }
 jsonwebtoken = "9"
 serde = { workspace = true, features = ["derive"] }
 
+
+[lints]
+workspace = true

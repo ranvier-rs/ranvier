@@ -1,4 +1,4 @@
-use String;
+use std::convert::Infallible;
 use std::path::PathBuf;
 
 use ranvier_core::prelude::*;

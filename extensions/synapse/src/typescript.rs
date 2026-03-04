@@ -2,6 +2,7 @@ use anyhow::Result;
 use ranvier_core::schematic::{NodeKind, Schematic};
 use std::collections::BTreeSet;
 
+#[derive(Default)]
 pub struct TypeScriptGenerator;
 
 impl TypeScriptGenerator {
@@ -25,15 +26,15 @@ impl TypeScriptGenerator {
         ts.push_str(&self.generate_types(schematic)?);
 
         // Cache keys
-        ts.push_str("\n");
+        ts.push('\n');
         ts.push_str(&self.generate_cache_keys(schematic)?);
 
         // Query hooks
-        ts.push_str("\n");
+        ts.push('\n');
         ts.push_str(&self.generate_query_hooks(schematic)?);
 
         // WebSocket bindings
-        ts.push_str("\n");
+        ts.push('\n');
         ts.push_str(&self.generate_ws_bindings(schematic)?);
 
         Ok(ts)
@@ -104,15 +105,15 @@ impl TypeScriptGenerator {
                 "export function {}(options?: {{ enabled?: boolean }}) {{\n",
                 hook_name
             ));
-            ts.push_str(&format!("  return useQuery({{\n"));
+            ts.push_str("  return useQuery({\n");
             ts.push_str(&format!("    queryKey: [{}],\n", query_key));
             ts.push_str(&format!(
                 "    queryFn: () => fetch(`/api/{}`).then(r => r.json()),\n",
                 safe_label.to_lowercase()
             ));
-            ts.push_str(&format!("    ...options,\n"));
-            ts.push_str(&format!("  }});\n"));
-            ts.push_str(&format!("}}\n\n"));
+            ts.push_str("    ...options,\n");
+            ts.push_str("  });\n");
+            ts.push_str("}\n\n");
         }
 
         Ok(ts)

@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use ranvier_core::prelude::*;
 use ranvier_core::static_gen::StaticNode;
 use serde::Serialize;

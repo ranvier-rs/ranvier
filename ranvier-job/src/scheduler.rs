@@ -49,7 +49,7 @@ impl Scheduler {
 
         let mut interval = tokio::time::interval(Duration::from_millis(500));
         let jobs_ref = self.jobs.clone();
-        
+
         // We track the next intended execution time for each job to avoid
         // drift or double-firing within the same second.
         let mut next_execs: HashMap<JobId, chrono::DateTime<Utc>> = HashMap::new();
@@ -73,11 +73,11 @@ impl Scheduler {
                         if now >= *next {
                             // Time to fire the job
                             debug!(job_id = %id, "Executing scheduled job");
-                            
+
                             // Spawn the job execution to avoid blocking the scheduler loop
                             let job_clone = job.clone();
                             let job_id_clone = id.clone();
-                            
+
                             join_set.spawn(async move {
                                 // For standalone jobs, we instantiate a fresh Bus.
                                 // Alternatively, a global Bus or Bus factory could be passed.
@@ -90,7 +90,7 @@ impl Scheduler {
                             if let Some(new_next) = job.trigger().next(now) {
                                 *next = new_next;
                             } else {
-                                // If the trigger is exhausted (unlikely for chron/interval), 
+                                // If the trigger is exhausted (unlikely for chron/interval),
                                 // we push it far into the future.
                                 *next = now + chrono::Duration::days(3650);
                             }
@@ -104,13 +104,13 @@ impl Scheduler {
                 }
             }
         }
-        
+
         while let Some(res) = join_set.join_next().await {
             if let Err(e) = res {
                 error!("Job task panicked or was cancelled during shutdown: {}", e);
             }
         }
-        
+
         info!("Ranvier Scheduler stopped.");
     }
 }

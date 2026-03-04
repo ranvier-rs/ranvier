@@ -16,8 +16,8 @@
 //! ```
 
 use std::net::SocketAddr;
-use tonic::transport::server::Router;
 use tonic::transport::Server;
+use tonic::transport::server::Router;
 
 /// The primary builder for configuring a gRPC server backed by Ranvier Axon circuits.
 ///
@@ -78,7 +78,9 @@ impl GrpcIngress {
     ///
     /// Listens on the configured address and serves all registered services.
     pub async fn run(self) -> Result<(), tonic::transport::Error> {
-        let router = self.router.expect("at least one gRPC service must be added");
+        let router = self
+            .router
+            .expect("at least one gRPC service must be added");
 
         tracing::info!("gRPC server listening on {}", self.addr);
 
@@ -90,9 +92,14 @@ impl GrpcIngress {
     where
         F: std::future::Future<Output = ()> + Send + 'static,
     {
-        let router = self.router.expect("at least one gRPC service must be added");
+        let router = self
+            .router
+            .expect("at least one gRPC service must be added");
 
-        tracing::info!("gRPC server listening on {} (graceful shutdown enabled)", self.addr);
+        tracing::info!(
+            "gRPC server listening on {} (graceful shutdown enabled)",
+            self.addr
+        );
 
         router.serve_with_shutdown(self.addr, signal).await
     }

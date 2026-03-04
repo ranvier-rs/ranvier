@@ -297,8 +297,8 @@ mod tests {
     struct Ping;
 
     #[async_trait::async_trait]
-    impl Transition<(), &'static str> for Ping {
-        type Error = std::convert::Infallible;
+    impl Transition<(), String> for Ping {
+        type Error = String;
         type Resources = ();
 
         async fn run(
@@ -306,8 +306,8 @@ mod tests {
             _state: (),
             _resources: &Self::Resources,
             _bus: &mut ranvier_core::Bus,
-        ) -> Outcome<&'static str, Self::Error> {
-            Outcome::next("pong")
+        ) -> Outcome<String, Self::Error> {
+            Outcome::next("pong".to_string())
         }
     }
 
@@ -315,7 +315,7 @@ mod tests {
     async fn test_app_executes_route_without_network_socket() {
         let ingress = crate::Ranvier::http::<()>().get(
             "/ping",
-            Axon::<(), (), std::convert::Infallible, ()>::new("Ping").then(Ping),
+            Axon::<(), (), String, ()>::new("Ping").then(Ping),
         );
         let app = TestApp::new(ingress, ());
 

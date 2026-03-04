@@ -38,29 +38,17 @@ enum DemoRouteError {
 }
 
 #[transition]
-async fn order_route(
-    _state: (),
-    _resources: &(),
-    _bus: &mut Bus,
-) -> Outcome<String, String> {
+async fn order_route(_state: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, String> {
     Outcome::Next("route:/orders/:id".to_string())
 }
 
 #[transition]
-async fn asset_route(
-    _state: (),
-    _resources: &(),
-    _bus: &mut Bus,
-) -> Outcome<String, String> {
+async fn asset_route(_state: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, String> {
     Outcome::Next("route:/assets/*path".to_string())
 }
 
 #[transition]
-async fn not_found_route(
-    _state: (),
-    _resources: &(),
-    _bus: &mut Bus,
-) -> Outcome<String, String> {
+async fn not_found_route(_state: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, String> {
     Outcome::Next("route:fallback".to_string())
 }
 

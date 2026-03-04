@@ -133,7 +133,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Introspect the registered route table
     let descriptors = ingress.route_descriptors();
-    println!("=== Large API Demo — registered routes ({}) ===", descriptors.len());
+    println!(
+        "=== Large API Demo — registered routes ({}) ===",
+        descriptors.len()
+    );
     for desc in &descriptors {
         println!("  {:6}  {}", desc.method(), desc.path_pattern());
     }

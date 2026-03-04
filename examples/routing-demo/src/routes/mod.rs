@@ -108,8 +108,7 @@ pub async fn demo_nested_routing() {
     for req in requests {
         println!("  {} {} => ", req.method.as_str(), req.path);
         let mut bus = Bus::new();
-        let axon =
-            Axon::<RouteRequest, RouteRequest, RouteError>::new("ApiRouter").then(ApiRoute);
+        let axon = Axon::<RouteRequest, RouteRequest, RouteError>::new("ApiRouter").then(ApiRoute);
         match axon.execute(req.clone(), &(), &mut bus).await {
             Outcome::Next(resp) => println!("    {} {}", resp.status, resp.body),
             Outcome::Branch(route, resp_box) => {

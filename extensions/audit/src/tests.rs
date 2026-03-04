@@ -26,7 +26,7 @@ impl AuditSink for MockAuditSink {
 }
 
 #[cfg(test)]
-mod tests {
+mod audit_tests {
     use super::*;
 
     #[tokio::test]
@@ -38,7 +38,7 @@ mod tests {
             "evt_001".into(),
             "user_55".into(),
             "DELETE".into(),
-            "resource_99".into()
+            "resource_99".into(),
         )
         .with_intent("Account cleanup")
         .with_metadata("reason", "GDPR request");
@@ -47,7 +47,7 @@ mod tests {
 
         let recorded = sink.get_events();
         assert_eq!(recorded.len(), 1);
-        
+
         let stored = &recorded[0];
         assert_eq!(stored.id, "evt_001");
         assert_eq!(stored.actor, "user_55");

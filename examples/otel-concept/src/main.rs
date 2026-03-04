@@ -17,6 +17,7 @@ use ranvier_core::bus::{ConnectionBus, ConnectionId};
 use ranvier_core::prelude::*;
 use ranvier_core::telemetry::Traced;
 use ranvier_runtime::Axon;
+use std::convert::Infallible;
 use std::fmt::Debug;
 
 // ============================================================================
@@ -51,7 +52,7 @@ struct Authenticate;
 
 #[async_trait]
 impl Transition<HttpRequest, AuthUser> for Authenticate {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -67,7 +68,7 @@ impl Transition<HttpRequest, AuthUser> for Authenticate {
         // Let's simulate checking a header
         if input.path == "/login" {
             // Fail flow
-            return Outcome::Fault(anyhow::anyhow!("Login not supported in this demo"));
+            return Outcome::Fault("Login not supported in this demo".to_string());
         }
 
         Outcome::Next(AuthUser {
@@ -83,7 +84,7 @@ struct HandleRequest;
 
 #[async_trait]
 impl Transition<AuthUser, HttpResponse> for HandleRequest {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -134,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
         Outcome::Next(res) => {
             println!("\n[Result] Status: {}, Body: {}", res.status, res.body);
         }
-        Outcome::Fault(e.to_string()) => {
+        Outcome::Fault(e) => {
             println!("\n[Result] Fault: {:?}", e);
         }
         _ => println!("\n[Result] Other outcome"),

@@ -175,7 +175,12 @@ impl Gauge {
             if self
                 .inner
                 .value
-                .compare_exchange_weak(current, f64::to_bits(new), Ordering::Relaxed, Ordering::Relaxed)
+                .compare_exchange_weak(
+                    current,
+                    f64::to_bits(new),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                )
                 .is_ok()
             {
                 break;
@@ -208,7 +213,11 @@ impl Gauge {
     pub fn render_prometheus(&self) -> String {
         format!(
             "# HELP {} {}\n# TYPE {} gauge\n{} {}\n",
-            self.inner.name, self.inner.help, self.inner.name, self.inner.name, self.get()
+            self.inner.name,
+            self.inner.help,
+            self.inner.name,
+            self.inner.name,
+            self.get()
         )
     }
 }
@@ -238,7 +247,9 @@ impl Histogram {
         Self::with_buckets(
             name,
             help,
-            &[5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0],
+            &[
+                5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0,
+            ],
         )
     }
 
@@ -268,7 +279,12 @@ impl Histogram {
             if self
                 .inner
                 .sum
-                .compare_exchange_weak(current, f64::to_bits(new), Ordering::Relaxed, Ordering::Relaxed)
+                .compare_exchange_weak(
+                    current,
+                    f64::to_bits(new),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                )
                 .is_ok()
             {
                 break;
@@ -356,7 +372,10 @@ impl MetricsRegistry {
 
     /// Register a histogram.
     pub fn register_histogram(&self, histogram: Histogram) {
-        self.histograms.lock().expect("registry lock").push(histogram);
+        self.histograms
+            .lock()
+            .expect("registry lock")
+            .push(histogram);
     }
 
     /// Render all registered metrics as Prometheus text format.

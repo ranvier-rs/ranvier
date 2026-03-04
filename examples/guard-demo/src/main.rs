@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::time::Duration;
 
 use http::header::HeaderName;
@@ -55,8 +56,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         RateLimitPolicy::new(5, Duration::from_secs(60)).key_header(client_header),
     );
 
-    let public = Axon::<(), (), String, ()>::new("PublicHello").then(PublicHello);
-    let burst = Axon::<(), (), String, ()>::new("BurstHello").then(BurstHello);
+    let public = Axon::<(), (), Infallible, ()>::new("PublicHello").then(PublicHello);
+    let burst = Axon::<(), (), Infallible, ()>::new("BurstHello").then(BurstHello);
 
     Ranvier::http::<()>()
         .bind("127.0.0.1:3110")

@@ -6,5 +6,5 @@
 pub mod ingress;
 pub mod schema;
 
-pub use ingress::GraphQLIngress;
 pub use async_graphql;
+pub use ingress::GraphQLIngress;

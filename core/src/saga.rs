@@ -1,12 +1,12 @@
-use serde::{Serialize, Deserialize};
-use std::collections::HashMap;
-use std::sync::Arc;
-use futures_util::future::BoxFuture;
 use crate::bus::Bus;
 use crate::outcome::Outcome;
+use futures_util::future::BoxFuture;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// A type-erased compensation handler for Saga rollbacks.
-/// 
+///
 /// Takes serialized input snapshot, resources, and bus.
 pub type SagaCompensationFn<E, Res> = Arc<
     dyn for<'a> Fn(Vec<u8>, &'a Res, &'a mut Bus) -> BoxFuture<'a, Outcome<(), E>> + Send + Sync,
@@ -36,23 +36,18 @@ impl<E, Res> SagaCompensationRegistry<E, Res> {
 }
 
 /// Defines how the runtime should handle Saga compensations.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SagaPolicy {
     /// No automated saga compensation.
+    #[default]
     Disabled,
     /// Enable automated stack-based compensation (LIFO).
     Enabled,
 }
 
-impl Default for SagaPolicy {
-    fn default() -> Self {
-        Self::Disabled
-    }
-}
-
 /// Represents a successfully completed step that might need compensation later.
 ///
-/// Captured automatically during Saga execution to enable "state-mapping" 
+/// Captured automatically during Saga execution to enable "state-mapping"
 /// for automated rollbacks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SagaTask {

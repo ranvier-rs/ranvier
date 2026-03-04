@@ -7,13 +7,15 @@
 //! - Static build: `cargo run -p static-build-demo -- --static-build --output-dir ./dist`
 //! - Via CLI: `ranvier build static --example static-build-demo`
 
+#![allow(deprecated)]
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use http::Request;
 use ranvier_core::bus::Bus;
 use ranvier_core::outcome::Outcome;
-use ranvier_core::static_gen::{write_json_file, StaticAxon, StaticManifest};
+use ranvier_core::static_gen::{StaticAxon, StaticManifest, write_json_file};
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
 use std::env;
 use std::path::PathBuf;
 
@@ -299,8 +301,7 @@ impl StaticAxon for DocsIndexAxon {
 // ============================================================
 
 /// Registry of all static axons in this project
-fn get_static_axons() -> Vec<Box<dyn StaticAxon<Output = serde_json::Value, Error = String>>>
-{
+fn get_static_axons() -> Vec<Box<dyn StaticAxon<Output = serde_json::Value, Error = String>>> {
     vec![
         Box::new(ValueAxon::new(LandingPageAxon)),
         Box::new(ValueAxon::new(PricingPageAxon)),
@@ -338,7 +339,7 @@ where
                     .map_err(|e| anyhow::anyhow!("Serialization failed: {}", e))?;
                 Ok(Outcome::Next(value))
             }
-            Outcome::Fault(e.to_string()) => Ok(Outcome::Fault(e.to_string())),
+            Outcome::Fault(e) => Ok(Outcome::Fault(e)),
             _ => Ok(Outcome::Next(serde_json::json!({}))),
         }
     }
@@ -371,7 +372,7 @@ fn run_static_build(output_dir: &str) -> Result<()> {
 
                 manifest.add_state(name, file_name);
             }
-            Ok(Outcome::Fault(e.to_string())) => {
+            Ok(Outcome::Fault(e)) => {
                 eprintln!("     ❌ Fault: {:?}", e);
             }
             Ok(_) => {

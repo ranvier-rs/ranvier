@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -50,9 +50,15 @@ impl Session {
     }
 
     /// Retrieves a typed value from the session state.
-    pub async fn get<T: DeserializeOwned>(&self, key: &str) -> Option<Result<T, serde_json::Error>> {
+    pub async fn get<T: DeserializeOwned>(
+        &self,
+        key: &str,
+    ) -> Option<Result<T, serde_json::Error>> {
         let inner = self.0.read().await;
-        inner.data.get(key).map(|v| serde_json::from_value(v.clone()))
+        inner
+            .data
+            .get(key)
+            .map(|v| serde_json::from_value(v.clone()))
     }
 
     /// Removes a value from the session state.
@@ -103,8 +109,7 @@ impl Session {
 
     /// Extracts the serialized inner state (useful for stores).
     pub async fn into_inner(self) -> SessionInner {
-        let inner = self.0.read().await.clone();
-        inner
+        self.0.read().await.clone()
     }
 
     /// Creates a session from a loaded Inner state.
@@ -124,10 +129,10 @@ impl Default for Session {
 pub trait SessionStore: Send + Sync + 'static {
     /// Loads a session by ID.
     async fn load(&self, session_id: &str) -> anyhow::Result<Option<Session>>;
-    
+
     /// Saves a session to the store.
     async fn save(&self, session: &Session) -> anyhow::Result<()>;
-    
+
     /// Destroys a session in the store.
     async fn destroy(&self, session_id: &str) -> anyhow::Result<()>;
 }

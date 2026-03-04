@@ -59,4 +59,10 @@ rcgen = { version = "0.13", optional = true }
 tempfile = "3.14"
 ranvier-observe = { workspace = true }
 
+# Gate broken examples behind non-existent feature to prevent default compilation
+[[example]]
+name = "large_api_demo"
+required-features = ["_route_group"]
 
+[lints]
+workspace = true

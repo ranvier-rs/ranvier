@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::{Serialize, Deserialize};
 use ranvier_core::prelude::*;
 use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
@@ -8,6 +7,7 @@ use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, Database, DatabaseConnection, EntityTrait, ModelTrait,
 };
 use sea_orm_migration::prelude::*;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
 struct AppResources {
@@ -264,25 +264,21 @@ async fn main() -> Result<()> {
     let resources = AppResources { db };
     let mut bus = Bus::new();
 
-    let create = Axon::<CreateUserInput, CreateUserInput, String, AppResources>::new(
-        "seaorm.create_user",
-    )
-    .then(CreateUserTransition);
+    let create =
+        Axon::<CreateUserInput, CreateUserInput, String, AppResources>::new("seaorm.create_user")
+            .then(CreateUserTransition);
 
-    let list = Axon::<FetchAllInput, FetchAllInput, String, AppResources>::new(
-        "seaorm.list_users",
-    )
-    .then(ListUsersTransition);
+    let list = Axon::<FetchAllInput, FetchAllInput, String, AppResources>::new("seaorm.list_users")
+        .then(ListUsersTransition);
 
     let update = Axon::<UpdateEmailInput, UpdateEmailInput, String, AppResources>::new(
         "seaorm.update_user_email",
     )
     .then(UpdateUserEmailTransition);
 
-    let delete = Axon::<DeleteUserInput, DeleteUserInput, String, AppResources>::new(
-        "seaorm.delete_user",
-    )
-    .then(DeleteUserTransition);
+    let delete =
+        Axon::<DeleteUserInput, DeleteUserInput, String, AppResources>::new("seaorm.delete_user")
+            .then(DeleteUserTransition);
 
     let alice = create
         .execute(
@@ -351,7 +347,10 @@ async fn main() -> Result<()> {
         Outcome::Next(users) => {
             println!("list(after): {} users", users.len());
             for user in users {
-                println!("- id={} username={} email={}", user.id, user.username, user.email);
+                println!(
+                    "- id={} username={} email={}",
+                    user.id, user.username, user.email
+                );
             }
         }
         other => {

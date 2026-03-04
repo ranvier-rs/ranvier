@@ -1,22 +1,22 @@
 use async_trait::async_trait;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
 // In a real scenario, this might use ranvier_core::cluster::DistributedLock or the local one in distributed.rs
-use crate::distributed::{DistributedLock, LockOptions, DistributedError};
+use crate::distributed::{DistributedError, DistributedLock, LockOptions};
 
 /// Interface for components participating in cluster leader election.
 #[async_trait]
 pub trait LeaderElection: Send + Sync {
     /// Attempt to become the leader or renew leadership if already the leader.
     async fn try_become_leader(&self) -> Result<bool, DistributedError>;
-    
+
     /// Returns true if this node is currently the elected leader.
     fn is_leader(&self) -> bool;
-    
+
     /// Step down from leadership explicitly.
     async fn step_down(&self) -> Result<(), DistributedError>;
 }
@@ -50,7 +50,7 @@ impl<L: DistributedLock> LeaderElection for LockBasedElection<L> {
             retry_count: 0,
             retry_delay_ms: 0,
         };
-        
+
         match self.lock.acquire(&self.resource_key, opts).await {
             Ok(_guard) => {
                 if !self.is_leader.load(Ordering::Relaxed) {
@@ -92,7 +92,10 @@ pub struct ClusterManager {
 
 impl ClusterManager {
     /// Starts a background task that periodically polls the leader election
-    pub fn start_election_loop<E: LeaderElection + 'static>(election: Arc<E>, interval: Duration) -> tokio::task::JoinHandle<()> {
+    pub fn start_election_loop<E: LeaderElection + 'static>(
+        election: Arc<E>,
+        interval: Duration,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             loop {
                 match election.try_become_leader().await {

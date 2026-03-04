@@ -20,7 +20,7 @@ mod tests {
         let lock_b = RedisDistributedLock::new(pool.clone(), "node-b");
 
         let key = "test:race:lock";
-        
+
         // Clear previous state
         let _ = lock_a.release(key).await;
 
@@ -38,7 +38,7 @@ mod tests {
         // Node B now succeeds
         let ok_b2 = lock_b.try_acquire(key, 5000).await.unwrap();
         assert!(ok_b2, "Node B should now acquire the lock");
-        
+
         lock_b.release(key).await.unwrap();
     }
 

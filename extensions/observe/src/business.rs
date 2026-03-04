@@ -16,8 +16,8 @@
 //! assert_eq!(sli.failed_requests(), 1);
 //! ```
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Service Level Indicator tracker.

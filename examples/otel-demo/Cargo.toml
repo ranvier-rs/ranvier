@@ -15,3 +15,6 @@ opentelemetry = { version = "0.22", features = ["metrics", "trace"] }
 opentelemetry_sdk = { version = "0.22", features = ["metrics", "rt-tokio"] }
 opentelemetry-otlp = { version = "0.15", default-features = false, features = ["metrics", "grpc-tonic", "http-proto", "reqwest-client"] }
 
+
+[lints]
+workspace = true

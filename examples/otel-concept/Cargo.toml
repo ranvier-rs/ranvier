@@ -11,3 +11,6 @@ async-trait = "0.1"
 anyhow = "1.0"
 http = "1.2"
 
+
+[lints]
+workspace = true

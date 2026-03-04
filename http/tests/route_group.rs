@@ -1,3 +1,5 @@
+// Disabled: RouteGroup API removed in v0.15. Tests preserved for future re-implementation.
+#![cfg(feature = "_route_group_tests")]
 //! M151 Router DSL Pack — RouteGroup integration tests
 //!
 //! Validates prefix application, route nesting, empty sub-path semantics,
@@ -40,10 +42,7 @@ fn ok_circuit() -> Axon<(), String, Infallible, ()> {
 /// Basic prefix: RouteGroup::new("/api").get("", …) → GET /api  => 200
 #[tokio::test]
 async fn route_group_prefix_empty_sub_path() {
-    let ingress = Ranvier::http::<()>().route_group(
-        RouteGroup::new("/api")
-            .get("", ok_circuit()),
-    );
+    let ingress = Ranvier::http::<()>().route_group(RouteGroup::new("/api").get("", ok_circuit()));
 
     let app = TestApp::new(ingress, ());
 
@@ -59,7 +58,11 @@ async fn route_group_prefix_empty_sub_path() {
         .send(TestRequest::get("/api/other"))
         .await
         .expect("request should succeed");
-    assert_eq!(res2.status(), StatusCode::NOT_FOUND, "GET /api/other expected 404");
+    assert_eq!(
+        res2.status(),
+        StatusCode::NOT_FOUND,
+        "GET /api/other expected 404"
+    );
 }
 
 /// Prefix + sub-path: RouteGroup::new("/api").get("/users", …) → GET /api/users
@@ -80,28 +83,39 @@ async fn route_group_prefix_with_sub_path() {
     assert_eq!(res.status(), StatusCode::OK, "POST /api/v1/users");
 
     // Wrong method
-    let res = app.send(TestRequest::delete("/api/v1/users")).await.unwrap();
-    assert_eq!(res.status(), StatusCode::NOT_FOUND, "DELETE /api/v1/users should 404");
+    let res = app
+        .send(TestRequest::delete("/api/v1/users"))
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::NOT_FOUND,
+        "DELETE /api/v1/users should 404"
+    );
 }
 
 /// Nested groups: parent /api, child /v1  →  /api/v1/ping
 #[tokio::test]
 async fn route_group_nested_group() {
     let ingress = Ranvier::http::<()>().route_group(
-        RouteGroup::new("/api")
-            .group(
-                RouteGroup::new("/v1")
-                    .get("/ping", ok_circuit()),
-            ),
+        RouteGroup::new("/api").group(RouteGroup::new("/v1").get("/ping", ok_circuit())),
     );
 
     let app = TestApp::new(ingress, ());
 
     let res = app.send(TestRequest::get("/api/v1/ping")).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK, "GET /api/v1/ping (nested group)");
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "GET /api/v1/ping (nested group)"
+    );
 
     let res = app.send(TestRequest::get("/api/ping")).await.unwrap();
-    assert_eq!(res.status(), StatusCode::NOT_FOUND, "GET /api/ping should 404 (wrong prefix)");
+    assert_eq!(
+        res.status(),
+        StatusCode::NOT_FOUND,
+        "GET /api/ping should 404 (wrong prefix)"
+    );
 }
 
 /// Multiple groups on the same ingress stay independent.
@@ -113,10 +127,7 @@ async fn route_group_multiple_groups_on_ingress() {
                 .get("", ok_circuit())
                 .post("", ok_circuit()),
         )
-        .route_group(
-            RouteGroup::new("/orders")
-                .get("", ok_circuit()),
-        );
+        .route_group(RouteGroup::new("/orders").get("", ok_circuit()));
 
     let app = TestApp::new(ingress, ());
 
@@ -125,16 +136,25 @@ async fn route_group_multiple_groups_on_ingress() {
         StatusCode::OK
     );
     assert_eq!(
-        app.send(TestRequest::post("/users")).await.unwrap().status(),
+        app.send(TestRequest::post("/users"))
+            .await
+            .unwrap()
+            .status(),
         StatusCode::OK
     );
     assert_eq!(
-        app.send(TestRequest::get("/orders")).await.unwrap().status(),
+        app.send(TestRequest::get("/orders"))
+            .await
+            .unwrap()
+            .status(),
         StatusCode::OK
     );
     // Cross-group non-existent path
     assert_eq!(
-        app.send(TestRequest::get("/products")).await.unwrap().status(),
+        app.send(TestRequest::get("/products"))
+            .await
+            .unwrap()
+            .status(),
         StatusCode::NOT_FOUND
     );
 }
@@ -144,10 +164,7 @@ async fn route_group_multiple_groups_on_ingress() {
 async fn route_group_alongside_plain_route() {
     let ingress = Ranvier::http::<()>()
         .route("/ping", ok_circuit())
-        .route_group(
-            RouteGroup::new("/api")
-                .get("/status", ok_circuit()),
-        );
+        .route_group(RouteGroup::new("/api").get("/status", ok_circuit()));
 
     let app = TestApp::new(ingress, ());
 
@@ -157,7 +174,10 @@ async fn route_group_alongside_plain_route() {
         "plain .route() should still work"
     );
     assert_eq!(
-        app.send(TestRequest::get("/api/status")).await.unwrap().status(),
+        app.send(TestRequest::get("/api/status"))
+            .await
+            .unwrap()
+            .status(),
         StatusCode::OK,
         "route_group route should work alongside plain route"
     );
@@ -167,11 +187,8 @@ async fn route_group_alongside_plain_route() {
 #[tokio::test]
 async fn route_group_deeply_nested() {
     let ingress = Ranvier::http::<()>().route_group(
-        RouteGroup::new("/a").group(
-            RouteGroup::new("/b").group(
-                RouteGroup::new("/c").get("", ok_circuit()),
-            ),
-        ),
+        RouteGroup::new("/a")
+            .group(RouteGroup::new("/b").group(RouteGroup::new("/c").get("", ok_circuit()))),
     );
 
     let app = TestApp::new(ingress, ());
@@ -182,12 +199,13 @@ async fn route_group_deeply_nested() {
 /// Trailing slash normalisation: RouteGroup::new("/api/") matches /api
 #[tokio::test]
 async fn route_group_trailing_slash_normalised() {
-    let ingress = Ranvier::http::<()>().route_group(
-        RouteGroup::new("/api/")
-            .get("", ok_circuit()),
-    );
+    let ingress = Ranvier::http::<()>().route_group(RouteGroup::new("/api/").get("", ok_circuit()));
 
     let app = TestApp::new(ingress, ());
     let res = app.send(TestRequest::get("/api")).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK, "trailing slash in prefix should normalise");
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "trailing slash in prefix should normalise"
+    );
 }

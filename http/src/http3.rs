@@ -34,9 +34,11 @@ impl Http3Config {
 
     /// Helper to generate a self-signed certificate for local testing and examples.
     /// NEVER USE IN PRODUCTION.
-    pub fn generate_self_signed(bind_addr: SocketAddr) -> Result<Self, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    pub fn generate_self_signed(
+        bind_addr: SocketAddr,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync + 'static>> {
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])?;
-        
+
         let cert_der = cert.cert.der().to_vec();
         let key_der = cert.key_pair.serialize_der();
 
@@ -49,7 +51,10 @@ impl Http3Config {
 }
 
 /// Runs the HTTP/3 server with the given configuration and Tower service.
-pub async fn serve<S, B>(config: Http3Config, service: S) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>
+pub async fn serve<S, B>(
+    config: Http3Config,
+    service: S,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>
 where
     S: Service<Request<Full<Bytes>>, Response = Response<B>> + Clone + Send + 'static,
     S::Future: Send + 'static,
@@ -63,7 +68,7 @@ where
         .into_iter()
         .map(|c| CertificateDer::from(c))
         .collect();
-    
+
     let key = PrivateKeyDer::try_from(config.private_key)?;
 
     let mut crypto = rustls::ServerConfig::builder()
@@ -94,7 +99,10 @@ where
     Ok(())
 }
 
-async fn handle_connection<S, B>(incoming: h3_quinn::quinn::Incoming, service: S) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>
+async fn handle_connection<S, B>(
+    incoming: h3_quinn::quinn::Incoming,
+    service: S,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>
 where
     S: Service<Request<Full<Bytes>>, Response = Response<B>> + Clone + Send + 'static,
     S::Future: Send + 'static,
@@ -103,7 +111,7 @@ where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     let connection = incoming.await?;
-    
+
     let peer_addr = connection.remote_address();
     trace!("QUIC connection accepted from {}", peer_addr);
 
@@ -112,21 +120,19 @@ where
 
     loop {
         match h3_server.accept().await {
-            Ok(Some(resolver)) => {
-                match resolver.resolve_request().await {
-                    Ok((req, stream)) => {
-                        let service = service.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = handle_request(req, stream, service).await {
-                                debug!("HTTP/3 request error: {}", e);
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        debug!("HTTP/3 resolve error: {}", e);
-                    }
+            Ok(Some(resolver)) => match resolver.resolve_request().await {
+                Ok((req, stream)) => {
+                    let service = service.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_request(req, stream, service).await {
+                            debug!("HTTP/3 request error: {}", e);
+                        }
+                    });
                 }
-            }
+                Err(e) => {
+                    debug!("HTTP/3 resolve error: {}", e);
+                }
+            },
             Ok(None) => {
                 break; // Connection gracefully closed
             }
@@ -161,7 +167,7 @@ where
             chunk.advance(len);
         }
     }
-    
+
     let (parts, _) = req.into_parts();
     let http_req = Request::from_parts(parts, Full::new(Bytes::from(body_bytes)));
 
@@ -170,7 +176,7 @@ where
         Ok(res) => {
             let (parts, body) = res.into_parts();
             let http_res = Response::from_parts(parts, ());
-            
+
             // Send headers
             stream.send_response(http_res).await?;
 
@@ -189,10 +195,7 @@ where
         Err(e) => {
             error!("HTTP/3 service error: {}", e);
             // Internal Server Error
-            let res = Response::builder()
-                .status(500)
-                .body(())
-                .unwrap();
+            let res = Response::builder().status(500).body(()).unwrap();
             stream.send_response(res).await?;
             stream.finish().await?;
         }

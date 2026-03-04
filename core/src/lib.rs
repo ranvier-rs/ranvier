@@ -18,6 +18,7 @@ pub mod transition;
 // For Ingress adapters, use: ranvier_http
 
 // Static generation exports
+#[allow(deprecated)]
 pub use static_gen::{
     StaticAxon, StaticBuildConfig, StaticBuildResult, StaticManifest, StaticNode, StaticStateEntry,
     read_json_file, write_json_file,
@@ -29,11 +30,11 @@ pub mod prelude {
     pub use crate::debug::{DebugControl, DebugState};
     pub use crate::event::{DeadLetter, DlqPolicy, DlqReader, DlqSink, EventSink, EventSource};
     pub use crate::iam::{IamError, IamHandle, IamIdentity, IamPolicy, IamToken, IamVerifier};
-    pub use crate::policy::{DynamicPolicy, PolicyRegistry};
     pub use crate::metadata::StepMetadata;
     pub use crate::outcome::{BranchId, NodeId, Outcome};
+    pub use crate::policy::{DynamicPolicy, PolicyRegistry};
     pub use crate::saga::{SagaCompensationRegistry, SagaPolicy, SagaStack, SagaTask};
-    pub use crate::schematic::{Edge, Node, NodeKind, Schematic, SchemaMigrationMapper};
+    pub use crate::schematic::{Edge, Node, NodeKind, SchemaMigrationMapper, Schematic};
     pub use crate::timeline::{Timeline, TimelineEvent};
     pub use crate::transition::Transition;
 }

@@ -7,11 +7,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use ranvier_core::policy::DynamicPolicy;
 use bytes::Bytes;
 use http::header::{HeaderName, HeaderValue};
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
+use ranvier_core::policy::DynamicPolicy;
 use tower::{Layer, Service};
 use tower_http::cors::CorsLayer;
 
@@ -129,9 +129,8 @@ impl SecurityHeadersPolicy {
 
     /// Set Content-Security-Policy from a `CspBuilder`.
     pub fn csp(mut self, builder: CspBuilder) -> Self {
-        self.content_security_policy = Some(
-            HeaderValue::from_str(&builder.build()).expect("valid CSP header"),
-        );
+        self.content_security_policy =
+            Some(HeaderValue::from_str(&builder.build()).expect("valid CSP header"));
         self
     }
 
@@ -155,9 +154,8 @@ impl SecurityHeadersPolicy {
 
     /// Set the Permissions-Policy header.
     pub fn permissions_policy(mut self, value: &str) -> Self {
-        self.permissions_policy = Some(
-            HeaderValue::from_str(value).expect("valid Permissions-Policy header"),
-        );
+        self.permissions_policy =
+            Some(HeaderValue::from_str(value).expect("valid Permissions-Policy header"));
         self
     }
 
@@ -205,22 +203,13 @@ impl SecurityHeadersPolicy {
             );
         }
         if let Some(ref pp) = self.permissions_policy {
-            headers.insert(
-                HeaderName::from_static("permissions-policy"),
-                pp.clone(),
-            );
+            headers.insert(HeaderName::from_static("permissions-policy"), pp.clone());
         }
         if let Some(ref xss) = self.x_xss_protection {
-            headers.insert(
-                HeaderName::from_static("x-xss-protection"),
-                xss.clone(),
-            );
+            headers.insert(HeaderName::from_static("x-xss-protection"), xss.clone());
         }
         if let Some(ref rp) = self.referrer_policy {
-            headers.insert(
-                HeaderName::from_static("referrer-policy"),
-                rp.clone(),
-            );
+            headers.insert(HeaderName::from_static("referrer-policy"), rp.clone());
         }
     }
 }
@@ -365,14 +354,20 @@ pub struct SecurityHeadersService<S> {
 
 impl<S, B> Service<Request<B>> for SecurityHeadersService<S>
 where
-    S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
-        + Clone
+    S: Service<
+            Request<B>,
+            Response = Response<
+                http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>,
+            >,
+            Error = Infallible,
+        > + Clone
         + Send
         + 'static,
     S::Future: Send + 'static,
     B: Send + 'static,
 {
-    type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    type Response =
+        Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
     type Error = Infallible;
     type Future = BoxFuture<Self::Response>;
 
@@ -514,14 +509,20 @@ struct RateDecision {
 
 impl<S, B> Service<Request<B>> for RateLimitService<S>
 where
-    S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
-        + Clone
+    S: Service<
+            Request<B>,
+            Response = Response<
+                http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>,
+            >,
+            Error = Infallible,
+        > + Clone
         + Send
         + 'static,
     S::Future: Send + 'static,
     B: Send + 'static,
 {
-    type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    type Response =
+        Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
     type Error = Infallible;
     type Future = BoxFuture<Self::Response>;
 
@@ -554,14 +555,20 @@ where
 
 impl<S, B> Service<Request<B>> for DynamicRateLimitService<S>
 where
-    S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
-        + Clone
+    S: Service<
+            Request<B>,
+            Response = Response<
+                http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>,
+            >,
+            Error = Infallible,
+        > + Clone
         + Send
         + 'static,
     S::Future: Send + 'static,
     B: Send + 'static,
 {
-    type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    type Response =
+        Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
     type Error = Infallible;
     type Future = BoxFuture<Self::Response>;
 
@@ -594,12 +601,11 @@ where
 }
 
 fn client_key<B>(req: &Request<B>, policy: &RateLimitPolicy) -> String {
-    if let Some(header) = &policy.key_header {
-        if let Some(value) = req.headers().get(header) {
-            if let Ok(text) = value.to_str() {
-                return text.to_string();
-            }
-        }
+    if let Some(header) = &policy.key_header
+        && let Some(value) = req.headers().get(header)
+        && let Ok(text) = value.to_str()
+    {
+        return text.to_string();
     }
     "global".to_string()
 }
@@ -647,7 +653,9 @@ fn add_rate_headers(headers: &mut http::HeaderMap, limit: u64, remaining: u64) {
     );
 }
 
-fn rate_limited_response(limit: u64) -> Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>> {
+fn rate_limited_response(
+    limit: u64,
+) -> Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>> {
     let payload = serde_json::json!({
         "error": "rate_limit_exceeded",
         "message": "too many requests",
@@ -708,14 +716,20 @@ pub struct ConnectionLimitService<S> {
 
 impl<S, B> Service<Request<B>> for ConnectionLimitService<S>
 where
-    S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
-        + Clone
+    S: Service<
+            Request<B>,
+            Response = Response<
+                http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>,
+            >,
+            Error = Infallible,
+        > + Clone
         + Send
         + 'static,
     S::Future: Send + 'static,
     B: Send + 'static,
 {
-    type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    type Response =
+        Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
     type Error = Infallible;
     type Future = BoxFuture<Self::Response>;
 
@@ -735,7 +749,10 @@ where
             let ip = extract_client_ip(&req);
             let counter = {
                 let mut store = state.lock().expect("connection-limit state lock");
-                store.entry(ip).or_insert_with(|| Arc::new(AtomicUsize::new(0))).clone()
+                store
+                    .entry(ip)
+                    .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
+                    .clone()
             };
 
             let current = counter.fetch_add(1, Ordering::SeqCst);
@@ -761,21 +778,18 @@ where
 
 fn extract_client_ip<B>(req: &Request<B>) -> IpAddr {
     // Try X-Forwarded-For first, then X-Real-IP, fall back to loopback
-    if let Some(xff) = req.headers().get("x-forwarded-for") {
-        if let Ok(text) = xff.to_str() {
-            if let Some(first) = text.split(',').next() {
-                if let Ok(ip) = first.trim().parse::<IpAddr>() {
-                    return ip;
-                }
-            }
-        }
+    if let Some(xff) = req.headers().get("x-forwarded-for")
+        && let Ok(text) = xff.to_str()
+        && let Some(first) = text.split(',').next()
+        && let Ok(ip) = first.trim().parse::<IpAddr>()
+    {
+        return ip;
     }
-    if let Some(xri) = req.headers().get("x-real-ip") {
-        if let Ok(text) = xri.to_str() {
-            if let Ok(ip) = text.trim().parse::<IpAddr>() {
-                return ip;
-            }
-        }
+    if let Some(xri) = req.headers().get("x-real-ip")
+        && let Ok(text) = xri.to_str()
+        && let Ok(ip) = text.trim().parse::<IpAddr>()
+    {
+        return ip;
     }
     IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
 }
@@ -843,14 +857,20 @@ pub struct RequestSizeLimitService<S> {
 
 impl<S, B> Service<Request<B>> for RequestSizeLimitService<S>
 where
-    S: Service<Request<B>, Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Error = Infallible>
-        + Clone
+    S: Service<
+            Request<B>,
+            Response = Response<
+                http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>,
+            >,
+            Error = Infallible,
+        > + Clone
         + Send
         + 'static,
     S::Future: Send + 'static,
     B: Send + 'static,
 {
-    type Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
+    type Response =
+        Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>;
     type Error = Infallible;
     type Future = BoxFuture<Self::Response>;
 
@@ -882,7 +902,9 @@ where
             }
 
             // Check total header size
-            let header_bytes: usize = req.headers().iter()
+            let header_bytes: usize = req
+                .headers()
+                .iter()
                 .map(|(k, v)| k.as_str().len() + v.len())
                 .sum();
             if header_bytes > max_header {
@@ -916,11 +938,21 @@ mod tests {
     use http_body_util::Full;
     use tower::ServiceExt;
 
+    #[allow(clippy::type_complexity)]
     fn ok_service() -> impl Service<
         Request<Full<Bytes>>,
-        Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>,
+        Response = Response<
+            http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>,
+        >,
         Error = Infallible,
-        Future = impl Future<Output = Result<Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Infallible>> + Send,
+        Future = impl Future<
+            Output = Result<
+                Response<
+                    http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>,
+                >,
+                Infallible,
+            >,
+        > + Send,
     > + Clone {
         tower::service_fn(|_req: Request<Full<Bytes>>| async move {
             Ok::<_, Infallible>(

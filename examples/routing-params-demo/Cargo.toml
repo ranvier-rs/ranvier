@@ -17,3 +17,6 @@ bytes = { workspace = true }
 http-body-util = { workspace = true }
 serde = { workspace = true }
 
+
+[lints]
+workspace = true

@@ -38,7 +38,11 @@ fn main() {
     ];
     for err in errors {
         let status: tonic::Status = err.into();
-        println!("   Code={:?}, Message=\"{}\"", status.code(), status.message());
+        println!(
+            "   Code={:?}, Message=\"{}\"",
+            status.code(),
+            status.message()
+        );
     }
     println!();
 
@@ -53,7 +57,11 @@ fn main() {
     let err_result: Result<String, GrpcError> = Err(GrpcError::NotFound("not found".into()));
     match err_result.into_grpc_response() {
         Ok(resp) => println!("   Ok response: {:?}", resp.get_ref()),
-        Err(s) => println!("   Error status: code={:?}, msg=\"{}\"", s.code(), s.message()),
+        Err(s) => println!(
+            "   Error status: code={:?}, msg=\"{}\"",
+            s.code(),
+            s.message()
+        ),
     }
     println!();
 

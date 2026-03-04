@@ -2,17 +2,24 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use bytes::Bytes;
-use http::{Method, Request, Response, StatusCode};
-use http::header::HeaderName;
+use http::{Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
 use ranvier_guard::*;
 use tower::{Layer, Service, ServiceExt};
 
+#[allow(clippy::type_complexity)]
 fn ok_service() -> impl Service<
     Request<Full<Bytes>>,
-    Response = Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>,
+    Response = Response<
+        http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>,
+    >,
     Error = Infallible,
-    Future = impl std::future::Future<Output = Result<Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>, Infallible>> + Send,
+    Future = impl std::future::Future<
+        Output = Result<
+            Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::convert::Infallible>>,
+            Infallible,
+        >,
+    > + Send,
 > + Clone {
     tower::service_fn(|_req: Request<Full<Bytes>>| async move {
         Ok::<_, Infallible>(
@@ -74,24 +81,49 @@ async fn strict_policy_applies_all_headers() {
 
     // Enhanced headers
     assert_eq!(
-        response.headers().get("content-security-policy").unwrap().to_str().unwrap(),
+        response
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "default-src 'self'"
     );
     assert_eq!(
-        response.headers().get("cross-origin-embedder-policy").unwrap().to_str().unwrap(),
+        response
+            .headers()
+            .get("cross-origin-embedder-policy")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "require-corp"
     );
     assert_eq!(
-        response.headers().get("cross-origin-opener-policy").unwrap().to_str().unwrap(),
+        response
+            .headers()
+            .get("cross-origin-opener-policy")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "same-origin"
     );
     assert_eq!(
-        response.headers().get("cross-origin-resource-policy").unwrap().to_str().unwrap(),
+        response
+            .headers()
+            .get("cross-origin-resource-policy")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "same-origin"
     );
     assert!(response.headers().contains_key("permissions-policy"));
     assert_eq!(
-        response.headers().get("x-xss-protection").unwrap().to_str().unwrap(),
+        response
+            .headers()
+            .get("x-xss-protection")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "1; mode=block"
     );
     assert!(response.headers().contains_key("referrer-policy"));
@@ -112,7 +144,12 @@ async fn custom_csp_via_builder() {
         .expect("response");
 
     assert_eq!(
-        response.headers().get("content-security-policy").unwrap().to_str().unwrap(),
+        response
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "default-src 'none'; script-src 'self'"
     );
 }
@@ -165,7 +202,10 @@ async fn request_size_limit_rejects_large_headers() {
         .unwrap();
 
     let response = service.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE);
+    assert_eq!(
+        response.status(),
+        StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE
+    );
 }
 
 #[tokio::test]

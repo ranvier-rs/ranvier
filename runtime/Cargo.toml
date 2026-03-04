@@ -39,3 +39,6 @@ tempfile = "3"
 [[bench]]
 name = "axon_latency"
 harness = false
+
+[lints]
+workspace = true

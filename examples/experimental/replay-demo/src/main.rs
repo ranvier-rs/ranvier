@@ -61,9 +61,8 @@ async fn main() -> anyhow::Result<()> {
                     ..
                 } => {
                     println!(
-                        "[{:>5}] 🔴 Exit Node : {} ({}ms) -> Outcome: {}",
+                        "[{:>5}] 🔴 Exit Node : <unknown> ({}ms) -> Outcome: {}",
                         timestamp - start_time,
-                        "<unknown>",
                         duration_ms,
                         outcome_type
                     );

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_core::transition::ResourceRequirement;
@@ -53,8 +53,7 @@ fn route_slot(route: &str) -> String {
     route
         .trim_start_matches('/')
         .replace('/', ":")
-        .replace('?', "_")
-        .replace('&', "_")
+        .replace(['?', '&'], "_")
 }
 
 #[derive(Clone, Copy)]
@@ -132,7 +131,8 @@ impl Transition<SessionContext, ResponsePayload> for CacheResponseTransition {
             route_slot(&input.route)
         );
 
-        let cached: Result<Option<String>, String> = redis.get(&cache_key).await.map_err(|e| e.to_string());
+        let cached: Result<Option<String>, String> =
+            redis.get(&cache_key).await.map_err(|e| e.to_string());
         let cached = match cached {
             Ok(value) => value,
             Err(err) => return Outcome::Fault(err),
@@ -183,11 +183,7 @@ async fn main() -> Result<()> {
     let manager = match redis::aio::ConnectionManager::new(client).await {
         Ok(manager) => manager,
         Err(err) => {
-            println!(
-                "redis unavailable (url={}): {}",
-                redis_url,
-                err
-            );
+            println!("redis unavailable (url={}): {}", redis_url, err);
             println!("skip live cache/session flow");
             return Ok(());
         }
@@ -246,11 +242,7 @@ async fn main() -> Result<()> {
             Outcome::Next(payload) => {
                 println!(
                     "{}: sid={} route={} cache_hit={} body={}",
-                    label,
-                    payload.sid,
-                    payload.route,
-                    payload.cache_hit,
-                    payload.body
+                    label, payload.sid, payload.route, payload.cache_hit, payload.body
                 );
             }
             other => return Err(anyhow!("{} request failed: {:?}", label, other)),

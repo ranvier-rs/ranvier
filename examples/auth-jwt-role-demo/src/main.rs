@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
@@ -63,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let admin_token = issue_demo_admin_token();
     println!("demo admin token: Bearer {admin_token}");
 
-    let secure_admin = Axon::<(), (), String, ()>::new("AdminGreeting").then(AdminGreeting);
+    let secure_admin = Axon::<(), (), Infallible, ()>::new("AdminGreeting").then(AdminGreeting);
 
     Ranvier::http::<()>()
         .bind("127.0.0.1:3107")

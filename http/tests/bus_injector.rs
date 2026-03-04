@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use http::StatusCode;
 use ranvier_core::{Bus, Outcome, Transition};
 use ranvier_http::prelude::*;
@@ -10,7 +8,7 @@ struct WhoAmI;
 
 #[async_trait::async_trait]
 impl Transition<(), String> for WhoAmI {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -39,7 +37,7 @@ async fn bus_injector_moves_request_context_into_bus() {
         })
         .get(
             "/whoami",
-            Axon::<(), (), Infallible, ()>::new("WhoAmI").then(WhoAmI),
+            Axon::<(), (), String, ()>::new("WhoAmI").then(WhoAmI),
         );
 
     let app = TestApp::new(ingress, ());

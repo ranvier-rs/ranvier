@@ -17,18 +17,19 @@ use crate::persistence::{
     PersistenceAutoComplete, PersistenceEnvelope, PersistenceHandle, PersistenceTraceId,
 };
 use async_trait::async_trait;
+use ranvier_audit::{AuditEvent, AuditSink};
 use ranvier_core::bus::Bus;
+use ranvier_core::cluster::DistributedLock;
+use ranvier_core::event::{DlqPolicy, DlqSink};
 use ranvier_core::outcome::Outcome;
+use ranvier_core::policy::DynamicPolicy;
+use ranvier_core::saga::{SagaPolicy, SagaStack};
 use ranvier_core::schematic::{
     BusCapabilitySchema, Edge, EdgeType, Node, NodeKind, Schematic, SourceLocation,
 };
 use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_core::transition::Transition;
-use ranvier_core::event::{DlqSink, DlqPolicy};
-use ranvier_core::policy::DynamicPolicy;
-use ranvier_core::saga::{SagaPolicy, SagaStack};
 use serde::{Serialize, de::DeserializeOwned};
-use ranvier_audit::{AuditSink, AuditEvent};
 use serde_json::Value;
 use std::any::type_name;
 use std::ffi::OsString;
@@ -40,7 +41,6 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::Instrument;
-use ranvier_core::cluster::DistributedLock;
 
 /// Configuration for Execution Mode.
 #[derive(Clone)]
@@ -128,7 +128,8 @@ pub struct Axon<In, Out, E, Res = ()> {
     /// Optional dynamic (hot-reloadable) Saga policy — takes precedence over static `saga_policy`
     pub dynamic_saga_policy: Option<DynamicPolicy<SagaPolicy>>,
     /// Registry for Saga compensation handlers
-    pub saga_compensation_registry: Arc<std::sync::RwLock<ranvier_core::saga::SagaCompensationRegistry<E, Res>>>,
+    pub saga_compensation_registry:
+        Arc<std::sync::RwLock<ranvier_core::saga::SagaCompensationRegistry<E, Res>>>,
     /// Optional IAM handle for identity verification at the Schematic boundary
     pub iam_handle: Option<ranvier_core::iam::IamHandle>,
 }
@@ -215,7 +216,9 @@ where
             dynamic_dlq_policy: None,
             saga_policy: SagaPolicy::default(),
             dynamic_saga_policy: None,
-            saga_compensation_registry: Arc::new(std::sync::RwLock::new(ranvier_core::saga::SagaCompensationRegistry::new())),
+            saga_compensation_registry: Arc::new(std::sync::RwLock::new(
+                ranvier_core::saga::SagaCompensationRegistry::new(),
+            )),
             iam_handle: None,
         }
     }
@@ -327,16 +330,25 @@ where
         Some(serde_json::to_value(trace).unwrap_or(serde_json::Value::Null))
     }
 
-    async fn force_resume(&self, trace_id: &str, target_node: &str, payload_override: Option<Value>) -> Result<(), String> {
-        let store = self.persistence_store.as_ref().ok_or("No persistence store attached to Axon")?;
-        
+    async fn force_resume(
+        &self,
+        trace_id: &str,
+        target_node: &str,
+        payload_override: Option<Value>,
+    ) -> Result<(), String> {
+        let store = self
+            .persistence_store
+            .as_ref()
+            .ok_or("No persistence store attached to Axon")?;
+
         let intervention = crate::persistence::Intervention {
             target_node: target_node.to_string(),
             payload_override,
             timestamp_ms: now_ms(),
         };
 
-        store.save_intervention(trace_id, intervention)
+        store
+            .save_intervention(trace_id, intervention)
             .await
             .map_err(|e| format!("Failed to save intervention: {}", e))?;
 
@@ -348,7 +360,7 @@ where
                 trace_id.to_string(),
             )
             .with_metadata("target_node", target_node);
-            
+
             let _ = sink.append(&event).await;
         }
 
@@ -403,7 +415,9 @@ where
             metadata: Default::default(),
             bus_capability: bus_capability_schema_from_policy(transition.bus_access_policy()),
             source_location: Some(SourceLocation::new(caller.file(), caller.line())),
-            position: transition.position().map(|(x, y)| ranvier_core::schematic::Position { x, y }),
+            position: transition
+                .position()
+                .map(|(x, y)| ranvier_core::schematic::Position { x, y }),
             compensation_node_id: None,
         };
 
@@ -438,55 +452,82 @@ where
 
                 Box::pin(async move {
                     // Check for manual intervention jump
-                    if let Some(jump) = bus.read::<ManualJump>() {
-                        if jump.target_node == timeline_node_id || jump.target_node == timeline_node_label {
-                            tracing::info!(
-                                node_id = %timeline_node_id,
-                                node_label = %timeline_node_label,
-                                "Manual jump target reached; skipping previous steps"
-                            );
+                    if let Some(jump) = bus.read::<ManualJump>()
+                        && (jump.target_node == timeline_node_id
+                            || jump.target_node == timeline_node_label)
+                    {
+                        tracing::info!(
+                            node_id = %timeline_node_id,
+                            node_label = %timeline_node_label,
+                            "Manual jump target reached; skipping previous steps"
+                        );
 
-                            let state = if let Some(ow) = jump.payload_override.clone() {
-                                match serde_json::from_value::<Out>(ow) {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        tracing::error!("Payload override deserialization failed: {}", e);
-                                        return Outcome::emit("execution.jump.payload_error", Some(serde_json::json!({"error": e.to_string()})))
-                                            .map(|_: ()| unreachable!());
-                                    }
+                        let state = if let Some(ow) = jump.payload_override.clone() {
+                            match serde_json::from_value::<Out>(ow) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Payload override deserialization failed: {}",
+                                        e
+                                    );
+                                    return Outcome::emit(
+                                        "execution.jump.payload_error",
+                                        Some(serde_json::json!({"error": e.to_string()})),
+                                    )
+                                    .map(|_: ()| unreachable!());
                                 }
-                            } else {
-                                // Default back to the provided input if this is an identity jump or types match
-                                // For now, treat missing payload on a mid-flow jump as an avoidable error if Possible.
-                                // In a better implementation, we'd try to load the last persisted Out for the previous step.
-                                return Outcome::emit("execution.jump.missing_payload", Some(serde_json::json!({"node_id": timeline_node_id})));
-                            };
-                            
-                            // Skip prev() and continue with trans.run(state, ...)
-                            return run_this_step::<Out, Next, E, Res>(
-                                &trans, state, res, bus, &timeline_node_id, &timeline_node_label, &transition_bus_policy, step_idx
-                            ).await;
-                        }
+                            }
+                        } else {
+                            // Default back to the provided input if this is an identity jump or types match
+                            // For now, treat missing payload on a mid-flow jump as an avoidable error if Possible.
+                            // In a better implementation, we'd try to load the last persisted Out for the previous step.
+                            return Outcome::emit(
+                                "execution.jump.missing_payload",
+                                Some(serde_json::json!({"node_id": timeline_node_id})),
+                            );
+                        };
+
+                        // Skip prev() and continue with trans.run(state, ...)
+                        return run_this_step::<Out, Next, E, Res>(
+                            &trans,
+                            state,
+                            res,
+                            bus,
+                            &timeline_node_id,
+                            &timeline_node_label,
+                            &transition_bus_policy,
+                            step_idx,
+                        )
+                        .await;
                     }
 
                     // Handle resumption skip
-                    if let Some(start) = bus.read::<StartStep>() {
-                        if step_idx == start.0 {
-                            if let Some(resumption) = bus.read::<ResumptionState>() {
-                                if let Some(p) = resumption.payload.clone() {
-                                    match serde_json::from_value::<Out>(p) {
-                                        Ok(s) => {
-                                            tracing::info!(node_id = %timeline_node_id, "Resuming with persisted state");
-                                            return run_this_step::<Out, Next, E, Res>(
-                                                &trans, s, res, bus, &timeline_node_id, &timeline_node_label, &transition_bus_policy, step_idx
-                                            ).await;
-                                        }
-                                        Err(e) => {
-                                            return Outcome::emit("execution.resumption.payload_error", Some(serde_json::json!({"error": e.to_string()})))
-                                                .map(|_: ()| unreachable!());
-                                        }
-                                    }
-                                }
+                    if let Some(start) = bus.read::<StartStep>()
+                        && step_idx == start.0
+                        && let Some(resumption) = bus.read::<ResumptionState>()
+                        && let Some(p) = resumption.payload.clone()
+                    {
+                        match serde_json::from_value::<Out>(p) {
+                            Ok(s) => {
+                                tracing::info!(node_id = %timeline_node_id, "Resuming with persisted state");
+                                return run_this_step::<Out, Next, E, Res>(
+                                    &trans,
+                                    s,
+                                    res,
+                                    bus,
+                                    &timeline_node_id,
+                                    &timeline_node_label,
+                                    &transition_bus_policy,
+                                    step_idx,
+                                )
+                                .await;
+                            }
+                            Err(e) => {
+                                return Outcome::emit(
+                                    "execution.resumption.payload_error",
+                                    Some(serde_json::json!({"error": e.to_string()})),
+                                )
+                                .map(|_: ()| unreachable!());
                             }
                         }
                     }
@@ -501,8 +542,16 @@ where
                     };
 
                     run_this_step::<Out, Next, E, Res>(
-                        &trans, state, res, bus, &timeline_node_id, &timeline_node_label, &transition_bus_policy, step_idx
-                    ).await
+                        &trans,
+                        state,
+                        res,
+                        bus,
+                        &timeline_node_id,
+                        &timeline_node_label,
+                        &transition_bus_policy,
+                        step_idx,
+                    )
+                    .await
                 })
             },
         );
@@ -569,7 +618,9 @@ where
             metadata: Default::default(),
             bus_capability: bus_capability_schema_from_policy(transition.bus_access_policy()),
             source_location: Some(SourceLocation::new(caller.file(), caller.line())),
-            position: transition.position().map(|(x, y)| ranvier_core::schematic::Position { x, y }),
+            position: transition
+                .position()
+                .map(|(x, y)| ranvier_core::schematic::Position { x, y }),
             compensation_node_id: Some(comp_node_id.clone()),
         };
 
@@ -585,7 +636,9 @@ where
             metadata: Default::default(),
             bus_capability: None,
             source_location: None,
-            position: compensation.position().map(|(x, y)| ranvier_core::schematic::Position { x, y }),
+            position: compensation
+                .position()
+                .map(|(x, y)| ranvier_core::schematic::Position { x, y }),
             compensation_node_id: None,
         };
 
@@ -626,53 +679,84 @@ where
 
                 Box::pin(async move {
                     // Check for manual intervention jump
-                    if let Some(jump) = bus.read::<ManualJump>() {
-                        if jump.target_node == timeline_node_id || jump.target_node == timeline_node_label {
-                            tracing::info!(
-                                node_id = %timeline_node_id,
-                                node_label = %timeline_node_label,
-                                "Manual jump target reached (compensated); skipping previous steps"
-                            );
+                    if let Some(jump) = bus.read::<ManualJump>()
+                        && (jump.target_node == timeline_node_id
+                            || jump.target_node == timeline_node_label)
+                    {
+                        tracing::info!(
+                            node_id = %timeline_node_id,
+                            node_label = %timeline_node_label,
+                            "Manual jump target reached (compensated); skipping previous steps"
+                        );
 
-                            let state = if let Some(ow) = jump.payload_override.clone() {
-                                match serde_json::from_value::<Out>(ow) {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        tracing::error!("Payload override deserialization failed: {}", e);
-                                        return Outcome::emit("execution.jump.payload_error", Some(serde_json::json!({"error": e.to_string()})))
-                                            .map(|_: ()| unreachable!());
-                                    }
-                                }
-                            } else {
-                                return Outcome::emit("execution.jump.missing_payload", Some(serde_json::json!({"node_id": timeline_node_id})))
+                        let state = if let Some(ow) = jump.payload_override.clone() {
+                            match serde_json::from_value::<Out>(ow) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Payload override deserialization failed: {}",
+                                        e
+                                    );
+                                    return Outcome::emit(
+                                        "execution.jump.payload_error",
+                                        Some(serde_json::json!({"error": e.to_string()})),
+                                    )
                                     .map(|_: ()| unreachable!());
-                            };
-                            
-                            // Skip prev() and continue with trans.run(state, ...)
-                            return run_this_compensated_step::<Out, Next, E, Res, Comp>(
-                                &trans, &comp, state, res, bus, &timeline_node_id, &timeline_comp_id, &timeline_node_label, &transition_bus_policy, step_idx
-                            ).await;
-                        }
+                                }
+                            }
+                        } else {
+                            return Outcome::emit(
+                                "execution.jump.missing_payload",
+                                Some(serde_json::json!({"node_id": timeline_node_id})),
+                            )
+                            .map(|_: ()| unreachable!());
+                        };
+
+                        // Skip prev() and continue with trans.run(state, ...)
+                        return run_this_compensated_step::<Out, Next, E, Res, Comp>(
+                            &trans,
+                            &comp,
+                            state,
+                            res,
+                            bus,
+                            &timeline_node_id,
+                            &timeline_comp_id,
+                            &timeline_node_label,
+                            &transition_bus_policy,
+                            step_idx,
+                        )
+                        .await;
                     }
 
                     // Handle resumption skip
-                    if let Some(start) = bus.read::<StartStep>() {
-                        if step_idx == start.0 {
-                            if let Some(resumption) = bus.read::<ResumptionState>() {
-                                if let Some(p) = resumption.payload.clone() {
-                                    match serde_json::from_value::<Out>(p) {
-                                        Ok(s) => {
-                                            tracing::info!(node_id = %timeline_node_id, "Resuming with persisted state (compensated)");
-                                            return run_this_compensated_step::<Out, Next, E, Res, Comp>(
-                                                &trans, &comp, s, res, bus, &timeline_node_id, &timeline_comp_id, &timeline_node_label, &transition_bus_policy, step_idx
-                                            ).await;
-                                        }
-                                        Err(e) => {
-                                            return Outcome::emit("execution.resumption.payload_error", Some(serde_json::json!({"error": e.to_string()})))
-                                                .map(|_: ()| unreachable!());
-                                        }
-                                    }
-                                }
+                    if let Some(start) = bus.read::<StartStep>()
+                        && step_idx == start.0
+                        && let Some(resumption) = bus.read::<ResumptionState>()
+                        && let Some(p) = resumption.payload.clone()
+                    {
+                        match serde_json::from_value::<Out>(p) {
+                            Ok(s) => {
+                                tracing::info!(node_id = %timeline_node_id, "Resuming with persisted state (compensated)");
+                                return run_this_compensated_step::<Out, Next, E, Res, Comp>(
+                                    &trans,
+                                    &comp,
+                                    s,
+                                    res,
+                                    bus,
+                                    &timeline_node_id,
+                                    &timeline_comp_id,
+                                    &timeline_node_label,
+                                    &transition_bus_policy,
+                                    step_idx,
+                                )
+                                .await;
+                            }
+                            Err(e) => {
+                                return Outcome::emit(
+                                    "execution.resumption.payload_error",
+                                    Some(serde_json::json!({"error": e.to_string()})),
+                                )
+                                .map(|_: ()| unreachable!());
                             }
                         }
                     }
@@ -687,8 +771,18 @@ where
                     };
 
                     run_this_compensated_step::<Out, Next, E, Res, Comp>(
-                        &trans, &comp, state, res, bus, &timeline_node_id, &timeline_comp_id, &timeline_node_label, &transition_bus_policy, step_idx
-                    ).await
+                        &trans,
+                        &comp,
+                        state,
+                        res,
+                        bus,
+                        &timeline_node_id,
+                        &timeline_comp_id,
+                        &timeline_node_label,
+                        &transition_bus_policy,
+                        step_idx,
+                    )
+                    .await
                 })
             },
         );
@@ -698,17 +792,18 @@ where
             let comp_fn = compensation.clone();
             let transition_bus_policy = bus_policy_for_registry.clone();
 
-            let handler: ranvier_core::saga::SagaCompensationFn<E, Res> = Arc::new(move |input_data, res, bus| {
-                let comp = comp_fn.clone();
-                let bus_policy = transition_bus_policy.clone();
-                Box::pin(async move {
-                    let input: Out = serde_json::from_slice(&input_data).unwrap();
-                    bus.set_access_policy(comp.label(), bus_policy);
-                    let res = comp.run(input, res, bus).await;
-                    bus.clear_access_policy();
-                    res
-                })
-            });
+            let handler: ranvier_core::saga::SagaCompensationFn<E, Res> =
+                Arc::new(move |input_data, res, bus| {
+                    let comp = comp_fn.clone();
+                    let bus_policy = transition_bus_policy.clone();
+                    Box::pin(async move {
+                        let input: Out = serde_json::from_slice(&input_data).unwrap();
+                        bus.set_access_policy(comp.label(), bus_policy);
+                        let res = comp.run(input, res, bus).await;
+                        bus.clear_access_policy();
+                        res
+                    })
+                });
             registry.register(next_node_id.clone(), handler);
         }
 
@@ -751,7 +846,9 @@ where
             metadata: Default::default(),
             bus_capability: None,
             source_location: Some(SourceLocation::new(caller.file(), caller.line())),
-            position: transition.position().map(|(x, y)| ranvier_core::schematic::Position { x, y }),
+            position: transition
+                .position()
+                .map(|(x, y)| ranvier_core::schematic::Position { x, y }),
             compensation_node_id: None,
         };
 
@@ -803,7 +900,12 @@ where
 
     /// Execute the Axon with the given input and resources.
     pub async fn execute(&self, input: In, resources: &Res, bus: &mut Bus) -> Outcome<Out, E> {
-        if let ExecutionMode::Singleton { lock_key, ttl_ms, lock_provider } = &self.execution_mode {
+        if let ExecutionMode::Singleton {
+            lock_key,
+            ttl_ms,
+            lock_provider,
+        } = &self.execution_mode
+        {
             let trace_span = tracing::info_span!("Singleton Execution", key = %lock_key);
             let _enter = trace_span.enter();
             match lock_provider.try_acquire(lock_key, *ttl_ms).await {
@@ -811,17 +913,26 @@ where
                     tracing::debug!("Successfully acquired singleton lock: {}", lock_key);
                 }
                 Ok(false) => {
-                    tracing::debug!("Singleton lock {} already held, aborting execution.", lock_key);
+                    tracing::debug!(
+                        "Singleton lock {} already held, aborting execution.",
+                        lock_key
+                    );
                     // Emit a specific event indicating skip
-                    return Outcome::emit("execution.skipped.lock_held", Some(serde_json::json!({
-                        "lock_key": lock_key
-                    })));
+                    return Outcome::emit(
+                        "execution.skipped.lock_held",
+                        Some(serde_json::json!({
+                            "lock_key": lock_key
+                        })),
+                    );
                 }
                 Err(e) => {
                     tracing::error!("Failed to check singleton lock {}: {:?}", lock_key, e);
-                    return Outcome::emit("execution.skipped.lock_error", Some(serde_json::json!({
-                        "error": e.to_string()
-                    })));
+                    return Outcome::emit(
+                        "execution.skipped.lock_error",
+                        Some(serde_json::json!({
+                            "error": e.to_string()
+                        })),
+                    );
                 }
             }
         }
@@ -833,9 +944,7 @@ where
             if matches!(iam.policy, IamPolicy::None) {
                 // No verification required — skip
             } else {
-                let token = bus
-                    .read::<IamToken>()
-                    .map(|t| t.0.clone());
+                let token = bus.read::<IamToken>().map(|t| t.0.clone());
 
                 match token {
                     Some(raw_token) => {
@@ -848,19 +957,25 @@ where
                                         "IAM policy enforcement failed: {}",
                                         e
                                     );
-                                    return Outcome::emit("iam.policy_denied", Some(serde_json::json!({
-                                        "error": e.to_string(),
-                                        "subject": identity.subject,
-                                    })));
+                                    return Outcome::emit(
+                                        "iam.policy_denied",
+                                        Some(serde_json::json!({
+                                            "error": e.to_string(),
+                                            "subject": identity.subject,
+                                        })),
+                                    );
                                 }
                                 // Insert verified identity into Bus for downstream access
                                 bus.insert(identity);
                             }
                             Err(e) => {
                                 tracing::warn!("IAM token verification failed: {}", e);
-                                return Outcome::emit("iam.verification_failed", Some(serde_json::json!({
-                                    "error": e.to_string()
-                                })));
+                                return Outcome::emit(
+                                    "iam.verification_failed",
+                                    Some(serde_json::json!({
+                                        "error": e.to_string()
+                                    })),
+                                );
                             }
                         }
                     }
@@ -874,19 +989,21 @@ where
 
         let trace_id = persistence_trace_id(bus);
         let label = self.schematic.name.clone();
-        
+
         // Inject DLQ config into Bus for step-level reporting
         if let Some(sink) = &self.dlq_sink {
             bus.insert(sink.clone());
         }
         // Prefer dynamic (hot-reloadable) policy if available, otherwise use static
-        let effective_dlq_policy = self.dynamic_dlq_policy
+        let effective_dlq_policy = self
+            .dynamic_dlq_policy
             .as_ref()
             .map(|d| d.current())
             .unwrap_or_else(|| self.dlq_policy.clone());
         bus.insert(effective_dlq_policy);
         bus.insert(self.schematic.clone());
-        let effective_saga_policy = self.dynamic_saga_policy
+        let effective_saga_policy = self
+            .dynamic_saga_policy
             .as_ref()
             .map(|d| d.current())
             .unwrap_or_else(|| self.saga_policy.clone());
@@ -902,20 +1019,28 @@ where
         let compensation_retry_policy = compensation_retry_policy(bus);
         let compensation_idempotency = bus.read::<CompensationIdempotencyHandle>().cloned();
         let version = self.schematic.schema_version.clone();
-        let migration_registry = bus.read::<ranvier_core::schematic::MigrationRegistry>().cloned();
-        
+        let migration_registry = bus
+            .read::<ranvier_core::schematic::MigrationRegistry>()
+            .cloned();
+
         let persistence_start_step = if let Some(handle) = persistence_handle.as_ref() {
-            let (mut start_step, trace_version, intervention, last_node_id, mut last_payload) = load_persistence_version(handle, &trace_id).await;
-            
+            let (mut start_step, trace_version, intervention, last_node_id, mut last_payload) =
+                load_persistence_version(handle, &trace_id).await;
+
             if let Some(interv) = intervention {
                 tracing::info!(
                     trace_id = %trace_id,
                     target_node = %interv.target_node,
                     "Applying manual intervention command"
                 );
-                
+
                 // Find the step index for the target node
-                if let Some(target_idx) = self.schematic.nodes.iter().position(|n| n.id == interv.target_node || n.label == interv.target_node) {
+                if let Some(target_idx) = self
+                    .schematic
+                    .nodes
+                    .iter()
+                    .position(|n| n.id == interv.target_node || n.label == interv.target_node)
+                {
                     tracing::info!(
                         trace_id = %trace_id,
                         target_node = %interv.target_node,
@@ -940,7 +1065,7 @@ where
                         )
                         .with_metadata("target_node", interv.target_node.clone())
                         .with_metadata("target_step", target_idx);
-                        
+
                         let _ = sink.append(&event).await;
                     }
                 } else {
@@ -951,123 +1076,175 @@ where
                     );
                 }
             }
-            
-            if let Some(old_version) = trace_version {
-                if old_version != version {
-                    tracing::info!(
-                        trace_id = %trace_id,
-                        old_version = %old_version,
-                        current_version = %version,
-                        "Version mismatch detected during resumption"
-                    );
 
-                    // Try multi-hop migration path first, fall back to direct lookup
-                    let migration_path = migration_registry
-                        .as_ref()
-                        .and_then(|r| r.find_migration_path(&old_version, &version));
+            if let Some(old_version) = trace_version
+                && old_version != version
+            {
+                tracing::info!(
+                    trace_id = %trace_id,
+                    old_version = %old_version,
+                    current_version = %version,
+                    "Version mismatch detected during resumption"
+                );
 
-                    let (final_migration, mapped_payload) = if let Some(path) = migration_path {
-                        if path.is_empty() {
-                            (None, last_payload.clone())
-                        } else {
-                            // Apply payload mappers along the migration chain
-                            let mut payload = last_payload.clone();
-                            for hop in &path {
-                                if let (Some(mapper), Some(p)) = (&hop.payload_mapper, payload.as_ref()) {
-                                    match mapper.map_state(p) {
-                                        Ok(mapped) => payload = Some(mapped),
-                                        Err(e) => {
-                                            tracing::error!(
-                                                trace_id = %trace_id,
-                                                from = %hop.from_version,
-                                                to = %hop.to_version,
-                                                error = %e,
-                                                "Payload migration mapper failed"
-                                            );
-                                            return Outcome::emit("execution.resumption.payload_migration_failed", Some(serde_json::json!({
+                // Try multi-hop migration path first, fall back to direct lookup
+                let migration_path = migration_registry
+                    .as_ref()
+                    .and_then(|r| r.find_migration_path(&old_version, &version));
+
+                let (final_migration, mapped_payload) = if let Some(path) = migration_path {
+                    if path.is_empty() {
+                        (None, last_payload.clone())
+                    } else {
+                        // Apply payload mappers along the migration chain
+                        let mut payload = last_payload.clone();
+                        for hop in &path {
+                            if let (Some(mapper), Some(p)) = (&hop.payload_mapper, payload.as_ref())
+                            {
+                                match mapper.map_state(p) {
+                                    Ok(mapped) => payload = Some(mapped),
+                                    Err(e) => {
+                                        tracing::error!(
+                                            trace_id = %trace_id,
+                                            from = %hop.from_version,
+                                            to = %hop.to_version,
+                                            error = %e,
+                                            "Payload migration mapper failed"
+                                        );
+                                        return Outcome::emit(
+                                            "execution.resumption.payload_migration_failed",
+                                            Some(serde_json::json!({
                                                 "trace_id": trace_id,
                                                 "from": hop.from_version,
                                                 "to": hop.to_version,
                                                 "error": e.to_string()
-                                            })));
-                                        }
+                                            })),
+                                        );
                                     }
                                 }
                             }
-                            let hops: Vec<String> = path.iter().map(|h| format!("{}->{}", h.from_version, h.to_version)).collect();
-                            tracing::info!(trace_id = %trace_id, hops = ?hops, "Applied multi-hop migration path");
-                            (path.last().copied(), payload)
                         }
-                    } else {
-                        (None, last_payload.clone())
-                    };
-
-                    // Use the final migration in the path to determine strategy
-                    let migration = final_migration.or_else(|| {
-                        migration_registry.as_ref().and_then(|r| r.find_migration(&old_version, &version))
-                    });
-
-                    // Update last_payload with mapped version
-                    if mapped_payload.is_some() {
-                        last_payload = mapped_payload;
+                        let hops: Vec<String> = path
+                            .iter()
+                            .map(|h| format!("{}->{}", h.from_version, h.to_version))
+                            .collect();
+                        tracing::info!(trace_id = %trace_id, hops = ?hops, "Applied multi-hop migration path");
+                        (path.last().copied(), payload)
                     }
+                } else {
+                    (None, last_payload.clone())
+                };
 
-                    let strategy = if let (Some(m), Some(node_id)) = (migration, last_node_id.as_ref()) {
-                        m.node_mapping.get(node_id).cloned().unwrap_or(m.default_strategy.clone())
-                    } else {
-                        migration.map(|m| m.default_strategy.clone()).unwrap_or(ranvier_core::schematic::MigrationStrategy::Fail)
-                    };
+                // Use the final migration in the path to determine strategy
+                let migration = final_migration.or_else(|| {
+                    migration_registry
+                        .as_ref()
+                        .and_then(|r| r.find_migration(&old_version, &version))
+                });
 
-                    match strategy {
-                        ranvier_core::schematic::MigrationStrategy::ResumeFromStart => {
-                            tracing::info!(trace_id = %trace_id, "Applying ResumeFromStart migration strategy");
-                            start_step = 0;
+                // Update last_payload with mapped version
+                if mapped_payload.is_some() {
+                    last_payload = mapped_payload;
+                }
+
+                let strategy = if let (Some(m), Some(node_id)) = (migration, last_node_id.as_ref())
+                {
+                    m.node_mapping
+                        .get(node_id)
+                        .cloned()
+                        .unwrap_or(m.default_strategy.clone())
+                } else {
+                    migration
+                        .map(|m| m.default_strategy.clone())
+                        .unwrap_or(ranvier_core::schematic::MigrationStrategy::Fail)
+                };
+
+                match strategy {
+                    ranvier_core::schematic::MigrationStrategy::ResumeFromStart => {
+                        tracing::info!(trace_id = %trace_id, "Applying ResumeFromStart migration strategy");
+                        start_step = 0;
+                    }
+                    ranvier_core::schematic::MigrationStrategy::MigrateActiveNode {
+                        new_node_id,
+                        ..
+                    } => {
+                        tracing::info!(trace_id = %trace_id, to_node = %new_node_id, "Applying MigrateActiveNode strategy");
+                        if let Some(target_idx) = self
+                            .schematic
+                            .nodes
+                            .iter()
+                            .position(|n| n.id == new_node_id || n.label == new_node_id)
+                        {
+                            start_step = target_idx as u64;
+                        } else {
+                            tracing::warn!(trace_id = %trace_id, "MigrateActiveNode: target node {} not found", new_node_id);
+                            return Outcome::emit(
+                                "execution.resumption.migration_target_not_found",
+                                Some(serde_json::json!({ "node_id": new_node_id })),
+                            );
                         }
-                        ranvier_core::schematic::MigrationStrategy::MigrateActiveNode { new_node_id, .. } => {
-                            tracing::info!(trace_id = %trace_id, to_node = %new_node_id, "Applying MigrateActiveNode strategy");
-                            if let Some(target_idx) = self.schematic.nodes.iter().position(|n| n.id == new_node_id || n.label == new_node_id) {
-                                start_step = target_idx as u64;
-                            } else {
-                                tracing::warn!(trace_id = %trace_id, "MigrateActiveNode: target node {} not found", new_node_id);
-                                return Outcome::emit("execution.resumption.migration_target_not_found", Some(serde_json::json!({ "node_id": new_node_id })));
-                            }
+                    }
+                    ranvier_core::schematic::MigrationStrategy::FallbackToNode(node_id) => {
+                        tracing::info!(trace_id = %trace_id, to_node = %node_id, "Applying FallbackToNode strategy");
+                        if let Some(target_idx) = self
+                            .schematic
+                            .nodes
+                            .iter()
+                            .position(|n| n.id == node_id || n.label == node_id)
+                        {
+                            start_step = target_idx as u64;
+                        } else {
+                            tracing::warn!(trace_id = %trace_id, "FallbackToNode: node {} not found", node_id);
+                            return Outcome::emit(
+                                "execution.resumption.migration_target_not_found",
+                                Some(serde_json::json!({ "node_id": node_id })),
+                            );
                         }
-                        ranvier_core::schematic::MigrationStrategy::FallbackToNode(node_id) => {
-                            tracing::info!(trace_id = %trace_id, to_node = %node_id, "Applying FallbackToNode strategy");
-                            if let Some(target_idx) = self.schematic.nodes.iter().position(|n| n.id == node_id || n.label == node_id) {
-                                start_step = target_idx as u64;
-                            } else {
-                                tracing::warn!(trace_id = %trace_id, "FallbackToNode: node {} not found", node_id);
-                                return Outcome::emit("execution.resumption.migration_target_not_found", Some(serde_json::json!({ "node_id": node_id })));
-                            }
-                        }
-                        ranvier_core::schematic::MigrationStrategy::Fail => {
-                            tracing::error!(trace_id = %trace_id, "Version mismatch: no migration path found. Failing resumption.");
-                            return Outcome::emit("execution.resumption.version_mismatch_failed", Some(serde_json::json!({
+                    }
+                    ranvier_core::schematic::MigrationStrategy::Fail => {
+                        tracing::error!(trace_id = %trace_id, "Version mismatch: no migration path found. Failing resumption.");
+                        return Outcome::emit(
+                            "execution.resumption.version_mismatch_failed",
+                            Some(serde_json::json!({
                                 "trace_id": trace_id,
                                 "old_version": old_version,
                                 "current_version": version
-                            })));
-                        }
-                        _ => {
-                            tracing::error!(trace_id = %trace_id, "Unsupported migration strategy: {:?}", strategy);
-                             return Outcome::emit("execution.resumption.unsupported_migration", Some(serde_json::json!({
+                            })),
+                        );
+                    }
+                    _ => {
+                        tracing::error!(trace_id = %trace_id, "Unsupported migration strategy: {:?}", strategy);
+                        return Outcome::emit(
+                            "execution.resumption.unsupported_migration",
+                            Some(serde_json::json!({
                                 "trace_id": trace_id,
                                 "strategy": format!("{:?}", strategy)
-                            })));
-                        }
+                            })),
+                        );
                     }
                 }
             }
 
             let ingress_node_id = self.schematic.nodes.first().map(|n| n.id.clone());
-            persist_execution_event(handle, &trace_id, &label, &version, start_step, ingress_node_id, "Enter", None).await;
-            
+            persist_execution_event(
+                handle,
+                &trace_id,
+                &label,
+                &version,
+                start_step,
+                ingress_node_id,
+                "Enter",
+                None,
+            )
+            .await;
+
             bus.insert(StartStep(start_step));
             if start_step > 0 {
-                bus.insert(ResumptionState { payload: last_payload });
+                bus.insert(ResumptionState {
+                    payload: last_payload,
+                });
             }
-            
+
             Some(start_step)
         } else {
             None
@@ -1102,7 +1279,7 @@ where
             .instrument(circuit_span.clone())
             .await;
         circuit_span.record("ranvier.outcome_kind", outcome_kind_name(&outcome));
-                if let Some(target) = outcome_target(&outcome) {
+        if let Some(target) = outcome_target(&outcome) {
             circuit_span.record("ranvier.outcome_target", tracing::field::display(&target));
         }
 
@@ -1112,23 +1289,23 @@ where
                 let mut stack = bus.read_mut::<SagaStack>();
                 stack.as_mut().and_then(|s| s.pop())
             } {
-                    tracing::info!(trace_id = %trace_id, node_id = %task.node_id, "Compensating step: {}", task.node_label);
-                    
-                    let handler = {
-                        let registry = self.saga_compensation_registry.read().unwrap();
-                        registry.get(&task.node_id)
-                    };
-                    if let Some(handler) = handler {
-                        let res = handler(task.input_snapshot, resources, bus).await;
-                        if let Outcome::Fault(e) = res {
-                            tracing::error!(trace_id = %trace_id, node_id = %task.node_id, "Saga compensation FAILED: {:?}", e);
-                        }
-                    } else {
-                        tracing::warn!(trace_id = %trace_id, node_id = %task.node_id, "No compensation handler found in registry for saga rollback");
+                tracing::info!(trace_id = %trace_id, node_id = %task.node_id, "Compensating step: {}", task.node_label);
+
+                let handler = {
+                    let registry = self.saga_compensation_registry.read().unwrap();
+                    registry.get(&task.node_id)
+                };
+                if let Some(handler) = handler {
+                    let res = handler(task.input_snapshot, resources, bus).await;
+                    if let Outcome::Fault(e) = res {
+                        tracing::error!(trace_id = %trace_id, node_id = %task.node_id, "Saga compensation FAILED: {:?}", e);
                     }
+                } else {
+                    tracing::warn!(trace_id = %trace_id, node_id = %task.node_id, "No compensation handler found in registry for saga rollback");
                 }
-                tracing::info!(trace_id = %trace_id, "Saga automated rollback completed");
             }
+            tracing::info!(trace_id = %trace_id, "Saga automated rollback completed");
+        }
 
         let ingress_exit_ts = now_ms();
         if should_capture
@@ -1296,10 +1473,10 @@ where
     pub fn export_schematic(&self, request: &SchematicExportRequest) -> anyhow::Result<()> {
         let json = serde_json::to_string_pretty(self.schematic())?;
         if let Some(path) = &request.output {
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    fs::create_dir_all(parent)?;
-                }
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                fs::create_dir_all(parent)?;
             }
             fs::write(path, json.as_bytes())?;
             return Ok(());
@@ -1477,12 +1654,20 @@ fn compensation_retry_policy(bus: &Bus) -> CompensationRetryPolicy {
 async fn load_persistence_version(
     handle: &PersistenceHandle,
     trace_id: &str,
-) -> (u64, Option<String>, Option<crate::persistence::Intervention>, Option<String>, Option<serde_json::Value>) {
+) -> (
+    u64,
+    Option<String>,
+    Option<crate::persistence::Intervention>,
+    Option<String>,
+    Option<serde_json::Value>,
+) {
     let store = handle.store();
     match store.load(trace_id).await {
         Ok(Some(trace)) => {
             let last_event = trace.events.last();
-            let next_step = last_event.map(|event| event.step.saturating_add(1)).unwrap_or(0);
+            let next_step = last_event
+                .map(|event| event.step.saturating_add(1))
+                .unwrap_or(0);
             let last_node_id = last_event.and_then(|e| e.node_id.clone());
             let last_payload = last_event.and_then(|e| e.payload.clone());
 
@@ -1506,8 +1691,9 @@ async fn load_persistence_version(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_this_step<In, Out, E, Res>(
-    trans: &(impl Transition<In, Out, Resources = Res, Error = E> + Clone + Send + Sync + 'static),
+    trans: &(impl Transition<In, Out, Resources = Res, Error = E> + Clone + 'static),
     state: In,
     res: &Res,
     bus: &mut Bus,
@@ -1567,7 +1753,11 @@ where
 
     // Check DLQ retry policy and pre-serialize state for potential retries
     let dlq_retry_config = bus.read::<DlqPolicy>().and_then(|p| {
-        if let DlqPolicy::RetryThenDlq { max_attempts, backoff_ms } = &*p {
+        if let DlqPolicy::RetryThenDlq {
+            max_attempts,
+            backoff_ms,
+        } = p
+        {
             Some((*max_attempts, *backoff_ms))
         } else {
             None
@@ -1665,8 +1855,7 @@ where
 
     node_span.record("ranvier.outcome_kind", outcome_kind_name(&result));
     if let Some(target) = outcome_target(&result) {
-        node_span
-            .record("ranvier.outcome_target", tracing::field::display(&target));
+        node_span.record("ranvier.outcome_target", tracing::field::display(&target));
     }
     let duration_ms = started.elapsed().as_millis() as u64;
     let exit_ts = now_ms();
@@ -1688,19 +1877,25 @@ where
     }
 
     // Push to Saga Stack if Next outcome and snapshot taken
-    if let (Outcome::Next(_), Some(snapshot)) = (&result, saga_snapshot) {
-        if let Some(mut stack) = bus.read_mut::<SagaStack>() {
-            stack.push(node_id.to_string(), label.clone(), snapshot);
-        }
+    if let (Outcome::Next(_), Some(snapshot)) = (&result, saga_snapshot)
+        && let Some(stack) = bus.read_mut::<SagaStack>()
+    {
+        stack.push(node_id.to_string(), label.clone(), snapshot);
     }
 
     if let Some(handle) = bus.read::<PersistenceHandle>() {
         let trace_id = persistence_trace_id(bus);
-        let circuit = bus.read::<ranvier_core::schematic::Schematic>().map(|s| s.name.clone()).unwrap_or_default();
-        let version = bus.read::<ranvier_core::schematic::Schematic>().map(|s| s.schema_version.clone()).unwrap_or_default();
-        
+        let circuit = bus
+            .read::<ranvier_core::schematic::Schematic>()
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        let version = bus
+            .read::<ranvier_core::schematic::Schematic>()
+            .map(|s| s.schema_version.clone())
+            .unwrap_or_default();
+
         persist_execution_event(
-            &handle,
+            handle,
             &trace_id,
             &circuit,
             &version,
@@ -1708,7 +1903,8 @@ where
             Some(node_id.to_string()),
             outcome_kind_name(&result),
             Some(result.to_json_value()),
-        ).await;
+        )
+        .await;
     }
 
     // DLQ reporting — only fires after all retries are exhausted (RetryThenDlq)
@@ -1719,41 +1915,45 @@ where
             let policy = bus.read::<DlqPolicy>();
             let sink = bus.read::<Arc<dyn DlqSink>>();
             match (sink, policy) {
-                (Some(s), Some(p)) if !matches!(&*p, DlqPolicy::Drop) => {
-                    Some(s.clone())
-                }
+                (Some(s), Some(p)) if !matches!(p, DlqPolicy::Drop) => Some(s.clone()),
                 _ => None,
             }
         };
 
         if let Some(sink) = dlq_action {
-            if let Some((max_attempts, _)) = dlq_retry_config {
-                if let Some(timeline) = bus.read_mut::<Timeline>() {
-                    timeline.push(TimelineEvent::DlqExhausted {
-                        node_id: node_id.to_string(),
-                        total_attempts: max_attempts,
-                        timestamp: now_ms(),
-                    });
-                }
+            if let Some((max_attempts, _)) = dlq_retry_config
+                && let Some(timeline) = bus.read_mut::<Timeline>()
+            {
+                timeline.push(TimelineEvent::DlqExhausted {
+                    node_id: node_id.to_string(),
+                    total_attempts: max_attempts,
+                    timestamp: now_ms(),
+                });
             }
 
             let trace_id = persistence_trace_id(bus);
-            let circuit = bus.read::<ranvier_core::schematic::Schematic>().map(|s| s.name.clone()).unwrap_or_default();
-            let _ = sink.store_dead_letter(
-                &trace_id,
-                &circuit,
-                node_id,
-                &format!("{:?}", f),
-                &serde_json::to_vec(&f).unwrap_or_default(),
-            ).await;
+            let circuit = bus
+                .read::<ranvier_core::schematic::Schematic>()
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
+            let _ = sink
+                .store_dead_letter(
+                    &trace_id,
+                    &circuit,
+                    node_id,
+                    &format!("{:?}", f),
+                    &serde_json::to_vec(&f).unwrap_or_default(),
+                )
+                .await;
         }
     }
 
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_this_compensated_step<Out, Next, E, Res, Comp>(
-    trans: &(impl Transition<Out, Next, Resources = Res, Error = E> + Clone + Send + Sync + 'static),
+    trans: &(impl Transition<Out, Next, Resources = Res, Error = E> + Clone + 'static),
     comp: &Comp,
     state: Out,
     res: &Res,
@@ -1869,11 +2069,17 @@ where
 
             if let Some(handle) = bus.read::<PersistenceHandle>() {
                 let trace_id = persistence_trace_id(bus);
-                let circuit = bus.read::<ranvier_core::schematic::Schematic>().map(|s| s.name.clone()).unwrap_or_default();
-                let version = bus.read::<ranvier_core::schematic::Schematic>().map(|s| s.schema_version.clone()).unwrap_or_default();
-                
+                let circuit = bus
+                    .read::<ranvier_core::schematic::Schematic>()
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default();
+                let version = bus
+                    .read::<ranvier_core::schematic::Schematic>()
+                    .map(|s| s.schema_version.clone())
+                    .unwrap_or_default();
+
                 persist_execution_event(
-                    &handle,
+                    handle,
                     &trace_id,
                     &circuit,
                     &version,
@@ -1881,22 +2087,29 @@ where
                     Some(comp_node_id.to_string()),
                     "Compensated",
                     None,
-                ).await;
+                )
+                .await;
             }
         }
     } else if let (Outcome::Next(_), Some(snapshot)) = (&result, saga_snapshot) {
         // Push to Saga Stack if Next outcome and snapshot taken
-        if let Some(mut stack) = bus.read_mut::<SagaStack>() {
+        if let Some(stack) = bus.read_mut::<SagaStack>() {
             stack.push(node_id.to_string(), label.clone(), snapshot);
         }
 
         if let Some(handle) = bus.read::<PersistenceHandle>() {
             let trace_id = persistence_trace_id(bus);
-            let circuit = bus.read::<ranvier_core::schematic::Schematic>().map(|s| s.name.clone()).unwrap_or_default();
-            let version = bus.read::<ranvier_core::schematic::Schematic>().map(|s| s.schema_version.clone()).unwrap_or_default();
-            
+            let circuit = bus
+                .read::<ranvier_core::schematic::Schematic>()
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
+            let version = bus
+                .read::<ranvier_core::schematic::Schematic>()
+                .map(|s| s.schema_version.clone())
+                .unwrap_or_default();
+
             persist_execution_event(
-                &handle,
+                handle,
                 &trace_id,
                 &circuit,
                 &version,
@@ -1904,31 +2117,39 @@ where
                 Some(node_id.to_string()),
                 outcome_kind_name(&result),
                 Some(result.to_json_value()),
-            ).await;
+            )
+            .await;
         }
     }
 
     // DLQ reporting for compensated steps
-    if let Outcome::Fault(f) = &result {
-        if let (Some(sink), Some(policy)) = (bus.read::<Arc<dyn DlqSink>>(), bus.read::<DlqPolicy>()) {
-            let should_dlq = !matches!(&*policy, DlqPolicy::Drop);
-            if should_dlq {
-                let trace_id = persistence_trace_id(bus);
-                let circuit = bus.read::<ranvier_core::schematic::Schematic>().map(|s| s.name.clone()).unwrap_or_default();
-                let _ = sink.store_dead_letter(
+    if let Outcome::Fault(f) = &result
+        && let (Some(sink), Some(policy)) =
+            (bus.read::<Arc<dyn DlqSink>>(), bus.read::<DlqPolicy>())
+    {
+        let should_dlq = !matches!(policy, DlqPolicy::Drop);
+        if should_dlq {
+            let trace_id = persistence_trace_id(bus);
+            let circuit = bus
+                .read::<ranvier_core::schematic::Schematic>()
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
+            let _ = sink
+                .store_dead_letter(
                     &trace_id,
                     &circuit,
                     node_id,
                     &format!("{:?}", f),
                     &serde_json::to_vec(&f).unwrap_or_default(),
-                ).await;
-            }
+                )
+                .await;
         }
     }
 
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn persist_execution_event(
     handle: &PersistenceHandle,
     trace_id: &str,
@@ -2249,10 +2470,10 @@ fn write_timeline_with_policy(
 }
 
 fn write_timeline_json(path: &str, timeline: &Timeline) -> Result<(), String> {
-    if let Some(parent) = Path::new(path).parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
+    if let Some(parent) = Path::new(path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_string_pretty(timeline).map_err(|e| e.to_string())?;
     fs::write(path, json).map_err(|e| e.to_string())
@@ -2304,13 +2525,13 @@ fn cleanup_rotated_files(base_path: &str, keep: usize) -> Result<(), String> {
             let name = name.to_string_lossy();
             name.starts_with(&prefix) && name.ends_with(&suffix)
         })
-        .filter_map(|entry| {
+        .map(|entry| {
             let modified = entry
                 .metadata()
                 .ok()
                 .and_then(|m| m.modified().ok())
                 .unwrap_or(SystemTime::UNIX_EPOCH);
-            Some((entry.path(), modified))
+            (entry.path(), modified)
         })
         .collect::<Vec<_>>();
 
@@ -2324,9 +2545,7 @@ fn cleanup_rotated_files(base_path: &str, keep: usize) -> Result<(), String> {
 fn bus_capability_schema_from_policy(
     policy: Option<ranvier_core::bus::BusAccessPolicy>,
 ) -> Option<BusCapabilitySchema> {
-    let Some(policy) = policy else {
-        return None;
-    };
+    let policy = policy?;
 
     let mut allow = policy
         .allow
@@ -2370,15 +2589,15 @@ mod tests {
     };
     use anyhow::Result;
     use async_trait::async_trait;
-    use ranvier_core::{Bus, BusAccessPolicy, BusTypeRef, Outcome, Transition};
+    use ranvier_audit::{AuditError, AuditEvent, AuditSink};
     use ranvier_core::event::{DlqPolicy, DlqSink};
     use ranvier_core::saga::SagaStack;
     use ranvier_core::timeline::{Timeline, TimelineEvent};
+    use ranvier_core::{Bus, BusAccessPolicy, BusTypeRef, Outcome, Transition};
+    use serde::{Deserialize, Serialize};
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use uuid::Uuid;
-    use serde::{Deserialize, Serialize};
-    use ranvier_audit::{AuditSink, AuditEvent, AuditError};
 
     struct MockAuditSink {
         events: Arc<Mutex<Vec<AuditEvent>>>,
@@ -2399,7 +2618,9 @@ mod tests {
         let trace_id = "test-audit-trace";
         let store_impl = InMemoryPersistenceStore::new();
         let events = Arc::new(Mutex::new(Vec::new()));
-        let sink = MockAuditSink { events: events.clone() };
+        let sink = MockAuditSink {
+            events: events.clone(),
+        };
 
         let axon = Axon::<i32, i32, TestInfallible>::start("AuditTest")
             .then(AddOne)
@@ -2412,26 +2633,35 @@ mod tests {
         let target_node_id = axon.schematic.nodes[0].id.clone();
 
         // 0. Pre-requisite: Save an initial trace state so intervention has a target to attach to
-        store_impl.append(crate::persistence::PersistenceEnvelope {
-            trace_id: trace_id.to_string(),
-            circuit: "AuditTest".to_string(),
-            schematic_version: "v1.0".to_string(),
-            step: 0,
-            node_id: None,
-            outcome_kind: "Next".to_string(),
-            timestamp_ms: 0,
-            payload_hash: None,
-            payload: None,
-        }).await.unwrap();
+        store_impl
+            .append(crate::persistence::PersistenceEnvelope {
+                trace_id: trace_id.to_string(),
+                circuit: "AuditTest".to_string(),
+                schematic_version: "v1.0".to_string(),
+                step: 0,
+                node_id: None,
+                outcome_kind: "Next".to_string(),
+                timestamp_ms: 0,
+                payload_hash: None,
+                payload: None,
+            })
+            .await
+            .unwrap();
 
         // 1. Trigger force_resume (should log ForceResume)
-        axon.force_resume(trace_id, &target_node_id, None).await.unwrap();
+        axon.force_resume(trace_id, &target_node_id, None)
+            .await
+            .unwrap();
 
         // 2. Execute (should log ApplyIntervention)
         axon.execute(10, &(), &mut bus).await;
 
         let recorded = events.lock().await;
-        assert_eq!(recorded.len(), 2, "Should have 2 audit events: ForceResume and ApplyIntervention");
+        assert_eq!(
+            recorded.len(),
+            2,
+            "Should have 2 audit events: ForceResume and ApplyIntervention"
+        );
         assert_eq!(recorded[0].action, "ForceResume");
         assert_eq!(recorded[0].target, trace_id);
         assert_eq!(recorded[1].action, "ApplyIntervention");
@@ -2671,8 +2901,7 @@ mod tests {
         bus.insert(PersistenceTraceId::new("trace-no-complete"));
         bus.insert(PersistenceAutoComplete(false));
 
-        let axon =
-            Axon::<i32, i32, TestInfallible>::start("PersistNoComplete").then(AddOne);
+        let axon = Axon::<i32, i32, TestInfallible>::start("PersistNoComplete").then(AddOne);
         let outcome = axon.execute(1, &(), &mut bus).await;
         assert!(matches!(outcome, Outcome::Next(2)));
 
@@ -2803,8 +3032,7 @@ mod tests {
         bus.insert(CompensationHandle::from_hook(compensation));
         bus.insert(CompensationIdempotencyHandle::from_store(idempotency));
 
-        let axon =
-            Axon::<i32, i32, String>::start("CompensationIdempotency").then(AlwaysFault);
+        let axon = Axon::<i32, i32, String>::start("CompensationIdempotency").then(AlwaysFault);
 
         let outcome1 = axon.execute(7, &(), &mut bus).await;
         let outcome2 = axon.execute(8, &(), &mut bus).await;
@@ -2814,10 +3042,15 @@ mod tests {
         let persisted = store_impl.load("trace-idempotent").await.unwrap().unwrap();
         assert_eq!(persisted.completion, None);
         // Verify that "Compensated" events are present for both executions
-        let compensated_count = persisted.events.iter()
+        let compensated_count = persisted
+            .events
+            .iter()
             .filter(|e| e.outcome_kind == "Compensated")
             .count();
-        assert_eq!(compensated_count, 2, "Should have 2 Compensated events (one per execution)");
+        assert_eq!(
+            compensated_count, 2,
+            "Should have 2 Compensated events (one per execution)"
+        );
 
         let recorded = calls.lock().await;
         assert_eq!(recorded.len(), 1);
@@ -2845,8 +3078,7 @@ mod tests {
         bus.insert(CompensationHandle::from_hook(compensation));
         bus.insert(CompensationIdempotencyHandle::from_store(idempotency));
 
-        let axon =
-            Axon::<i32, i32, String>::start("IdempotencyStoreFailure").then(AlwaysFault);
+        let axon = Axon::<i32, i32, String>::start("IdempotencyStoreFailure").then(AlwaysFault);
         let outcome = axon.execute(9, &(), &mut bus).await;
         assert!(matches!(outcome, Outcome::Fault(msg) if msg == "boom"));
 
@@ -2890,7 +3122,7 @@ mod tests {
     async fn execute_fails_on_version_mismatch_without_migration() {
         let store_impl = Arc::new(InMemoryPersistenceStore::new());
         let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
-        
+
         let trace_id = "v-mismatch";
         // Create an existing trace with an older version
         let old_envelope = crate::persistence::PersistenceEnvelope {
@@ -2925,7 +3157,7 @@ mod tests {
     async fn execute_resumes_from_start_on_migration_strategy() {
         let store_impl = Arc::new(InMemoryPersistenceStore::new());
         let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
-        
+
         let trace_id = "v-migration";
         // Create an existing trace with an older version at step 5
         let old_envelope = crate::persistence::PersistenceEnvelope {
@@ -2961,7 +3193,7 @@ mod tests {
 
         // Should have resumed from start (step 0), resulting in 11
         assert!(matches!(outcome, Outcome::Next(11)));
-        
+
         // Verify new event has current version
         let persisted = store_impl.load(trace_id).await.unwrap().unwrap();
         assert_eq!(persisted.schematic_version, "1.0");
@@ -2971,48 +3203,57 @@ mod tests {
     async fn execute_applies_manual_intervention_jump_and_payload() {
         let store_impl = Arc::new(InMemoryPersistenceStore::new());
         let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
-        
+
         let trace_id = "intervention-test";
         // 1. Run a normal trace part-way
         let axon = Axon::<i32, i32, TestInfallible>::new("TestCircuit")
             .then(AddOne)
             .then(AddOne);
-            
+
         let mut bus = Bus::new();
         bus.insert(PersistenceHandle::from_arc(store_dyn));
         bus.insert(PersistenceTraceId::new(trace_id));
-        
+
         // Save an intervention: Jump to the second 'AddOne' node (which has the label 'AddOne')
         // with a payload override of 100.
-        // The first node is 'AddOne', the second is ALSO 'AddOne'. 
+        // The first node is 'AddOne', the second is ALSO 'AddOne'.
         // Schematic position: 0=Ingress, 1=AddOne, 2=AddOne
-        let _target_node_label = "AddOne"; 
+        let _target_node_label = "AddOne";
         // To be precise, let's find the ID of the second node.
         let target_node_id = axon.schematic.nodes[2].id.clone();
 
         // Pre-seed an initial trace entry so save_intervention doesn't fail
-        store_impl.append(crate::persistence::PersistenceEnvelope {
-            trace_id: trace_id.to_string(),
-            circuit: "TestCircuit".to_string(),
-            schematic_version: "1.0".to_string(),
-            step: 0,
-            node_id: None,
-            outcome_kind: "Enter".to_string(),
-            timestamp_ms: 0,
-            payload_hash: None,
-            payload: None,
-        }).await.unwrap();
-        
-        store_impl.save_intervention(trace_id, crate::persistence::Intervention {
-            target_node: target_node_id.clone(),
-            payload_override: Some(serde_json::json!(100)),
-            timestamp_ms: 0,
-        }).await.unwrap();
+        store_impl
+            .append(crate::persistence::PersistenceEnvelope {
+                trace_id: trace_id.to_string(),
+                circuit: "TestCircuit".to_string(),
+                schematic_version: "1.0".to_string(),
+                step: 0,
+                node_id: None,
+                outcome_kind: "Enter".to_string(),
+                timestamp_ms: 0,
+                payload_hash: None,
+                payload: None,
+            })
+            .await
+            .unwrap();
+
+        store_impl
+            .save_intervention(
+                trace_id,
+                crate::persistence::Intervention {
+                    target_node: target_node_id.clone(),
+                    payload_override: Some(serde_json::json!(100)),
+                    timestamp_ms: 0,
+                },
+            )
+            .await
+            .unwrap();
 
         // 2. Execute. It should skip the first AddOne and use 100 for the second AddOne.
         // Result should be 100 + 1 = 101.
         let outcome = axon.execute(10, &(), &mut bus).await;
-        
+
         match outcome {
             Outcome::Next(val) => assert_eq!(val, 101, "Should have used payload 100 and added 1"),
             other => panic!("Expected Outcome::Next(101), got {:?}", other),
@@ -3082,27 +3323,44 @@ mod tests {
         let remaining = Arc::new(tokio::sync::Mutex::new(2u32));
         let trans = FailNThenSucceed { remaining };
 
-        let dlq_sink = MockDlqSink { letters: Arc::new(tokio::sync::Mutex::new(Vec::new())) };
+        let dlq_sink = MockDlqSink {
+            letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
 
         let mut bus = Bus::new();
         bus.insert(Timeline::new());
 
         let axon = Axon::<i32, i32, String>::start("RetrySucceed")
             .then(trans)
-            .with_dlq_policy(DlqPolicy::RetryThenDlq { max_attempts: 5, backoff_ms: 1 })
+            .with_dlq_policy(DlqPolicy::RetryThenDlq {
+                max_attempts: 5,
+                backoff_ms: 1,
+            })
             .with_dlq_sink(dlq_sink.clone());
         let outcome = axon.execute(10, &(), &mut bus).await;
 
         // Should succeed (10 + 1 = 11)
-        assert!(matches!(outcome, Outcome::Next(11)), "Expected Next(11), got {:?}", outcome);
+        assert!(
+            matches!(outcome, Outcome::Next(11)),
+            "Expected Next(11), got {:?}",
+            outcome
+        );
 
         // No dead letters since it recovered
         let letters = dlq_sink.letters.lock().await;
-        assert!(letters.is_empty(), "Should have 0 dead letters, got {}", letters.len());
+        assert!(
+            letters.is_empty(),
+            "Should have 0 dead letters, got {}",
+            letters.len()
+        );
 
         // Timeline should contain NodeRetry events
         let timeline = bus.read::<Timeline>().unwrap();
-        let retry_count = timeline.events.iter().filter(|e| matches!(e, TimelineEvent::NodeRetry { .. })).count();
+        let retry_count = timeline
+            .events
+            .iter()
+            .filter(|e| matches!(e, TimelineEvent::NodeRetry { .. }))
+            .count();
         assert_eq!(retry_count, 2, "Should have 2 retry events");
     }
 
@@ -3112,15 +3370,24 @@ mod tests {
         let mut bus = Bus::new();
         bus.insert(Timeline::new());
 
-        let dlq_sink = MockDlqSink { letters: Arc::new(tokio::sync::Mutex::new(Vec::new())) };
+        let dlq_sink = MockDlqSink {
+            letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
 
         let axon = Axon::<i32, i32, String>::start("RetryExhaust")
             .then(AlwaysFault)
-            .with_dlq_policy(DlqPolicy::RetryThenDlq { max_attempts: 3, backoff_ms: 1 })
+            .with_dlq_policy(DlqPolicy::RetryThenDlq {
+                max_attempts: 3,
+                backoff_ms: 1,
+            })
             .with_dlq_sink(dlq_sink.clone());
         let outcome = axon.execute(42, &(), &mut bus).await;
 
-        assert!(matches!(outcome, Outcome::Fault(ref msg) if msg == "boom"), "Expected Fault(boom), got {:?}", outcome);
+        assert!(
+            matches!(outcome, Outcome::Fault(ref msg) if msg == "boom"),
+            "Expected Fault(boom), got {:?}",
+            outcome
+        );
 
         // Should have exactly 1 dead letter
         let letters = dlq_sink.letters.lock().await;
@@ -3128,9 +3395,20 @@ mod tests {
 
         // Timeline should have 2 retry events and 1 DlqExhausted event
         let timeline = bus.read::<Timeline>().unwrap();
-        let retry_count = timeline.events.iter().filter(|e| matches!(e, TimelineEvent::NodeRetry { .. })).count();
-        let dlq_count = timeline.events.iter().filter(|e| matches!(e, TimelineEvent::DlqExhausted { .. })).count();
-        assert_eq!(retry_count, 2, "Should have 2 retry events (attempts 2 and 3)");
+        let retry_count = timeline
+            .events
+            .iter()
+            .filter(|e| matches!(e, TimelineEvent::NodeRetry { .. }))
+            .count();
+        let dlq_count = timeline
+            .events
+            .iter()
+            .filter(|e| matches!(e, TimelineEvent::DlqExhausted { .. }))
+            .count();
+        assert_eq!(
+            retry_count, 2,
+            "Should have 2 retry events (attempts 2 and 3)"
+        );
         assert_eq!(dlq_count, 1, "Should have 1 DlqExhausted event");
     }
 
@@ -3139,7 +3417,9 @@ mod tests {
         let mut bus = Bus::new();
         bus.insert(Timeline::new());
 
-        let dlq_sink = MockDlqSink { letters: Arc::new(tokio::sync::Mutex::new(Vec::new())) };
+        let dlq_sink = MockDlqSink {
+            letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
 
         let axon = Axon::<i32, i32, String>::start("SendDlq")
             .then(AlwaysFault)
@@ -3155,7 +3435,11 @@ mod tests {
 
         // No retry or DlqExhausted events
         let timeline = bus.read::<Timeline>().unwrap();
-        let retry_count = timeline.events.iter().filter(|e| matches!(e, TimelineEvent::NodeRetry { .. })).count();
+        let retry_count = timeline
+            .events
+            .iter()
+            .filter(|e| matches!(e, TimelineEvent::NodeRetry { .. }))
+            .count();
         assert_eq!(retry_count, 0);
     }
 
@@ -3163,7 +3447,9 @@ mod tests {
     async fn drop_policy_does_not_send_to_dlq() {
         let mut bus = Bus::new();
 
-        let dlq_sink = MockDlqSink { letters: Arc::new(tokio::sync::Mutex::new(Vec::new())) };
+        let dlq_sink = MockDlqSink {
+            letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
 
         let axon = Axon::<i32, i32, String>::start("DropDlq")
             .then(AlwaysFault)
@@ -3184,7 +3470,9 @@ mod tests {
 
         // Start with Drop policy (no DLQ)
         let (tx, dynamic) = DynamicPolicy::new(DlqPolicy::Drop);
-        let dlq_sink = MockDlqSink { letters: Arc::new(tokio::sync::Mutex::new(Vec::new())) };
+        let dlq_sink = MockDlqSink {
+            letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
 
         let axon = Axon::<i32, i32, String>::start("DynamicDlq")
             .then(AlwaysFault)
@@ -3195,7 +3483,10 @@ mod tests {
         let mut bus = Bus::new();
         let outcome = axon.execute(1, &(), &mut bus).await;
         assert!(matches!(outcome, Outcome::Fault(_)));
-        assert!(dlq_sink.letters.lock().await.is_empty(), "Drop policy should produce no DLQ entries");
+        assert!(
+            dlq_sink.letters.lock().await.is_empty(),
+            "Drop policy should produce no DLQ entries"
+        );
 
         // Hot-reload: switch to SendToDlq
         tx.send(DlqPolicy::SendToDlq).unwrap();
@@ -3204,7 +3495,11 @@ mod tests {
         let mut bus2 = Bus::new();
         let outcome2 = axon.execute(2, &(), &mut bus2).await;
         assert!(matches!(outcome2, Outcome::Fault(_)));
-        assert_eq!(dlq_sink.letters.lock().await.len(), 1, "SendToDlq policy should produce 1 DLQ entry");
+        assert_eq!(
+            dlq_sink.letters.lock().await.len(),
+            1,
+            "SendToDlq policy should produce 1 DLQ entry"
+        );
     }
 
     #[tokio::test]
@@ -3222,8 +3517,10 @@ mod tests {
         // First execution: Disabled → no SagaStack in bus
         let mut bus = Bus::new();
         let _outcome = axon.execute(1, &(), &mut bus).await;
-        assert!(bus.read::<SagaStack>().is_none() || bus.read::<SagaStack>().unwrap().is_empty(),
-            "SagaStack should be absent or empty when disabled");
+        assert!(
+            bus.read::<SagaStack>().is_none() || bus.read::<SagaStack>().unwrap().is_empty(),
+            "SagaStack should be absent or empty when disabled"
+        );
 
         // Hot-reload: enable saga
         tx.send(SagaPolicy::Enabled).unwrap();
@@ -3231,16 +3528,17 @@ mod tests {
         // Second execution: Enabled → SagaStack populated
         let mut bus2 = Bus::new();
         let _outcome2 = axon.execute(10, &(), &mut bus2).await;
-        assert!(bus2.read::<SagaStack>().is_some(), "SagaStack should exist when saga is enabled");
+        assert!(
+            bus2.read::<SagaStack>().is_some(),
+            "SagaStack should exist when saga is enabled"
+        );
     }
 
     // ── IAM Boundary Tests ──────────────────────────────────────
 
     mod iam_tests {
         use super::*;
-        use ranvier_core::iam::{
-            IamError, IamIdentity, IamPolicy, IamToken, IamVerifier,
-        };
+        use ranvier_core::iam::{IamError, IamIdentity, IamPolicy, IamToken, IamVerifier};
 
         /// Mock IamVerifier that returns a fixed identity.
         #[derive(Clone)]
@@ -3277,7 +3575,9 @@ mod tests {
 
             assert!(matches!(outcome, Outcome::Next(11)));
             // Verify IamIdentity was injected into Bus
-            let identity = bus.read::<IamIdentity>().expect("IamIdentity should be in Bus");
+            let identity = bus
+                .read::<IamIdentity>()
+                .expect("IamIdentity should be in Bus");
             assert_eq!(identity.subject, "alice");
         }
 
@@ -3331,9 +3631,7 @@ mod tests {
         #[tokio::test]
         async fn iam_require_role_passes_with_matching_role() {
             let verifier = MockVerifier {
-                identity: IamIdentity::new("bob")
-                    .with_role("admin")
-                    .with_role("user"),
+                identity: IamIdentity::new("bob").with_role("admin").with_role("user"),
                 should_fail: false,
             };
 
@@ -3390,18 +3688,3 @@ mod tests {
         }
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

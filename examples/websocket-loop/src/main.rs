@@ -26,6 +26,7 @@ use ranvier_core::event::{EventSink, EventSource};
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
 use std::collections::VecDeque;
+use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
 // ============================================================================
@@ -176,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
 
         // 3. Define the Axon for this event kind
         // Note: Axons are light and created per event typically, or reused if stateless.
-        let axon = Axon::<WsMessage, WsMessage, String>::new("ChatFlow")
+        let axon = Axon::<WsMessage, WsMessage, Infallible>::new("ChatFlow")
             .then(ProcessMessage)
             .then(Broadcast);
 
@@ -192,7 +193,7 @@ async fn main() -> anyhow::Result<()> {
             Outcome::Branch(_id, _val) => {
                 println!("Branched (not handled in this loop demo)");
             }
-            Outcome::Fault(e.to_string()) => eprintln!("Axon Error: {}", e),
+            Outcome::Fault(e) => eprintln!("Axon Error: {}", e),
             _ => {}
         }
     }

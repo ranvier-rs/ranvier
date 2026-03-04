@@ -103,7 +103,7 @@ async fn run_order_flow(
             tracking
         ),
         Outcome::Branch(reason, _) => println!("\n\x1b[31m[FAILED] Branch: {}\x1b[0m", reason),
-        Outcome::Fault(e.to_string()) => println!("\n\x1b[31m[FAULT] Error: {}\x1b[0m", e),
+        Outcome::Fault(e) => println!("\n\x1b[31m[FAULT] Error: {}\x1b[0m", e),
         Outcome::Jump(id, _) => println!("\n\x1b[33m[JUMP] {}\x1b[0m", id),
         Outcome::Emit(event, _) => println!("\n\x1b[34m[EMIT] {}\x1b[0m", event),
     };

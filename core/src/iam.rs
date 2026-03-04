@@ -21,9 +21,10 @@ use std::sync::Arc;
 // ── Policy ─────────────────────────────────────────────────────
 
 /// IAM policy enforced at the Axon/Schematic execution boundary.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum IamPolicy {
     /// No identity verification required.
+    #[default]
     None,
     /// Any valid, verified identity is sufficient.
     RequireIdentity,
@@ -31,12 +32,6 @@ pub enum IamPolicy {
     RequireRole(String),
     /// Identity must possess ALL specified claims.
     RequireClaims(Vec<String>),
-}
-
-impl Default for IamPolicy {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 // ── Identity ───────────────────────────────────────────────────
@@ -235,17 +230,19 @@ mod tests {
         let id = IamIdentity::new("eve")
             .with_claim("email", serde_json::json!("eve@example.com"))
             .with_claim("org", serde_json::json!("acme"));
-        assert!(enforce_policy(
-            &IamPolicy::RequireClaims(vec!["email".into(), "org".into()]),
-            &id
-        )
-        .is_ok());
+        assert!(
+            enforce_policy(
+                &IamPolicy::RequireClaims(vec!["email".into(), "org".into()]),
+                &id
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn policy_require_claims_fails_when_missing() {
-        let id = IamIdentity::new("frank")
-            .with_claim("email", serde_json::json!("frank@example.com"));
+        let id =
+            IamIdentity::new("frank").with_claim("email", serde_json::json!("frank@example.com"));
         let err = enforce_policy(
             &IamPolicy::RequireClaims(vec!["email".into(), "org".into()]),
             &id,

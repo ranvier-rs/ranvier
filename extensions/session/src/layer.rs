@@ -66,7 +66,8 @@ pub struct SessionService<S, InnerService> {
 impl<S, InnerService, ReqBody> Service<Request<ReqBody>> for SessionService<S, InnerService>
 where
     S: SessionStore + Send + Sync + 'static,
-    InnerService: Service<Request<ReqBody>, Response = Response<Full<Bytes>>> + Clone + Send + 'static,
+    InnerService:
+        Service<Request<ReqBody>, Response = Response<Full<Bytes>>> + Clone + Send + 'static,
     InnerService::Future: Send + 'static,
     ReqBody: Send + 'static,
 {
@@ -100,17 +101,15 @@ where
 
             // 2. Load session or create new
             let session = match session_id {
-                Some(id) => {
-                    match store.load(&id).await {
-                        Ok(Some(s)) => s,
-                        _ => Session::new(),
-                    }
-                }
+                Some(id) => match store.load(&id).await {
+                    Ok(Some(s)) => s,
+                    _ => Session::new(),
+                },
                 None => Session::new(),
             };
 
             let original_session_id = session.id().await;
-            
+
             // 3. Inject session into request extensions
             req.extensions_mut().insert(session.clone());
 
@@ -121,7 +120,10 @@ where
             if session.is_destroyed().await {
                 let _ = store.destroy(&original_session_id).await;
                 // Emit deletion cookie
-                let cookie = format!("{}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT", cookie_name);
+                let cookie = format!(
+                    "{}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                    cookie_name
+                );
                 response.headers_mut().append(
                     header::SET_COOKIE,
                     http::HeaderValue::from_str(&cookie).unwrap(),
@@ -129,17 +131,19 @@ where
             } else if session.is_modified().await {
                 // Save mutated session
                 let _ = store.save(&session).await;
-                
+
                 // If it's a new session or ID changed (e.g. regenerated), issue a cookie
                 let current_id = session.id().await;
                 // Even if not new, we might want to update expiry, but for now just basic "always set if modified"
-                let cookie = format!("{}=path=/; HttpOnly; SameSite=Lax", current_id);
                 // In a real implementation we'd probably add proper generic cookie builder here.
-                let cookie_val = format!("{}={}; Path=/; HttpOnly; SameSite=Lax", cookie_name, current_id);
-                
+                let cookie_val = format!(
+                    "{}={}; Path=/; HttpOnly; SameSite=Lax",
+                    cookie_name, current_id
+                );
+
                 response.headers_mut().append(
                     header::SET_COOKIE,
-                    http::HeaderValue::from_str(&cookie_val).unwrap()
+                    http::HeaderValue::from_str(&cookie_val).unwrap(),
                 );
             }
 

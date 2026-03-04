@@ -11,11 +11,11 @@
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_core::saga::SagaPolicy;
+use ranvier_runtime::Axon;
 use ranvier_runtime::persistence::{
     CompensationAutoTrigger, CompensationContext, CompensationHandle, CompensationHook,
     InMemoryPersistenceStore, PersistenceHandle, PersistenceStore, PersistenceTraceId,
 };
-use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
@@ -53,11 +53,20 @@ struct ReserveInventory;
 impl Transition<OrderState, OrderState> for ReserveInventory {
     type Error = String;
     type Resources = ();
-    fn label(&self) -> String { "ReserveInventory".to_string() }
+    fn label(&self) -> String {
+        "ReserveInventory".to_string()
+    }
 
-    async fn run(&self, mut state: OrderState, _res: &(), _bus: &mut Bus) -> Outcome<OrderState, String> {
+    async fn run(
+        &self,
+        mut state: OrderState,
+        _res: &(),
+        _bus: &mut Bus,
+    ) -> Outcome<OrderState, String> {
         state.inventory_reserved = true;
-        state.audit_log.push(format!("Inventory reserved for order {}", state.order_id));
+        state
+            .audit_log
+            .push(format!("Inventory reserved for order {}", state.order_id));
         Outcome::Next(state)
     }
 }
@@ -71,10 +80,15 @@ struct UndoReserveInventory {
 impl Transition<OrderState, ()> for UndoReserveInventory {
     type Error = String;
     type Resources = ();
-    fn label(&self) -> String { "UndoReserveInventory".to_string() }
+    fn label(&self) -> String {
+        "UndoReserveInventory".to_string()
+    }
 
     async fn run(&self, state: OrderState, _res: &(), _bus: &mut Bus) -> Outcome<(), String> {
-        let msg = format!("Compensation: Released inventory for order {} (was_reserved={})", state.order_id, state.inventory_reserved);
+        let msg = format!(
+            "Compensation: Released inventory for order {} (was_reserved={})",
+            state.order_id, state.inventory_reserved
+        );
         self.log.lock().unwrap().push(msg);
         Outcome::Next(())
     }
@@ -89,15 +103,31 @@ struct ChargePayment {
 impl Transition<OrderState, OrderState> for ChargePayment {
     type Error = String;
     type Resources = ();
-    fn label(&self) -> String { "ChargePayment".to_string() }
+    fn label(&self) -> String {
+        "ChargePayment".to_string()
+    }
 
-    async fn run(&self, mut state: OrderState, _res: &(), _bus: &mut Bus) -> Outcome<OrderState, String> {
+    async fn run(
+        &self,
+        mut state: OrderState,
+        _res: &(),
+        _bus: &mut Bus,
+    ) -> Outcome<OrderState, String> {
         if self.should_fail {
-            state.audit_log.push(format!("Payment FAILED for order {} (amount={})", state.order_id, state.amount));
-            return Outcome::fault(format!("Payment gateway declined order {} for ${:.2}", state.order_id, state.amount));
+            state.audit_log.push(format!(
+                "Payment FAILED for order {} (amount={})",
+                state.order_id, state.amount
+            ));
+            return Outcome::fault(format!(
+                "Payment gateway declined order {} for ${:.2}",
+                state.order_id, state.amount
+            ));
         }
         state.payment_charged = true;
-        state.audit_log.push(format!("Payment charged ${:.2} for order {}", state.amount, state.order_id));
+        state.audit_log.push(format!(
+            "Payment charged ${:.2} for order {}",
+            state.amount, state.order_id
+        ));
         Outcome::Next(state)
     }
 }
@@ -111,10 +141,15 @@ struct UndoChargePayment {
 impl Transition<OrderState, ()> for UndoChargePayment {
     type Error = String;
     type Resources = ();
-    fn label(&self) -> String { "UndoChargePayment".to_string() }
+    fn label(&self) -> String {
+        "UndoChargePayment".to_string()
+    }
 
     async fn run(&self, state: OrderState, _res: &(), _bus: &mut Bus) -> Outcome<(), String> {
-        let msg = format!("Compensation: Refund placeholder for order {} (was_charged={})", state.order_id, state.payment_charged);
+        let msg = format!(
+            "Compensation: Refund placeholder for order {} (was_charged={})",
+            state.order_id, state.payment_charged
+        );
         self.log.lock().unwrap().push(msg);
         Outcome::Next(())
     }
@@ -127,11 +162,20 @@ struct ConfirmShipment;
 impl Transition<OrderState, OrderState> for ConfirmShipment {
     type Error = String;
     type Resources = ();
-    fn label(&self) -> String { "ConfirmShipment".to_string() }
+    fn label(&self) -> String {
+        "ConfirmShipment".to_string()
+    }
 
-    async fn run(&self, mut state: OrderState, _res: &(), _bus: &mut Bus) -> Outcome<OrderState, String> {
+    async fn run(
+        &self,
+        mut state: OrderState,
+        _res: &(),
+        _bus: &mut Bus,
+    ) -> Outcome<OrderState, String> {
         state.shipment_confirmed = true;
-        state.audit_log.push(format!("Shipment confirmed for order {}", state.order_id));
+        state
+            .audit_log
+            .push(format!("Shipment confirmed for order {}", state.order_id));
         Outcome::Next(state)
     }
 }
@@ -199,17 +243,23 @@ async fn order_saga_encounters_failure_and_compensates_perfectly() {
         .with_dlq_sink(dlq_sink.clone())
         .then_compensated(
             ReserveInventory,
-            UndoReserveInventory { log: compensation_log.clone() },
+            UndoReserveInventory {
+                log: compensation_log.clone(),
+            },
         )
         .then_compensated(
             ChargePayment { should_fail: true },
-            UndoChargePayment { log: compensation_log.clone() },
+            UndoChargePayment {
+                log: compensation_log.clone(),
+            },
         )
         .then(ConfirmShipment);
 
     // Execute with persistence and compensation enabled
     let mut bus = Bus::new();
-    bus.insert(PersistenceHandle::from_arc(store.clone() as Arc<dyn PersistenceStore>));
+    bus.insert(PersistenceHandle::from_arc(
+        store.clone() as Arc<dyn PersistenceStore>
+    ));
     bus.insert(PersistenceTraceId::new("order-001"));
     bus.insert(CompensationHandle::from_hook(OrderCompensationHook {
         triggered: hook_log.clone(),
@@ -236,7 +286,11 @@ async fn order_saga_encounters_failure_and_compensates_perfectly() {
 
     // 2. Saga compensation occurred in LIFO order
     let comp_log = compensation_log.lock().unwrap();
-    assert_eq!(comp_log.len(), 2, "Should have 2 compensation entries (ChargePayment + ReserveInventory)");
+    assert_eq!(
+        comp_log.len(),
+        2,
+        "Should have 2 compensation entries (ChargePayment + ReserveInventory)"
+    );
     // LIFO: ChargePayment compensation first, then ReserveInventory
     assert!(
         comp_log[0].contains("Refund placeholder"),
@@ -262,7 +316,10 @@ async fn order_saga_encounters_failure_and_compensates_perfectly() {
     // 3. Compensation hook was triggered
     let hooks = hook_log.lock().unwrap();
     assert_eq!(hooks.len(), 1, "Compensation hook should fire once");
-    assert!(hooks[0].contains("order-001"), "Hook should reference the trace_id");
+    assert!(
+        hooks[0].contains("order-001"),
+        "Hook should reference the trace_id"
+    );
 
     // 4. DLQ captured the failed event (after retry exhaustion)
     let letters = dlq_sink.letters.lock().await;
@@ -275,17 +332,28 @@ async fn order_saga_encounters_failure_and_compensates_perfectly() {
 
     // 5. Persistence trace contains the full history
     let trace = store.load("order-001").await.unwrap().unwrap();
-    assert!(trace.events.len() >= 3, "Should have at least 3 persistence events");
+    assert!(
+        trace.events.len() >= 3,
+        "Should have at least 3 persistence events"
+    );
     assert_eq!(trace.events[0].outcome_kind, "Enter");
 
     // 6. Timeline has execution trace
     let timeline = bus.read::<Timeline>().unwrap();
-    assert!(!timeline.events.is_empty(), "Timeline should have recorded execution events");
+    assert!(
+        !timeline.events.is_empty(),
+        "Timeline should have recorded execution events"
+    );
     // Verify at least NodeEnter/NodeExit events were tracked
-    let enter_count = timeline.events.iter()
+    let enter_count = timeline
+        .events
+        .iter()
         .filter(|e| matches!(e, TimelineEvent::NodeEnter { .. }))
         .count();
-    assert!(enter_count >= 2, "Should have at least 2 NodeEnter events (Reserve + Charge)");
+    assert!(
+        enter_count >= 2,
+        "Should have at least 2 NodeEnter events (Reserve + Charge)"
+    );
 }
 
 #[tokio::test]
@@ -296,11 +364,15 @@ async fn order_saga_succeeds_end_to_end_without_failure() {
         .with_saga_policy(SagaPolicy::Enabled)
         .then_compensated(
             ReserveInventory,
-            UndoReserveInventory { log: compensation_log.clone() },
+            UndoReserveInventory {
+                log: compensation_log.clone(),
+            },
         )
         .then_compensated(
             ChargePayment { should_fail: false },
-            UndoChargePayment { log: compensation_log.clone() },
+            UndoChargePayment {
+                log: compensation_log.clone(),
+            },
         )
         .then(ConfirmShipment);
 
@@ -320,5 +392,8 @@ async fn order_saga_succeeds_end_to_end_without_failure() {
     }
 
     // No compensation should have fired
-    assert!(compensation_log.lock().unwrap().is_empty(), "No compensation needed for successful order");
+    assert!(
+        compensation_log.lock().unwrap().is_empty(),
+        "No compensation needed for successful order"
+    );
 }

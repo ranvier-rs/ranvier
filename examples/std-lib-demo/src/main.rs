@@ -1,8 +1,9 @@
+use std::convert::Infallible;
+
 use http::Request;
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
-use String;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 

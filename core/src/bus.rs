@@ -312,15 +312,15 @@ impl Bus {
             });
         }
 
-        if let Some(allow) = &guard.allow {
-            if !allow.contains(&requested) {
-                return Err(BusAccessError::Unauthorized {
-                    transition: guard.transition_label.to_string(),
-                    resource: type_name::<T>(),
-                    allow: Some(guard.allow_names.to_vec()),
-                    deny: guard.deny_names.to_vec(),
-                });
-            }
+        if let Some(allow) = &guard.allow
+            && !allow.contains(&requested)
+        {
+            return Err(BusAccessError::Unauthorized {
+                transition: guard.transition_label.to_string(),
+                resource: type_name::<T>(),
+                allow: Some(guard.allow_names.to_vec()),
+                deny: guard.deny_names.to_vec(),
+            });
         }
 
         Ok(())
@@ -337,9 +337,15 @@ impl Default for Bus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConnectionId(pub Uuid);
 
+impl Default for ConnectionId {
+    fn default() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
 impl ConnectionId {
     pub fn new() -> Self {
-        Self(Uuid::new_v4())
+        Self::default()
     }
 }
 

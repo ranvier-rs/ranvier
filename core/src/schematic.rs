@@ -200,7 +200,10 @@ pub enum MigrationStrategy {
     /// Wait for the instance to complete on the old version before migrating.
     CompleteOnOldVersion,
     /// Migrate the active node from the old ID to the new ID.
-    MigrateActiveNode { old_node_id: String, new_node_id: String },
+    MigrateActiveNode {
+        old_node_id: String,
+        new_node_id: String,
+    },
     /// Resume from a specific fallback node.
     FallbackToNode(String),
     /// Abandon current state and resume from the Ingress node of the new version.
@@ -243,7 +246,10 @@ impl std::fmt::Debug for SnapshotMigration {
             .field("to_version", &self.to_version)
             .field("default_strategy", &self.default_strategy)
             .field("node_mapping", &self.node_mapping)
-            .field("payload_mapper", &self.payload_mapper.as_ref().map(|_| ".."))
+            .field(
+                "payload_mapper",
+                &self.payload_mapper.as_ref().map(|_| ".."),
+            )
             .finish()
     }
 }
@@ -271,7 +277,9 @@ impl MigrationRegistry {
 
     /// Finds a direct migration from `from_version` to `to_version`.
     pub fn find_migration(&self, from: &str, to: &str) -> Option<&SnapshotMigration> {
-        self.migrations.iter().find(|m| m.from_version == from && m.to_version == to)
+        self.migrations
+            .iter()
+            .find(|m| m.from_version == from && m.to_version == to)
     }
 
     /// Finds a multi-hop migration path from `from_version` to `to_version`.
@@ -287,7 +295,8 @@ impl MigrationRegistry {
             return Some(vec![direct]);
         }
         // BFS for multi-hop
-        let mut queue: std::collections::VecDeque<(String, Vec<usize>)> = std::collections::VecDeque::new();
+        let mut queue: std::collections::VecDeque<(String, Vec<usize>)> =
+            std::collections::VecDeque::new();
         let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
         visited.insert(from.to_string());
         for (i, m) in self.migrations.iter().enumerate() {

@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
 
 // ============================================================================
 // 1. Data Types
@@ -63,7 +64,7 @@ struct LoadSession;
 
 #[async_trait]
 impl Transition<String, String> for LoadSession {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -107,7 +108,7 @@ struct RequireAuth;
 
 #[async_trait]
 impl Transition<String, String> for RequireAuth {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -137,7 +138,7 @@ struct UserProfile;
 
 #[async_trait]
 impl Transition<String, String> for UserProfile {
-    type Error = Infallible;
+    type Error = String;
     type Resources = ();
 
     async fn run(
@@ -153,7 +154,7 @@ impl Transition<String, String> for UserProfile {
             Outcome::Next(profile)
         } else {
             // Should not happen if schematic is correct, but runtime safe
-            Outcome::Fault(anyhow::anyhow!("Session missing in UserProfile"))
+            Outcome::Fault("Session missing in UserProfile".to_string())
         }
     }
 }
@@ -184,7 +185,7 @@ async fn main() -> anyhow::Result<()> {
     match result {
         Outcome::Next(profile) => println!("Success: {}", profile),
         Outcome::Branch(route, _) => println!("Redirected: {}", route),
-        Outcome::Fault(e.to_string()) => println!("Error: {:?}", e),
+        Outcome::Fault(e) => println!("Error: {:?}", e),
         _ => {}
     }
 
@@ -207,7 +208,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("Redirected to '{}': {}", route, r);
             }
         }
-        Outcome::Fault(e.to_string()) => println!("Error: {:?}", e),
+        Outcome::Fault(e) => println!("Error: {:?}", e),
         _ => {}
     }
 

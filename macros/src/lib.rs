@@ -279,18 +279,16 @@ pub fn ranvier_router(input: TokenStream) -> TokenStream {
 fn extract_outcome_types(
     ty: &Type,
 ) -> Option<(quote::__private::TokenStream, quote::__private::TokenStream)> {
-    if let Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            if segment.ident == "Outcome" {
-                if let PathArguments::AngleBracketed(args) = &segment.arguments {
-                    let mut type_args = args.args.iter();
-                    if let (Some(GenericArgument::Type(to)), Some(GenericArgument::Type(err))) =
-                        (type_args.next(), type_args.next())
-                    {
-                        return Some((quote! { #to }, quote! { #err }));
-                    }
-                }
-            }
+    if let Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+        && segment.ident == "Outcome"
+        && let PathArguments::AngleBracketed(args) = &segment.arguments
+    {
+        let mut type_args = args.args.iter();
+        if let (Some(GenericArgument::Type(to)), Some(GenericArgument::Type(err))) =
+            (type_args.next(), type_args.next())
+        {
+            return Some((quote! { #to }, quote! { #err }));
         }
     }
     None

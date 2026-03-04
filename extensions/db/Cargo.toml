@@ -49,3 +49,5 @@ ranvier-runtime = { workspace = true }
 [[bench]]
 name = "db_query_latency"
 harness = false
+[lints]
+workspace = true

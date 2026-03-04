@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
 
@@ -205,7 +205,7 @@ mod tests {
     use super::*;
     use http::Response;
     use std::convert::Infallible;
-    use tower::{service_fn, Layer, Service};
+    use tower::{Layer, Service, service_fn};
 
     #[test]
     fn metrics_snapshot_tracks_counts_and_buckets() {

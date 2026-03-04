@@ -16,3 +16,6 @@ schemars = { version = "1.2.0", features = ["derive"] }
 http = { workspace = true }
 hyper = { workspace = true }
 
+
+[lints]
+workspace = true

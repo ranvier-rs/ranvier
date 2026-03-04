@@ -5,28 +5,28 @@ use std::str::FromStr;
 
 use anyhow::anyhow;
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry::{global, KeyValue, Value};
+use opentelemetry::{KeyValue, Value, global};
 use opentelemetry_otlp::{Protocol, WithExportConfig};
 use opentelemetry_sdk::export::trace::{ExportResult, SpanData, SpanExporter};
 use opentelemetry_sdk::trace::BatchSpanProcessor;
-use opentelemetry_sdk::{runtime, Resource};
+use opentelemetry_sdk::{Resource, runtime};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry};
 
+pub mod business;
+pub mod dlq_file;
 pub mod http_metrics;
 pub mod http_trace;
 pub mod metrics;
-pub mod business;
-pub mod dlq_file;
 
-pub use http_metrics::{HttpMetrics, HttpMetricsLayer, HttpMetricsSnapshot, ResponseStatus};
-pub use http_trace::{
-    extract_trace_context, extract_trace_context_snapshot, IncomingTraceContext, TraceContextLayer,
-};
-pub use metrics::{Counter, Gauge, Histogram, MetricsRegistry};
 pub use business::SliTracker;
 pub use dlq_file::FileDlqSink;
+pub use http_metrics::{HttpMetrics, HttpMetricsLayer, HttpMetricsSnapshot, ResponseStatus};
+pub use http_trace::{
+    IncomingTraceContext, TraceContextLayer, extract_trace_context, extract_trace_context_snapshot,
+};
+pub use metrics::{Counter, Gauge, Histogram, MetricsRegistry};
 
 /// OTLP transport preset for trace export.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -395,20 +395,22 @@ fn has_semantic_prefix(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{TelemetryRedactionMode, TelemetryRedactionPolicy};
+    use opentelemetry::KeyValue;
     use opentelemetry::trace::{
         Event, SpanContext, SpanId, SpanKind, Status, TraceFlags, TraceId, TraceState,
     };
-    use opentelemetry::KeyValue;
+    use opentelemetry_sdk::Resource;
     use opentelemetry_sdk::export::trace::SpanData;
     use opentelemetry_sdk::trace::{SpanEvents, SpanLinks};
-    use opentelemetry_sdk::Resource;
     use std::borrow::Cow;
     use std::time::SystemTime;
 
     #[test]
     fn public_mode_redacts_sensitive_span_and_event_attributes() {
-        let mut policy = TelemetryRedactionPolicy::default();
-        policy.mode = TelemetryRedactionMode::Public;
+        let policy = TelemetryRedactionPolicy {
+            mode: TelemetryRedactionMode::Public,
+            ..Default::default()
+        };
 
         let mut batch = vec![sample_span_data(vec![
             KeyValue::new("customer_email", "demo.user@example.com"),
@@ -436,9 +438,15 @@ mod tests {
 
     #[test]
     fn strict_mode_drops_non_allowlisted_custom_attributes() {
-        let mut policy = TelemetryRedactionPolicy::default();
-        policy.mode = TelemetryRedactionMode::Strict;
-        policy.allow_keys.insert("custom.keep".to_string());
+        let policy = TelemetryRedactionPolicy {
+            mode: TelemetryRedactionMode::Strict,
+            allow_keys: {
+                let mut keys = std::collections::HashSet::new();
+                keys.insert("custom.keep".to_string());
+                keys
+            },
+            ..Default::default()
+        };
 
         let mut batch = vec![sample_span_data(vec![
             KeyValue::new("custom.keep", "ok"),

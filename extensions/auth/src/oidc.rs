@@ -24,8 +24,7 @@
 
 use async_trait::async_trait;
 use jsonwebtoken::{
-    Algorithm, DecodingKey, TokenData, Validation,
-    decode, decode_header,
+    Algorithm, DecodingKey, TokenData, Validation, decode, decode_header,
     jwk::{self, JwkSet},
 };
 use ranvier_core::iam::{IamError, IamIdentity, IamVerifier};
@@ -110,7 +109,7 @@ impl OidcVerifier {
             _ => {
                 return Err(IamError::InvalidToken(
                     "Unsupported JWK key type (only RSA/EC supported)".into(),
-                ))
+                ));
             }
         };
 
@@ -163,14 +162,14 @@ impl IamVerifier for OidcVerifier {
         // Normalize roles: check both `roles` claim and common provider-specific claims
         let mut roles = claims.roles;
         // Azure AD / Keycloak often use "realm_access.roles"
-        if let Some(serde_json::Value::Object(realm)) = claims.extra.get("realm_access") {
-            if let Some(serde_json::Value::Array(realm_roles)) = realm.get("roles") {
-                for r in realm_roles {
-                    if let serde_json::Value::String(s) = r {
-                        if !roles.contains(s) {
-                            roles.push(s.clone());
-                        }
-                    }
+        if let Some(serde_json::Value::Object(realm)) = claims.extra.get("realm_access")
+            && let Some(serde_json::Value::Array(realm_roles)) = realm.get("roles")
+        {
+            for r in realm_roles {
+                if let serde_json::Value::String(s) = r
+                    && !roles.contains(s)
+                {
+                    roles.push(s.clone());
                 }
             }
         }
@@ -198,10 +197,14 @@ mod tests {
         let rsa_private_pem = include_str!("../test_fixtures/test_rsa_private.pem");
         let jwks_json = include_str!("../test_fixtures/test_jwks.json");
 
-        let encoding_key = EncodingKey::from_rsa_pem(rsa_private_pem.as_bytes())
-            .expect("test RSA private key");
+        let encoding_key =
+            EncodingKey::from_rsa_pem(rsa_private_pem.as_bytes()).expect("test RSA private key");
 
-        (encoding_key, jwks_json.to_string(), "test-key-1".to_string())
+        (
+            encoding_key,
+            jwks_json.to_string(),
+            "test-key-1".to_string(),
+        )
     }
 
     fn make_oidc_token(
@@ -255,7 +258,10 @@ mod tests {
 
         let identity = verifier.verify(&token).await.expect("should verify");
         assert_eq!(identity.subject, "user-123");
-        assert_eq!(identity.issuer.as_deref(), Some("https://issuer.example.com"));
+        assert_eq!(
+            identity.issuer.as_deref(),
+            Some("https://issuer.example.com")
+        );
         assert!(identity.has_role("admin"));
         assert!(identity.has_role("user"));
     }

@@ -1,8 +1,8 @@
 use crate::{IsolationPolicy, TenantId, TenantResolver};
+use futures_util::future::BoxFuture;
 use http::{Request, Response, StatusCode};
 use std::task::{Context, Poll};
 use tower::{Layer, Service};
-use futures_util::future::BoxFuture;
 
 /// A Tower layer that extracts `TenantId` from the incoming HTTP request,
 /// validates the isolation policy, and injects it into the request extensions.
@@ -54,21 +54,19 @@ where
 
     fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
         let mut inner = self.inner.clone();
-        
+
         let tenant_id = match &self.resolver {
-            TenantResolver::Header(name) => {
-                req.headers()
-                    .get(*name)
-                    .and_then(|val| val.to_str().ok())
-                    .map(TenantId::new)
-            }
-            TenantResolver::Subdomain => {
-                req.headers()
-                    .get(http::header::HOST)
-                    .and_then(|val| val.to_str().ok())
-                    .and_then(|host| host.split('.').next())
-                    .map(TenantId::new)
-            }
+            TenantResolver::Header(name) => req
+                .headers()
+                .get(*name)
+                .and_then(|val| val.to_str().ok())
+                .map(TenantId::new),
+            TenantResolver::Subdomain => req
+                .headers()
+                .get(http::header::HOST)
+                .and_then(|val| val.to_str().ok())
+                .and_then(|host| host.split('.').next())
+                .map(TenantId::new),
             TenantResolver::PathPrefix => {
                 let path = req.uri().path();
                 let mut parts = path.split('/');
@@ -88,13 +86,11 @@ where
                 req.extensions_mut().insert(id);
                 Box::pin(async move { inner.call(req).await })
             }
-            None => {
-                Box::pin(async move {
-                    let mut res = Response::new(ResBody::default());
-                    *res.status_mut() = StatusCode::BAD_REQUEST;
-                    Ok(res)
-                })
-            }
+            None => Box::pin(async move {
+                let mut res = Response::new(ResBody::default());
+                *res.status_mut() = StatusCode::BAD_REQUEST;
+                Ok(res)
+            }),
         }
     }
 }
@@ -103,8 +99,8 @@ where
 mod tests {
     use super::*;
     use http::{Request, Response, StatusCode};
-    use tower::{ServiceBuilder, ServiceExt};
     use std::convert::Infallible;
+    use tower::ServiceBuilder;
 
     async fn handle_request(req: Request<()>) -> Result<Response<()>, Infallible> {
         let mut response = Response::new(());
@@ -134,7 +130,7 @@ mod tests {
             .unwrap();
 
         let response = service.call(request).await.unwrap();
-        
+
         assert_eq!(response.status(), StatusCode::OK);
         let extracted_tenant = response.extensions().get::<TenantId>().unwrap();
         assert_eq!(extracted_tenant.as_str(), "tenant-123");
@@ -151,12 +147,10 @@ mod tests {
             .layer(layer)
             .service_fn(|req: Request<()>| async move { handle_request(req).await });
 
-        let request = Request::builder()
-            .body(())
-            .unwrap();
+        let request = Request::builder().body(()).unwrap();
 
         let response = service.call(request).await.unwrap();
-        
+
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

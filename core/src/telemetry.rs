@@ -16,12 +16,18 @@ pub struct TraceContext {
     pub span_id: String,
 }
 
-impl TraceContext {
-    pub fn new() -> Self {
+impl Default for TraceContext {
+    fn default() -> Self {
         Self {
             trace_id: uuid::Uuid::new_v4().to_string(),
             span_id: uuid::Uuid::new_v4().to_string(),
         }
+    }
+}
+
+impl TraceContext {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 

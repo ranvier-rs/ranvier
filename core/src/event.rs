@@ -17,20 +17,15 @@ pub trait EventSink<E>: Send + Sync {
 }
 
 /// Defines the policy for handling failed events (Dead Letter Queue behavior).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub enum DlqPolicy {
     /// Drop the failed event.
+    #[default]
     Drop,
     /// Send the event to a configured DLQ.
     SendToDlq,
     /// Retry a specific number of times with an exponential backoff before sending to DLQ.
     RetryThenDlq { max_attempts: u32, backoff_ms: u64 },
-}
-
-impl Default for DlqPolicy {
-    fn default() -> Self {
-        Self::Drop
-    }
 }
 
 /// A Dead Letter Queue sink for storing failed events or workflow state.

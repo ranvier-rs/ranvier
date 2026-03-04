@@ -29,7 +29,6 @@ use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -166,7 +165,11 @@ impl Service<Request<Incoming>> for TimeoutService {
                 Ok(response) => response,
                 Err(_) => Ok(Response::builder()
                     .status(StatusCode::REQUEST_TIMEOUT)
-                    .body(Full::new(Bytes::from("Request Timeout")).map_err(|never| match never {}).boxed())
+                    .body(
+                        Full::new(Bytes::from("Request Timeout"))
+                            .map_err(|never| match never {})
+                            .boxed(),
+                    )
                     .unwrap()),
             }
         })
@@ -399,10 +402,10 @@ impl WebSocketEvent {
 
     fn into_wire_message(self) -> WsWireMessage {
         match self {
-            Self::Text(value) => WsWireMessage::Text(value.into()),
-            Self::Binary(value) => WsWireMessage::Binary(value.into()),
-            Self::Ping(value) => WsWireMessage::Ping(value.into()),
-            Self::Pong(value) => WsWireMessage::Pong(value.into()),
+            Self::Text(value) => WsWireMessage::Text(value),
+            Self::Binary(value) => WsWireMessage::Binary(value),
+            Self::Ping(value) => WsWireMessage::Ping(value),
+            Self::Pong(value) => WsWireMessage::Pong(value),
             Self::Close => WsWireMessage::Close(None),
         }
     }
@@ -581,7 +584,7 @@ fn find_matching_route<'a, R>(
     path: &str,
 ) -> Option<(&'a RouteEntry<R>, PathParams)> {
     for entry in routes {
-        if &entry.method != method {
+        if entry.method != *method {
             continue;
         }
         if let Some(params) = entry.pattern.match_path(path) {
@@ -626,8 +629,18 @@ fn websocket_accept_key(client_key: &str) -> String {
 fn websocket_bad_request(message: &'static str) -> HttpResponse {
     Response::builder()
         .status(StatusCode::BAD_REQUEST)
-        .body(Full::new(Bytes::from(message)).map_err(|never| match never {}).boxed())
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()).map_err(|never| match never {}).boxed()))
+        .body(
+            Full::new(Bytes::from(message))
+                .map_err(|never| match never {})
+                .boxed(),
+        )
+        .unwrap_or_else(|_| {
+            Response::new(
+                Full::new(Bytes::new())
+                    .map_err(|never| match never {})
+                    .boxed(),
+            )
+        })
 }
 
 fn websocket_upgrade_response<B>(
@@ -674,8 +687,18 @@ fn websocket_upgrade_response<B>(
         .header(http::header::UPGRADE, WS_UPGRADE_TOKEN)
         .header(http::header::CONNECTION, "Upgrade")
         .header("sec-websocket-accept", accept_key)
-        .body(Full::new(Bytes::new()).map_err(|never| match never {}).boxed())
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()).map_err(|never| match never {}).boxed()));
+        .body(
+            Full::new(Bytes::new())
+                .map_err(|never| match never {})
+                .boxed(),
+        )
+        .unwrap_or_else(|_| {
+            Response::new(
+                Full::new(Bytes::new())
+                    .map_err(|never| match never {})
+                    .boxed(),
+            )
+        });
 
     Ok((response, on_upgrade))
 }
@@ -1082,7 +1105,8 @@ where
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Error: {:?}", error),
-            ).into_response()
+            )
+                .into_response()
         })
     }
 
@@ -1133,7 +1157,8 @@ where
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Error: {:?}", error),
-                ).into_response()
+                )
+                    .into_response()
             },
             Arc::new(vec![to_service_layer(layer)]),
             true,
@@ -1165,7 +1190,8 @@ where
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Error: {:?}", error),
-                ).into_response()
+                )
+                    .into_response()
             },
             Arc::new(vec![to_service_layer(layer)]),
             false,
@@ -1362,7 +1388,8 @@ where
                     for injector in fallback_bus_injectors.iter() {
                         injector(&parts, &mut bus);
                     }
-                    let result: ranvier_core::Outcome<Out, E> = circuit.execute((), &res, &mut bus).await;
+                    let result: ranvier_core::Outcome<Out, E> =
+                        circuit.execute((), &res, &mut bus).await;
 
                     match result {
                         Outcome::Next(output) => {
@@ -1372,7 +1399,11 @@ where
                         }
                         _ => Response::builder()
                             .status(StatusCode::NOT_FOUND)
-                            .body(Full::new(Bytes::from("Not Found")).map_err(|never| match never {}).boxed())
+                            .body(
+                                Full::new(Bytes::from("Not Found"))
+                                    .map_err(|never| match never {})
+                                    .boxed(),
+                            )
                             .unwrap(),
                     }
                 }
@@ -1408,7 +1439,11 @@ where
                 Box::pin(async move {
                     Response::builder()
                         .status(StatusCode::OK)
-                        .body(Full::new(Bytes::from("Intervention accepted")).map_err(|never| match never {} as Infallible).boxed())
+                        .body(
+                            Full::new(Bytes::from("Intervention accepted"))
+                                .map_err(|never| match never {} as Infallible)
+                                .boxed(),
+                        )
                         .unwrap()
                 }) as Pin<Box<dyn Future<Output = HttpResponse> + Send>>
             });
@@ -1423,15 +1458,19 @@ where
         }
 
         if let Some(registry) = self.policy_registry.clone() {
-            let handler: RouteHandler<R> = Arc::new(move |parts, _res| {
-                let registry = registry.clone();
+            let handler: RouteHandler<R> = Arc::new(move |_parts, _res| {
+                let _registry = registry.clone();
                 Box::pin(async move {
                     // This is a simplified reload endpoint.
                     // In a real implementation, it would parse JSON from the body.
                     // For now, we provide the infrastructure.
                     Response::builder()
                         .status(StatusCode::OK)
-                        .body(Full::new(Bytes::from("Policy registry active")).map_err(|never| match never {} as Infallible).boxed())
+                        .body(
+                            Full::new(Bytes::from("Policy registry active"))
+                                .map_err(|never| match never {} as Infallible)
+                                .boxed(),
+                        )
                         .unwrap()
                 }) as Pin<Box<dyn Future<Output = HttpResponse> + Send>>
             });
@@ -1595,10 +1634,13 @@ where
 
                 if effective_layers.is_empty() {
                     let (parts, _) = req.into_parts();
+                    #[allow(unused_mut)]
                     let mut res = (entry.handler)(parts, &resources).await;
                     #[cfg(feature = "http3")]
                     if let Some(port) = alt_svc_port {
-                        if let Ok(val) = http::HeaderValue::from_str(&format!("h3=\":{}\"; ma=86400", port)) {
+                        if let Ok(val) =
+                            http::HeaderValue::from_str(&format!("h3=\":{}\"; ma=86400", port))
+                        {
                             res.headers_mut().insert(http::header::ALT_SVC, val);
                         }
                     }
@@ -1609,11 +1651,15 @@ where
                         resources.clone(),
                         effective_layers,
                     );
+                    #[allow(unused_mut)]
                     let mut res = route_service.oneshot(req).await;
                     #[cfg(feature = "http3")]
+                    #[allow(irrefutable_let_patterns)]
                     if let Ok(ref mut r) = res {
                         if let Some(port) = alt_svc_port {
-                            if let Ok(val) = http::HeaderValue::from_str(&format!("h3=\":{}\"; ma=86400", port)) {
+                            if let Ok(val) =
+                                http::HeaderValue::from_str(&format!("h3=\":{}\"; ma=86400", port))
+                            {
                                 r.headers_mut().insert(http::header::ALT_SVC, val);
                             }
                         }
@@ -1629,6 +1675,7 @@ where
                         Err(response) => return Ok(response),
                     };
 
+                #[allow(unused_mut)]
                 let mut fallback_res = if let Some(ref fb) = fallback {
                     if layers.is_empty() {
                         let (parts, _) = req.into_parts();
@@ -1641,19 +1688,25 @@ where
                 } else {
                     Ok(Response::builder()
                         .status(StatusCode::NOT_FOUND)
-                        .body(Full::new(Bytes::from("Not Found")).map_err(|never| match never {}).boxed())
+                        .body(
+                            Full::new(Bytes::from("Not Found"))
+                                .map_err(|never| match never {})
+                                .boxed(),
+                        )
                         .unwrap())
                 };
-                
+
                 #[cfg(feature = "http3")]
                 if let Ok(r) = fallback_res.as_mut() {
                     if let Some(port) = alt_svc_port {
-                        if let Ok(val) = http::HeaderValue::from_str(&format!("h3=\":{}\"; ma=86400", port)) {
+                        if let Ok(val) =
+                            http::HeaderValue::from_str(&format!("h3=\":{}\"; ma=86400", port))
+                        {
                             r.headers_mut().insert(http::header::ALT_SVC, val);
                         }
                     }
                 }
-                
+
                 fallback_res
             }
         }
@@ -1763,8 +1816,18 @@ async fn maybe_handle_static_request(
             Err(_) => {
                 return Err(Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(Full::new(Bytes::from("Failed to serve static asset")).map_err(|never| match never {}).boxed())
-                    .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()).map_err(|never| match never {}).boxed())));
+                    .body(
+                        Full::new(Bytes::from("Failed to serve static asset"))
+                            .map_err(|never| match never {})
+                            .boxed(),
+                    )
+                    .unwrap_or_else(|_| {
+                        Response::new(
+                            Full::new(Bytes::new())
+                                .map_err(|never| match never {})
+                                .boxed(),
+                        )
+                    }));
             }
         };
         let response =
@@ -1776,7 +1839,10 @@ async fn maybe_handle_static_request(
         )
         .await;
         let (parts, body) = response.into_parts();
-        return Err(Response::from_parts(parts, body.map_err(|never| match never {}).boxed()));
+        return Err(Response::from_parts(
+            parts,
+            body.map_err(|never| match never {}).boxed(),
+        ));
     }
 
     if let Some(spa_file) = static_assets.spa_fallback.as_ref() {
@@ -1788,8 +1854,18 @@ async fn maybe_handle_static_request(
                 Err(_) => {
                     return Err(Response::builder()
                         .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(Full::new(Bytes::from("Failed to serve SPA fallback")).map_err(|never| match never {}).boxed())
-                        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()).map_err(|never| match never {}).boxed())));
+                        .body(
+                            Full::new(Bytes::from("Failed to serve SPA fallback"))
+                                .map_err(|never| match never {})
+                                .boxed(),
+                        )
+                        .unwrap_or_else(|_| {
+                            Response::new(
+                                Full::new(Bytes::new())
+                                    .map_err(|never| match never {})
+                                    .boxed(),
+                            )
+                        }));
                 }
             };
             let response =
@@ -1801,7 +1877,10 @@ async fn maybe_handle_static_request(
             )
             .await;
             let (parts, body) = response.into_parts();
-            return Err(Response::from_parts(parts, body.map_err(|never| match never {}).boxed()));
+            return Err(Response::from_parts(
+                parts,
+                body.map_err(|never| match never {}).boxed(),
+            ));
         }
     }
 
@@ -1982,7 +2061,11 @@ fn health_json_response(
     Response::builder()
         .status(status_code)
         .header(http::header::CONTENT_TYPE, "application/json")
-        .body(Full::new(Bytes::from(body)).map_err(|never| match never {}).boxed())
+        .body(
+            Full::new(Bytes::from(body))
+                .map_err(|never| match never {})
+                .boxed(),
+        )
         .unwrap()
 }
 
@@ -2093,8 +2176,16 @@ where
         let resources = self.resources.clone();
 
         Box::pin(async move {
-            let service =
-                build_http_service(routes, fallback, resources, layers, health, static_assets, #[cfg(feature = "http3")] None);
+            let service = build_http_service(
+                routes,
+                fallback,
+                resources,
+                layers,
+                health,
+                static_assets,
+                #[cfg(feature = "http3")]
+                None,
+            );
             service.oneshot(req).await
         })
     }
@@ -2190,7 +2281,7 @@ mod tests {
     #[test]
     fn route_without_layer_keeps_empty_route_middleware_stack() {
         let ingress =
-            HttpIngress::<()>::new().get("/ping", Axon::<(), (), Infallible, ()>::new("Ping"));
+            HttpIngress::<()>::new().get("/ping", Axon::<(), (), String, ()>::new("Ping"));
         assert_eq!(ingress.routes.len(), 1);
         assert!(ingress.routes[0].layers.is_empty());
         assert!(ingress.routes[0].apply_global_layers);
@@ -2200,7 +2291,7 @@ mod tests {
     fn route_with_layer_registers_route_middleware_stack() {
         let ingress = HttpIngress::<()>::new().get_with_layer(
             "/ping",
-            Axon::<(), (), Infallible, ()>::new("Ping"),
+            Axon::<(), (), String, ()>::new("Ping"),
             tower::layer::util::Identity::new(),
         );
         assert_eq!(ingress.routes.len(), 1);
@@ -2212,7 +2303,7 @@ mod tests {
     fn route_with_layer_override_disables_global_layers() {
         let ingress = HttpIngress::<()>::new().get_with_layer_override(
             "/ping",
-            Axon::<(), (), Infallible, ()>::new("Ping"),
+            Axon::<(), (), String, ()>::new("Ping"),
             tower::layer::util::Identity::new(),
         );
         assert_eq!(ingress.routes.len(), 1);
@@ -2271,11 +2362,7 @@ mod tests {
         let ingress = HttpIngress::<()>::new()
             .bind(addr.to_string())
             .bus_injector(|req, bus| {
-                if let Some(value) = req
-                    .headers
-                    .get("x-tenant-id")
-                    .and_then(|v| v.to_str().ok())
-                {
+                if let Some(value) = req.headers.get("x-tenant-id").and_then(|v| v.to_str().ok()) {
                     bus.insert(value.to_string());
                 }
             })
@@ -2382,7 +2469,7 @@ mod tests {
 
     #[async_trait]
     impl Transition<(), String> for EchoTrace {
-        type Error = Infallible;
+        type Error = String;
         type Resources = ();
 
         async fn run(
@@ -2412,7 +2499,7 @@ mod tests {
             })
             .get(
                 "/trace",
-                Axon::<(), (), Infallible, ()>::new("EchoTrace").then(EchoTrace),
+                Axon::<(), (), String, ()>::new("EchoTrace").then(EchoTrace),
             );
 
         let app = crate::test_harness::TestApp::new(ingress, ());
@@ -2440,7 +2527,7 @@ mod tests {
         let ingress = HttpIngress::<()>::new()
             .get(
                 "/orders/:id",
-                Axon::<(), (), Infallible, ()>::new("OrderById"),
+                Axon::<(), (), String, ()>::new("OrderById"),
             )
             .health_endpoint("/healthz")
             .readiness_liveness("/readyz", "/livez");
@@ -2508,8 +2595,8 @@ mod tests {
         struct SlowDrainRoute;
 
         #[async_trait]
-        impl Transition<(), &'static str> for SlowDrainRoute {
-            type Error = Infallible;
+        impl Transition<(), String> for SlowDrainRoute {
+            type Error = String;
             type Resources = ();
 
             async fn run(
@@ -2517,9 +2604,9 @@ mod tests {
                 _state: (),
                 _resources: &Self::Resources,
                 _bus: &mut Bus,
-            ) -> Outcome<&'static str, Self::Error> {
+            ) -> Outcome<String, Self::Error> {
                 tokio::time::sleep(Duration::from_millis(120)).await;
-                Outcome::next("drained-ok")
+                Outcome::next("drained-ok".to_string())
             }
         }
 
@@ -2532,7 +2619,7 @@ mod tests {
             .graceful_shutdown(Duration::from_millis(500))
             .get(
                 "/drain",
-                Axon::<(), (), Infallible, ()>::new("SlowDrain").then(SlowDrainRoute),
+                Axon::<(), (), String, ()>::new("SlowDrain").then(SlowDrainRoute),
             );
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -2665,8 +2752,8 @@ mod tests {
         struct SlowRoute;
 
         #[async_trait]
-        impl Transition<(), &'static str> for SlowRoute {
-            type Error = Infallible;
+        impl Transition<(), String> for SlowRoute {
+            type Error = String;
             type Resources = ();
 
             async fn run(
@@ -2674,9 +2761,9 @@ mod tests {
                 _state: (),
                 _resources: &Self::Resources,
                 _bus: &mut Bus,
-            ) -> Outcome<&'static str, Self::Error> {
+            ) -> Outcome<String, Self::Error> {
                 tokio::time::sleep(Duration::from_millis(80)).await;
-                Outcome::next("slow-ok")
+                Outcome::next("slow-ok".to_string())
             }
         }
 
@@ -2689,7 +2776,7 @@ mod tests {
             .timeout_layer(Duration::from_millis(10))
             .get(
                 "/slow",
-                Axon::<(), (), Infallible, ()>::new("Slow").then(SlowRoute),
+                Axon::<(), (), String, ()>::new("Slow").then(SlowRoute),
             );
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -2725,8 +2812,8 @@ mod tests {
         struct SlowRoute;
 
         #[async_trait]
-        impl Transition<(), &'static str> for SlowRoute {
-            type Error = Infallible;
+        impl Transition<(), String> for SlowRoute {
+            type Error = String;
             type Resources = ();
 
             async fn run(
@@ -2734,9 +2821,9 @@ mod tests {
                 _state: (),
                 _resources: &Self::Resources,
                 _bus: &mut Bus,
-            ) -> Outcome<&'static str, Self::Error> {
+            ) -> Outcome<String, Self::Error> {
                 tokio::time::sleep(Duration::from_millis(60)).await;
-                Outcome::next("override-ok")
+                Outcome::next("override-ok".to_string())
             }
         }
 
@@ -2749,7 +2836,7 @@ mod tests {
             .timeout_layer(Duration::from_millis(10))
             .get_with_layer_override(
                 "/slow",
-                Axon::<(), (), Infallible, ()>::new("SlowOverride").then(SlowRoute),
+                Axon::<(), (), String, ()>::new("SlowOverride").then(SlowRoute),
                 tower::layer::util::Identity::new(),
             );
 

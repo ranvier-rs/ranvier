@@ -1,7 +1,6 @@
 use crate::Trigger;
 use async_trait::async_trait;
 use ranvier_core::bus::Bus;
-use ranvier_core::outcome::Outcome;
 use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
 
@@ -34,7 +33,13 @@ pub struct AxonJob<In, Out, E, Res> {
 }
 
 impl<In, Out, E, Res> AxonJob<In, Out, E, Res> {
-    pub fn new(id: impl Into<String>, trigger: Trigger, axon: Axon<In, Out, E, Res>, input: In, resources: Res) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        trigger: Trigger,
+        axon: Axon<In, Out, E, Res>,
+        input: In,
+        resources: Res,
+    ) -> Self {
         Self {
             id: id.into(),
             trigger,

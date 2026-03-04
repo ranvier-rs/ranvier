@@ -45,11 +45,11 @@ impl SessionStore for RedisStore {
         let mut conn = self.client.get_async_connection().await?;
         let mut session_inner = session.clone().into_inner().await;
         let key = self.key(&session_inner.id);
-        
+
         // Reset flags before serialization
         session_inner.is_modified = false;
         session_inner.is_destroyed = false;
-        
+
         let json = serde_json::to_string(&session_inner)?;
 
         if let Some(expiry) = session_inner.expires_at {

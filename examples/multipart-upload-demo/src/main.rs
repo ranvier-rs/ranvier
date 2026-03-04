@@ -15,10 +15,10 @@
 //!    curl -F "username=ranvier" -F "avatar=@photo.jpg" http://localhost:3000/upload
 //!    ```
 
-use ranvier_http::extract::multipart::Multipart;
-use ranvier_http::extract::FromRequest;
 use bytes::Bytes;
 use http_body_util::Full;
+use ranvier_http::extract::multipart::Multipart;
+use ranvier_http::extract::FromRequest;
 
 /// Simulates a handler that processes multipart uploads.
 async fn handle_upload(mut mp: Multipart) -> String {

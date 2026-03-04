@@ -1,9 +1,10 @@
 use async_trait::async_trait;
+use base64::Engine;
+use chrono::Utc;
 use ranvier_core::event::{DeadLetter, DlqReader, DlqSink};
 use std::path::{Path, PathBuf};
 use tokio::fs::{self, OpenOptions, create_dir_all};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use chrono::Utc;
 
 /// A file-based DLQ sink that stores failed events as JSON lines.
 pub struct FileDlqSink {
@@ -31,14 +32,14 @@ impl DlqSink for FileDlqSink {
         payload: &[u8],
     ) -> Result<(), String> {
         let timestamp = Utc::now().to_rfc3339();
-        
+
         let entry = serde_json::json!({
             "timestamp": timestamp,
             "workflow_id": workflow_id,
             "circuit_label": circuit_label,
             "node_id": node_id,
             "error": error_msg,
-            "payload_base64": base64::encode(payload),
+            "payload_base64": base64::engine::general_purpose::STANDARD.encode(payload),
         });
 
         let mut file_path = self.storage_dir.clone();
@@ -85,10 +86,10 @@ impl DlqReader for FileDlqSink {
 
             while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
                 if let Ok(dl) = serde_json::from_str::<DeadLetter>(&line) {
-                    if let Some(filter) = workflow_filter {
-                        if dl.workflow_id != filter {
-                            continue;
-                        }
+                    if let Some(filter) = workflow_filter
+                        && dl.workflow_id != filter
+                    {
+                        continue;
                     }
                     entries.push(dl);
                     if entries.len() >= limit {
@@ -119,7 +120,12 @@ impl DlqReader for FileDlqSink {
             let reader = BufReader::new(file);
             let mut lines = reader.lines();
 
-            while let Some(_) = lines.next_line().await.map_err(|e| e.to_string())? {
+            while lines
+                .next_line()
+                .await
+                .map_err(|e| e.to_string())?
+                .is_some()
+            {
                 count += 1;
             }
         }
