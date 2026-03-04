@@ -1,6 +1,7 @@
 pub mod bus;
 pub mod cluster;
 pub mod debug;
+pub mod error;
 pub mod event;
 pub mod iam;
 pub mod metadata;
@@ -36,6 +37,7 @@ pub mod prelude {
     pub use crate::saga::{SagaCompensationRegistry, SagaPolicy, SagaStack, SagaTask};
     pub use crate::schematic::{Edge, EdgeType, Node, NodeKind, SchemaMigrationMapper, Schematic};
     pub use crate::timeline::{Timeline, TimelineEvent};
+    pub use crate::error::RanvierError;
     pub use crate::transition::{ResourceRequirement, Transition};
 }
 

@@ -9,6 +9,7 @@ pub mod testkit;
 
 pub mod prelude {
     pub use crate::axon::{Axon, BoxFuture, ExecutionMode, SchematicExportRequest};
+    pub use crate::{InfallibleAxon, SimpleAxon, TypedAxon};
     pub use crate::cluster::{ClusterManager, LeaderElection, LockBasedElection};
     pub use crate::distributed::{
         DistributedError, DistributedLock, DistributedStore, Guard, LockOptions,
@@ -27,6 +28,15 @@ pub mod prelude {
     pub use crate::replay::ReplayEngine;
     pub use crate::testkit::AxonTestKit;
 }
+
+/// Axon with `String` error — the most common pattern for examples and prototyping.
+pub type SimpleAxon<In, Out, Res = ()> = Axon<In, Out, String, Res>;
+
+/// Axon with `RanvierError` — typed error categories without a custom enum.
+pub type TypedAxon<In, Out, Res = ()> = Axon<In, Out, ranvier_core::error::RanvierError, Res>;
+
+/// Axon with `Infallible` error — for pipelines that cannot fail.
+pub type InfallibleAxon<In, Out, Res = ()> = Axon<In, Out, std::convert::Infallible, Res>;
 
 pub use axon::{Axon, SchematicExportRequest};
 pub use cluster::{ClusterManager, LeaderElection, LockBasedElection};
