@@ -66,6 +66,11 @@ members = [
     "extensions/cluster",
     "graphql",
     "examples/graphql-service-demo",
+    "examples/testing-patterns",
+    "examples/custom-error-types",
+    "examples/retry-dlq-demo",
+    "examples/state-persistence-demo",
+    "examples/multitenancy-demo",
 ]
 
 [workspace.package]
