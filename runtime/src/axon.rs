@@ -504,32 +504,39 @@ where
                     // Handle resumption skip
                     if let Some(start) = bus.read::<StartStep>()
                         && step_idx == start.0
-                        && let Some(resumption) = bus.read::<ResumptionState>()
-                        && let Some(p) = resumption.payload.clone()
+                        && bus.read::<ResumptionState>().is_some()
                     {
-                        match serde_json::from_value::<Out>(p) {
-                            Ok(s) => {
-                                tracing::info!(node_id = %timeline_node_id, "Resuming with persisted state");
-                                return run_this_step::<Out, Next, E, Res>(
-                                    &trans,
-                                    s,
-                                    res,
-                                    bus,
-                                    &timeline_node_id,
-                                    &timeline_node_label,
-                                    &transition_bus_policy,
-                                    step_idx,
-                                )
-                                .await;
-                            }
-                            Err(e) => {
-                                return Outcome::emit(
-                                    "execution.resumption.payload_error",
-                                    Some(serde_json::json!({"error": e.to_string()})),
-                                )
-                                .map(|_: ()| unreachable!());
-                            }
+                        // Prefer fresh input (In → Out via JSON round-trip).
+                        // The caller provides updated state (e.g., corrected data after a fault).
+                        // Falls back to persisted checkpoint state when types are incompatible.
+                        let fresh_state = serde_json::to_value(&input)
+                            .ok()
+                            .and_then(|v| serde_json::from_value::<Out>(v).ok());
+                        let persisted_state = bus
+                            .read::<ResumptionState>()
+                            .and_then(|r| r.payload.clone())
+                            .and_then(|p| serde_json::from_value::<Out>(p).ok());
+
+                        if let Some(s) = fresh_state.or(persisted_state) {
+                            tracing::info!(node_id = %timeline_node_id, "Resuming at checkpoint");
+                            return run_this_step::<Out, Next, E, Res>(
+                                &trans,
+                                s,
+                                res,
+                                bus,
+                                &timeline_node_id,
+                                &timeline_node_label,
+                                &transition_bus_policy,
+                                step_idx,
+                            )
+                            .await;
                         }
+
+                        return Outcome::emit(
+                            "execution.resumption.payload_error",
+                            Some(serde_json::json!({"error": "no compatible resumption state"})),
+                        )
+                        .map(|_: ()| unreachable!());
                     }
 
                     // Run previous step
@@ -731,34 +738,38 @@ where
                     // Handle resumption skip
                     if let Some(start) = bus.read::<StartStep>()
                         && step_idx == start.0
-                        && let Some(resumption) = bus.read::<ResumptionState>()
-                        && let Some(p) = resumption.payload.clone()
+                        && bus.read::<ResumptionState>().is_some()
                     {
-                        match serde_json::from_value::<Out>(p) {
-                            Ok(s) => {
-                                tracing::info!(node_id = %timeline_node_id, "Resuming with persisted state (compensated)");
-                                return run_this_compensated_step::<Out, Next, E, Res, Comp>(
-                                    &trans,
-                                    &comp,
-                                    s,
-                                    res,
-                                    bus,
-                                    &timeline_node_id,
-                                    &timeline_comp_id,
-                                    &timeline_node_label,
-                                    &transition_bus_policy,
-                                    step_idx,
-                                )
-                                .await;
-                            }
-                            Err(e) => {
-                                return Outcome::emit(
-                                    "execution.resumption.payload_error",
-                                    Some(serde_json::json!({"error": e.to_string()})),
-                                )
-                                .map(|_: ()| unreachable!());
-                            }
+                        let fresh_state = serde_json::to_value(&input)
+                            .ok()
+                            .and_then(|v| serde_json::from_value::<Out>(v).ok());
+                        let persisted_state = bus
+                            .read::<ResumptionState>()
+                            .and_then(|r| r.payload.clone())
+                            .and_then(|p| serde_json::from_value::<Out>(p).ok());
+
+                        if let Some(s) = fresh_state.or(persisted_state) {
+                            tracing::info!(node_id = %timeline_node_id, "Resuming at checkpoint (compensated)");
+                            return run_this_compensated_step::<Out, Next, E, Res, Comp>(
+                                &trans,
+                                &comp,
+                                s,
+                                res,
+                                bus,
+                                &timeline_node_id,
+                                &timeline_comp_id,
+                                &timeline_node_label,
+                                &transition_bus_policy,
+                                step_idx,
+                            )
+                            .await;
                         }
+
+                        return Outcome::emit(
+                            "execution.resumption.payload_error",
+                            Some(serde_json::json!({"error": "no compatible resumption state"})),
+                        )
+                        .map(|_: ()| unreachable!());
                     }
 
                     // Run previous step
@@ -1651,6 +1662,21 @@ fn compensation_retry_policy(bus: &Bus) -> CompensationRetryPolicy {
         .unwrap_or_default()
 }
 
+/// Unwrap the Outcome enum layer from a persisted event payload.
+///
+/// Events are stored with `outcome.to_json_value()` which serializes the full
+/// Outcome enum, e.g. `{"Next": {"order_id": "1001", ...}}`. The resumption
+/// handler expects the raw inner value, so we extract it here.
+fn unwrap_outcome_payload(payload: Option<&serde_json::Value>) -> Option<serde_json::Value> {
+    payload.map(|p| {
+        p.get("Next")
+            .or_else(|| p.get("Branch"))
+            .or_else(|| p.get("Jump"))
+            .cloned()
+            .unwrap_or_else(|| p.clone())
+    })
+}
+
 async fn load_persistence_version(
     handle: &PersistenceHandle,
     trace_id: &str,
@@ -1664,12 +1690,50 @@ async fn load_persistence_version(
     let store = handle.store();
     match store.load(trace_id).await {
         Ok(Some(trace)) => {
-            let last_event = trace.events.last();
-            let next_step = last_event
-                .map(|event| event.step.saturating_add(1))
-                .unwrap_or(0);
-            let last_node_id = last_event.and_then(|e| e.node_id.clone());
-            let last_payload = last_event.and_then(|e| e.payload.clone());
+            let (next_step, last_node_id, last_payload) =
+                if let Some(resume_from_step) = trace.resumed_from_step {
+                    let anchor_event = trace
+                        .events
+                        .iter()
+                        .rev()
+                        .find(|event| {
+                            event.step <= resume_from_step
+                                && event.outcome_kind == "Next"
+                                && event.payload.is_some()
+                        })
+                        .or_else(|| {
+                            trace.events.iter().rev().find(|event| {
+                                event.step <= resume_from_step
+                                    && event.outcome_kind != "Fault"
+                                    && event.payload.is_some()
+                            })
+                        })
+                        .or_else(|| {
+                            trace.events.iter().rev().find(|event| {
+                                event.step <= resume_from_step && event.payload.is_some()
+                            })
+                        })
+                        .or_else(|| trace.events.last());
+
+                    (
+                        resume_from_step.saturating_add(1),
+                        anchor_event.and_then(|event| event.node_id.clone()),
+                        anchor_event.and_then(|event| {
+                            unwrap_outcome_payload(event.payload.as_ref())
+                        }),
+                    )
+                } else {
+                    let last_event = trace.events.last();
+                    (
+                        last_event
+                            .map(|event| event.step.saturating_add(1))
+                            .unwrap_or(0),
+                        last_event.and_then(|event| event.node_id.clone()),
+                        last_event.and_then(|event| {
+                            unwrap_outcome_payload(event.payload.as_ref())
+                        }),
+                    )
+                };
 
             (
                 next_step,

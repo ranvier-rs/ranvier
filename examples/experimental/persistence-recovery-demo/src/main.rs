@@ -161,9 +161,13 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("missing trace after first run"))?;
     print_trace_summary("after first run", &first_trace);
 
+    // Resume from the latest successful checkpoint, not from the terminal fault event.
     let resume_from = first_trace
         .events
-        .last()
+        .iter()
+        .rev()
+        .find(|event| event.outcome_kind == "Next")
+        .or_else(|| first_trace.events.last())
         .map(|event| event.step)
         .unwrap_or(0);
     let cursor = store_impl.resume(trace_id, resume_from).await?;

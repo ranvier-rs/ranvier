@@ -199,10 +199,14 @@ async fn main() -> anyhow::Result<()> {
     // --- Phase 2: Resume from checkpoint (fix condition, complete) ---
     println!("\n--- Phase 2: Resume — fix payment condition and complete ---");
 
+    // Resume from the latest successful checkpoint, not from a terminal fault marker.
     let resume_from = trace
         .events
-        .last()
-        .map(|e| e.step)
+        .iter()
+        .rev()
+        .find(|event| event.outcome_kind == "Next")
+        .or_else(|| trace.events.last())
+        .map(|event| event.step)
         .unwrap_or(0);
     let cursor = store_impl.resume(trace_id, resume_from).await?;
     println!(
