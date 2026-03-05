@@ -107,6 +107,17 @@ impl DebugControl {
     pub fn state(&self) -> DebugState {
         *self.inner.state.lock().unwrap()
     }
+
+    /// List all currently set breakpoint node IDs.
+    pub fn list_breakpoints(&self) -> Vec<String> {
+        self.inner
+            .breakpoints
+            .lock()
+            .unwrap()
+            .iter()
+            .cloned()
+            .collect()
+    }
 }
 
 impl Default for DebugControl {

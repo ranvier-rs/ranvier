@@ -7,6 +7,7 @@ homepage.workspace = true
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Database persistence layer for the Ranvier Typed Decision Engine framework."
 [dependencies]
 # Ranvier core
 ranvier-core = { workspace = true }

@@ -1,3 +1,8 @@
+pub mod breakpoint;
+pub mod metrics;
+pub mod payload;
+pub mod stall;
+
 use async_trait::async_trait;
 use axum::{
     Json, Router,
@@ -9,6 +14,7 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use ranvier_core::event::DlqReader;
 use ranvier_core::prelude::DebugControl;
 use ranvier_core::schematic::{NodeKind, Schematic};
 use serde::Deserialize;
@@ -17,6 +23,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[async_trait]
 pub trait StateInspector: Send + Sync {
@@ -34,10 +41,112 @@ use tracing::{Event, Id, Subscriber};
 use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
 static EVENT_CHANNEL: OnceLock<broadcast::Sender<String>> = OnceLock::new();
+static TRACE_REGISTRY: OnceLock<Arc<Mutex<ActiveTraceRegistry>>> = OnceLock::new();
+static PAYLOAD_POLICY: OnceLock<payload::PayloadCapturePolicy> = OnceLock::new();
 const QUICK_VIEW_HTML: &str = include_str!("quick_view/index.html");
 const QUICK_VIEW_JS: &str = include_str!("quick_view/app.js");
 const QUICK_VIEW_CSS: &str = include_str!("quick_view/styles.css");
 const INSPECTOR_API_VERSION: &str = "1.0";
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct TraceRecord {
+    pub trace_id: String,
+    pub circuit: String,
+    pub status: TraceStatus,
+    pub started_at: u64,
+    pub finished_at: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub outcome_type: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TraceStatus {
+    Active,
+    Completed,
+    Faulted,
+}
+
+struct ActiveTraceRegistry {
+    active: HashMap<String, TraceRecord>,
+    recent: Vec<TraceRecord>,
+    max_recent: usize,
+}
+
+impl ActiveTraceRegistry {
+    fn new() -> Self {
+        Self {
+            active: HashMap::new(),
+            recent: Vec::new(),
+            max_recent: 100,
+        }
+    }
+
+    fn register(&mut self, circuit: String) {
+        let trace_id = format!(
+            "{}-{}",
+            circuit.replace(' ', "_").to_lowercase(),
+            epoch_ms()
+        );
+        self.active.insert(
+            trace_id.clone(),
+            TraceRecord {
+                trace_id,
+                circuit,
+                status: TraceStatus::Active,
+                started_at: epoch_ms(),
+                finished_at: None,
+                duration_ms: None,
+                outcome_type: None,
+            },
+        );
+    }
+
+    fn complete(
+        &mut self,
+        circuit: &str,
+        outcome_type: Option<String>,
+        duration_ms: Option<u64>,
+    ) {
+        // Find the active trace for this circuit (most recent)
+        let key = self
+            .active
+            .iter()
+            .filter(|(_, r)| r.circuit == circuit)
+            .max_by_key(|(_, r)| r.started_at)
+            .map(|(k, _)| k.clone());
+
+        if let Some(key) = key {
+            if let Some(mut record) = self.active.remove(&key) {
+                record.finished_at = Some(epoch_ms());
+                record.duration_ms = duration_ms;
+                record.outcome_type = outcome_type.clone();
+                record.status = if outcome_type.as_deref() == Some("Fault") {
+                    TraceStatus::Faulted
+                } else {
+                    TraceStatus::Completed
+                };
+                self.recent.push(record);
+                if self.recent.len() > self.max_recent {
+                    self.recent.remove(0);
+                }
+            }
+        }
+    }
+
+    fn list_all(&self) -> Vec<TraceRecord> {
+        let mut result: Vec<TraceRecord> = self.active.values().cloned().collect();
+        result.extend(self.recent.iter().cloned());
+        result.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        result
+    }
+}
+
+fn get_trace_registry() -> Arc<Mutex<ActiveTraceRegistry>> {
+    TRACE_REGISTRY
+        .get_or_init(|| Arc::new(Mutex::new(ActiveTraceRegistry::new())))
+        .clone()
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InspectorMode {
@@ -226,6 +335,8 @@ pub struct Inspector {
     auth_policy: AuthPolicy,
     redaction_policy: TelemetryRedactionPolicy,
     state_inspector: Option<Arc<dyn StateInspector>>,
+    dlq_reader: Option<Arc<dyn DlqReader>>,
+    payload_policy: payload::PayloadCapturePolicy,
 }
 
 impl Inspector {
@@ -246,7 +357,19 @@ impl Inspector {
             auth_policy: AuthPolicy::default(),
             redaction_policy: TelemetryRedactionPolicy::from_env(),
             state_inspector: None,
+            dlq_reader: None,
+            payload_policy: payload::PayloadCapturePolicy::from_env(),
         }
+    }
+
+    pub fn with_dlq_reader(mut self, reader: Arc<dyn DlqReader>) -> Self {
+        self.dlq_reader = Some(reader);
+        self
+    }
+
+    pub fn with_payload_capture(mut self, policy: payload::PayloadCapturePolicy) -> Self {
+        self.payload_policy = policy;
+        self
     }
 
     pub fn with_state_inspector(mut self, inspector: Arc<dyn StateInspector>) -> Self {
@@ -369,7 +492,11 @@ impl Inspector {
             auth_policy: self.auth_policy,
             redaction_policy: self.redaction_policy.clone(),
             state_inspector: self.state_inspector,
+            dlq_reader: self.dlq_reader,
         };
+
+        // Store payload capture policy in a global for the tracing Layer to access
+        PAYLOAD_POLICY.get_or_init(|| self.payload_policy);
 
         let mut app = Router::new()
             .route("/schematic", get(get_schematic))
@@ -396,7 +523,22 @@ impl Inspector {
                 .route(
                     "/inspector/timeline/:request_id",
                     get(get_inspector_timeline_by_request_id),
-                );
+                )
+                .route("/api/v1/traces", get(api_get_traces))
+                .route("/api/v1/metrics", get(api_get_metrics_all))
+                .route("/api/v1/metrics/:circuit", get(api_get_metrics))
+                .route("/api/v1/events", get(api_get_events))
+                .route("/api/v1/dlq", get(api_get_dlq))
+                .route(
+                    "/api/v1/breakpoints",
+                    get(api_get_breakpoints).post(api_post_breakpoint),
+                )
+                .route(
+                    "/api/v1/breakpoints/:bp_id",
+                    axum::routing::delete(api_delete_breakpoint)
+                        .patch(api_patch_breakpoint),
+                )
+                .route("/api/v1/stalls", get(api_get_stalls));
         }
 
         if self.surface_policy.expose_events {
@@ -413,6 +555,43 @@ impl Inspector {
         let app = app.with_state(state);
         let addr = listener.local_addr()?;
         tracing::info!("Ranvier Inspector listening on http://{}", addr);
+
+        // Spawn periodic metrics broadcast task
+        if self.surface_policy.expose_events {
+            let broadcast_interval = std::env::var("RANVIER_INSPECTOR_METRICS_INTERVAL_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(2000);
+            tokio::spawn(async move {
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_millis(broadcast_interval));
+                loop {
+                    interval.tick().await;
+                    let snapshots = metrics::snapshot_all();
+                    if !snapshots.is_empty() {
+                        let msg = serde_json::json!({
+                            "type": "metrics",
+                            "circuits": snapshots,
+                            "timestamp": epoch_ms()
+                        })
+                        .to_string();
+                        let _ = get_sender().send(msg);
+                    }
+
+                    // Stall detection piggybacks on the same timer
+                    let stalls = stall::detect_stalls();
+                    if !stalls.is_empty() {
+                        let msg = serde_json::json!({
+                            "type": "stall_detected",
+                            "stalls": stalls,
+                            "timestamp": epoch_ms()
+                        })
+                        .to_string();
+                        let _ = get_sender().send(msg);
+                    }
+                }
+            });
+        }
 
         axum::serve(listener, app).await
     }
@@ -639,6 +818,187 @@ async fn api_post_resume(
     }
 }
 
+async fn api_get_traces(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    let traces = get_trace_registry()
+        .lock()
+        .map(|r| r.list_all())
+        .unwrap_or_default();
+    Ok(inspector_envelope(
+        "inspector.traces.v1",
+        serde_json::json!({
+            "count": traces.len(),
+            "traces": traces
+        }),
+    ))
+}
+
+async fn api_get_metrics(
+    headers: HeaderMap,
+    AxPath(circuit): AxPath<String>,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    match metrics::snapshot_circuit(&circuit) {
+        Some(snap) => Ok(inspector_envelope(
+            "inspector.metrics.v1",
+            serde_json::json!(snap),
+        )),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "No metrics for circuit", "circuit": circuit })),
+        )),
+    }
+}
+
+async fn api_get_metrics_all(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    let snapshots = metrics::snapshot_all();
+    Ok(inspector_envelope(
+        "inspector.metrics.v1",
+        serde_json::json!({
+            "count": snapshots.len(),
+            "circuits": snapshots
+        }),
+    ))
+}
+
+async fn api_get_events(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    let events = payload::list_events(200);
+    Ok(inspector_envelope(
+        "inspector.events.v1",
+        serde_json::json!({
+            "count": events.len(),
+            "events": events
+        }),
+    ))
+}
+
+async fn api_get_dlq(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    match &state.dlq_reader {
+        Some(reader) => {
+            let letters = reader
+                .list_dead_letters(None, 100)
+                .await
+                .unwrap_or_default();
+            let count = reader.count_dead_letters().await.unwrap_or(0);
+            Ok(inspector_envelope(
+                "inspector.dlq.v1",
+                serde_json::json!({
+                    "total": count,
+                    "items": letters
+                }),
+            ))
+        }
+        None => Ok(inspector_envelope(
+            "inspector.dlq.v1",
+            serde_json::json!({
+                "total": 0,
+                "items": [],
+                "note": "No DLQ reader configured"
+            }),
+        )),
+    }
+}
+
+async fn api_get_breakpoints(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    let bps = breakpoint::list_breakpoints();
+    Ok(inspector_envelope(
+        "inspector.breakpoints.v1",
+        serde_json::json!({
+            "count": bps.len(),
+            "breakpoints": bps
+        }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct CreateBreakpointPayload {
+    node_id: String,
+    condition: Option<String>,
+}
+
+async fn api_post_breakpoint(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+    Json(body): Json<CreateBreakpointPayload>,
+) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    let bp = breakpoint::add_breakpoint(body.node_id, body.condition);
+    Ok((
+        StatusCode::CREATED,
+        inspector_envelope("inspector.breakpoint.v1", serde_json::json!(bp)),
+    ))
+}
+
+async fn api_delete_breakpoint(
+    headers: HeaderMap,
+    AxPath(bp_id): AxPath<String>,
+    State(state): State<InspectorState>,
+) -> Result<StatusCode, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    if breakpoint::remove_breakpoint(&bp_id) {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(policy_error(StatusCode::NOT_FOUND, "breakpoint_not_found"))
+    }
+}
+
+#[derive(Deserialize)]
+struct PatchBreakpointPayload {
+    enabled: Option<bool>,
+    condition: Option<Option<String>>,
+}
+
+async fn api_patch_breakpoint(
+    headers: HeaderMap,
+    AxPath(bp_id): AxPath<String>,
+    State(state): State<InspectorState>,
+    Json(body): Json<PatchBreakpointPayload>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    match breakpoint::update_breakpoint(&bp_id, body.enabled, body.condition) {
+        Some(bp) => Ok(inspector_envelope(
+            "inspector.breakpoint.v1",
+            serde_json::json!(bp),
+        )),
+        None => Err(policy_error(StatusCode::NOT_FOUND, "breakpoint_not_found")),
+    }
+}
+
+async fn api_get_stalls(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    let stalls = stall::detect_stalls();
+    Ok(inspector_envelope(
+        "inspector.stalls.v1",
+        serde_json::json!({
+            "count": stalls.len(),
+            "stalls": stalls
+        }),
+    ))
+}
+
 static DEBUG_REGISTRY: OnceLock<Arc<Mutex<HashMap<String, DebugControl>>>> = OnceLock::new();
 
 fn get_debug_registry() -> Arc<Mutex<HashMap<String, DebugControl>>> {
@@ -672,10 +1032,107 @@ struct InspectorState {
     auth_policy: AuthPolicy,
     redaction_policy: TelemetryRedactionPolicy,
     state_inspector: Option<Arc<dyn StateInspector>>,
+    dlq_reader: Option<Arc<dyn DlqReader>>,
 }
 
 pub fn layer() -> InspectorLayer {
     InspectorLayer
+}
+
+/// Per-span data stored in span extensions by InspectorLayer.
+struct SpanData {
+    node_id: Option<String>,
+    resource_type: Option<String>,
+    circuit: Option<String>,
+    outcome_kind: Option<String>,
+    outcome_target: Option<String>,
+    entered_at: Option<Instant>,
+    duration_ms: Option<u64>,
+}
+
+impl SpanData {
+    fn from_visitor(v: SpanFieldExtractor) -> Self {
+        Self {
+            node_id: v.node_id,
+            resource_type: v.resource_type,
+            circuit: v.circuit,
+            outcome_kind: v.outcome_kind,
+            outcome_target: v.outcome_target,
+            entered_at: None,
+            duration_ms: None,
+        }
+    }
+
+    fn update_from_visitor(&mut self, v: SpanFieldExtractor) {
+        if let Some(val) = v.node_id {
+            self.node_id = Some(val);
+        }
+        if let Some(val) = v.resource_type {
+            self.resource_type = Some(val);
+        }
+        if let Some(val) = v.circuit {
+            self.circuit = Some(val);
+        }
+        if let Some(val) = v.outcome_kind {
+            self.outcome_kind = Some(val);
+        }
+        if let Some(val) = v.outcome_target {
+            self.outcome_target = Some(val);
+        }
+    }
+}
+
+struct SpanFieldExtractor {
+    node_id: Option<String>,
+    resource_type: Option<String>,
+    circuit: Option<String>,
+    outcome_kind: Option<String>,
+    outcome_target: Option<String>,
+}
+
+impl SpanFieldExtractor {
+    fn new() -> Self {
+        Self {
+            node_id: None,
+            resource_type: None,
+            circuit: None,
+            outcome_kind: None,
+            outcome_target: None,
+        }
+    }
+}
+
+impl tracing::field::Visit for SpanFieldExtractor {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        match field.name() {
+            "ranvier.node" => self.node_id = Some(value.to_string()),
+            "ranvier.resource_type" => self.resource_type = Some(value.to_string()),
+            "ranvier.circuit" => self.circuit = Some(value.to_string()),
+            "ranvier.outcome_kind" => self.outcome_kind = Some(value.to_string()),
+            "ranvier.outcome_target" => self.outcome_target = Some(value.to_string()),
+            _ => {}
+        }
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        // For %Display fields, the Debug impl delegates to Display
+        let s = format!("{value:?}");
+        match field.name() {
+            "ranvier.node" => self.node_id = Some(s),
+            "ranvier.resource_type" => self.resource_type = Some(s),
+            "ranvier.circuit" => self.circuit = Some(s),
+            "ranvier.outcome_kind" => self.outcome_kind = Some(s),
+            "ranvier.outcome_target" => self.outcome_target = Some(s),
+            _ => {}
+        }
+    }
+}
+
+fn epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 pub struct InspectorLayer;
@@ -684,22 +1141,58 @@ impl<S> Layer<S> for InspectorLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        id: &Id,
+        ctx: Context<'_, S>,
+    ) {
+        if let Some(span) = ctx.span(id) {
+            let name = span.name();
+            if name == "Node" || name == "Circuit" || name == "NodeRetry" {
+                let mut extractor = SpanFieldExtractor::new();
+                attrs.record(&mut extractor);
+                span.extensions_mut()
+                    .insert(SpanData::from_visitor(extractor));
+            }
+        }
+    }
+
+    fn on_record(
+        &self,
+        id: &Id,
+        values: &tracing::span::Record<'_>,
+        ctx: Context<'_, S>,
+    ) {
+        if let Some(span) = ctx.span(id) {
+            let name = span.name();
+            if name == "Node" || name == "Circuit" || name == "NodeRetry" {
+                let mut extractor = SpanFieldExtractor::new();
+                values.record(&mut extractor);
+                if let Some(data) = span.extensions_mut().get_mut::<SpanData>() {
+                    data.update_from_visitor(extractor);
+                }
+            }
+        }
+    }
+
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let metadata = event.metadata();
         if metadata.target() == "ranvier.debugger" {
-            // Extract fields for debugger event
             let mut fields = HashMap::new();
             let mut visitor = FieldVisitor {
                 fields: &mut fields,
             };
             event.record(&mut visitor);
 
-            if let (Some(trace_id), Some(node_id)) = (fields.get("trace_id"), fields.get("node_id"))
+            if let (Some(trace_id), Some(node_id)) =
+                (fields.get("trace_id"), fields.get("node_id"))
             {
                 let msg = serde_json::json!({
                     "type": "node_paused",
                     "trace_id": trace_id,
-                    "node_id": node_id
+                    "node_id": node_id,
+                    "timestamp": epoch_ms()
                 })
                 .to_string();
                 let _ = get_sender().send(msg);
@@ -708,27 +1201,168 @@ where
         }
 
         if metadata.target().starts_with("ranvier") {
-            // Simple JSON serialization of the event
-            // In a real impl, we'd use a visitor to extract fields
-            let msg = format!(
-                "{{\"type\": \"event\", \"target\": \"{}\", \"level\": \"{}\"}}",
-                metadata.target(),
-                metadata.level()
-            );
+            let mut fields = HashMap::new();
+            let mut visitor = FieldVisitor {
+                fields: &mut fields,
+            };
+            event.record(&mut visitor);
+
+            let msg = serde_json::json!({
+                "type": "event",
+                "target": metadata.target(),
+                "level": format!("{}", metadata.level()),
+                "fields": fields,
+                "timestamp": epoch_ms()
+            })
+            .to_string();
             let _ = get_sender().send(msg);
         }
     }
 
     fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
-        if let Some(span) = ctx.span(id)
-            && span.name() == "Node"
-        {
-            // Send Node Enter Event
-            let msg = format!(
-                "{{\"type\": \"node_enter\", \"name\": \"{}\"}}",
-                span.name()
-            );
-            let _ = get_sender().send(msg);
+        if let Some(span) = ctx.span(id) {
+            let name = span.name();
+            if name == "Node" || name == "Circuit" {
+                let mut extensions = span.extensions_mut();
+                if let Some(data) = extensions.get_mut::<SpanData>() {
+                    data.entered_at = Some(Instant::now());
+
+                    if name == "Node" {
+                        let msg = serde_json::json!({
+                            "type": "node_enter",
+                            "node_id": data.node_id,
+                            "resource_type": data.resource_type,
+                            "timestamp": epoch_ms()
+                        })
+                        .to_string();
+                        let _ = get_sender().send(msg);
+
+                        // Register for stall detection
+                        if let Some(node_id) = &data.node_id {
+                            let circuit_name = data.circuit.clone().unwrap_or_default();
+                            stall::register_node(
+                                format!("{:?}", id),
+                                node_id.clone(),
+                                circuit_name,
+                            );
+                        }
+                    } else if name == "Circuit" {
+                        if let Some(circuit) = &data.circuit {
+                            if let Ok(mut registry) = get_trace_registry().lock() {
+                                registry.register(circuit.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn on_exit(&self, id: &Id, ctx: Context<'_, S>) {
+        if let Some(span) = ctx.span(id) {
+            let name = span.name();
+            if name == "Node" || name == "Circuit" {
+                let mut extensions = span.extensions_mut();
+                if let Some(data) = extensions.get_mut::<SpanData>() {
+                    // Store duration for use in on_close (outcome fields not yet recorded)
+                    data.duration_ms =
+                        data.entered_at.map(|t| t.elapsed().as_millis() as u64);
+                }
+            }
+        }
+    }
+
+    fn on_close(&self, id: Id, ctx: Context<'_, S>) {
+        if let Some(span) = ctx.span(&id) {
+            let name = span.name();
+            if name == "Node" {
+                // Unregister from stall detector
+                stall::unregister_node(&format!("{:?}", id));
+
+                let extensions = span.extensions();
+                if let Some(data) = extensions.get::<SpanData>() {
+                    let duration = data.duration_ms.unwrap_or(0);
+                    let is_error = data.outcome_kind.as_deref() == Some("Fault");
+
+                    let msg = serde_json::json!({
+                        "type": "node_exit",
+                        "node_id": data.node_id,
+                        "resource_type": data.resource_type,
+                        "outcome_type": data.outcome_kind,
+                        "outcome_target": data.outcome_target,
+                        "duration_ms": duration,
+                        "timestamp": epoch_ms()
+                    })
+                    .to_string();
+                    let _ = get_sender().send(msg);
+
+                    // Record metrics — resolve parent circuit name
+                    let circuit_name = span
+                        .parent()
+                        .and_then(|p| {
+                            p.extensions()
+                                .get::<SpanData>()
+                                .and_then(|d| d.circuit.clone())
+                        });
+                    if let Some(node_id) = &data.node_id {
+                        metrics::record_global_node_exit(
+                            circuit_name.as_deref().unwrap_or("default"),
+                            node_id,
+                            duration,
+                            is_error,
+                        );
+                    }
+
+                    // Record event in ring buffer
+                    payload::record_event(payload::CapturedEvent {
+                        timestamp: epoch_ms(),
+                        event_type: "node_exit".to_string(),
+                        node_id: data.node_id.clone(),
+                        circuit: circuit_name,
+                        duration_ms: Some(duration),
+                        outcome_type: data.outcome_kind.clone(),
+                        payload_hash: None,
+                        payload_json: None,
+                    });
+                }
+            } else if name == "Circuit" {
+                let extensions = span.extensions();
+                if let Some(data) = extensions.get::<SpanData>() {
+                    let msg = serde_json::json!({
+                        "type": "circuit_exit",
+                        "circuit": data.circuit,
+                        "outcome_type": data.outcome_kind,
+                        "outcome_target": data.outcome_target,
+                        "duration_ms": data.duration_ms.unwrap_or(0),
+                        "timestamp": epoch_ms()
+                    })
+                    .to_string();
+                    let _ = get_sender().send(msg);
+
+                    // Complete trace in registry
+                    if let Some(circuit) = &data.circuit {
+                        if let Ok(mut registry) = get_trace_registry().lock() {
+                            registry.complete(
+                                circuit,
+                                data.outcome_kind.clone(),
+                                data.duration_ms,
+                            );
+                        }
+                    }
+
+                    // Record circuit event
+                    payload::record_event(payload::CapturedEvent {
+                        timestamp: epoch_ms(),
+                        event_type: "circuit_exit".to_string(),
+                        node_id: None,
+                        circuit: data.circuit.clone(),
+                        duration_ms: data.duration_ms,
+                        outcome_type: data.outcome_kind.clone(),
+                        payload_hash: None,
+                        payload_json: None,
+                    });
+                }
+            }
         }
     }
 }
