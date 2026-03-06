@@ -3747,6 +3747,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "reference-ecommerce-order"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "http 1.4.0",
+ "jsonwebtoken",
+ "ranvier-audit",
+ "ranvier-core",
+ "ranvier-http",
+ "ranvier-macros",
+ "ranvier-runtime",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "reference-todo-api"
 version = "0.1.0"
 dependencies = [

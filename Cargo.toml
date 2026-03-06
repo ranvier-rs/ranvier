@@ -57,6 +57,7 @@ members = [
     "examples/reference-todo-api",
     "examples/production-config-demo",
     "examples/reference-chat-server",
+    "examples/reference-ecommerce-order",
 ]
 
 [workspace.package]
