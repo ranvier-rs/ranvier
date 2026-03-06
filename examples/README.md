@@ -1,6 +1,7 @@
 # Ranvier Examples
 
-**Updated:** 2026-02-04  
+**Updated:** 2026-03-06
+**Workspace:** v0.21.0 — 10 crates, Hyper 1.0 native (no tower/tower-http)
 **Purpose:** Keep examples aligned with the Typed Decision Engine direction:
 1. Axon execution is explicit.
 2. Schematic is analysis data, not an executable graph.
@@ -14,10 +15,10 @@
 
 These are the first examples users should run.
 
-1. `hello-world` - HTTP ingress baseline
-2. `typed-state-tree` - typed state progression baseline
-3. `basic-schematic` - schematic export + runtime baseline
-4. `otel-demo` - minimal trace wiring baseline
+1. `hello-world` — HTTP ingress baseline
+2. `typed-state-tree` — typed state progression baseline
+3. `basic-schematic` — schematic export + runtime baseline
+4. `otel-concept` — minimal OpenTelemetry concept baseline
 
 ### Tier B: Supported (advanced/reference)
 
@@ -28,69 +29,75 @@ These are maintained and useful, but not the first onboarding path.
 3. `routing-params-demo`
 4. `session-pattern`
 5. `std-lib-demo`
-6. `otel-concept`
-7. `db-example`
-8. `static-build-demo`
-9. `studio-demo`
-10. `websocket-loop`
+6. `static-build-demo`
+7. `static-spa-demo`
+8. `studio-demo`
+9. `websocket-loop`
+10. `websocket-ingress-demo`
 11. `complex-schematic`
 12. `synapse-demo`
 13. `order-processing-demo`
-14. `auth-jwt-role-demo`
-15. `guard-demo`
-16. `static-spa-demo`
-17. `websocket-ingress-demo`
-18. `multipart-upload-demo`
-19. `sse-streaming-demo`
-20. `grpc-service-demo`
-21. `graphql-service-demo`
-22. `testing-patterns`
-23. `custom-error-types`
-24. `retry-dlq-demo`
-25. `state-persistence-demo`
-26. `multitenancy-demo`
-27. `session-demo`
-28. `persistence-production-demo`
-29. `job-scheduler-demo`
-30. `observe-http-demo`
-31. `otel-ops-demo`
-32. `ecosystem-redis-demo`
-33. `ecosystem-diesel-demo`
-34. `ecosystem-seaorm-demo`
-35. `ecosystem-nats-demo`
-36. `ecosystem-meilisearch-demo`
-37. `bus-capability-demo`
-38. `inspector-demo`
-39. `audit-demo`
-40. `compliance-demo`
-41. `cluster-demo`
-42. `status-demo`
-43. `macros-demo`
+14. `multitenancy-demo`
+15. `multipart-upload-demo`
+16. `sse-streaming-demo`
+17. `testing-patterns`
+18. `custom-error-types`
+19. `retry-dlq-demo`
+20. `state-persistence-demo`
+21. `persistence-production-demo`
+22. `otel-ops-demo`
+23. `inspector-demo`
+24. `openapi-demo`
+25. `audit-demo`
+26. `compliance-demo`
+27. `macros-demo`
+28. `bus-capability-demo`
 
-### Tier C: Experimental (not authoritative for architecture)
+### Tier C: Ecosystem Integration
 
-These are retained for exploration and may not represent the current recommended direction end-to-end.
+External library direct usage — no Ranvier wrapper crate needed.
+
+1. `ecosystem-redis-demo`
+2. `ecosystem-diesel-demo`
+3. `ecosystem-seaorm-demo`
+4. `ecosystem-nats-demo`
+5. `ecosystem-meilisearch-demo`
+
+### Tier D: Experimental (not authoritative for architecture)
+
+Retained for exploration. May not represent the current recommended direction.
 
 1. `experimental/fullstack-demo`
 2. `experimental/replay-demo`
 3. `experimental/state-tree-demo`
+4. `experimental/persistence-recovery-demo`
 
 ---
 
-## 2. Alignment Notes
+## 2. Removed in v0.21.0
+
+The following examples were removed because the crates they depended on were
+consolidated or removed (23 → 10 crate consolidation):
+
+- `auth-jwt-role-demo` → use `ranvier_core::iam::AuthContext` directly
+- `guard-demo` → use Transition-based access control
+- `observe-http-demo` → use `otel-concept` or `otel-ops-demo` with external OTEL crates
+- `otel-demo` → replaced by `otel-concept`
+- `graphql-service-demo` → use `async-graphql` directly
+- `grpc-service-demo` → use `tonic` directly
+- `db-example` → use `ecosystem-diesel-demo` or `ecosystem-seaorm-demo`
+- `cluster-demo` → use `ecosystem-nats-demo` for distributed messaging
+- `status-demo` → implement as Transition node
+- `job-scheduler-demo` → use `tokio` cron patterns directly
+- `session-demo` → use `session-pattern` for Transition-based sessions
+
+---
+
+## 3. Alignment Notes
 
 1. When docs and code diverge, prefer Tier A examples first.
-2. Tier C examples should not be used as public API/architecture references until promoted.
+2. Tier D examples should not be used as public API/architecture references until promoted.
 3. Promotion criteria:
    - Compiles on workspace baseline
    - Matches current Axon/Schematic boundary language
    - Includes a short run path and expected output
-
----
-
-## 3. Next Cleanup Targets
-
-1. Promote `order-processing-demo` from Tier B to Tier A after guide-level stabilization.
-2. Remove unfinished/refactor-only branches from `routing-demo`.
-3. `fullstack-demo`, `replay-demo`, `state-tree-demo` moved under `examples/experimental/*` and workspace paths were updated.
-4. Remaining work: add a short guide section mapping `order-processing-demo` transitions to trace projection fields.

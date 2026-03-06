@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.21.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.21.0 — Crate consolidation (23 → 10 crates), Hyper 1.0 native HTTP stack.**
+Structural diet release: 13 thin-wrapper crates removed, paradigm types absorbed into core, tower/tower-http replaced with direct Hyper 1.0 usage. All removed crate functionality is preserved via external library direct usage with Transition-pattern examples.
+
+### Changed
+- **Crate consolidation:** 23 crates → 10 crates. Removed 13 crates that failed the paradigm test ("Does this crate operate on Transition/Outcome/Bus/Schematic?").
+- **`ranvier-http` Hyper migration:** Removed `tower`, `tower-http`, `axum` dependencies. Now uses `hyper 1.0` directly with custom `BoxService` type-erasure, `flate2` compression, and `tokio::fs` static file serving.
+- **`RanvierService` trait:** Changed from `tower::Service` to `hyper::service::Service` (`&self` call, no `poll_ready`).
+- **10-crate publish DAG:** T0: core, macros → T1: audit, compliance, inspector, std → T2: runtime → T3: http → T4: openapi → T5: ranvier.
+
+### Added
+- **`ranvier-core::iam` module (M208):** `AuthContext` and `AuthScheme` absorbed from removed `ranvier-auth`. Bus-injectable authentication context.
+- **`ranvier-core::tenant` module (M208):** `TenantId`, `TenantExtractor`, `TenantResolver`, `IsolationPolicy` absorbed from removed `ranvier-multitenancy`.
+- **`matchit` routing (M210):** URL pattern matching via `matchit` crate (replaces tower/axum router internals).
+- **`flate2` compression (M210):** Gzip response compression for static assets (replaces `tower_http::compression`).
+
+### Removed
+- **13 crates yanked from crates.io:** `ranvier-auth`, `ranvier-guard`, `ranvier-observe`, `ranvier-multitenancy`, `ranvier-graphql`, `ranvier-grpc`, `ranvier-synapse`, `ranvier-db`, `ranvier-redis`, `ranvier-session`, `ranvier-cluster`, `ranvier-job`, `ranvier-status`.
+- **11 example demos removed:** Replaced by Transition-pattern alternatives and ecosystem integration examples.
+- **Tower dependency:** `tower`, `tower-http`, `tower-layer`, `tower-service` removed from the dependency tree.
+
+---
+
 ## [0.20.0] — 2026-03
 
 ### Summary

@@ -59,22 +59,32 @@ Default features include the HTTP ingress adapter and std nodes.
 To slim down dependencies:
 
 ```toml
-ranvier = { version = "0.19.0", default-features = false }
+ranvier = { version = "0.21.0", default-features = false }
 ```
 
 You can enable features explicitly:
 
 ```toml
-ranvier = { version = "0.19.0", features = ["http", "std"] }
+ranvier = { version = "0.21.0", features = ["http", "std"] }
 ```
 
-## Crates
+## Crates (10-crate architecture, v0.21.0)
 
-- `ranvier-core`
-- `ranvier-runtime`
-- `ranvier-http`
-- `ranvier-std`
-- `ranvier-cli`
+| Tier | Crate | Purpose |
+|------|-------|---------|
+| T0 | `ranvier-core` | Kernel: Transition, Outcome, Bus, Schematic, iam, tenant |
+| T0 | `ranvier-macros` | Proc macros: `#[transition]` attribute |
+| T1 | `ranvier-audit` | Audit trail persistence |
+| T1 | `ranvier-compliance` | Regulatory compliance checks |
+| T1 | `ranvier-inspector` | Schema registry + relay API |
+| T1 | `ranvier-std` | Standard library: Filter, Switch, Log, etc. |
+| T2 | `ranvier-runtime` | Async Axon execution engine |
+| T3 | `ranvier-http` | Hyper 1.0 native HTTP ingress adapter |
+| T4 | `ranvier-openapi` | OpenAPI spec generation |
+| T5 | `ranvier` | Facade crate (this crate) |
+
+13 wrapper crates were removed in v0.21.0. Use external libraries directly
+with Transition-pattern examples.
 
 ## Examples
 

@@ -16,6 +16,8 @@
 - **`Transition` Trait:** The atomic unit of logic that drives state changes.
 - **`Outcome` Enum:** The result of an execution (`Next`, `Branch`, `Fault`, `End`).
 - **`Bus`:** A type-map container for passing state and context through a circuit.
+- **`iam` module:** `AuthContext` and `AuthScheme` — authentication context absorbed from the removed `ranvier-auth` crate.
+- **`tenant` module:** `TenantId`, `TenantExtractor`, `TenantResolver`, `IsolationPolicy` — multi-tenancy primitives absorbed from the removed `ranvier-multitenancy` crate.
 
 ## 🚀 Development Direction
 
