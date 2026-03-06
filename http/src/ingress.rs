@@ -16,14 +16,12 @@
 use base64::Engine;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use http::{Method, Request, Response, StatusCode, Uri};
-use http_body::Body;
+use http::{Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
-use hyper_util::service::TowerToHyperService;
 use ranvier_core::event::{EventSink, EventSource};
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
@@ -41,10 +39,6 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Error as WsWireError, Message as WsWireMessage};
-use tower::util::BoxCloneService;
-use tower::{Layer, Service, ServiceExt, service_fn};
-use tower_http::compression::CompressionLayer;
-use tower_http::services::{ServeDir, ServeFile};
 use tracing::Instrument;
 
 use crate::response::{HttpResponse, IntoResponse, outcome_to_response_with_error};
@@ -72,7 +66,41 @@ type RouteHandler<R> = Arc<
         + Sync,
 >;
 
-type BoxHttpService = BoxCloneService<Request<Incoming>, HttpResponse, Infallible>;
+/// Type-erased cloneable HTTP service (replaces tower::util::BoxCloneService).
+#[derive(Clone)]
+struct BoxService(
+    Arc<
+        dyn Fn(Request<Incoming>) -> Pin<Box<dyn Future<Output = Result<HttpResponse, Infallible>> + Send>>
+            + Send
+            + Sync,
+    >,
+);
+
+impl BoxService {
+    fn new<F, Fut>(f: F) -> Self
+    where
+        F: Fn(Request<Incoming>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<HttpResponse, Infallible>> + Send + 'static,
+    {
+        Self(Arc::new(move |req| Box::pin(f(req))))
+    }
+
+    fn call(&self, req: Request<Incoming>) -> Pin<Box<dyn Future<Output = Result<HttpResponse, Infallible>> + Send>> {
+        (self.0)(req)
+    }
+}
+
+impl hyper::service::Service<Request<Incoming>> for BoxService {
+    type Response = HttpResponse;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<HttpResponse, Infallible>> + Send>>;
+
+    fn call(&self, req: Request<Incoming>) -> Self::Future {
+        (self.0)(req)
+    }
+}
+
+type BoxHttpService = BoxService;
 type ServiceLayer = Arc<dyn Fn(BoxHttpService) -> BoxHttpService + Send + Sync>;
 type LifecycleHook = Arc<dyn Fn() + Send + Sync>;
 type BusInjector = Arc<dyn Fn(&http::request::Parts, &mut Bus) + Send + Sync + 'static>;
@@ -139,93 +167,53 @@ struct HealthCheckReport {
     error: Option<String>,
 }
 
-#[derive(Clone)]
-struct TimeoutService {
-    inner: BoxHttpService,
-    timeout: Duration,
-}
-
-impl Service<Request<Incoming>> for TimeoutService {
-    type Response = HttpResponse;
-    type Error = Infallible;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-
-    fn poll_ready(
-        &mut self,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
-    }
-
-    fn call(&mut self, req: Request<Incoming>) -> Self::Future {
-        let timeout = self.timeout;
-        let fut = self.inner.call(req);
-        Box::pin(async move {
-            match tokio::time::timeout(timeout, fut).await {
-                Ok(response) => response,
-                Err(_) => Ok(Response::builder()
-                    .status(StatusCode::REQUEST_TIMEOUT)
-                    .body(
-                        Full::new(Bytes::from("Request Timeout"))
-                            .map_err(|never| match never {})
-                            .boxed(),
-                    )
-                    .unwrap()),
+fn timeout_middleware(timeout: Duration) -> ServiceLayer {
+    Arc::new(move |inner: BoxHttpService| {
+        BoxService::new(move |req: Request<Incoming>| {
+            let inner = inner.clone();
+            async move {
+                match tokio::time::timeout(timeout, inner.call(req)).await {
+                    Ok(response) => response,
+                    Err(_) => Ok(Response::builder()
+                        .status(StatusCode::REQUEST_TIMEOUT)
+                        .body(
+                            Full::new(Bytes::from("Request Timeout"))
+                                .map_err(|never| match never {})
+                                .boxed(),
+                        )
+                        .unwrap()),
+                }
             }
         })
-    }
+    })
 }
 
-#[derive(Clone)]
-struct RequestIdService {
-    inner: BoxHttpService,
-}
-
-impl Service<Request<Incoming>> for RequestIdService {
-    type Response = HttpResponse;
-    type Error = Infallible;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-
-    fn poll_ready(
-        &mut self,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
-    }
-
-    fn call(&mut self, req: Request<Incoming>) -> Self::Future {
-        let mut req = req;
-        let request_id = req
-            .headers()
-            .get(REQUEST_ID_HEADER)
-            .cloned()
-            .unwrap_or_else(|| {
-                http::HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())
-                    .unwrap_or_else(|_| http::HeaderValue::from_static("request-id-unavailable"))
-            });
-
-        req.headers_mut()
-            .insert(REQUEST_ID_HEADER, request_id.clone());
-
-        let fut = self.inner.call(req);
-        Box::pin(async move {
-            let mut response = fut.await?;
-            response.headers_mut().insert(REQUEST_ID_HEADER, request_id);
-            Ok(response)
+fn request_id_middleware() -> ServiceLayer {
+    Arc::new(move |inner: BoxHttpService| {
+        BoxService::new(move |req: Request<Incoming>| {
+            let inner = inner.clone();
+            async move {
+                let mut req = req;
+                let request_id = req
+                    .headers()
+                    .get(REQUEST_ID_HEADER)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        http::HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())
+                            .unwrap_or_else(|_| {
+                                http::HeaderValue::from_static("request-id-unavailable")
+                            })
+                    });
+                req.headers_mut()
+                    .insert(REQUEST_ID_HEADER, request_id.clone());
+                let mut response = inner.call(req).await?;
+                response
+                    .headers_mut()
+                    .insert(REQUEST_ID_HEADER, request_id);
+                Ok(response)
+            }
         })
-    }
-}
-
-fn to_service_layer<L>(layer: L) -> ServiceLayer
-where
-    L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-    L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
-        + Clone
-        + Send
-        + 'static,
-    <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
-{
-    Arc::new(move |service: BoxHttpService| BoxCloneService::new(layer.clone().layer(service)))
+    })
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -811,32 +799,10 @@ where
         self
     }
 
-    /// Add a global Tower layer to the ingress service stack.
-    ///
-    /// Layers execute in LIFO order on the request path:
-    /// the last layer added is the first to receive the request.
-    pub fn layer<L>(mut self, layer: L) -> Self
-    where
-        L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-        L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
-            + Clone
-            + Send
-            + 'static,
-        <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
-    {
-        self.layers.push(to_service_layer(layer));
-        self
-    }
-
     /// Add built-in timeout middleware that returns `408 Request Timeout`
     /// when the inner service call exceeds `timeout`.
     pub fn timeout_layer(mut self, timeout: Duration) -> Self {
-        self.layers.push(Arc::new(move |service: BoxHttpService| {
-            BoxCloneService::new(TimeoutService {
-                inner: service,
-                timeout,
-            })
-        }));
+        self.layers.push(timeout_middleware(timeout));
         self
     }
 
@@ -844,9 +810,7 @@ where
     ///
     /// Ensures `x-request-id` exists on request and response headers.
     pub fn request_id_layer(mut self) -> Self {
-        self.layers.push(Arc::new(move |service: BoxHttpService| {
-            BoxCloneService::new(RequestIdService { inner: service })
-        }));
+        self.layers.push(request_id_middleware());
         self
     }
 
@@ -929,7 +893,7 @@ where
         self
     }
 
-    /// Add gzip/brotli response compression via `tower-http::CompressionLayer`.
+    /// Enable gzip response compression for static assets.
     pub fn compression_layer(mut self) -> Self {
         self.static_assets.enable_compression = true;
         self
@@ -1132,71 +1096,7 @@ where
         )
     }
 
-    pub fn route_method_with_layer<Out, E, L>(
-        self,
-        method: Method,
-        path: impl Into<String>,
-        circuit: Axon<(), Out, E, R>,
-        layer: L,
-    ) -> Self
-    where
-        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
-        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
-        L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-        L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
-            + Clone
-            + Send
-            + 'static,
-        <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
-    {
-        self.route_method_with_error_and_layers(
-            method,
-            path,
-            circuit,
-            |error| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Error: {:?}", error),
-                )
-                    .into_response()
-            },
-            Arc::new(vec![to_service_layer(layer)]),
-            true,
-        )
-    }
 
-    pub fn route_method_with_layer_override<Out, E, L>(
-        self,
-        method: Method,
-        path: impl Into<String>,
-        circuit: Axon<(), Out, E, R>,
-        layer: L,
-    ) -> Self
-    where
-        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
-        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
-        L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-        L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
-            + Clone
-            + Send
-            + 'static,
-        <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
-    {
-        self.route_method_with_error_and_layers(
-            method,
-            path,
-            circuit,
-            |error| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Error: {:?}", error),
-                )
-                    .into_response()
-            },
-            Arc::new(vec![to_service_layer(layer)]),
-            false,
-        )
-    }
 
     fn route_method_with_error_and_layers<Out, E, H>(
         mut self,
@@ -1281,44 +1181,6 @@ where
         H: Fn(&E) -> HttpResponse + Send + Sync + 'static,
     {
         self.route_method_with_error(Method::GET, path, circuit, error_handler)
-    }
-
-    pub fn get_with_layer<Out, E, L>(
-        self,
-        path: impl Into<String>,
-        circuit: Axon<(), Out, E, R>,
-        layer: L,
-    ) -> Self
-    where
-        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
-        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
-        L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-        L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
-            + Clone
-            + Send
-            + 'static,
-        <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
-    {
-        self.route_method_with_layer(Method::GET, path, circuit, layer)
-    }
-
-    pub fn get_with_layer_override<Out, E, L>(
-        self,
-        path: impl Into<String>,
-        circuit: Axon<(), Out, E, R>,
-        layer: L,
-    ) -> Self
-    where
-        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
-        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
-        L: Layer<BoxHttpService> + Clone + Send + Sync + 'static,
-        L::Service: Service<Request<Incoming>, Response = HttpResponse, Error = Infallible>
-            + Clone
-            + Send
-            + 'static,
-        <L::Service as Service<Request<Incoming>>>::Future: Send + 'static,
-    {
-        self.route_method_with_layer_override(Method::GET, path, circuit, layer)
     }
 
     pub fn post<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
@@ -1587,9 +1449,8 @@ where
                             static_assets,
                             #[cfg(feature = "http3")] alt_svc_h3_port,
                         );
-                        let hyper_service = TowerToHyperService::new(service);
                         if let Err(err) = http1::Builder::new()
-                            .serve_connection(io, hyper_service)
+                            .serve_connection(io, service)
                             .with_upgrades()
                             .await
                         {
@@ -1615,7 +1476,7 @@ where
         Ok(())
     }
 
-    /// Convert to a raw Tower Service for integration with existing Tower stacks.
+    /// Convert to a raw Hyper Service for integration with existing infrastructure.
     ///
     /// This is the "escape hatch" per Discussion 193:
     /// > "Raw API는 Flat API의 탈출구다."
@@ -1628,7 +1489,7 @@ where
     ///     .route("/", circuit);
     ///
     /// let raw_service = ingress.into_raw_service();
-    /// // Use raw_service with existing Tower infrastructure
+    /// // Use raw_service with existing Hyper infrastructure
     /// ```
     pub fn into_raw_service(self, resources: R) -> RawIngressService<R> {
         let routes = Arc::new(self.routes);
@@ -1661,7 +1522,7 @@ fn build_http_service<R>(
 where
     R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
 {
-    let base_service = service_fn(move |req: Request<Incoming>| {
+    BoxService::new(move |req: Request<Incoming>| {
         let routes = routes.clone();
         let fallback = fallback.clone();
         let resources = resources.clone();
@@ -1708,7 +1569,7 @@ where
                         effective_layers,
                     );
                     #[allow(unused_mut)]
-                    let mut res = route_service.oneshot(req).await;
+                    let mut res = route_service.call(req).await;
                     #[cfg(feature = "http3")]
                     #[allow(irrefutable_let_patterns)]
                     if let Ok(ref mut r) = res {
@@ -1739,7 +1600,7 @@ where
                     } else {
                         let fallback_service =
                             build_route_service(fb.clone(), resources.clone(), layers.clone());
-                        fallback_service.oneshot(req).await
+                        fallback_service.call(req).await
                     }
                 } else {
                     Ok(Response::builder()
@@ -1766,9 +1627,7 @@ where
                 fallback_res
             }
         }
-    });
-
-    BoxCloneService::new(base_service)
+    })
 }
 
 fn build_route_service<R>(
@@ -1779,14 +1638,15 @@ fn build_route_service<R>(
 where
     R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
 {
-    let base_service = service_fn(move |req: Request<Incoming>| {
+    let mut service = BoxService::new(move |req: Request<Incoming>| {
         let handler = handler.clone();
         let resources = resources.clone();
-        let (parts, _) = req.into_parts();
-        async move { Ok::<_, Infallible>(handler(parts, &resources).await) }
+        async move {
+            let (parts, _) = req.into_parts();
+            Ok::<_, Infallible>(handler(parts, &resources).await)
+        }
     });
 
-    let mut service = BoxCloneService::new(base_service);
     for layer in layers.iter() {
         service = layer(service);
     }
@@ -1846,6 +1706,113 @@ where
     None
 }
 
+/// Serve a single file from the filesystem with MIME type detection and ETag.
+async fn serve_single_file(file_path: &str) -> Result<Response<Full<Bytes>>, std::io::Error> {
+    let path = std::path::Path::new(file_path);
+    let content = tokio::fs::read(path).await?;
+    let mime = guess_mime(file_path);
+    let mut response = Response::new(Full::new(Bytes::from(content)));
+    if let Ok(value) = http::HeaderValue::from_str(mime) {
+        response
+            .headers_mut()
+            .insert(http::header::CONTENT_TYPE, value);
+    }
+    if let Ok(metadata) = tokio::fs::metadata(path).await {
+        if let Ok(modified) = metadata.modified() {
+            if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+                let etag = format!("\"{}\"", duration.as_secs());
+                if let Ok(value) = http::HeaderValue::from_str(&etag) {
+                    response.headers_mut().insert(http::header::ETAG, value);
+                }
+            }
+        }
+    }
+    Ok(response)
+}
+
+/// Serve a file from a static directory with path traversal protection.
+async fn serve_static_file(
+    directory: &str,
+    file_subpath: &str,
+) -> Result<Response<Full<Bytes>>, std::io::Error> {
+    let subpath = file_subpath.trim_start_matches('/');
+    if subpath.is_empty() || subpath == "/" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "empty path",
+        ));
+    }
+    let full_path = std::path::Path::new(directory).join(subpath);
+    // Path traversal protection
+    let canonical = tokio::fs::canonicalize(&full_path).await?;
+    let dir_canonical = tokio::fs::canonicalize(directory).await?;
+    if !canonical.starts_with(&dir_canonical) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "path traversal detected",
+        ));
+    }
+    let content = tokio::fs::read(&canonical).await?;
+    let mime = guess_mime(canonical.to_str().unwrap_or(""));
+    let mut response = Response::new(Full::new(Bytes::from(content)));
+    if let Ok(value) = http::HeaderValue::from_str(mime) {
+        response
+            .headers_mut()
+            .insert(http::header::CONTENT_TYPE, value);
+    }
+    if let Ok(metadata) = tokio::fs::metadata(&canonical).await {
+        if let Ok(modified) = metadata.modified() {
+            if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+                let etag = format!("\"{}\"", duration.as_secs());
+                if let Ok(value) = http::HeaderValue::from_str(&etag) {
+                    response.headers_mut().insert(http::header::ETAG, value);
+                }
+            }
+        }
+    }
+    Ok(response)
+}
+
+fn guess_mime(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or("") {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" | "mjs" => "application/javascript; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "txt" => "text/plain; charset=utf-8",
+        "xml" => "application/xml; charset=utf-8",
+        "wasm" => "application/wasm",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
+fn apply_cache_control(
+    mut response: Response<Full<Bytes>>,
+    cache_control: Option<&str>,
+) -> Response<Full<Bytes>> {
+    if response.status() == StatusCode::OK {
+        if let Some(value) = cache_control {
+            if !response.headers().contains_key(http::header::CACHE_CONTROL) {
+                if let Ok(header_value) = http::HeaderValue::from_str(value) {
+                    response
+                        .headers_mut()
+                        .insert(http::header::CACHE_CONTROL, header_value);
+                }
+            }
+        }
+    }
+    response
+}
+
 async fn maybe_handle_static_request(
     req: Request<Incoming>,
     method: &Method,
@@ -1865,9 +1832,7 @@ async fn maybe_handle_static_request(
         let Some(stripped_path) = strip_mount_prefix(path, &mount.route_prefix) else {
             return Ok(req);
         };
-        let rewritten = rewrite_request_path(req, &stripped_path);
-        let service = ServeDir::new(&mount.directory);
-        let response = match service.oneshot(rewritten).await {
+        let response = match serve_static_file(&mount.directory, &stripped_path).await {
             Ok(response) => response,
             Err(_) => {
                 return Err(Response::builder()
@@ -1886,14 +1851,12 @@ async fn maybe_handle_static_request(
                     }));
             }
         };
-        let response =
-            collect_static_response(response, static_assets.cache_control.as_deref()).await;
-        let response = maybe_compress_static_response(
+        let mut response = apply_cache_control(response, static_assets.cache_control.as_deref());
+        response = maybe_compress_static_response(
             response,
             accept_encoding,
             static_assets.enable_compression,
-        )
-        .await;
+        );
         let (parts, body) = response.into_parts();
         return Err(Response::from_parts(
             parts,
@@ -1904,8 +1867,7 @@ async fn maybe_handle_static_request(
     if let Some(spa_file) = static_assets.spa_fallback.as_ref() {
         if looks_like_spa_request(path) {
             let accept_encoding = req.headers().get(http::header::ACCEPT_ENCODING).cloned();
-            let service = ServeFile::new(spa_file);
-            let response = match service.oneshot(req).await {
+            let response = match serve_single_file(spa_file).await {
                 Ok(response) => response,
                 Err(_) => {
                     return Err(Response::builder()
@@ -1924,14 +1886,13 @@ async fn maybe_handle_static_request(
                         }));
                 }
             };
-            let response =
-                collect_static_response(response, static_assets.cache_control.as_deref()).await;
-            let response = maybe_compress_static_response(
+            let mut response =
+                apply_cache_control(response, static_assets.cache_control.as_deref());
+            response = maybe_compress_static_response(
                 response,
                 accept_encoding,
                 static_assets.enable_compression,
-            )
-            .await;
+            );
             let (parts, body) = response.into_parts();
             return Err(Response::from_parts(
                 parts,
@@ -1963,72 +1924,12 @@ fn strip_mount_prefix(path: &str, prefix: &str) -> Option<String> {
         .map(|stripped| format!("/{}", stripped))
 }
 
-fn rewrite_request_path(mut req: Request<Incoming>, new_path: &str) -> Request<Incoming> {
-    let query = req.uri().query().map(str::to_string);
-    let path_and_query = match query {
-        Some(query) => format!("{new_path}?{query}"),
-        None => new_path.to_string(),
-    };
-
-    let mut parts = req.uri().clone().into_parts();
-    if let Ok(parsed_path_and_query) = path_and_query.parse() {
-        parts.path_and_query = Some(parsed_path_and_query);
-        if let Ok(uri) = Uri::from_parts(parts) {
-            *req.uri_mut() = uri;
-        }
-    }
-
-    req
-}
-
-async fn collect_static_response<B>(
-    response: Response<B>,
-    cache_control: Option<&str>,
-) -> Response<Full<Bytes>>
-where
-    B: Body<Data = Bytes> + Send + 'static,
-    B::Error: std::fmt::Display,
-{
-    let status = response.status();
-    let headers = response.headers().clone();
-    let body = response.into_body();
-    let collected = body.collect().await;
-
-    let bytes = match collected {
-        Ok(value) => value.to_bytes(),
-        Err(error) => Bytes::from(error.to_string()),
-    };
-
-    let mut builder = Response::builder().status(status);
-    for (name, value) in headers.iter() {
-        builder = builder.header(name, value);
-    }
-
-    let mut response = builder
-        .body(Full::new(bytes))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())));
-
-    if status == StatusCode::OK {
-        if let Some(value) = cache_control {
-            if !response.headers().contains_key(http::header::CACHE_CONTROL) {
-                if let Ok(header_value) = http::HeaderValue::from_str(value) {
-                    response
-                        .headers_mut()
-                        .insert(http::header::CACHE_CONTROL, header_value);
-                }
-            }
-        }
-    }
-
-    response
-}
-
 fn looks_like_spa_request(path: &str) -> bool {
     let tail = path.rsplit('/').next().unwrap_or_default();
     !tail.contains('.')
 }
 
-async fn maybe_compress_static_response(
+fn maybe_compress_static_response(
     response: Response<Full<Bytes>>,
     accept_encoding: Option<http::HeaderValue>,
     enable_compression: bool,
@@ -2041,26 +1942,41 @@ async fn maybe_compress_static_response(
         return response;
     };
 
-    let mut request = Request::builder()
-        .uri("/")
-        .body(Full::new(Bytes::new()))
-        .unwrap_or_else(|_| Request::new(Full::new(Bytes::new())));
-    request
-        .headers_mut()
-        .insert(http::header::ACCEPT_ENCODING, accept_encoding);
-
-    let service = CompressionLayer::new().layer(service_fn({
-        let response = response.clone();
-        move |_req: Request<Full<Bytes>>| {
-            let response = response.clone();
-            async move { Ok::<_, Infallible>(response) }
-        }
-    }));
-
-    match service.oneshot(request).await {
-        Ok(compressed) => collect_static_response(compressed, None).await,
-        Err(_) => response,
+    let accept_str = accept_encoding.to_str().unwrap_or("");
+    if !accept_str.contains("gzip") {
+        return response;
     }
+
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = response.into_body();
+
+    // Full<Bytes> resolves immediately — collect synchronously via now_or_never()
+    let data = futures_util::FutureExt::now_or_never(BodyExt::collect(body))
+        .and_then(|r| r.ok())
+        .map(|collected| collected.to_bytes())
+        .unwrap_or_default();
+
+    // Compress with gzip
+    let compressed = {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let _ = encoder.write_all(&data);
+        encoder.finish().unwrap_or_default()
+    };
+
+    let mut builder = Response::builder().status(status);
+    for (name, value) in headers.iter() {
+        if name != http::header::CONTENT_LENGTH && name != http::header::CONTENT_ENCODING {
+            builder = builder.header(name, value);
+        }
+    }
+    builder
+        .header(http::header::CONTENT_ENCODING, "gzip")
+        .body(Full::new(Bytes::from(compressed)))
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
 }
 
 async fn run_named_health_checks<R>(
@@ -2208,7 +2124,7 @@ pub struct RawIngressService<R> {
     resources: Arc<R>,
 }
 
-impl<R> Service<Request<Incoming>> for RawIngressService<R>
+impl<R> hyper::service::Service<Request<Incoming>> for RawIngressService<R>
 where
     R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
 {
@@ -2216,14 +2132,7 @@ where
     type Error = Infallible;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
-    fn poll_ready(
-        &mut self,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        std::task::Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, req: Request<Incoming>) -> Self::Future {
+    fn call(&self, req: Request<Incoming>) -> Self::Future {
         let routes = self.routes.clone();
         let fallback = self.fallback.clone();
         let layers = self.layers.clone();
@@ -2242,7 +2151,7 @@ where
                 #[cfg(feature = "http3")]
                 None,
             );
-            service.oneshot(req).await
+            service.call(req).await
         })
     }
 }
@@ -2252,7 +2161,6 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures_util::{SinkExt, StreamExt};
-    use ranvier_observe::{HttpMetrics, HttpMetricsLayer, IncomingTraceContext, TraceContextLayer};
     use serde::Deserialize;
     use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -2321,50 +2229,12 @@ mod tests {
     }
 
     #[test]
-    fn layer_registration_stacks_globally() {
-        let ingress = HttpIngress::<()>::new()
-            .layer(tower::layer::util::Identity::new())
-            .layer(tower::layer::util::Identity::new());
-        assert_eq!(ingress.layers.len(), 2);
-    }
-
-    #[test]
-    fn layer_accepts_tower_http_cors_layer() {
-        let ingress = HttpIngress::<()>::new().layer(tower_http::cors::CorsLayer::permissive());
-        assert_eq!(ingress.layers.len(), 1);
-    }
-
-    #[test]
     fn route_without_layer_keeps_empty_route_middleware_stack() {
         let ingress =
             HttpIngress::<()>::new().get("/ping", Axon::<(), (), String, ()>::new("Ping"));
         assert_eq!(ingress.routes.len(), 1);
         assert!(ingress.routes[0].layers.is_empty());
         assert!(ingress.routes[0].apply_global_layers);
-    }
-
-    #[test]
-    fn route_with_layer_registers_route_middleware_stack() {
-        let ingress = HttpIngress::<()>::new().get_with_layer(
-            "/ping",
-            Axon::<(), (), String, ()>::new("Ping"),
-            tower::layer::util::Identity::new(),
-        );
-        assert_eq!(ingress.routes.len(), 1);
-        assert_eq!(ingress.routes[0].layers.len(), 1);
-        assert!(ingress.routes[0].apply_global_layers);
-    }
-
-    #[test]
-    fn route_with_layer_override_disables_global_layers() {
-        let ingress = HttpIngress::<()>::new().get_with_layer_override(
-            "/ping",
-            Axon::<(), (), String, ()>::new("Ping"),
-            tower::layer::util::Identity::new(),
-        );
-        assert_eq!(ingress.routes.len(), 1);
-        assert_eq!(ingress.routes[0].layers.len(), 1);
-        assert!(!ingress.routes[0].apply_global_layers);
     }
 
     #[test]
@@ -2518,64 +2388,6 @@ mod tests {
             .await
             .expect("server join")
             .expect("server shutdown should succeed");
-    }
-
-    #[derive(Clone)]
-    struct EchoTrace;
-
-    #[async_trait]
-    impl Transition<(), String> for EchoTrace {
-        type Error = String;
-        type Resources = ();
-
-        async fn run(
-            &self,
-            _state: (),
-            _resources: &Self::Resources,
-            bus: &mut Bus,
-        ) -> Outcome<String, Self::Error> {
-            let trace_id = bus
-                .read::<String>()
-                .cloned()
-                .unwrap_or_else(|| "missing-trace".to_string());
-            Outcome::next(trace_id)
-        }
-    }
-
-    #[tokio::test]
-    async fn observe_trace_context_and_metrics_layers_work_with_ingress() {
-        let metrics = HttpMetrics::default();
-        let ingress = HttpIngress::<()>::new()
-            .layer(TraceContextLayer::new())
-            .layer(HttpMetricsLayer::new(metrics.clone()))
-            .bus_injector(|req, bus| {
-                if let Some(trace) = req.extensions.get::<IncomingTraceContext>() {
-                    bus.insert(trace.trace_id().to_string());
-                }
-            })
-            .get(
-                "/trace",
-                Axon::<(), (), String, ()>::new("EchoTrace").then(EchoTrace),
-            );
-
-        let app = crate::test_harness::TestApp::new(ingress, ());
-        let response = app
-            .send(crate::test_harness::TestRequest::get("/trace").header(
-                "traceparent",
-                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-            ))
-            .await
-            .expect("request should succeed");
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.text().expect("utf8 response"),
-            "4bf92f3577b34da6a3ce929d0e0e4736"
-        );
-
-        let snapshot = metrics.snapshot();
-        assert_eq!(snapshot.requests_total, 1);
-        assert_eq!(snapshot.requests_error, 0);
     }
 
     #[test]
@@ -2862,65 +2674,4 @@ mod tests {
             .expect("server shutdown should succeed");
     }
 
-    #[tokio::test]
-    async fn route_layer_override_bypasses_global_timeout() {
-        #[derive(Clone)]
-        struct SlowRoute;
-
-        #[async_trait]
-        impl Transition<(), String> for SlowRoute {
-            type Error = String;
-            type Resources = ();
-
-            async fn run(
-                &self,
-                _state: (),
-                _resources: &Self::Resources,
-                _bus: &mut Bus,
-            ) -> Outcome<String, Self::Error> {
-                tokio::time::sleep(Duration::from_millis(60)).await;
-                Outcome::next("override-ok".to_string())
-            }
-        }
-
-        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
-        let addr = probe.local_addr().expect("local addr");
-        drop(probe);
-
-        let ingress = HttpIngress::<()>::new()
-            .bind(addr.to_string())
-            .timeout_layer(Duration::from_millis(10))
-            .get_with_layer_override(
-                "/slow",
-                Axon::<(), (), String, ()>::new("SlowOverride").then(SlowRoute),
-                tower::layer::util::Identity::new(),
-            );
-
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-        let server = tokio::spawn(async move {
-            ingress
-                .run_with_shutdown_signal((), async move {
-                    let _ = shutdown_rx.await;
-                })
-                .await
-        });
-
-        let mut stream = connect_with_retry(addr).await;
-        stream
-            .write_all(b"GET /slow HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-            .await
-            .expect("write request");
-
-        let mut buf = Vec::new();
-        stream.read_to_end(&mut buf).await.expect("read response");
-        let response = String::from_utf8_lossy(&buf);
-        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-        assert!(response.contains("override-ok"), "{response}");
-
-        let _ = shutdown_tx.send(());
-        server
-            .await
-            .expect("server join")
-            .expect("server shutdown should succeed");
-    }
 }

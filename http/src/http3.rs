@@ -11,7 +11,7 @@ use h3_quinn::quinn::{Endpoint, ServerConfig};
 use http::{Request, Response};
 use http_body_util::{BodyExt, Full};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use tower::{Service, ServiceExt};
+use hyper::service::Service;
 use tracing::{debug, error, info, trace};
 
 /// Configuration for the HTTP/3 QUIC server.
@@ -50,7 +50,7 @@ impl Http3Config {
     }
 }
 
-/// Runs the HTTP/3 server with the given configuration and Tower service.
+/// Runs the HTTP/3 server with the given configuration and Hyper service.
 pub async fn serve<S, B>(
     config: Http3Config,
     service: S,
@@ -149,7 +149,7 @@ where
 async fn handle_request<S, B>(
     req: Request<()>,
     mut stream: RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
-    mut service: S,
+    service: S,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>>
 where
     S: Service<Request<Full<Bytes>>, Response = Response<B>>,
@@ -171,8 +171,8 @@ where
     let (parts, _) = req.into_parts();
     let http_req = Request::from_parts(parts, Full::new(Bytes::from(body_bytes)));
 
-    // Process via Tower service
-    match service.ready().await?.call(http_req).await {
+    // Process via Hyper service
+    match service.call(http_req).await {
         Ok(res) => {
             let (parts, body) = res.into_parts();
             let http_res = Response::from_parts(parts, ());

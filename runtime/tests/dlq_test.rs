@@ -1,8 +1,37 @@
-use ranvier_core::event::DlqPolicy;
+use ranvier_core::event::{DlqPolicy, DlqSink};
 use ranvier_core::prelude::*;
-use ranvier_observe::FileDlqSink;
 use ranvier_runtime::Axon;
-use tempfile::tempdir;
+use std::sync::Arc;
+
+/// In-memory DLQ sink for integration testing (replaces removed ranvier-observe FileDlqSink).
+#[derive(Clone)]
+struct MemoryDlqSink {
+    letters: Arc<tokio::sync::Mutex<Vec<String>>>,
+}
+
+impl MemoryDlqSink {
+    fn new() -> Self {
+        Self {
+            letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DlqSink for MemoryDlqSink {
+    async fn store_dead_letter(
+        &self,
+        workflow_id: &str,
+        circuit_label: &str,
+        node_id: &str,
+        error_msg: &str,
+        _payload: &[u8],
+    ) -> Result<(), String> {
+        let entry = format!("{workflow_id}|{circuit_label}|{node_id}|{error_msg}");
+        self.letters.lock().await.push(entry);
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum FaultError {
@@ -29,12 +58,10 @@ impl Transition<(), ()> for FaultyStep {
 
 #[tokio::test]
 async fn test_dlq_captures_fault() {
-    let dir = tempdir().unwrap();
-    let dlq_path = dir.path().to_owned();
-    let dlq_sink = FileDlqSink::new(&dlq_path).await.unwrap();
+    let dlq_sink = MemoryDlqSink::new();
 
     let axon = Axon::<(), (), FaultError, ()>::new("DlqTest")
-        .with_dlq_sink(dlq_sink)
+        .with_dlq_sink(dlq_sink.clone())
         .with_dlq_policy(DlqPolicy::SendToDlq)
         .then(FaultyStep);
 
@@ -47,14 +74,17 @@ async fn test_dlq_captures_fault() {
         _ => panic!("Expected fault, got {:?}", outcome),
     }
 
-    // Check if DLQ file was created and contains the fault
-    let mut files = std::fs::read_dir(&dlq_path).unwrap();
-    let entry = files
-        .next()
-        .expect("Expected at least one DLQ file")
-        .unwrap();
-    let content = std::fs::read_to_string(entry.path()).unwrap();
-
-    assert!(content.contains("ExpectedFault"));
-    assert!(content.contains("DlqTest"));
+    // Verify DLQ captured the fault
+    let letters = dlq_sink.letters.lock().await;
+    assert_eq!(letters.len(), 1, "Expected exactly one DLQ entry");
+    assert!(
+        letters[0].contains("ExpectedFault"),
+        "DLQ entry should contain error: {}",
+        letters[0]
+    );
+    assert!(
+        letters[0].contains("DlqTest"),
+        "DLQ entry should contain circuit label: {}",
+        letters[0]
+    );
 }

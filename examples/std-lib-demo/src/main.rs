@@ -1,6 +1,6 @@
 //! # Standard Library Demo
 //!
-//! Demonstrates core Ranvier logic nodes (Filter, Switch, Log) with Hyper/Tower integration.
+//! Demonstrates core Ranvier logic nodes (Filter, Switch, Log) with Hyper integration.
 //!
 //! ## Run
 //! ```bash
@@ -9,13 +9,12 @@
 //!
 //! ## Key Concepts
 //! - FilterNode and SwitchNode for conditional logic
-//! - Hyper/Tower service integration with RanvierService
+//! - Hyper service integration with RanvierService
 //! - HTTP server using low-level Hyper primitives
 
 use http::Request;
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
-use hyper_util::service::TowerToHyperService;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
@@ -28,7 +27,7 @@ use ranvier_std::prelude::*;
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    println!("Running Ranvier Standard Library Demo (Hyper/Tower Foundation)...");
+    println!("Running Ranvier Standard Library Demo (Hyper Foundation)...");
 
     // 1. Logic Demo Decision flow
     let filter = FilterNode::new(|s: &String| s.len() > 5);
@@ -63,11 +62,10 @@ async fn main() -> anyhow::Result<()> {
         let (stream, _) = listener.accept().await?;
         let io = TokioIo::new(stream);
         let service_clone = service.clone();
-        let hyper_service = TowerToHyperService::new(service_clone);
 
         tokio::task::spawn(async move {
             if let Err(err) = http1::Builder::new()
-                .serve_connection(io, hyper_service)
+                .serve_connection(io, service_clone)
                 .await
             {
                 println!("Error serving connection: {:?}", err);

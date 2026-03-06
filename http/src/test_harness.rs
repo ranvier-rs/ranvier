@@ -2,7 +2,6 @@ use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
-use hyper_util::service::TowerToHyperService;
 use ranvier_core::transition::ResourceRequirement;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -67,10 +66,9 @@ where
 
         let service = self.service.clone();
         let server_task = tokio::spawn(async move {
-            let hyper_service = TowerToHyperService::new(service);
             http1::Builder::new()
                 .keep_alive(false)
-                .serve_connection(TokioIo::new(server_io), hyper_service)
+                .serve_connection(TokioIo::new(server_io), service)
                 .await
         });
 

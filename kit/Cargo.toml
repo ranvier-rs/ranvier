@@ -16,8 +16,6 @@ categories.workspace = true
 default = ["http", "std"]
 http = ["dep:ranvier-http"]
 std = ["dep:ranvier-std"]
-auth = ["dep:ranvier-auth"]
-guard = ["dep:ranvier-guard"]
 openapi = ["dep:ranvier-openapi"]
 
 [dependencies]
@@ -25,8 +23,6 @@ ranvier-core = { workspace = true }
 ranvier-runtime = { workspace = true }
 ranvier-http = { workspace = true, optional = true }
 ranvier-std = { workspace = true, optional = true }
-ranvier-auth = { workspace = true, optional = true }
-ranvier-guard = { workspace = true, optional = true }
 ranvier-openapi = { workspace = true, optional = true }
 
 

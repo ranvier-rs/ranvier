@@ -7,7 +7,7 @@ homepage.workspace = true
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "HTTP Ingress adapter for Ranvier - Tower-native Service implementation"
+description = "HTTP Ingress adapter for Ranvier - Hyper 1.0 native Service implementation"
 
 [features]
 default = []
@@ -25,15 +25,15 @@ async-trait = { workspace = true }
 futures-util = { workspace = true }
 tokio-tungstenite = "0.24"
 
-# HTTP / Tower Stack
+# HTTP Stack (Hyper 1.0 native — no tower/tower-http)
 hyper = { workspace = true }
 hyper-util = { workspace = true }
-tower = { workspace = true }
-tower-http = { version = "0.5", features = ["cors", "fs", "compression-br", "compression-gzip"] }
+matchit = { workspace = true }
 http = { workspace = true }
 http-body = "1"
 http-body-util = { workspace = true }
 bytes = { workspace = true }
+flate2 = "1"
 
 # Utilities
 thiserror = { workspace = true }
@@ -57,7 +57,6 @@ rcgen = { version = "0.13", optional = true }
 
 [dev-dependencies]
 tempfile = "3.14"
-ranvier-observe = { workspace = true }
 
 # Gate broken examples behind non-existent feature to prevent default compilation
 [[example]]

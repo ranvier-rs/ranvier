@@ -1,13 +1,13 @@
 //! # ranvier-http - HTTP Ingress Adapter for Ranvier
 //!
-//! This crate provides the **Tower-native boundary layer** for Ranvier.
+//! This crate provides the **Hyper 1.0 native boundary layer** for Ranvier.
 //! It implements `Ranvier::http()` as an Ingress Circuit Builder (Discussion 193).
 //!
 //! ## Key Components
 //!
 //! - `Ranvier::http()` - Entry point for building HTTP ingress
 //! - `HttpIngress` - Builder for configuring routes and server
-//! - `RanvierService` - Tower Service adapter for Axon execution
+//! - `RanvierService` - Hyper Service adapter for Axon execution
 //!
 //! ## Example
 //!
