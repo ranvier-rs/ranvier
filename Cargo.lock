@@ -3730,6 +3730,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "reference-chat-server"
+version = "0.23.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ranvier-core",
+ "ranvier-http",
+ "ranvier-macros",
+ "ranvier-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "reference-todo-api"
 version = "0.1.0"
 dependencies = [

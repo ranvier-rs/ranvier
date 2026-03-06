@@ -1,0 +1,67 @@
+{
+  "name": "Chat Server Flow",
+  "description": "End-to-end chat server test scenarios",
+  "requests": [
+    {
+      "name": "Login as Alice",
+      "method": "POST",
+      "url": "{{base_url}}/login",
+      "headers": { "Content-Type": "application/json" },
+      "body": { "username": "alice" },
+      "captures": { "token": "$.token", "user_id": "$.user_id" }
+    },
+    {
+      "name": "Login as Bob",
+      "method": "POST",
+      "url": "{{base_url}}/login",
+      "headers": { "Content-Type": "application/json" },
+      "body": { "username": "bob" },
+      "captures": { "bob_token": "$.token" }
+    },
+    {
+      "name": "List Rooms (default general)",
+      "method": "GET",
+      "url": "{{base_url}}/rooms",
+      "assertions": [
+        { "target": "$.rooms", "operator": "not_empty" },
+        { "target": "$.rooms[0].name", "operator": "eq", "expected": "General" }
+      ]
+    },
+    {
+      "name": "Create Private Room",
+      "method": "POST",
+      "url": "{{base_url}}/rooms",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer {{token}}"
+      },
+      "body": { "name": "vip-lounge", "is_public": false },
+      "captures": { "room_id": "$.id" },
+      "assertions": [
+        { "target": "$.name", "operator": "eq", "expected": "vip-lounge" }
+      ]
+    },
+    {
+      "name": "Room History (empty)",
+      "method": "GET",
+      "url": "{{base_url}}/rooms/general/history",
+      "assertions": [
+        { "target": "$.room_id", "operator": "eq", "expected": "general" },
+        { "target": "$.messages", "operator": "type", "expected": "array" }
+      ]
+    },
+    {
+      "name": "Login without username (error)",
+      "method": "POST",
+      "url": "{{base_url}}/login",
+      "headers": { "Content-Type": "application/json" },
+      "body": {},
+      "assertions": [
+        { "target": "$", "operator": "contains", "expected": "username" }
+      ]
+    }
+  ],
+  "variables": {
+    "base_url": "http://localhost:3000"
+  }
+}

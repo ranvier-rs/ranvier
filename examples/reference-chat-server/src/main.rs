@@ -1,0 +1,117 @@
+//! # Reference Chat Server
+//!
+//! A multi-room WebSocket chat server built with Ranvier.
+//!
+//! Demonstrates:
+//! - WebSocket connections with room management
+//! - JWT-style authentication
+//! - `RanvierConfig` for configuration management
+//! - REST + WebSocket hybrid routing
+//! - In-memory message persistence
+//!
+//! ## Running
+//!
+//! ```sh
+//! cargo run -p reference-chat-server
+//! ```
+//!
+//! ## Endpoints
+//!
+//! - `POST /login` — Get auth token (body: `{"username": "alice"}`)
+//! - `GET /rooms` — List public rooms
+//! - `POST /rooms` — Create room (auth required, body: `{"name": "my-room"}`)
+//! - `GET /rooms/:id/history` — Get room message history
+//! - `GET /ws` — WebSocket connection (query: `?token=tok_xxx`)
+
+mod auth;
+mod models;
+mod transitions;
+mod ws;
+
+use ranvier_core::config::RanvierConfig;
+use ranvier_http::Ranvier;
+use ranvier_runtime::Axon;
+use ws::room_manager::RoomManager;
+
+use transitions::login::login;
+use transitions::create_room::create_room;
+use transitions::list_rooms::list_rooms;
+use transitions::room_history::room_history;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let config = RanvierConfig::load()?;
+    config.init_logging();
+
+    let token_store = auth::new_token_store();
+    let room_manager = RoomManager::new();
+
+    tracing::info!(
+        host = %config.server.host,
+        port = %config.server.port,
+        "Starting chat server"
+    );
+
+    let login_ts = token_store.clone();
+    let create_ts = token_store.clone();
+    let create_rm = room_manager.clone();
+    let list_rm = room_manager.clone();
+    let history_rm = room_manager.clone();
+    let ws_ts = token_store.clone();
+    let ws_rm = room_manager.clone();
+
+    Ranvier::http()
+        .config(&config)
+        .graceful_shutdown(config.shutdown_timeout())
+        .health_endpoint("/health")
+        .readiness_liveness_default()
+        .post(
+            "/login",
+            Axon::<(), (), String>::new("login").then(login),
+        )
+        .get(
+            "/rooms",
+            Axon::<(), (), String>::new("list_rooms").then(list_rooms),
+        )
+        .post(
+            "/rooms",
+            Axon::<(), (), String>::new("create_room").then(create_room),
+        )
+        .get(
+            "/rooms/:id/history",
+            Axon::<(), (), String>::new("room_history").then(room_history),
+        )
+        .ws("/ws", ws::handler::handle_ws)
+        .bus_injector(move |parts, bus| {
+            bus.insert(login_ts.clone());
+
+            // Extract Authorization header for protected routes
+            if let Some(auth) = parts.headers.get("authorization") {
+                if let Ok(value) = auth.to_str() {
+                    bus.insert(value.to_string());
+                }
+            }
+        })
+        .bus_injector(move |_parts, bus| {
+            bus.insert(create_ts.clone());
+            bus.insert(create_rm.clone());
+        })
+        .bus_injector(move |_parts, bus| {
+            bus.insert(list_rm.clone());
+        })
+        .bus_injector(move |_parts, bus| {
+            bus.insert(history_rm.clone());
+        })
+        .bus_injector(move |_parts, bus| {
+            bus.insert(ws_ts.clone());
+            bus.insert(ws_rm.clone());
+        })
+        .on_start(|| {
+            tracing::info!("Chat server started — connect via WebSocket at /ws?token=<token>");
+        })
+        .on_shutdown(|| {
+            tracing::info!("Chat server shut down");
+        })
+        .run(())
+        .await
+}
