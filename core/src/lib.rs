@@ -13,6 +13,7 @@ pub mod schematic;
 pub mod static_gen;
 pub mod synapse;
 pub mod telemetry;
+pub mod tenant;
 pub mod timeline;
 pub mod transition;
 
@@ -31,12 +32,16 @@ pub mod prelude {
     pub use crate::bus::{Bus, BusAccessError, BusAccessPolicy, BusTypeRef};
     pub use crate::debug::{DebugControl, DebugState};
     pub use crate::event::{DeadLetter, DlqPolicy, DlqReader, DlqSink, EventSink, EventSource};
-    pub use crate::iam::{IamError, IamHandle, IamIdentity, IamPolicy, IamToken, IamVerifier};
+    pub use crate::iam::{
+        AuthContext, AuthScheme, IamError, IamHandle, IamIdentity, IamPolicy, IamToken,
+        IamVerifier,
+    };
     pub use crate::metadata::StepMetadata;
     pub use crate::outcome::{BranchId, NodeId, Outcome};
     pub use crate::policy::{DynamicPolicy, PolicyRegistry};
     pub use crate::saga::{SagaCompensationRegistry, SagaPolicy, SagaStack, SagaTask};
     pub use crate::schematic::{Edge, EdgeType, Node, NodeKind, SchemaMigrationMapper, Schematic};
+    pub use crate::tenant::{IsolationPolicy, TenantExtractor, TenantId, TenantResolver};
     pub use crate::timeline::{Timeline, TimelineEvent};
     pub use crate::error::RanvierError;
     pub use crate::never::Never;

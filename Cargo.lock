@@ -3019,7 +3019,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "ranvier-core",
- "ranvier-multitenancy",
  "ranvier-runtime",
  "serde",
  "serde_json",

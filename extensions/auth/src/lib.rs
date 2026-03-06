@@ -23,34 +23,9 @@ pub enum AuthPolicy {
     None,
 }
 
-/// Source scheme of an authenticated subject.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum AuthScheme {
-    Bearer,
-    ApiKey,
-}
-
-/// Auth context propagated through request extensions and Bus.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct AuthContext {
-    pub subject: String,
-    pub roles: Vec<String>,
-    pub scheme: AuthScheme,
-}
-
-impl AuthContext {
-    pub fn new(subject: impl Into<String>, roles: Vec<String>, scheme: AuthScheme) -> Self {
-        Self {
-            subject: subject.into(),
-            roles,
-            scheme,
-        }
-    }
-
-    pub fn has_role(&self, role: &str) -> bool {
-        self.roles.iter().any(|candidate| candidate == role)
-    }
-}
+// AuthContext and AuthScheme are now defined in ranvier-core::iam.
+// Re-exported here for backward compatibility until M210 removes this crate.
+pub use ranvier_core::iam::{AuthContext, AuthScheme};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {

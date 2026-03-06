@@ -1,7 +1,7 @@
 //! Multi-Tenancy Demo
 //!
 //! ## Purpose
-//! Demonstrates tenant isolation patterns using `ranvier-multitenancy` within
+//! Demonstrates tenant isolation patterns using `ranvier_core::tenant` within
 //! Axon workflows: tenant-scoped data access, Bus-injected tenant context,
 //! and resource isolation best practices.
 //!
@@ -27,7 +27,7 @@
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_core::transition::ResourceRequirement;
-use ranvier_multitenancy::TenantId;
+use ranvier_core::tenant::TenantId;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

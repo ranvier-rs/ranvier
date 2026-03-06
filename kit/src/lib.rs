@@ -18,8 +18,11 @@ pub use ranvier_std as std;
 
 #[cfg(feature = "auth")]
 pub use ranvier_auth::{
-    ApiKeyAuthLayer, AuthContext, AuthPolicy, AuthScheme, BearerAuthLayer, RequireRoleLayer,
+    ApiKeyAuthLayer, AuthPolicy, BearerAuthLayer, RequireRoleLayer,
 };
+// AuthContext and AuthScheme now live in ranvier-core::iam (always available, no feature gate).
+pub use ranvier_core::iam::{AuthContext, AuthScheme};
+pub use ranvier_core::tenant::{IsolationPolicy, TenantExtractor, TenantId, TenantResolver};
 pub use ranvier_core::{Bus, Never, Outcome, Schematic, Transition};
 #[cfg(feature = "guard")]
 pub use ranvier_guard::{

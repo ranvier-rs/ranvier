@@ -196,6 +196,51 @@ pub fn enforce_policy(policy: &IamPolicy, identity: &IamIdentity) -> Result<(), 
     }
 }
 
+// ── Auth context (absorbed from ranvier-auth) ─────────────────
+
+/// Source scheme of an authenticated subject.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum AuthScheme {
+    Bearer,
+    ApiKey,
+}
+
+/// Auth context propagated through the Bus.
+///
+/// The HTTP boundary (or test harness) constructs an `AuthContext` and
+/// inserts it into the Bus via [`inject_auth_context`].  Downstream
+/// Transitions read it via [`auth_context`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AuthContext {
+    pub subject: String,
+    pub roles: Vec<String>,
+    pub scheme: AuthScheme,
+}
+
+impl AuthContext {
+    pub fn new(subject: impl Into<String>, roles: Vec<String>, scheme: AuthScheme) -> Self {
+        Self {
+            subject: subject.into(),
+            roles,
+            scheme,
+        }
+    }
+
+    pub fn has_role(&self, role: &str) -> bool {
+        self.roles.iter().any(|candidate| candidate == role)
+    }
+}
+
+/// Insert an [`AuthContext`] into the Bus.
+pub fn inject_auth_context(bus: &mut crate::bus::Bus, ctx: AuthContext) {
+    bus.insert(ctx);
+}
+
+/// Read the [`AuthContext`] from the Bus.
+pub fn auth_context(bus: &crate::bus::Bus) -> Option<&AuthContext> {
+    bus.read::<AuthContext>()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +297,29 @@ mod tests {
             IamError::MissingClaims(missing) => assert_eq!(missing, vec!["org".to_string()]),
             other => panic!("Expected MissingClaims, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn auth_context_has_role() {
+        let ctx = AuthContext::new("alice", vec!["admin".into(), "user".into()], AuthScheme::Bearer);
+        assert!(ctx.has_role("admin"));
+        assert!(ctx.has_role("user"));
+        assert!(!ctx.has_role("superadmin"));
+    }
+
+    #[test]
+    fn auth_context_bus_inject_and_read() {
+        let ctx = AuthContext::new("bob", vec!["editor".into()], AuthScheme::ApiKey);
+        let mut bus = crate::bus::Bus::new();
+        inject_auth_context(&mut bus, ctx.clone());
+        assert_eq!(auth_context(&bus), Some(&ctx));
+    }
+
+    #[test]
+    fn auth_context_serde_roundtrip() {
+        let ctx = AuthContext::new("carol", vec!["admin".into()], AuthScheme::Bearer);
+        let json = serde_json::to_string(&ctx).expect("serialize");
+        let back: AuthContext = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(ctx, back);
     }
 }
