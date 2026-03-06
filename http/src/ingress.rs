@@ -152,6 +152,14 @@ struct StaticMount {
     directory: String,
 }
 
+/// TLS configuration for HTTPS serving.
+#[cfg(feature = "tls")]
+#[derive(Clone)]
+struct TlsAcceptorConfig {
+    cert_path: String,
+    key_path: String,
+}
+
 #[derive(Serialize)]
 struct HealthReport {
     status: &'static str,
@@ -721,6 +729,9 @@ pub struct HttpIngress<R = ()> {
     http3_config: Option<crate::http3::Http3Config>,
     #[cfg(feature = "http3")]
     alt_svc_h3_port: Option<u16>,
+    /// TLS configuration (feature-gated: `tls`)
+    #[cfg(feature = "tls")]
+    tls_config: Option<TlsAcceptorConfig>,
     /// Features: enable active intervention system routes
     active_intervention: bool,
     /// Optional policy registry for hot-reloads
@@ -745,6 +756,8 @@ where
             bus_injectors: Vec::new(),
             static_assets: StaticAssetsConfig::default(),
             health: HealthConfig::default(),
+            #[cfg(feature = "tls")]
+            tls_config: None,
             #[cfg(feature = "http3")]
             http3_config: None,
             #[cfg(feature = "http3")]
@@ -796,6 +809,26 @@ where
     /// Configure graceful shutdown timeout for in-flight request draining.
     pub fn graceful_shutdown(mut self, timeout: Duration) -> Self {
         self.graceful_shutdown_timeout = timeout;
+        self
+    }
+
+    /// Apply a `RanvierConfig` to this builder.
+    ///
+    /// Reads server settings (bind address, shutdown timeout) from the config.
+    /// Logging should be initialized separately via `config.init_logging()`.
+    pub fn config(mut self, config: &ranvier_core::config::RanvierConfig) -> Self {
+        self.addr = Some(config.bind_addr());
+        self.graceful_shutdown_timeout = config.shutdown_timeout();
+        self
+    }
+
+    /// Enable TLS with certificate and key PEM files (requires `tls` feature).
+    #[cfg(feature = "tls")]
+    pub fn tls(mut self, cert_path: impl Into<String>, key_path: impl Into<String>) -> Self {
+        self.tls_config = Some(TlsAcceptorConfig {
+            cert_path: cert_path.into(),
+            key_path: key_path.into(),
+        });
         self
     }
 
@@ -1412,7 +1445,20 @@ where
         let resources = Arc::new(resources);
 
         let listener = TcpListener::bind(addr).await?;
+
+        // Build optional TLS acceptor
+        #[cfg(feature = "tls")]
+        let tls_acceptor = if let Some(ref tls_cfg) = self.tls_config {
+            let acceptor = build_tls_acceptor(&tls_cfg.cert_path, &tls_cfg.key_path)?;
+            tracing::info!("Ranvier HTTP Ingress listening on https://{}", addr);
+            Some(acceptor)
+        } else {
+            tracing::info!("Ranvier HTTP Ingress listening on http://{}", addr);
+            None
+        };
+        #[cfg(not(feature = "tls"))]
         tracing::info!("Ranvier HTTP Ingress listening on http://{}", addr);
+
         if let Some(callback) = on_start.as_ref() {
             callback();
         }
@@ -1428,7 +1474,6 @@ where
                 }
                 accept_result = listener.accept() => {
                     let (stream, _) = accept_result?;
-                    let io = TokioIo::new(stream);
 
                     let routes = routes.clone();
                     let fallback = fallback.clone();
@@ -1438,6 +1483,9 @@ where
                     let static_assets = static_assets.clone();
                     #[cfg(feature = "http3")]
                     let alt_svc_h3_port = self.alt_svc_h3_port;
+
+                    #[cfg(feature = "tls")]
+                    let tls_acceptor = tls_acceptor.clone();
 
                     connections.spawn(async move {
                         let service = build_http_service(
@@ -1449,6 +1497,28 @@ where
                             static_assets,
                             #[cfg(feature = "http3")] alt_svc_h3_port,
                         );
+
+                        #[cfg(feature = "tls")]
+                        if let Some(acceptor) = tls_acceptor {
+                            match acceptor.accept(stream).await {
+                                Ok(tls_stream) => {
+                                    let io = TokioIo::new(tls_stream);
+                                    if let Err(err) = http1::Builder::new()
+                                        .serve_connection(io, service)
+                                        .with_upgrades()
+                                        .await
+                                    {
+                                        tracing::error!("Error serving TLS connection: {:?}", err);
+                                    }
+                                }
+                                Err(err) => {
+                                    tracing::warn!("TLS handshake failed: {:?}", err);
+                                }
+                            }
+                            return;
+                        }
+
+                        let io = TokioIo::new(stream);
                         if let Err(err) = http1::Builder::new()
                             .serve_connection(io, service)
                             .with_upgrades()
@@ -2102,6 +2172,38 @@ async fn drain_connections(
     } else {
         false
     }
+}
+
+/// Build a TLS acceptor from PEM certificate and key files.
+#[cfg(feature = "tls")]
+fn build_tls_acceptor(
+    cert_path: &str,
+    key_path: &str,
+) -> Result<tokio_rustls::TlsAcceptor, Box<dyn std::error::Error + Send + Sync>> {
+    use rustls::ServerConfig;
+    use rustls_pemfile::{certs, private_key};
+    use std::io::BufReader;
+    use tokio_rustls::TlsAcceptor;
+
+    let cert_file = std::fs::File::open(cert_path)
+        .map_err(|e| format!("Failed to open certificate file '{}': {}", cert_path, e))?;
+    let key_file = std::fs::File::open(key_path)
+        .map_err(|e| format!("Failed to open key file '{}': {}", key_path, e))?;
+
+    let cert_chain: Vec<_> = certs(&mut BufReader::new(cert_file))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to parse certificate PEM: {}", e))?;
+
+    let key = private_key(&mut BufReader::new(key_file))
+        .map_err(|e| format!("Failed to parse private key PEM: {}", e))?
+        .ok_or("No private key found in key file")?;
+
+    let config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, key)
+        .map_err(|e| format!("TLS configuration error: {}", e))?;
+
+    Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
 impl<R> Default for HttpIngress<R>

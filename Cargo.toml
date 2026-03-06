@@ -55,6 +55,7 @@ members = [
     "examples/macros-demo",
     "bench",
     "examples/reference-todo-api",
+    "examples/production-config-demo",
 ]
 
 [workspace.package]

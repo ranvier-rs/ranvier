@@ -1,0 +1,49 @@
+# Ranvier Production Configuration Example
+#
+# This file demonstrates the ranvier.toml configuration system.
+# Settings here are loaded automatically by RanvierConfig::load().
+
+[server]
+host = "0.0.0.0"
+port = 3000
+shutdown_timeout_secs = 30
+
+[logging]
+format = "pretty"      # "json" | "pretty" | "compact"
+level = "info"
+
+[logging.module_levels]
+ranvier_runtime = "debug"
+ranvier_http = "info"
+
+[tls]
+enabled = false
+cert_path = "certs/cert.pem"
+key_path = "certs/key.pem"
+
+[inspector]
+enabled = true
+port = 3001
+
+# ── Profile Overrides ──
+
+[profile.prod.server]
+host = "0.0.0.0"
+
+[profile.prod.logging]
+format = "json"
+level = "warn"
+
+[profile.prod.tls]
+enabled = true
+
+[profile.prod.inspector]
+enabled = false
+
+[profile.staging.logging]
+format = "json"
+level = "info"
+
+[profile.dev.logging]
+format = "pretty"
+level = "debug"

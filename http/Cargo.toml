@@ -13,6 +13,7 @@ description = "HTTP Ingress adapter for Ranvier - Hyper 1.0 native Service imple
 default = []
 validation = ["dep:validator"]
 multer = ["dep:multer"]
+tls = ["dep:rustls", "dep:rustls-pemfile", "dep:tokio-rustls"]
 http3 = ["dep:quinn", "dep:h3", "dep:h3-quinn", "dep:rustls", "dep:rustls-pemfile", "dep:tokio-rustls", "dep:rcgen"]
 [dependencies]
 # Internal
