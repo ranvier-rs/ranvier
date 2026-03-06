@@ -1,0 +1,123 @@
+{
+  "name": "Todo CRUD",
+  "description": "Complete test collection for the Reference Todo API",
+  "base_url": "http://localhost:3000",
+  "requests": [
+    {
+      "name": "Login",
+      "method": "POST",
+      "path": "/login",
+      "headers": { "Content-Type": "application/json" },
+      "body": { "username": "admin", "password": "admin" },
+      "captures": { "token": "$.token" },
+      "assertions": [
+        { "target": "$.token", "operator": "exists" },
+        { "target": "$.username", "operator": "eq", "expected": "admin" }
+      ]
+    },
+    {
+      "name": "Login — bad credentials",
+      "method": "POST",
+      "path": "/login",
+      "headers": { "Content-Type": "application/json" },
+      "body": { "username": "wrong", "password": "wrong" },
+      "assertions": [
+        { "target": "$status", "operator": "eq", "expected": 500 }
+      ]
+    },
+    {
+      "name": "List todos (empty)",
+      "method": "GET",
+      "path": "/todos",
+      "assertions": [
+        { "target": "$", "operator": "eq", "expected": [] }
+      ]
+    },
+    {
+      "name": "Create todo — Buy milk",
+      "method": "POST",
+      "path": "/todos",
+      "headers": { "Content-Type": "application/json" },
+      "body": { "title": "Buy milk" },
+      "captures": { "todo_id": "$.id" },
+      "assertions": [
+        { "target": "$.title", "operator": "eq", "expected": "Buy milk" },
+        { "target": "$.completed", "operator": "eq", "expected": false },
+        { "target": "$.id", "operator": "exists" }
+      ]
+    },
+    {
+      "name": "Create todo — Walk the dog",
+      "method": "POST",
+      "path": "/todos",
+      "headers": { "Content-Type": "application/json" },
+      "body": { "title": "Walk the dog" },
+      "assertions": [
+        { "target": "$.title", "operator": "eq", "expected": "Walk the dog" }
+      ]
+    },
+    {
+      "name": "List todos (2 items)",
+      "method": "GET",
+      "path": "/todos",
+      "assertions": [
+        { "target": "$", "operator": "length", "expected": 2 }
+      ]
+    },
+    {
+      "name": "Get todo by ID",
+      "method": "GET",
+      "path": "/todos/{{todo_id}}",
+      "assertions": [
+        { "target": "$.title", "operator": "eq", "expected": "Buy milk" }
+      ]
+    },
+    {
+      "name": "Update todo — mark completed",
+      "method": "PUT",
+      "path": "/todos/{{todo_id}}",
+      "headers": { "Content-Type": "application/json" },
+      "body": { "completed": true },
+      "assertions": [
+        { "target": "$.completed", "operator": "eq", "expected": true },
+        { "target": "$.title", "operator": "eq", "expected": "Buy milk" }
+      ]
+    },
+    {
+      "name": "Update todo — rename",
+      "method": "PUT",
+      "path": "/todos/{{todo_id}}",
+      "headers": { "Content-Type": "application/json" },
+      "body": { "title": "Buy oat milk" },
+      "assertions": [
+        { "target": "$.title", "operator": "eq", "expected": "Buy oat milk" }
+      ]
+    },
+    {
+      "name": "Delete todo",
+      "method": "DELETE",
+      "path": "/todos/{{todo_id}}",
+      "assertions": [
+        { "target": "$.deleted", "operator": "exists" }
+      ]
+    },
+    {
+      "name": "Get deleted todo — 404",
+      "method": "GET",
+      "path": "/todos/{{todo_id}}",
+      "assertions": [
+        { "target": "$status", "operator": "eq", "expected": 500 }
+      ]
+    },
+    {
+      "name": "Create todo — empty title",
+      "method": "POST",
+      "path": "/todos",
+      "headers": { "Content-Type": "application/json" },
+      "body": { "title": "" },
+      "assertions": [
+        { "target": "$status", "operator": "eq", "expected": 500 }
+      ]
+    }
+  ]
+}
