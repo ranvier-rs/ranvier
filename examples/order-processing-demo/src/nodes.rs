@@ -22,7 +22,7 @@ impl Transition<OrderRequest, OrderRequest> for ValidateOrder {
             request.order_id
         );
 
-        if request.total_amount <= 0 {
+        if request.total_amount == 0 {
             return Outcome::Fault("Invalid amount".into());
         }
         if request.items.is_empty() {

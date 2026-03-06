@@ -24,6 +24,13 @@ Ranvier::http()
     .await?;
 ```
 
+## Examples
+
+- [`hello-world`](../examples/hello-world/) — HTTP ingress baseline
+- [`flat-api-demo`](../examples/flat-api-demo/) — Flat API routing
+- [`routing-demo`](../examples/routing-demo/) — Route branching patterns
+- [`routing-params-demo`](../examples/routing-params-demo/) — Route parameter extraction
+
 ## MSRV
 
 - Rust `1.93.0` or newer (Edition 2024).

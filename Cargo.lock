@@ -367,6 +367,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "audit-demo"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "ranvier-audit",
+ "ranvier-core",
+ "ranvier-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "auth-jwt-role-demo"
 version = "0.1.0"
 dependencies = [
@@ -850,6 +864,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
+name = "cluster-demo"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "ranvier-cluster",
+ "ranvier-core",
+ "ranvier-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "cmake"
 version = "0.1.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -890,6 +917,16 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "compliance-demo"
+version = "0.1.0"
+dependencies = [
+ "ranvier-compliance",
+ "ranvier-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1951,7 +1988,7 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "graphql-service-demo"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "async-graphql",
@@ -2581,6 +2618,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "inspector-demo"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "ranvier-core",
+ "ranvier-http",
+ "ranvier-inspector",
+ "ranvier-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2679,7 +2732,7 @@ checksum = "8eaf4bc02d17cbdd7ff4c7438cafcdf7fb9a4613313ad11b4f8fefe7d3fa0130"
 
 [[package]]
 name = "job-scheduler-demo"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2818,6 +2871,19 @@ name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
+
+[[package]]
+name = "macros-demo"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "ranvier-core",
+ "ranvier-macros",
+ "ranvier-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "matchers"
@@ -3916,7 +3982,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "ranvier-auth",
  "ranvier-core",
@@ -3929,7 +3995,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-audit"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3945,7 +4011,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-auth"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "async-trait",
  "base64 0.21.7",
@@ -3963,7 +4029,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-cluster"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "async-trait",
  "bb8",
@@ -3979,7 +4045,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-compliance"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3988,7 +4054,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-core"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4006,7 +4072,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-db"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4027,7 +4093,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-graphql"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "async-graphql",
  "async-trait",
@@ -4040,7 +4106,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-grpc"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -4060,7 +4126,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-guard"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "bytes",
  "http 1.4.0",
@@ -4074,7 +4140,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-http"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -4114,7 +4180,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-inspector"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "async-trait",
  "axum 0.7.9",
@@ -4131,7 +4197,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-job"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4148,7 +4214,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-macros"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4157,7 +4223,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-multitenancy"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -4171,7 +4237,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-observe"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4193,7 +4259,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-openapi"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "http 1.4.0",
  "ranvier-core",
@@ -4205,7 +4271,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-redis"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "async-trait",
  "fred",
@@ -4217,7 +4283,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-runtime"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4240,7 +4306,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-session"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4260,7 +4326,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-status"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4274,7 +4340,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-std"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4291,7 +4357,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-synapse"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5223,7 +5289,7 @@ dependencies = [
 
 [[package]]
 name = "session-demo"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5714,6 +5780,16 @@ name = "static_assertions_next"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7beae5182595e9a8b683fa98c4317f956c9a2dec3b9716990d20023cc60c766"
+
+[[package]]
+name = "status-demo"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "ranvier-core",
+ "ranvier-status",
+ "serde_json",
+]
 
 [[package]]
 name = "std-lib-demo"

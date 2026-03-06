@@ -14,8 +14,8 @@ use http::Request;
 use ranvier_core::bus::Bus;
 use ranvier_core::outcome::Outcome;
 use ranvier_core::static_gen::{StaticAxon, StaticManifest, write_json_file};
+use ranvier_core::Never;
 use serde::{Deserialize, Serialize};
-use std::convert::Infallible;
 use std::env;
 use std::path::PathBuf;
 
@@ -98,7 +98,7 @@ pub struct LandingPageAxon;
 
 impl StaticAxon for LandingPageAxon {
     type Output = LandingState;
-    type Error = Infallible;
+    type Error = Never;
 
     fn name(&self) -> &'static str {
         "landing_page"
@@ -151,7 +151,7 @@ pub struct PricingPageAxon;
 
 impl StaticAxon for PricingPageAxon {
     type Output = PricingState;
-    type Error = Infallible;
+    type Error = Never;
 
     fn name(&self) -> &'static str {
         "pricing_page"
@@ -218,7 +218,7 @@ pub struct DocsIndexAxon;
 
 impl StaticAxon for DocsIndexAxon {
     type Output = DocsIndexState;
-    type Error = Infallible;
+    type Error = Never;
 
     fn name(&self) -> &'static str {
         "docs_index"
@@ -301,7 +301,7 @@ impl StaticAxon for DocsIndexAxon {
 // ============================================================
 
 /// Registry of all static axons in this project
-fn get_static_axons() -> Vec<Box<dyn StaticAxon<Output = serde_json::Value, Error = Infallible>>> {
+fn get_static_axons() -> Vec<Box<dyn StaticAxon<Output = serde_json::Value, Error = Never>>> {
     vec![
         Box::new(ValueAxon::new(LandingPageAxon)),
         Box::new(ValueAxon::new(PricingPageAxon)),

@@ -80,15 +80,18 @@ async fn main() -> anyhow::Result<()> {
 
 ---
 
-**Canonical Examples**
+**Examples** — 47 runnable demos
 
-Run from this workspace:
+```bash
+cargo run -p hello-world          # HTTP ingress baseline
+cargo run -p typed-state-tree     # Typed state progression
+cargo run -p basic-schematic      # Schematic export + runtime
+cargo run -p macros-demo          # #[transition] macro DX
+cargo run -p inspector-demo       # Runtime observability server
+cargo run -p status-demo          # Static status page generation
+```
 
-1. `cargo run -p hello-world`
-2. `cargo run -p typed-state-tree`
-3. `cargo run -p basic-schematic`
-
-See `examples/README.md` for tiers and additional workflows.
+See `examples/README.md` for the full tier-classified list (47 examples).
 
 ---
 

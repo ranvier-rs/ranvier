@@ -36,6 +36,36 @@ These are maintained and useful, but not the first onboarding path.
 11. `complex-schematic`
 12. `synapse-demo`
 13. `order-processing-demo`
+14. `auth-jwt-role-demo`
+15. `guard-demo`
+16. `static-spa-demo`
+17. `websocket-ingress-demo`
+18. `multipart-upload-demo`
+19. `sse-streaming-demo`
+20. `grpc-service-demo`
+21. `graphql-service-demo`
+22. `testing-patterns`
+23. `custom-error-types`
+24. `retry-dlq-demo`
+25. `state-persistence-demo`
+26. `multitenancy-demo`
+27. `session-demo`
+28. `persistence-production-demo`
+29. `job-scheduler-demo`
+30. `observe-http-demo`
+31. `otel-ops-demo`
+32. `ecosystem-redis-demo`
+33. `ecosystem-diesel-demo`
+34. `ecosystem-seaorm-demo`
+35. `ecosystem-nats-demo`
+36. `ecosystem-meilisearch-demo`
+37. `bus-capability-demo`
+38. `inspector-demo`
+39. `audit-demo`
+40. `compliance-demo`
+41. `cluster-demo`
+42. `status-demo`
+43. `macros-demo`
 
 ### Tier C: Experimental (not authoritative for architecture)
 

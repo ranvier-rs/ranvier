@@ -370,6 +370,54 @@
       "tags": ["experimental", "state"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
+    },
+    {
+      "name": "inspector-demo",
+      "tier": "B",
+      "description": "Inspector runtime observability server with metrics, payload capture, and stall detection",
+      "tags": ["inspector", "observability", "metrics"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "audit-demo",
+      "tier": "B",
+      "description": "Tamper-evident audit logging with HMAC-signed file sink and Bus injection",
+      "tags": ["audit", "compliance", "logging"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "compliance-demo",
+      "tier": "B",
+      "description": "PII handling with Sensitive<T> wrapper, custom Redact, and PiiDetector",
+      "tags": ["compliance", "pii", "gdpr"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "cluster-demo",
+      "tier": "B",
+      "description": "Distributed lock, store, and bus with in-memory mock (Redis-swappable)",
+      "tags": ["cluster", "distributed", "lock"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "status-demo",
+      "tier": "B",
+      "description": "Static status page generation with circuit health, incidents, and timeline projections",
+      "tags": ["status", "monitoring", "html"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "macros-demo",
+      "tier": "B",
+      "description": "Procedural macros: #[transition], bus_allow, bus_deny for reduced boilerplate",
+      "tags": ["macros", "transition", "bus"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
     }
   ]
 }

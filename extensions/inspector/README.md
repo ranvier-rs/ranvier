@@ -11,6 +11,10 @@ Built-in Inspector REST + WebSocket server for runtime observability and debuggi
 - **Stall Detection**: Threshold-based detection for nodes exceeding configured duration (`RANVIER_INSPECTOR_STALL_THRESHOLD_MS`, default 30000ms).
 - **Auth Enforcement**: Optional role/tenant header checks (`RANVIER_AUTH_ENFORCE`, `RANVIER_AUTH_REQUIRE_TENANT_INTERNAL`).
 
+## Examples
+
+- [`inspector-demo`](../../examples/inspector-demo/) — Runtime observability server with metrics, payload capture, stall detection, and conditional breakpoints
+
 ## MSRV
 
 - Rust `1.93.0` or newer (Edition 2024).

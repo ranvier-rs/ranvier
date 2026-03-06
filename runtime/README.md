@@ -27,6 +27,11 @@ let axon = Axon::start("MyCircuit")
     .then(some_transition);
 ```
 
+## Examples
+
+- [`hello-world`](../examples/hello-world/) — HTTP ingress baseline
+- [`order-processing-demo`](../examples/order-processing-demo/) — Multi-step order processing pipeline
+
 ## MSRV
 
 - Rust `1.93.0` or newer (Edition 2024).

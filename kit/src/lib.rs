@@ -20,7 +20,7 @@ pub use ranvier_std as std;
 pub use ranvier_auth::{
     ApiKeyAuthLayer, AuthContext, AuthPolicy, AuthScheme, BearerAuthLayer, RequireRoleLayer,
 };
-pub use ranvier_core::{Bus, Outcome, Schematic, Transition};
+pub use ranvier_core::{Bus, Never, Outcome, Schematic, Transition};
 #[cfg(feature = "guard")]
 pub use ranvier_guard::{
     CorsGuardLayer, RateLimitLayer, RateLimitPolicy, SecurityHeadersLayer, SecurityHeadersPolicy,

@@ -23,6 +23,12 @@
 - **Type Safety:** Leverage Rust's type system to ensure valid state transitions.
 - **Telemetry:** Built-in tracing for visual debugging in Ranvier Studio.
 
+## Examples
+
+- [`hello-world`](../examples/hello-world/) — HTTP ingress baseline
+- [`typed-state-tree`](../examples/typed-state-tree/) — Typed state progression
+- [`basic-schematic`](../examples/basic-schematic/) — Schematic export + runtime
+
 ## MSRV
 
 - Rust `1.93.0` or newer (Edition 2024).

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.19.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.19.0 — Example ergonomics, new demos, and VSCode DX.**
+Introduces `Never` error type for infallible pipelines, 6 new example crates (47 total covering all 23 published crates), full crate README example link coverage, and VSCode code snippets + example commands.
+
+### Added
+- **`Never` type (M195):** `ranvier_core::Never` — serializable uninhabited error type replacing `std::convert::Infallible` for Axon pipelines. `InfallibleAxon` type alias updated.
+- **New examples (M196–M197):** inspector-demo, audit-demo, compliance-demo, cluster-demo, status-demo, macros-demo. Total: 47 maintained examples.
+- **Documentation sync (M198):** All 23 crate READMEs now have Examples sections. Manual docs, examples manifest, and web data fully synchronized.
+- **VSCode snippets (M199):** 6 Rust snippets — `rvtransition`, `rv-transition`, `rvroute`, `rvaxon`, `rvbus`, `rvtest`.
+- **VSCode example commands (M199):** `ranvier.loadExampleSchematic` and `ranvier.runExample` for browsing and running examples from the command palette.
+
+---
+
 ## [0.18.0] — 2026-03
 
 ### Summary
