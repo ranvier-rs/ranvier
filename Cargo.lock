@@ -3395,7 +3395,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "ranvier-core",
  "ranvier-http",
@@ -3407,7 +3407,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-audit"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3423,7 +3423,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-bench"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "actix-rt",
  "actix-web",
@@ -3447,7 +3447,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-compliance"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3457,7 +3457,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-core"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -3475,7 +3475,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-http"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3514,7 +3514,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-inspector"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "async-trait",
  "axum 0.7.9",
@@ -3534,7 +3534,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-macros"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3543,7 +3543,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-openapi"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "http 1.4.0",
  "ranvier-core",
@@ -3555,7 +3555,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-runtime"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3577,7 +3577,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-std"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "anyhow",
  "async-trait",

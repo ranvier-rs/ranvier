@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.23.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.23.0 — DX expansion: performance benchmarks, reference application, CLI scaffolding, WebSocket/SSE API testing.**
+Quantitative performance baselines via criterion micro-benchmarks and Axum/Actix-web comparison servers, a complete multi-file Reference Todo API (CRUD + JWT auth + test collection), interactive CLI project scaffolding with 10 templates and dependency chooser, and WebSocket/SSE endpoint testing in the VSCode API Explorer.
+
+### Added
+- **Performance benchmarks (M218):** criterion micro-benchmarks for Axon latency, Bus operations, and Transition chain depth (1/3/10-step). Three Actix-web comparison servers alongside existing Axum servers for fair framework comparison. PowerShell benchmark runner script.
+- **Reference Todo API (M219):** Complete multi-file example application with 6 transitions (login, CRUD), JWT auth module, typed error module, `Ranvier::http()` routing, and `.ranvier/collections/todo-crud.json` test collection with 12 requests and capture chaining.
+- **CLI interactive scaffolding (M217):** `ranvier new` with `dialoguer`-based interactive template selection (10 templates), dependency chooser (DB: sqlx-postgres/sqlite, sea-orm; Auth: jwt; Observability: otlp, tracing), auto-generated `.ranvier/collections/` and `.env.example`.
+- **WebSocket/SSE API testing (M216):** VSCode API Explorer with WebSocket bidirectional message panel (connect/disconnect, auto-reconnect, subprotocol headers, message filtering) and SSE stream panel (event type/data/id, filtering, Last-Event-ID reconnection).
+
+### Changed
+- **`bench` crate:** Added to workspace members. Removed stale `ranvier-auth`/`ranvier-guard` dependencies (consolidated in v0.21). Fixed `Infallible` → `ranvier_core::Never` across all scenario servers and benchmarks.
+
+---
+
 ## [0.22.0] — 2026-03
 
 ### Summary
