@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.22.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.22.0 — DX ergonomics, audit integrity, compliance depth, standard node library expansion.**
+Derive macro for `ResourceRequirement`, Bus convenience API (`provide`/`require`), audit hash-chain integrity verification, compliance classification and PII detection, and 12 new standard library nodes including Bus-injectable guard transitions.
+
+### Added
+- **`#[derive(ResourceRequirement)]` (M212):** Proc-macro derive for the `ResourceRequirement` marker trait, eliminating manual `impl` boilerplate for Bus-injectable types.
+- **`Bus::provide()` / `Bus::require()` / `Bus::try_require()` (M212):** Ergonomic convenience methods for dependency injection — `require()` panics with a helpful message naming the missing type.
+- **`AuditChain` (M213):** Tamper-proof SHA-256 hash chain linking `AuditEvent` records via `prev_hash`. `verify()` detects modification and deletion.
+- **`AuditQuery` builder (M213):** Fluent query API filtering by action, actor, target, and time range across any `AuditSink`.
+- **`RetentionPolicy` (M213):** `max_age` / `max_count` retention with `ArchiveStrategy` (Delete or Archive callback). Implemented for `InMemoryAuditSink` and `FileAuditSink`.
+- **`ClassificationLevel` (M214):** `Public` / `Internal` / `Confidential` / `Restricted` data classification enum for `Sensitive<T>`.
+- **`EncryptionHook` trait (M214):** Pluggable encryption abstraction with `NoOpEncryption` and `XorEncryption` implementations.
+- **`FieldNamePiiDetector` (M214):** Heuristic PII scanner detecting 9 categories (email, phone, SSN, credit card, name, address, DOB, IP, passport).
+- **`ErasureRequest` / `ErasureSink` (M214):** GDPR right-to-erasure abstractions with `InMemoryErasureSink` implementation.
+- **Validation nodes (M215):** `RequiredNode<T>`, `RangeValidator<T>`, `PatternValidator`, `SchemaValidator` — input validation as visible circuit transitions.
+- **Transformation nodes (M215):** `MapNode`, `FilterTransformNode`, `FlattenNode`, `MergeNode` — data transformation as composable transitions.
+- **Guard nodes (M215):** `CorsGuard`, `RateLimitGuard`, `SecurityHeadersGuard`, `IpFilterGuard` — Bus-injectable security guards replacing invisible middleware, visible in Schematic and Inspector Timeline.
+
+### Changed
+- **`Sensitive<T>` (M214):** Changed from tuple struct to named fields (`value`, `classification`). `Debug` output now shows classification level (e.g., `[REDACTED:Restricted]`).
+
+---
+
 ## [0.21.0] — 2026-03
 
 ### Summary
