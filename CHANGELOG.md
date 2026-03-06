@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.20.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.20.0 — Inspector schema registry, request relay, and schema-aware macros.**
+Introduces Inspector-side route discovery (`/api/v1/routes`), JSON Schema extraction (`/api/v1/routes/schema`, `/api/v1/routes/sample`), request relay API (`/api/v1/relay`), `#[transition(schema)]` macro attribute for compile-time schema generation, and `with_relay_target()` builder for Inspector relay configuration.
+
+### Added
+- **Schema Registry API:** `/api/v1/routes` endpoint enumerates all registered Axon routes with method, path, and transition metadata. `/api/v1/routes/schema` returns JSON Schema for route input/output types. `/api/v1/routes/sample` generates sample request payloads.
+- **Request Relay API:** `/api/v1/relay` proxies requests through the Inspector to any registered route, capturing full circuit trace (timing, node transitions, outcomes) for debugging.
+- **`#[transition(schema)]` macro attribute:** Generates `schema_for!(InputType)` under the `schemars` feature gate, enabling automatic JSON Schema extraction for transition input types.
+- **`with_relay_target()` builder:** Configures the Inspector relay target URL, allowing Inspector-mediated request forwarding to the application server.
+
+---
+
 ## [0.19.0] — 2026-03
 
 ### Summary

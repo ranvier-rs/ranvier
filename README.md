@@ -10,6 +10,7 @@ diff, and validate.
 
 **Latest: v0.18.0** (23 crates on crates.io)
 
+- **Schema Registry & Relay (v0.20)**: Inspector-side route discovery (`/api/v1/routes`), JSON Schema extraction (`/api/v1/routes/schema`, `/api/v1/routes/sample`), request relay (`/api/v1/relay`), `#[transition(schema)]` macro attribute.
 - **Inspector Enrichment (v0.19)**: Per-node metrics (throughput, latency percentiles, error rate), payload capture & DLQ, conditional breakpoints, stall detection via Inspector REST + WebSocket.
 - **Enterprise Production (v0.15–v0.16)**: Distributed execution, saga patterns, DLQ, MSRV 1.93.0 Edition 2024, API audit & CI hardening.
 - **Security & Performance (v0.14)**: HTTP/3, GraphQL, gRPC adapters, security hardening.
