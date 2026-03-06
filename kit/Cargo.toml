@@ -20,6 +20,7 @@ openapi = ["dep:ranvier-openapi"]
 
 [dependencies]
 ranvier-core = { workspace = true }
+ranvier-macros = { workspace = true }
 ranvier-runtime = { workspace = true }
 ranvier-http = { workspace = true, optional = true }
 ranvier-std = { workspace = true, optional = true }

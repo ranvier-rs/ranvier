@@ -277,6 +277,69 @@ impl Bus {
         self.resources.is_empty()
     }
 
+    /// Provide a resource to the Bus.
+    ///
+    /// Semantic alias for [`insert`](Bus::insert) that makes the intent clearer
+    /// when injecting external library handles (DB pools, HTTP clients, etc.).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use ranvier_core::Bus;
+    /// let mut bus = Bus::new();
+    /// bus.provide(42i32);
+    /// assert_eq!(*bus.read::<i32>().unwrap(), 42);
+    /// ```
+    #[inline]
+    pub fn provide<T: Any + Send + Sync + 'static>(&mut self, resource: T) {
+        self.insert(resource);
+    }
+
+    /// Require a resource from the Bus, panicking with a helpful message if missing.
+    ///
+    /// Use this when the resource is expected to always be present (e.g., injected
+    /// at startup). For optional resources, use [`try_require`](Bus::try_require).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the resource type `T` has not been inserted into the Bus.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use ranvier_core::Bus;
+    /// let mut bus = Bus::new();
+    /// bus.provide(42i32);
+    /// let value: &i32 = bus.require::<i32>();
+    /// assert_eq!(*value, 42);
+    /// ```
+    #[inline]
+    pub fn require<T: Any + Send + Sync + 'static>(&self) -> &T {
+        self.read::<T>().unwrap_or_else(|| {
+            panic!(
+                "Bus: required resource `{}` not found. Did you forget to call bus.provide()?",
+                std::any::type_name::<T>()
+            )
+        })
+    }
+
+    /// Try to require a resource from the Bus, returning `None` if missing.
+    ///
+    /// Semantic alias for [`read`](Bus::read) that pairs with [`provide`](Bus::provide)
+    /// and [`require`](Bus::require) for consistent naming.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use ranvier_core::Bus;
+    /// let bus = Bus::new();
+    /// assert!(bus.try_require::<i32>().is_none());
+    /// ```
+    #[inline]
+    pub fn try_require<T: Any + Send + Sync + 'static>(&self) -> Option<&T> {
+        self.read::<T>()
+    }
+
     /// Set transition-scoped policy. `None` keeps access unrestricted.
     pub fn set_access_policy(
         &mut self,
@@ -468,5 +531,32 @@ mod tests {
         let conn = ConnectionBus::new(id);
 
         assert_eq!(conn.connection_id(), id);
+    }
+
+    #[test]
+    fn provide_and_require_round_trip() {
+        let mut bus = Bus::new();
+        bus.provide(42i32);
+        assert_eq!(*bus.require::<i32>(), 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "required resource")]
+    fn require_panics_with_helpful_message_when_missing() {
+        let bus = Bus::new();
+        let _ = bus.require::<String>();
+    }
+
+    #[test]
+    fn try_require_returns_none_when_missing() {
+        let bus = Bus::new();
+        assert!(bus.try_require::<i32>().is_none());
+    }
+
+    #[test]
+    fn try_require_returns_some_when_present() {
+        let mut bus = Bus::new();
+        bus.provide("hello".to_string());
+        assert_eq!(bus.try_require::<String>().unwrap(), "hello");
     }
 }

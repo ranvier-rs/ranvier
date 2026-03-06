@@ -1,7 +1,10 @@
 use proc_macro::TokenStream;
 use quote::{ToTokens, quote};
 use std::collections::HashSet;
-use syn::{FnArg, GenericArgument, ItemFn, PathArguments, ReturnType, Type, parse_macro_input};
+use syn::{
+    DeriveInput, FnArg, GenericArgument, ItemFn, PathArguments, ReturnType, Type,
+    parse_macro_input,
+};
 
 /// Attribute macro to transform an async function into a `Transition` implementation.
 #[proc_macro_attribute]
@@ -344,6 +347,35 @@ fn parse_type_array_expr(expr: &syn::Expr) -> syn::Result<Vec<Type>> {
         .iter()
         .map(|elem| syn::parse2::<Type>(elem.to_token_stream()))
         .collect()
+}
+
+/// Derive macro for the `ResourceRequirement` marker trait.
+///
+/// Generates a blanket `impl ResourceRequirement for YourType {}`.
+/// The type must also implement `Clone` (required by the Axon execution engine).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ranvier::prelude::*;
+///
+/// #[derive(Clone, ResourceRequirement)]
+/// struct AppResources {
+///     pool: sqlx::PgPool,
+///     redis: redis::Client,
+/// }
+/// ```
+#[proc_macro_derive(ResourceRequirement)]
+pub fn derive_resource_requirement(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    let expanded = quote! {
+        impl #impl_generics ranvier_core::transition::ResourceRequirement for #name #ty_generics #where_clause {}
+    };
+
+    TokenStream::from(expanded)
 }
 
 fn validate_bus_policy_types(allow: &[Type], deny: &[Type]) -> syn::Result<()> {

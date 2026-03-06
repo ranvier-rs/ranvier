@@ -3022,6 +3022,7 @@ version = "0.21.0"
 dependencies = [
  "ranvier-core",
  "ranvier-http",
+ "ranvier-macros",
  "ranvier-openapi",
  "ranvier-runtime",
  "ranvier-std",

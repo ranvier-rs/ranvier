@@ -6,11 +6,15 @@
 pub use ranvier_core as core;
 #[cfg(feature = "http")]
 pub use ranvier_http as http;
+pub use ranvier_macros as macros;
 #[cfg(feature = "openapi")]
 pub use ranvier_openapi as openapi;
 pub use ranvier_runtime as runtime;
 #[cfg(feature = "std")]
 pub use ranvier_std as std;
+
+// Derive macros re-export (proc-macros require direct re-export)
+pub use ranvier_macros::ResourceRequirement;
 
 // AuthContext and AuthScheme live in ranvier-core::iam (always available, no feature gate).
 pub use ranvier_core::iam::{AuthContext, AuthScheme};
@@ -24,6 +28,7 @@ pub use ranvier_runtime::Axon;
 
 pub mod prelude {
     pub use ranvier_core::prelude::*;
+    pub use ranvier_macros::ResourceRequirement;
     #[cfg(feature = "http")]
     pub use ranvier_http::prelude::*;
     #[cfg(feature = "openapi")]
