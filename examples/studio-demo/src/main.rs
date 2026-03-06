@@ -1,6 +1,6 @@
 //! # Ranvier Studio Inspector Demo
 //!
-//! Demonstrates real-time tracing, schematic export, and timeline projection generation for Studio integration.
+//! Demonstrates real-time tracing, schematic export, and inspector integration for Studio.
 //!
 //! ## Run
 //! ```bash
@@ -10,17 +10,11 @@
 //! ## Key Concepts
 //! - Inspector layer for distributed tracing
 //! - Schematic export mode for circuit visualization
-//! - Timeline projections (public/internal trace artifacts)
+//! - Timeline output for post-hoc analysis
 
 use ranvier_core::prelude::*;
-use ranvier_core::schematic::Schematic;
 use ranvier_macros::transition;
 use ranvier_runtime::Axon;
-use ranvier_status::{
-    TimelineProjectionOptions, projections_from_timeline, write_projection_files,
-};
-use std::fs;
-use std::path::PathBuf;
 use std::time::Duration;
 
 #[transition]
@@ -47,7 +41,6 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Starting Studio Demo...");
 
-    // Start with i32 -> i32 identity
     let info_axon = Axon::<i32, i32, String>::new("Studio Demo Circuit")
         .then(step_one)
         .then(step_two);
@@ -61,76 +54,15 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Configure default local artifact paths for "run once and inspect" workflow.
-    let dist_dir = PathBuf::from("./dist/studio-demo");
-    fs::create_dir_all(&dist_dir)?;
-    let timeline_path = dist_dir.join("timeline.raw.json");
-    let public_path = dist_dir.join("trace.public.json");
-    let internal_path = dist_dir.join("trace.internal.json");
-
-    set_env_if_missing(
-        "RANVIER_TIMELINE_OUTPUT",
-        timeline_path.display().to_string(),
-    );
-    set_env_if_missing("RANVIER_TIMELINE_MODE", "overwrite".to_string());
-    set_env_if_missing(
-        "RANVIER_TRACE_PUBLIC_PATH",
-        public_path.display().to_string(),
-    );
-    set_env_if_missing(
-        "RANVIER_TRACE_INTERNAL_PATH",
-        internal_path.display().to_string(),
-    );
-
     let axon = info_axon.serve_inspector(9000);
 
     tracing::info!("Inspector mode: RANVIER_MODE=dev|prod, enabled by RANVIER_INSPECTOR=1|0");
     tracing::info!("Inspector dev page: http://localhost:9000/quick-view");
     tracing::info!("Raw endpoints: /schematic, /trace/public, /trace/internal (dev only)");
-    tracing::info!(
-        "Projection artifacts: {}, {}",
-        public_path.display(),
-        internal_path.display()
-    );
 
     loop {
         tracing::info!("Executing Axon...");
         let _ = axon.execute(50, &(), &mut Bus::new()).await;
-        if let Err(err) =
-            regenerate_projection_from_timeline(&timeline_path, &public_path, axon.schematic())
-        {
-            tracing::warn!("Projection refresh failed: {}", err);
-        }
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
-}
-
-fn set_env_if_missing(key: &str, value: String) {
-    if std::env::var_os(key).is_none() {
-        // Safe in this single-threaded startup path before background worker spawn.
-        unsafe {
-            std::env::set_var(key, value);
-        }
-    }
-}
-
-fn regenerate_projection_from_timeline(
-    timeline_path: &std::path::Path,
-    public_path: &std::path::Path,
-    schematic: &Schematic,
-) -> anyhow::Result<()> {
-    if !timeline_path.exists() {
-        return Ok(());
-    }
-
-    let content = fs::read_to_string(timeline_path)?;
-    let timeline = serde_json::from_str(&content)?;
-    let mut options = TimelineProjectionOptions::new(schematic.name.clone(), schematic.id.clone());
-    options.trace_id = "studio-demo-live".to_string();
-    let artifacts = projections_from_timeline(&timeline, &options)?;
-    let output_dir = public_path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("public path has no parent directory"))?;
-    write_projection_files(output_dir, &artifacts)?;
-    Ok(())
 }

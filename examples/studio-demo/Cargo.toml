@@ -7,7 +7,6 @@ rust-version.workspace = true
 ranvier-core = { workspace = true }
 ranvier-runtime = { workspace = true }
 ranvier-inspector = { workspace = true }
-ranvier-status = { workspace = true }
 ranvier-macros = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }

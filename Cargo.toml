@@ -30,7 +30,6 @@ members = [
     "examples/static-spa-demo",
     "examples/experimental/fullstack-demo",
     "examples/static-build-demo",
-    "examples/db-example",
     "examples/ecosystem-diesel-demo",
     "examples/ecosystem-nats-demo",
     "examples/ecosystem-meilisearch-demo",
@@ -39,33 +38,20 @@ members = [
     "examples/experimental/persistence-recovery-demo",
     "examples/std-lib-demo",
     "examples/typed-state-tree",
-    "examples/job-scheduler-demo",
-    "examples/session-demo",
     "examples/persistence-production-demo",
     "examples/otel-ops-demo",
-    "extensions/synapse",
-    "extensions/db",
-    "extensions/status",
     "extensions/auth",
     "extensions/guard",
     "extensions/openapi",
     "extensions/observe",
     "extensions/inspector",
     "extensions/audit",
-    "extensions/session",
-    "extensions/redis",
     "extensions/multitenancy",
     "extensions/compliance",
-    "ranvier-job",
     "examples/flat-api-demo",
     "examples/studio-demo",
     "examples/sse-streaming-demo",
     "examples/multipart-upload-demo",
-    "grpc",
-    "examples/grpc-service-demo",
-    "extensions/cluster",
-    "graphql",
-    "examples/graphql-service-demo",
     "examples/testing-patterns",
     "examples/custom-error-types",
     "examples/retry-dlq-demo",
@@ -74,8 +60,6 @@ members = [
     "examples/inspector-demo",
     "examples/audit-demo",
     "examples/compliance-demo",
-    "examples/cluster-demo",
-    "examples/status-demo",
     "examples/macros-demo",
 ]
 
@@ -95,8 +79,6 @@ categories = ["asynchronous", "development-tools", "web-programming"]
 ranvier-core = { path = "core", version = "0.20.0" }
 ranvier-runtime = { path = "runtime", version = "0.20.0" }
 ranvier-http = { path = "http", version = "0.20.0" }
-ranvier-db = { path = "extensions/db", version = "0.20.0" }
-ranvier-status = { path = "extensions/status", version = "0.20.0" }
 ranvier-auth = { path = "extensions/auth", version = "0.20.0" }
 ranvier-guard = { path = "extensions/guard", version = "0.20.0" }
 ranvier-openapi = { path = "extensions/openapi", version = "0.20.0" }
@@ -105,16 +87,9 @@ ranvier-inspector = { path = "extensions/inspector", version = "0.20.0" }
 ranvier-audit = { path = "extensions/audit", version = "0.20.0" }
 ranvier-std = { path = "std", version = "0.20.0" }
 ranvier-macros = { path = "macros", version = "0.20.0" }
-ranvier-grpc = { path = "grpc", version = "0.20.0" }
 ranvier-kit = { path = "kit", version = "0.20.0" }
-ranvier-synapse = { path = "extensions/synapse", version = "0.20.0" }
-ranvier-cluster = { path = "extensions/cluster", version = "0.20.0" }
-ranvier-graphql = { path = "graphql", version = "0.20.0" }
-ranvier-session = { path = "extensions/session", version = "0.20.0" }
-ranvier-redis = { path = "extensions/redis", version = "0.20.0" }
 ranvier-multitenancy = { path = "extensions/multitenancy", version = "0.20.0" }
 ranvier-compliance = { path = "extensions/compliance", version = "0.20.0" }
-ranvier-job = { path = "ranvier-job", version = "0.20.0" }
 
 
 # Sync Third-party Dependencies
