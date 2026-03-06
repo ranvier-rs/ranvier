@@ -1,29 +1,51 @@
 use ranvier::prelude::*;
-use ranvier_auth::prelude::*;
 use ranvier_macros::transition;
 use serde::{Deserialize, Serialize};
+use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
 
-#[derive(Serialize, Deserialize)]
-struct AuthResponse {
-    subject: String,
-    message: String,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct Claims {
+    sub: String,
+    roles: Vec<String>,
+    exp: usize,
 }
 
-/// Transition that explicitly reads AuthContext from the Bus.
-/// This highlights the "Typed Decision Flow" where auth data is first-class.
+/// Transition that verifies JWT token from Authorization header in Bus.
 #[transition]
-async fn check_capability(_input: (), _res: &(), bus: &mut Bus) -> Outcome<AuthContext, anyhow::Error> {
-    if let Some(ctx) = auth_context(bus) {
-        Outcome::Next(ctx.clone())
-    } else {
-        Outcome::Fault(anyhow::anyhow!("Unauthorized in Bus"))
+async fn verify_token(_input: (), _res: &(), bus: &mut Bus) -> Outcome<Claims, String> {
+    let headers: http::HeaderMap = bus.read::<http::HeaderMap>().cloned().unwrap_or_default();
+    let bearer: Option<&str> = headers
+        .get("authorization")
+        .and_then(|v: &http::HeaderValue| v.to_str().ok())
+        .and_then(|v: &str| v.strip_prefix("Bearer "));
+
+    let token = match bearer {
+        Some(t) => t.to_string(),
+        None => return Outcome::Fault("Missing Authorization header".to_string()),
+    };
+
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_exp = true;
+
+    match decode::<Claims>(
+        &token,
+        &DecodingKey::from_secret(b"bench-secret-key"),
+        &validation,
+    ) {
+        Ok(data) => {
+            if !data.claims.roles.contains(&"admin".to_string()) {
+                return Outcome::Fault("Forbidden: admin role required".to_string());
+            }
+            Outcome::Next(data.claims)
+        }
+        Err(e) => Outcome::Fault(format!("JWT verification failed: {}", e)),
     }
 }
 
 #[transition]
-async fn final_response(ctx: AuthContext, _res: &(), _bus: &mut Bus) -> Outcome<serde_json::Value, anyhow::Error> {
+async fn final_response(claims: Claims, _res: &(), _bus: &mut Bus) -> Outcome<serde_json::Value, String> {
     Outcome::Next(serde_json::json!({
-        "subject": ctx.subject,
+        "subject": claims.sub,
         "message": "Access Granted via Typed Bus Capability"
     }))
 }
@@ -40,19 +62,14 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let addr = "0.0.0.0:3001";
-    println!("Starting Ranvier Benchmark Server (Scenario 2: Complex Auth) on {}", addr);
+    println!("Starting Ranvier Benchmark Server (Scenario 2: Auth Flow) on {}", addr);
 
-    let auth_axon = Axon::<(), (), anyhow::Error>::new("auth-flow")
-        .then(check_capability)
+    let auth_axon = Axon::<(), (), String>::new("auth-flow")
+        .then(verify_token)
         .then(final_response);
 
     Ranvier::http()
         .bind(addr)
-        .bus_injector(|req, bus| {
-            inject_auth_context(req, bus);
-        })
-        .layer(BearerAuthLayer::new_hs256(token_secret).required())
-        .layer(RequireRoleLayer::new("admin"))
         .route("/protected", auth_axon)
         .run(())
         .await
@@ -62,15 +79,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn generate_bench_token(secret: &str) -> anyhow::Result<String> {
-    use jsonwebtoken::{encode, Header, EncodingKey, Algorithm};
+    use jsonwebtoken::{encode, Header, EncodingKey};
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[derive(Serialize)]
-    struct Claims {
-        sub: String,
-        roles: Vec<String>,
-        exp: usize,
-    }
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)?

@@ -15,8 +15,6 @@ ranvier-core = { workspace = true }
 ranvier-runtime = { workspace = true }
 ranvier-macros = { workspace = true }
 ranvier-http = { workspace = true }
-ranvier-auth = { workspace = true }
-ranvier-guard = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -24,13 +22,25 @@ criterion = { version = "0.5", features = ["async_tokio"] }
 jsonwebtoken = "9"
 async-trait = "0.1"
 anyhow = { workspace = true }
+http = { workspace = true }
 axum = "0.8"
+actix-web = "4"
+actix-rt = "2"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 clap = { version = "4.4", features = ["derive"] }
+
 [[bench]]
 name = "axon_latency"
 harness = false
 
 [[bench]]
 name = "http_throughput"
+harness = false
+
+[[bench]]
+name = "bus_operations"
+harness = false
+
+[[bench]]
+name = "transition_chain"
 harness = false

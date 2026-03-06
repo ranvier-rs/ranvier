@@ -53,6 +53,8 @@ members = [
     "examples/audit-demo",
     "examples/compliance-demo",
     "examples/macros-demo",
+    "bench",
+    "examples/reference-todo-api",
 ]
 
 [workspace.package]

@@ -1,10 +1,10 @@
-use std::convert::Infallible;
+use ranvier_core::Never;
 use ranvier::prelude::*;
 use ranvier_macros::transition;
 use std::time::Duration;
 
 #[transition]
-async fn concurrent_task(_input: (), _res: &(), _bus: &mut Bus) -> Outcome<serde_json::Value, Infallible> {
+async fn concurrent_task(_input: (), _res: &(), _bus: &mut Bus) -> Outcome<serde_json::Value, Never> {
     // Simulate a small I/O delay or async operation
     // This tests how well the Ranvier runtime handles many concurrent async tasks
     tokio::time::sleep(Duration::from_millis(5)).await;
@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
     let addr = "0.0.0.0:3003";
     println!("Starting Ranvier Benchmark Server (Scenario 4: High Concurrency) on {}", addr);
 
-    let axon = Axon::<(), (), Infallible>::new("concurrency")
+    let axon = Axon::<(), (), Never>::new("concurrency")
         .then(concurrent_task);
 
     Ranvier::http()

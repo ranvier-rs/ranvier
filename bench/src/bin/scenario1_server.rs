@@ -1,9 +1,9 @@
-use std::convert::Infallible;
+use ranvier_core::Never;
 use ranvier::prelude::*;
 use ranvier_macros::transition;
 
 #[transition]
-async fn json_logic(_input: (), _res: &(), _bus: &mut Bus) -> Outcome<serde_json::Value, Infallible> {
+async fn json_logic(_input: (), _res: &(), _bus: &mut Bus) -> Outcome<serde_json::Value, Never> {
     Outcome::Next(serde_json::json!({
         "message": "Hello, World!",
         "status": 200
@@ -15,7 +15,7 @@ async fn main() -> anyhow::Result<()> {
     let addr = "0.0.0.0:3000";
     println!("Starting Ranvier Benchmark Server (Scenario 1: Simple CRUD) on {}", addr);
 
-    let axon = Axon::<(), (), Infallible>::new("scenario1")
+    let axon = Axon::<(), (), Never>::new("scenario1")
         .then(json_logic);
 
     Ranvier::http()

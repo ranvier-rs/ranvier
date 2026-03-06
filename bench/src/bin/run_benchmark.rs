@@ -1,6 +1,5 @@
 use clap::Parser;
 use std::time::{Duration, Instant};
-use reqwest::Client;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -42,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
     
     let mut total_requests: u64 = 0;
     let mut successful_requests: u64 = 0;
-    let mut start_time = Instant::now();
+    let start_time = Instant::now();
     let mut set = JoinSet::new();
 
     loop {

@@ -2,13 +2,12 @@ use axum::{
     extract::State,
     http::{header, StatusCode},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::Response,
     routing::get,
     Json, Router,
 };
 use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Claims {
