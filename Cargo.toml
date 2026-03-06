@@ -58,6 +58,7 @@ members = [
     "examples/production-config-demo",
     "examples/reference-chat-server",
     "examples/reference-ecommerce-order",
+    "examples/llm-content-moderation",
 ]
 
 [workspace.package]
