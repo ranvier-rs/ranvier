@@ -639,6 +639,173 @@ where
         }
     }
 
+    /// Chain a transition with a retry policy.
+    ///
+    /// If the transition returns `Outcome::Fault`, it will be retried up to
+    /// `policy.max_retries` times with the configured backoff strategy.
+    /// Timeline events are recorded for each retry attempt.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use ranvier_runtime::{Axon, RetryPolicy};
+    /// use std::time::Duration;
+    ///
+    /// let axon = Axon::new("pipeline")
+    ///     .then_with_retry(my_transition, RetryPolicy::fixed(3, Duration::from_millis(100)));
+    /// ```
+    #[track_caller]
+    pub fn then_with_retry<Next, Trans>(
+        self,
+        transition: Trans,
+        policy: crate::retry::RetryPolicy,
+    ) -> Axon<In, Next, E, Res>
+    where
+        Out: Clone,
+        Next: Send + Sync + Serialize + DeserializeOwned + 'static,
+        Trans: Transition<Out, Next, Resources = Res, Error = E> + Clone + Send + Sync + 'static,
+    {
+        let caller = Location::caller();
+        let Axon {
+            mut schematic,
+            executor: prev_executor,
+            execution_mode,
+            persistence_store,
+            audit_sink,
+            dlq_sink,
+            dlq_policy,
+            dynamic_dlq_policy,
+            saga_policy,
+            dynamic_saga_policy,
+            saga_compensation_registry,
+            iam_handle,
+        } = self;
+
+        let next_node_id = uuid::Uuid::new_v4().to_string();
+        let next_node = Node {
+            id: next_node_id.clone(),
+            kind: NodeKind::Atom,
+            label: transition.label(),
+            description: transition.description(),
+            input_type: type_name_of::<Out>(),
+            output_type: type_name_of::<Next>(),
+            resource_type: type_name_of::<Res>(),
+            metadata: Default::default(),
+            bus_capability: bus_capability_schema_from_policy(transition.bus_access_policy()),
+            source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            position: transition
+                .position()
+                .map(|(x, y)| ranvier_core::schematic::Position { x, y }),
+            compensation_node_id: None,
+            input_schema: transition.input_schema(),
+            output_schema: None,
+        };
+
+        let last_node_id = schematic
+            .nodes
+            .last()
+            .map(|n| n.id.clone())
+            .unwrap_or_default();
+
+        schematic.nodes.push(next_node);
+        schematic.edges.push(Edge {
+            from: last_node_id,
+            to: next_node_id.clone(),
+            kind: EdgeType::Linear,
+            label: Some("Next (retryable)".to_string()),
+        });
+
+        let node_id_for_exec = next_node_id.clone();
+        let node_label_for_exec = transition.label();
+        let bus_policy_for_exec = transition.bus_access_policy();
+        let bus_policy_clone = bus_policy_for_exec.clone();
+        let current_step_idx = schematic.nodes.len() as u64 - 1;
+        let next_executor: Executor<In, Next, E, Res> = Arc::new(
+            move |input: In, res: &Res, bus: &mut Bus| -> BoxFuture<'_, Outcome<Next, E>> {
+                let prev = prev_executor.clone();
+                let trans = transition.clone();
+                let timeline_node_id = node_id_for_exec.clone();
+                let timeline_node_label = node_label_for_exec.clone();
+                let transition_bus_policy = bus_policy_clone.clone();
+                let step_idx = current_step_idx;
+                let retry_policy = policy.clone();
+
+                Box::pin(async move {
+                    // Run previous step
+                    let prev_result = prev(input, res, bus).await;
+                    let state = match prev_result {
+                        Outcome::Next(t) => t,
+                        other => return other.map(|_| unreachable!()),
+                    };
+
+                    // Attempt with retries
+                    let mut last_result = None;
+                    for attempt in 0..=retry_policy.max_retries {
+                        let attempt_state = state.clone();
+
+                        let result = run_this_step::<Out, Next, E, Res>(
+                            &trans,
+                            attempt_state,
+                            res,
+                            bus,
+                            &timeline_node_id,
+                            &timeline_node_label,
+                            &transition_bus_policy,
+                            step_idx,
+                        )
+                        .await;
+
+                        match &result {
+                            Outcome::Next(_) => return result,
+                            Outcome::Fault(_) if attempt < retry_policy.max_retries => {
+                                let delay = retry_policy.delay_for_attempt(attempt);
+                                tracing::warn!(
+                                    node_id = %timeline_node_id,
+                                    attempt = attempt + 1,
+                                    max = retry_policy.max_retries,
+                                    delay_ms = delay.as_millis() as u64,
+                                    "Transition failed, retrying"
+                                );
+                                if let Some(timeline) = bus.read_mut::<Timeline>() {
+                                    timeline.push(TimelineEvent::NodeRetry {
+                                        node_id: timeline_node_id.clone(),
+                                        attempt: attempt + 1,
+                                        max_attempts: retry_policy.max_retries,
+                                        backoff_ms: delay.as_millis() as u64,
+                                        timestamp: now_ms(),
+                                    });
+                                }
+                                tokio::time::sleep(delay).await;
+                            }
+                            _ => {
+                                last_result = Some(result);
+                                break;
+                            }
+                        }
+                    }
+
+                    last_result.unwrap_or_else(|| {
+                        Outcome::emit("execution.retry.exhausted", None)
+                    })
+                })
+            },
+        );
+        Axon {
+            schematic,
+            executor: next_executor,
+            execution_mode,
+            persistence_store,
+            audit_sink,
+            dlq_sink,
+            dlq_policy,
+            dynamic_dlq_policy,
+            saga_policy,
+            dynamic_saga_policy,
+            saga_compensation_registry,
+            iam_handle,
+        }
+    }
+
     /// Chain a transition to this Axon with a Saga compensation step.
     ///
     /// If the transition fails, the compensation transition will be executed

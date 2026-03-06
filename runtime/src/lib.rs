@@ -5,6 +5,7 @@ pub mod cluster;
 pub mod distributed;
 pub mod persistence;
 pub mod replay;
+pub mod retry;
 pub mod testkit;
 
 pub mod prelude {
@@ -26,6 +27,7 @@ pub mod prelude {
     #[cfg(feature = "persistence-redis")]
     pub use crate::persistence::{RedisCompensationIdempotencyStore, RedisPersistenceStore};
     pub use crate::replay::ReplayEngine;
+    pub use crate::retry::{BackoffStrategy, RetryPolicy};
     pub use crate::testkit::AxonTestKit;
 }
 
@@ -57,4 +59,5 @@ pub use persistence::{PostgresCompensationIdempotencyStore, PostgresPersistenceS
 #[cfg(feature = "persistence-redis")]
 pub use persistence::{RedisCompensationIdempotencyStore, RedisPersistenceStore};
 pub use replay::ReplayEngine;
+pub use retry::{BackoffStrategy, RetryPolicy};
 pub use testkit::AxonTestKit;

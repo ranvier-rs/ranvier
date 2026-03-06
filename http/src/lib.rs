@@ -41,8 +41,8 @@ pub use ingress::{
     WebSocketEvent, WebSocketSessionContext,
 };
 pub use response::{
-    Html, HttpResponse, IntoResponse, json_error_response, outcome_to_response,
-    outcome_to_response_with_error,
+    Html, HttpResponse, IntoProblemDetail, IntoResponse, ProblemDetail, json_error_response,
+    outcome_to_problem_response, outcome_to_response, outcome_to_response_with_error,
 };
 pub use service::RanvierService;
 pub use sse::{Sse, SseEvent};
@@ -56,8 +56,8 @@ pub mod prelude {
         WebSocketEvent, WebSocketSessionContext,
     };
     pub use crate::response::{
-        Html, HttpResponse, IntoResponse, json_error_response, outcome_to_response,
-        outcome_to_response_with_error,
+        Html, HttpResponse, IntoProblemDetail, IntoResponse, ProblemDetail, json_error_response,
+        outcome_to_problem_response, outcome_to_response, outcome_to_response_with_error,
     };
     pub use crate::service::RanvierService;
     pub use crate::sse::{Sse, SseEvent};

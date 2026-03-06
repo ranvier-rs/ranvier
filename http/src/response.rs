@@ -174,6 +174,115 @@ impl IntoResponse for (StatusCode, Bytes) {
     }
 }
 
+// ── RFC 7807 Problem Details ──
+
+/// RFC 7807 Problem Details for HTTP APIs.
+///
+/// Provides a standardized error response format with `Content-Type: application/problem+json`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// ProblemDetail::new(404, "Resource Not Found")
+///     .with_detail("Todo with id 42 was not found")
+///     .with_instance("/api/todos/42")
+///     .with_extension("trace_id", "abc123")
+/// ```
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProblemDetail {
+    /// A URI reference identifying the problem type (default: "about:blank").
+    #[serde(rename = "type")]
+    pub type_uri: String,
+    /// A short, human-readable summary of the problem type.
+    pub title: String,
+    /// The HTTP status code.
+    pub status: u16,
+    /// A human-readable explanation specific to this occurrence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// A URI reference identifying the specific occurrence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
+    /// Additional properties (trace_id, transition, axon, etc.).
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub extensions: std::collections::HashMap<String, serde_json::Value>,
+}
+
+impl ProblemDetail {
+    /// Create a new ProblemDetail with status and title.
+    pub fn new(status: u16, title: impl Into<String>) -> Self {
+        Self {
+            type_uri: "about:blank".to_string(),
+            title: title.into(),
+            status,
+            detail: None,
+            instance: None,
+            extensions: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Set the problem type URI.
+    pub fn with_type_uri(mut self, uri: impl Into<String>) -> Self {
+        self.type_uri = uri.into();
+        self
+    }
+
+    /// Set the detail message.
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    /// Set the instance URI.
+    pub fn with_instance(mut self, instance: impl Into<String>) -> Self {
+        self.instance = Some(instance.into());
+        self
+    }
+
+    /// Add an extension property.
+    pub fn with_extension(mut self, key: impl Into<String>, value: impl Into<serde_json::Value>) -> Self {
+        self.extensions.insert(key.into(), value.into());
+        self
+    }
+}
+
+impl IntoResponse for ProblemDetail {
+    fn into_response(self) -> HttpResponse {
+        let status = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let body = serde_json::to_string(&self).unwrap_or_default();
+        Response::builder()
+            .status(status)
+            .header(CONTENT_TYPE, "application/problem+json")
+            .body(
+                Full::new(Bytes::from(body))
+                    .map_err(|never| match never {})
+                    .boxed(),
+            )
+            .expect("response builder should be infallible")
+    }
+}
+
+/// Trait for converting error types into RFC 7807 ProblemDetail.
+///
+/// Implement this trait on your error types to enable automatic
+/// `Outcome::Fault` → `ProblemDetail` conversion.
+pub trait IntoProblemDetail {
+    fn into_problem_detail(&self) -> ProblemDetail;
+}
+
+/// Convert an `Outcome` to a response, using RFC 7807 for faults.
+pub fn outcome_to_problem_response<Out, E>(outcome: Outcome<Out, E>) -> HttpResponse
+where
+    Out: IntoResponse,
+    E: IntoProblemDetail,
+{
+    match outcome {
+        Outcome::Next(output) => output.into_response(),
+        Outcome::Fault(error) => error.into_problem_detail().into_response(),
+        _ => "OK".into_response(),
+    }
+}
+
 pub fn outcome_to_response<Out, E>(outcome: Outcome<Out, E>) -> HttpResponse
 where
     Out: IntoResponse,
@@ -237,5 +346,68 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("application/json")
         );
+    }
+
+    #[test]
+    fn problem_detail_new_sets_defaults() {
+        let pd = ProblemDetail::new(404, "Not Found");
+        assert_eq!(pd.status, 404);
+        assert_eq!(pd.title, "Not Found");
+        assert_eq!(pd.type_uri, "about:blank");
+        assert!(pd.detail.is_none());
+        assert!(pd.instance.is_none());
+        assert!(pd.extensions.is_empty());
+    }
+
+    #[test]
+    fn problem_detail_builder_methods() {
+        let pd = ProblemDetail::new(400, "Bad Request")
+            .with_type_uri("https://ranvier.studio/errors/validation")
+            .with_detail("2 validation errors")
+            .with_instance("/api/todos")
+            .with_extension("trace_id", "abc123");
+        assert_eq!(pd.type_uri, "https://ranvier.studio/errors/validation");
+        assert_eq!(pd.detail.as_deref(), Some("2 validation errors"));
+        assert_eq!(pd.instance.as_deref(), Some("/api/todos"));
+        assert_eq!(pd.extensions.get("trace_id").unwrap(), "abc123");
+    }
+
+    #[test]
+    fn problem_detail_into_response_sets_problem_json_content_type() {
+        let pd = ProblemDetail::new(404, "Not Found");
+        let response = pd.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/problem+json")
+        );
+    }
+
+    #[test]
+    fn problem_detail_serialization_roundtrip() {
+        let pd = ProblemDetail::new(500, "Internal Server Error")
+            .with_detail("Something went wrong")
+            .with_extension("transition", "GetUser");
+        let json = serde_json::to_string(&pd).unwrap();
+        let pd2: ProblemDetail = serde_json::from_str(&json).unwrap();
+        assert_eq!(pd2.status, 500);
+        assert_eq!(pd2.title, "Internal Server Error");
+        assert_eq!(pd2.detail.as_deref(), Some("Something went wrong"));
+    }
+
+    #[test]
+    fn outcome_to_problem_response_maps_fault_to_rfc7807() {
+        struct MyError;
+        impl IntoProblemDetail for MyError {
+            fn into_problem_detail(&self) -> ProblemDetail {
+                ProblemDetail::new(422, "Unprocessable Entity")
+            }
+        }
+        let outcome: Outcome<String, MyError> = Outcome::Fault(MyError);
+        let response = outcome_to_problem_response(outcome);
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }
