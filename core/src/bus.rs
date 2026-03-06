@@ -559,4 +559,79 @@ mod tests {
         bus.provide("hello".to_string());
         assert_eq!(bus.try_require::<String>().unwrap(), "hello");
     }
+
+    #[test]
+    fn test_reinsertion_overwrites_previous_value() {
+        let mut bus = Bus::new();
+        bus.insert(42i32);
+        assert_eq!(*bus.read::<i32>().unwrap(), 42);
+
+        bus.insert(100i32);
+        assert_eq!(*bus.read::<i32>().unwrap(), 100);
+    }
+
+    #[test]
+    fn test_remove_then_read_returns_none() {
+        let mut bus = Bus::new();
+        bus.insert(42i32);
+        assert!(bus.read::<i32>().is_some());
+
+        let removed = bus.remove::<i32>();
+        assert_eq!(removed, Some(42));
+        assert!(bus.read::<i32>().is_none());
+    }
+
+    #[test]
+    fn test_is_empty_after_insertions_and_removals() {
+        let mut bus = Bus::new();
+        assert!(bus.is_empty());
+        assert_eq!(bus.len(), 0);
+
+        bus.insert(42i32);
+        assert!(!bus.is_empty());
+        assert_eq!(bus.len(), 1);
+
+        bus.insert("hello".to_string());
+        assert!(!bus.is_empty());
+        assert_eq!(bus.len(), 2);
+
+        bus.remove::<i32>();
+        assert!(!bus.is_empty());
+        assert_eq!(bus.len(), 1);
+
+        bus.remove::<String>();
+        assert!(bus.is_empty());
+        assert_eq!(bus.len(), 0);
+    }
+
+    #[test]
+    fn test_read_mut_modifies_value_in_place() {
+        let mut bus = Bus::new();
+        bus.insert(42i32);
+
+        if let Some(value) = bus.read_mut::<i32>() {
+            *value = 100;
+        }
+
+        assert_eq!(*bus.read::<i32>().unwrap(), 100);
+    }
+
+    #[test]
+    fn test_multiple_types_coexist() {
+        let mut bus = Bus::new();
+        bus.insert(42i32);
+        bus.insert(3.14f64);
+        bus.insert("hello".to_string());
+        bus.insert(true);
+
+        assert!(bus.has::<i32>());
+        assert!(bus.has::<f64>());
+        assert!(bus.has::<String>());
+        assert!(bus.has::<bool>());
+
+        assert_eq!(*bus.read::<i32>().unwrap(), 42);
+        assert_eq!(*bus.read::<f64>().unwrap(), 3.14);
+        assert_eq!(bus.read::<String>().unwrap(), "hello");
+        assert_eq!(*bus.read::<bool>().unwrap(), true);
+    }
 }

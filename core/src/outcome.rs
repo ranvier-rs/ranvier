@@ -198,4 +198,242 @@ mod tests {
         let json = serde_json::to_string(&outcome).unwrap();
         assert!(json.contains("Next"));
     }
+
+    #[test]
+    fn test_outcome_map_preserves_branch() {
+        let outcome: Outcome<i32, String> = Outcome::branch("error_path", None);
+        let mapped = outcome.map(|x| x * 2);
+        assert!(mapped.is_branch());
+        assert!(!mapped.is_next());
+    }
+
+    #[test]
+    fn test_outcome_map_preserves_fault() {
+        let outcome: Outcome<i32, String> = Outcome::fault("error".to_string());
+        let mapped = outcome.map(|x| x * 2);
+        assert!(mapped.is_fault());
+    }
+
+    #[test]
+    fn test_outcome_map_preserves_jump() {
+        let node_id = Uuid::new_v4();
+        let outcome: Outcome<i32, String> = Outcome::jump(node_id, None);
+        let mapped = outcome.map(|x| x * 2);
+        assert!(mapped.is_jump());
+    }
+
+    #[test]
+    fn test_outcome_map_preserves_emit() {
+        let outcome: Outcome<i32, String> = Outcome::emit("user_created", None);
+        let mapped = outcome.map(|x| x * 2);
+        assert!(mapped.is_emit());
+    }
+
+    #[test]
+    fn test_outcome_map_err_transforms_fault() {
+        let outcome: Outcome<i32, String> = Outcome::fault("original_error".to_string());
+        let mapped = outcome.map_err(|e| format!("wrapped: {}", e));
+        match mapped {
+            Outcome::Fault(e) => assert_eq!(e, "wrapped: original_error"),
+            _ => panic!("Expected Fault variant"),
+        }
+    }
+
+    #[test]
+    fn test_outcome_map_err_preserves_next() {
+        let outcome: Outcome<i32, String> = Outcome::next(42);
+        let mapped = outcome.map_err(|e| format!("wrapped: {}", e));
+        assert!(matches!(mapped, Outcome::Next(42)));
+    }
+
+    #[test]
+    fn test_outcome_map_err_preserves_branch() {
+        let outcome: Outcome<i32, String> = Outcome::branch("auth_failed", None);
+        let mapped = outcome.map_err(|e| format!("wrapped: {}", e));
+        assert!(mapped.is_branch());
+    }
+
+    #[test]
+    fn test_outcome_is_next_check() {
+        let outcome: Outcome<i32, String> = Outcome::next(42);
+        assert!(outcome.is_next());
+        assert!(!outcome.is_fault());
+        assert!(!outcome.is_branch());
+        assert!(!outcome.is_jump());
+        assert!(!outcome.is_emit());
+    }
+
+    #[test]
+    fn test_outcome_is_fault_check() {
+        let outcome: Outcome<i32, String> = Outcome::fault("error".to_string());
+        assert!(outcome.is_fault());
+        assert!(!outcome.is_next());
+        assert!(!outcome.is_branch());
+        assert!(!outcome.is_jump());
+        assert!(!outcome.is_emit());
+    }
+
+    #[test]
+    fn test_outcome_is_branch_check() {
+        let outcome: Outcome<i32, String> = Outcome::branch("path", None);
+        assert!(outcome.is_branch());
+        assert!(!outcome.is_next());
+        assert!(!outcome.is_fault());
+        assert!(!outcome.is_jump());
+        assert!(!outcome.is_emit());
+    }
+
+    #[test]
+    fn test_outcome_is_jump_check() {
+        let node_id = Uuid::new_v4();
+        let outcome: Outcome<i32, String> = Outcome::jump(node_id, None);
+        assert!(outcome.is_jump());
+        assert!(!outcome.is_next());
+        assert!(!outcome.is_fault());
+        assert!(!outcome.is_branch());
+        assert!(!outcome.is_emit());
+    }
+
+    #[test]
+    fn test_outcome_is_emit_check() {
+        let outcome: Outcome<i32, String> = Outcome::emit("event", None);
+        assert!(outcome.is_emit());
+        assert!(!outcome.is_next());
+        assert!(!outcome.is_fault());
+        assert!(!outcome.is_branch());
+        assert!(!outcome.is_jump());
+    }
+
+    #[test]
+    fn test_outcome_serialization_roundtrip_next() {
+        let original: Outcome<i32, String> = Outcome::next(42);
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: Outcome<i32, String> = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized, Outcome::Next(42)));
+    }
+
+    #[test]
+    fn test_outcome_serialization_roundtrip_fault() {
+        let original: Outcome<i32, String> = Outcome::fault("error_message".to_string());
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: Outcome<i32, String> = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            Outcome::Fault(e) => assert_eq!(e, "error_message"),
+            _ => panic!("Expected Fault variant"),
+        }
+    }
+
+    #[test]
+    fn test_outcome_serialization_roundtrip_branch() {
+        let payload = serde_json::json!({"reason": "unauthorized"});
+        let original: Outcome<i32, String> = Outcome::branch("auth_failed", Some(payload.clone()));
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: Outcome<i32, String> = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            Outcome::Branch(id, p) => {
+                assert_eq!(id, "auth_failed");
+                assert_eq!(p, Some(payload));
+            }
+            _ => panic!("Expected Branch variant"),
+        }
+    }
+
+    #[test]
+    fn test_outcome_serialization_roundtrip_jump() {
+        let node_id = Uuid::new_v4();
+        let payload = serde_json::json!({"state": "retry"});
+        let original: Outcome<i32, String> = Outcome::jump(node_id, Some(payload.clone()));
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: Outcome<i32, String> = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            Outcome::Jump(id, p) => {
+                assert_eq!(id, node_id);
+                assert_eq!(p, Some(payload));
+            }
+            _ => panic!("Expected Jump variant"),
+        }
+    }
+
+    #[test]
+    fn test_outcome_serialization_roundtrip_emit() {
+        let payload = serde_json::json!({"user_id": 123});
+        let original: Outcome<i32, String> = Outcome::emit("user_created", Some(payload.clone()));
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: Outcome<i32, String> = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            Outcome::Emit(evt, p) => {
+                assert_eq!(evt, "user_created");
+                assert_eq!(p, Some(payload));
+            }
+            _ => panic!("Expected Emit variant"),
+        }
+    }
+
+    #[test]
+    fn test_outcome_into_result_next_success() {
+        let outcome: Outcome<i32, anyhow::Error> = Outcome::next(42);
+        let result = outcome.into_result();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_outcome_into_result_fault_error() {
+        let outcome: Outcome<i32, anyhow::Error> = Outcome::fault(anyhow::anyhow!("test error"));
+        let result = outcome.into_result();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "test error");
+    }
+
+    #[test]
+    fn test_outcome_into_result_branch_error() {
+        let outcome: Outcome<i32, anyhow::Error> = Outcome::branch("path", None);
+        let result = outcome.into_result();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Early termination: Branch"));
+    }
+
+    #[test]
+    fn test_outcome_into_result_jump_error() {
+        let node_id = Uuid::new_v4();
+        let outcome: Outcome<i32, anyhow::Error> = Outcome::jump(node_id, None);
+        let result = outcome.into_result();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Early termination: Jump"));
+    }
+
+    #[test]
+    fn test_outcome_into_result_emit_error() {
+        let outcome: Outcome<i32, anyhow::Error> = Outcome::emit("event", None);
+        let result = outcome.into_result();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Early termination: Emit"));
+    }
+
+    #[test]
+    fn test_outcome_emit_creates_event_emission() {
+        let outcome: Outcome<i32, String> = Outcome::emit("user_registered", None);
+        assert!(outcome.is_emit());
+        match outcome {
+            Outcome::Emit(event_type, payload) => {
+                assert_eq!(event_type, "user_registered");
+                assert_eq!(payload, None);
+            }
+            _ => panic!("Expected Emit variant"),
+        }
+    }
+
+    #[test]
+    fn test_outcome_emit_with_payload() {
+        let payload = serde_json::json!({"user_id": 456, "email": "test@example.com"});
+        let outcome: Outcome<i32, String> = Outcome::emit("user_registered", Some(payload.clone()));
+        assert!(outcome.is_emit());
+        match outcome {
+            Outcome::Emit(event_type, p) => {
+                assert_eq!(event_type, "user_registered");
+                assert_eq!(p, Some(payload));
+            }
+            _ => panic!("Expected Emit variant"),
+        }
+    }
 }

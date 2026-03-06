@@ -4103,4 +4103,159 @@ mod tests {
         assert_eq!(last.input_schema.as_ref().unwrap()["required"][0], "name");
         assert_eq!(last.output_schema.as_ref().unwrap()["type"], "string");
     }
+
+    // Test transitions for new unit tests
+    #[derive(Clone)]
+    struct MultiplyByTwo;
+
+    #[async_trait]
+    impl Transition<i32, i32> for MultiplyByTwo {
+        type Error = TestInfallible;
+        type Resources = ();
+
+        async fn run(
+            &self,
+            state: i32,
+            _resources: &Self::Resources,
+            _bus: &mut Bus,
+        ) -> Outcome<i32, Self::Error> {
+            Outcome::Next(state * 2)
+        }
+    }
+
+    #[derive(Clone)]
+    struct AddTen;
+
+    #[async_trait]
+    impl Transition<i32, i32> for AddTen {
+        type Error = TestInfallible;
+        type Resources = ();
+
+        async fn run(
+            &self,
+            state: i32,
+            _resources: &Self::Resources,
+            _bus: &mut Bus,
+        ) -> Outcome<i32, Self::Error> {
+            Outcome::Next(state + 10)
+        }
+    }
+
+    #[derive(Clone)]
+    struct AddOneString;
+
+    #[async_trait]
+    impl Transition<i32, i32> for AddOneString {
+        type Error = String;
+        type Resources = ();
+
+        async fn run(
+            &self,
+            state: i32,
+            _resources: &Self::Resources,
+            _bus: &mut Bus,
+        ) -> Outcome<i32, Self::Error> {
+            Outcome::Next(state + 1)
+        }
+    }
+
+    #[derive(Clone)]
+    struct AddTenString;
+
+    #[async_trait]
+    impl Transition<i32, i32> for AddTenString {
+        type Error = String;
+        type Resources = ();
+
+        async fn run(
+            &self,
+            state: i32,
+            _resources: &Self::Resources,
+            _bus: &mut Bus,
+        ) -> Outcome<i32, Self::Error> {
+            Outcome::Next(state + 10)
+        }
+    }
+
+    #[tokio::test]
+    async fn axon_single_step_chain_executes_and_returns_next() {
+        let mut bus = Bus::new();
+        let axon = Axon::<i32, i32, TestInfallible>::start("SingleStep").then(AddOne);
+
+        let outcome = axon.execute(5, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Next(6)));
+    }
+
+    #[tokio::test]
+    async fn axon_three_step_chain_executes_in_order() {
+        let mut bus = Bus::new();
+        let axon = Axon::<i32, i32, TestInfallible>::start("ThreeStep")
+            .then(AddOne)
+            .then(MultiplyByTwo)
+            .then(AddTen);
+
+        // Starting with 5: AddOne -> 6, MultiplyByTwo -> 12, AddTen -> 22
+        let outcome = axon.execute(5, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Next(22)));
+    }
+
+    #[tokio::test]
+    async fn axon_with_fault_in_middle_step_propagates_error() {
+        let mut bus = Bus::new();
+
+        // Create a 3-step chain where the middle step faults
+        // Step 1: AddOneString (5 -> 6)
+        // Step 2: AlwaysFault (should fault here)
+        // Step 3: AddTenString (never reached)
+        let axon = Axon::<i32, i32, String>::start("FaultInMiddle")
+            .then(AddOneString)
+            .then(AlwaysFault)
+            .then(AddTenString);
+
+        let outcome = axon.execute(5, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Fault(msg) if msg == "boom"));
+    }
+
+    #[test]
+    fn axon_schematic_has_correct_node_count_after_chaining() {
+        let axon = Axon::<i32, i32, TestInfallible>::start("NodeCount")
+            .then(AddOne)
+            .then(MultiplyByTwo)
+            .then(AddTen);
+
+        // Should have 4 nodes: ingress + 3 transitions
+        assert_eq!(axon.schematic.nodes.len(), 4);
+        assert_eq!(axon.schematic.name, "NodeCount");
+    }
+
+    #[tokio::test]
+    async fn axon_execution_records_timeline_events() {
+        let mut bus = Bus::new();
+        bus.insert(Timeline::new());
+
+        let axon = Axon::<i32, i32, TestInfallible>::start("TimelineTest")
+            .then(AddOne)
+            .then(MultiplyByTwo);
+
+        let outcome = axon.execute(3, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Next(8))); // (3 + 1) * 2 = 8
+
+        let timeline = bus.read::<Timeline>().unwrap();
+
+        // Should have NodeEnter and NodeExit events
+        let enter_count = timeline
+            .events
+            .iter()
+            .filter(|e| matches!(e, TimelineEvent::NodeEnter { .. }))
+            .count();
+        let exit_count = timeline
+            .events
+            .iter()
+            .filter(|e| matches!(e, TimelineEvent::NodeExit { .. }))
+            .count();
+
+        // Expect at least 1 enter and 1 exit (ingress node)
+        assert!(enter_count >= 1, "Should have at least 1 NodeEnter event");
+        assert!(exit_count >= 1, "Should have at least 1 NodeExit event");
+    }
 }
