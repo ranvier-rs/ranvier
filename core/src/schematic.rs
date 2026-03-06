@@ -182,6 +182,8 @@ pub enum NodeKind {
     Synapse,                  // Connection point / Branch
     Egress,                   // Response / End
     Subgraph(Box<Schematic>), // Nested graph
+    FanOut,                   // Parallel split point
+    FanIn,                    // Parallel join point
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,6 +192,7 @@ pub enum EdgeType {
     Branch(String), // Outcome::Branch(id)
     Jump,           // Outcome::Jump
     Fault,          // Outcome::Fault
+    Parallel,       // Parallel branch (FanOut -> branch)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -3,18 +3,20 @@
 pub mod axon;
 pub mod cluster;
 pub mod distributed;
+pub mod llm;
 pub mod persistence;
 pub mod replay;
 pub mod retry;
 pub mod testkit;
 
 pub mod prelude {
-    pub use crate::axon::{Axon, BoxFuture, ExecutionMode, SchematicExportRequest};
+    pub use crate::axon::{Axon, BoxFuture, ExecutionMode, ParallelStrategy, SchematicExportRequest};
     pub use crate::{InfallibleAxon, SimpleAxon, TypedAxon};
     pub use crate::cluster::{ClusterManager, LeaderElection, LockBasedElection};
     pub use crate::distributed::{
         DistributedError, DistributedLock, DistributedStore, Guard, LockOptions,
     };
+    pub use crate::llm::{LlmError, LlmProvider, LlmTemplateVars, LlmTransition, MockLlmConfig};
     pub use crate::persistence::{
         CompensationAutoTrigger, CompensationContext, CompensationHandle, CompensationHook,
         CompensationIdempotencyHandle, CompensationIdempotencyStore, CompensationRetryPolicy,
@@ -44,9 +46,10 @@ pub type TypedAxon<In, Out, Res = ()> = Axon<In, Out, ranvier_core::error::Ranvi
 /// required by `Axon`.
 pub type InfallibleAxon<In, Out, Res = ()> = Axon<In, Out, ranvier_core::Never, Res>;
 
-pub use axon::{Axon, SchematicExportRequest};
+pub use axon::{Axon, ParallelStrategy, SchematicExportRequest};
 pub use cluster::{ClusterManager, LeaderElection, LockBasedElection};
 pub use distributed::{DistributedError, DistributedLock, DistributedStore, Guard, LockOptions};
+pub use llm::{LlmError, LlmProvider, LlmTemplateVars, LlmTransition, MockLlmConfig};
 pub use persistence::{
     CompensationAutoTrigger, CompensationContext, CompensationHandle, CompensationHook,
     CompensationIdempotencyHandle, CompensationIdempotencyStore, CompensationRetryPolicy,

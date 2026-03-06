@@ -1,3 +1,5 @@
+pub mod alert;
+pub mod auth;
 pub mod breakpoint;
 pub mod metrics;
 pub mod payload;
@@ -5,6 +7,7 @@ pub mod relay;
 pub mod routes;
 pub mod schema;
 pub mod stall;
+pub mod trace_store;
 
 use async_trait::async_trait;
 use axum::{
@@ -341,6 +344,9 @@ pub struct Inspector {
     dlq_reader: Option<Arc<dyn DlqReader>>,
     payload_policy: payload::PayloadCapturePolicy,
     relay_state: Option<relay::RelayState>,
+    bearer_auth: auth::BearerAuth,
+    trace_store: Option<Arc<dyn trace_store::TraceStore>>,
+    alert_dispatcher: Option<Arc<alert::AlertDispatcher>>,
 }
 
 impl Inspector {
@@ -364,6 +370,9 @@ impl Inspector {
             dlq_reader: None,
             payload_policy: payload::PayloadCapturePolicy::from_env(),
             relay_state: None,
+            bearer_auth: auth::BearerAuth::default(),
+            trace_store: None,
+            alert_dispatcher: None,
         }
     }
 
@@ -500,6 +509,30 @@ impl Inspector {
         self
     }
 
+    /// Configure Bearer token authentication for production deployments.
+    pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
+        self.bearer_auth = auth::BearerAuth { token: Some(token.into()) };
+        self
+    }
+
+    /// Load bearer token from `RANVIER_INSPECTOR_TOKEN` environment variable.
+    pub fn with_bearer_token_from_env(mut self) -> Self {
+        self.bearer_auth = auth::BearerAuth::from_env();
+        self
+    }
+
+    /// Configure a persistent trace store for trace history.
+    pub fn with_trace_store(mut self, store: Arc<dyn trace_store::TraceStore>) -> Self {
+        self.trace_store = Some(store);
+        self
+    }
+
+    /// Configure alert hooks for production monitoring.
+    pub fn with_alert_dispatcher(mut self, dispatcher: Arc<alert::AlertDispatcher>) -> Self {
+        self.alert_dispatcher = Some(dispatcher);
+        self
+    }
+
     pub async fn serve(self) -> Result<(), std::io::Error> {
         let addr = SocketAddr::from(([0, 0, 0, 0], self.port));
         let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -521,6 +554,9 @@ impl Inspector {
             state_inspector: self.state_inspector,
             dlq_reader: self.dlq_reader,
             relay_state: self.relay_state,
+            bearer_auth: self.bearer_auth,
+            trace_store: self.trace_store,
+            alert_dispatcher: self.alert_dispatcher,
         };
 
         // Store payload capture policy in a global for the tracing Layer to access
@@ -579,7 +615,8 @@ impl Inspector {
                 .route(
                     "/api/v1/relay",
                     axum::routing::post(api_post_relay),
-                );
+                )
+                .route("/api/v1/traces/stored", get(api_get_stored_traces));
         }
 
         if self.surface_policy.expose_events {
@@ -697,6 +734,8 @@ fn node_kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Synapse => "Synapse",
         NodeKind::Egress => "Egress",
         NodeKind::Subgraph(_) => "Subgraph",
+        NodeKind::FanOut => "FanOut",
+        NodeKind::FanIn => "FanIn",
     }
 }
 
@@ -1075,6 +1114,10 @@ struct InspectorState {
     state_inspector: Option<Arc<dyn StateInspector>>,
     dlq_reader: Option<Arc<dyn DlqReader>>,
     relay_state: Option<relay::RelayState>,
+    bearer_auth: auth::BearerAuth,
+    trace_store: Option<Arc<dyn trace_store::TraceStore>>,
+    #[allow(dead_code)]
+    alert_dispatcher: Option<Arc<alert::AlertDispatcher>>,
 }
 
 pub fn layer() -> InspectorLayer {
@@ -2006,6 +2049,40 @@ async fn api_post_relay(
         Err(err) => Err((
             StatusCode::BAD_GATEWAY,
             Json(serde_json::to_value(&err).unwrap_or(Value::Null)),
+        )),
+    }
+}
+
+async fn api_get_stored_traces(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    state.bearer_auth.validate(&headers)?;
+
+    let Some(store) = &state.trace_store else {
+        return Ok(inspector_envelope(
+            "inspector.traces_stored.v1",
+            serde_json::json!({
+                "total": 0,
+                "traces": [],
+                "note": "No trace store configured"
+            }),
+        ));
+    };
+
+    let query = trace_store::TraceQuery::default();
+    match store.query(query).await {
+        Ok(traces) => Ok(inspector_envelope(
+            "inspector.traces_stored.v1",
+            serde_json::json!({
+                "total": traces.len(),
+                "traces": traces
+            }),
+        )),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "trace_store_error", "message": e })),
         )),
     }
 }
