@@ -100,6 +100,8 @@ async fn main() -> Result<()> {
         source_location: None,
         position: None,
         compensation_node_id: None,
+        input_schema: None,
+        output_schema: None,
     };
 
     // Create a Branch Edge
@@ -126,6 +128,8 @@ async fn main() -> Result<()> {
         source_location: None,
         position: None,
         compensation_node_id: None,
+        input_schema: None,
+        output_schema: None,
     };
 
     // Add Subgraph to the main graph (conceptually unconnected for now, just to show JSON structure)

@@ -26,30 +26,37 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut bus_deny_specified = false;
     let mut x_pos = None;
     let mut y_pos = None;
+    let mut schema_flag = false;
     if !attr.is_empty() {
         let parser = syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated;
         if let Ok(metas) = syn::parse::Parser::parse2(parser, attr.into()) {
             for meta in metas {
-                if let syn::Meta::NameValue(nv) = meta {
-                    if nv.path.is_ident("res") {
-                        res_override = Some(nv.value);
-                    } else if nv.path.is_ident("bus_allow") {
-                        bus_allow_specified = true;
-                        match parse_type_array_expr(&nv.value) {
-                            Ok(types) => bus_allow_types = types,
-                            Err(err) => return err.to_compile_error().into(),
-                        }
-                    } else if nv.path.is_ident("bus_deny") {
-                        bus_deny_specified = true;
-                        match parse_type_array_expr(&nv.value) {
-                            Ok(types) => bus_deny_types = types,
-                            Err(err) => return err.to_compile_error().into(),
-                        }
-                    } else if nv.path.is_ident("x") {
-                        x_pos = Some(nv.value);
-                    } else if nv.path.is_ident("y") {
-                        y_pos = Some(nv.value);
+                match meta {
+                    syn::Meta::Path(path) if path.is_ident("schema") => {
+                        schema_flag = true;
                     }
+                    syn::Meta::NameValue(nv) => {
+                        if nv.path.is_ident("res") {
+                            res_override = Some(nv.value);
+                        } else if nv.path.is_ident("bus_allow") {
+                            bus_allow_specified = true;
+                            match parse_type_array_expr(&nv.value) {
+                                Ok(types) => bus_allow_types = types,
+                                Err(err) => return err.to_compile_error().into(),
+                            }
+                        } else if nv.path.is_ident("bus_deny") {
+                            bus_deny_specified = true;
+                            match parse_type_array_expr(&nv.value) {
+                                Ok(types) => bus_deny_types = types,
+                                Err(err) => return err.to_compile_error().into(),
+                            }
+                        } else if nv.path.is_ident("x") {
+                            x_pos = Some(nv.value);
+                        } else if nv.path.is_ident("y") {
+                            y_pos = Some(nv.value);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -176,6 +183,17 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {}
     };
 
+    let schema_method = if schema_flag {
+        quote! {
+            fn input_schema(&self) -> Option<serde_json::Value> {
+                let schema = schemars::schema_for!(#input_type);
+                serde_json::to_value(schema).ok()
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     let expanded = quote! {
         #[derive(Clone, Default)]
         #[allow(non_camel_case_types)]
@@ -188,6 +206,7 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             #bus_policy_method
             #position_method
+            #schema_method
 
             async fn run(
                 &self,

@@ -1,6 +1,9 @@
 pub mod breakpoint;
 pub mod metrics;
 pub mod payload;
+pub mod relay;
+pub mod routes;
+pub mod schema;
 pub mod stall;
 
 use async_trait::async_trait;
@@ -337,6 +340,7 @@ pub struct Inspector {
     state_inspector: Option<Arc<dyn StateInspector>>,
     dlq_reader: Option<Arc<dyn DlqReader>>,
     payload_policy: payload::PayloadCapturePolicy,
+    relay_state: Option<relay::RelayState>,
 }
 
 impl Inspector {
@@ -359,7 +363,30 @@ impl Inspector {
             state_inspector: None,
             dlq_reader: None,
             payload_policy: payload::PayloadCapturePolicy::from_env(),
+            relay_state: None,
         }
+    }
+
+    /// Configure the relay target for proxying API requests into the running application.
+    ///
+    /// When set, `/api/v1/relay` will forward requests to the specified URL via `reqwest`.
+    ///
+    /// ```rust,ignore
+    /// let inspector = Inspector::new(schematic, 9090)
+    ///     .with_relay_target("http://127.0.0.1:3111");
+    /// ```
+    pub fn with_relay_target(mut self, target_url: impl Into<String>) -> Self {
+        let config = relay::RelayConfig::new(target_url);
+        self.relay_state = Some(relay::RelayState::new(config));
+        self
+    }
+
+    /// Register HTTP route descriptors for the `/api/v1/routes` endpoint.
+    ///
+    /// Call this with the route descriptors from your `HttpIngress`.
+    pub fn with_routes(self, route_infos: Vec<routes::RouteInfo>) -> Self {
+        routes::register_routes(route_infos);
+        self
     }
 
     pub fn with_dlq_reader(mut self, reader: Arc<dyn DlqReader>) -> Self {
@@ -493,6 +520,7 @@ impl Inspector {
             redaction_policy: self.redaction_policy.clone(),
             state_inspector: self.state_inspector,
             dlq_reader: self.dlq_reader,
+            relay_state: self.relay_state,
         };
 
         // Store payload capture policy in a global for the tracing Layer to access
@@ -538,7 +566,20 @@ impl Inspector {
                     axum::routing::delete(api_delete_breakpoint)
                         .patch(api_patch_breakpoint),
                 )
-                .route("/api/v1/stalls", get(api_get_stalls));
+                .route("/api/v1/stalls", get(api_get_stalls))
+                .route("/api/v1/routes", get(api_get_routes))
+                .route(
+                    "/api/v1/routes/schema",
+                    axum::routing::post(api_post_routes_schema),
+                )
+                .route(
+                    "/api/v1/routes/sample",
+                    axum::routing::post(api_post_routes_sample),
+                )
+                .route(
+                    "/api/v1/relay",
+                    axum::routing::post(api_post_relay),
+                );
         }
 
         if self.surface_policy.expose_events {
@@ -1033,6 +1074,7 @@ struct InspectorState {
     redaction_policy: TelemetryRedactionPolicy,
     state_inspector: Option<Arc<dyn StateInspector>>,
     dlq_reader: Option<Arc<dyn DlqReader>>,
+    relay_state: Option<relay::RelayState>,
 }
 
 pub fn layer() -> InspectorLayer {
@@ -1790,6 +1832,182 @@ fn ensure_internal_access(
         ));
     }
     Ok(())
+}
+
+// --- M201: New API endpoints ---
+
+async fn api_get_routes(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+
+    let registered = routes::list_routes();
+
+    // Also enrich from schematic node schemas
+    let schematic = state.schematic.lock().unwrap();
+    let mut route_list: Vec<Value> = registered
+        .iter()
+        .map(|r| {
+            // Find matching node in schematic by label
+            let node_schemas = schematic.nodes.iter().find(|n| {
+                Some(r.circuit_name.as_deref().unwrap_or(""))
+                    == Some(n.label.as_str())
+            });
+
+            serde_json::json!({
+                "method": r.method,
+                "path": r.path,
+                "circuit_name": r.circuit_name,
+                "input_schema": r.input_schema.clone().or_else(|| node_schemas.and_then(|n| n.input_schema.clone())),
+                "output_schema": r.output_schema.clone().or_else(|| node_schemas.and_then(|n| n.output_schema.clone())),
+            })
+        })
+        .collect();
+
+    // If no routes registered, build from schematic nodes
+    if route_list.is_empty() {
+        route_list = schematic
+            .nodes
+            .iter()
+            .filter(|n| n.input_schema.is_some() || n.output_schema.is_some())
+            .map(|n| {
+                serde_json::json!({
+                    "circuit_name": n.label,
+                    "input_type": n.input_type,
+                    "output_type": n.output_type,
+                    "input_schema": n.input_schema,
+                    "output_schema": n.output_schema,
+                })
+            })
+            .collect();
+    }
+
+    Ok(inspector_envelope(
+        "inspector.routes.v1",
+        serde_json::json!({
+            "count": route_list.len(),
+            "routes": route_list
+        }),
+    ))
+}
+
+async fn api_post_routes_schema(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+    Json(body): Json<routes::SchemaLookupRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+
+    // Look up from route registry first
+    if let Some(route) = routes::find_route(&body.method, &body.path) {
+        if let Some(schema) = route.input_schema {
+            return Ok(inspector_envelope(
+                "inspector.route_schema.v1",
+                serde_json::json!({
+                    "method": body.method,
+                    "path": body.path,
+                    "schema": schema
+                }),
+            ));
+        }
+    }
+
+    // Fallback: look in schematic nodes
+    let schematic = state.schematic.lock().unwrap();
+    for node in &schematic.nodes {
+        if let Some(schema) = &node.input_schema {
+            return Ok(inspector_envelope(
+                "inspector.route_schema.v1",
+                serde_json::json!({
+                    "method": body.method,
+                    "path": body.path,
+                    "schema": schema
+                }),
+            ));
+        }
+    }
+
+    Err(policy_error(StatusCode::NOT_FOUND, "schema_not_found"))
+}
+
+async fn api_post_routes_sample(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+    Json(body): Json<routes::SampleRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+
+    // Find the schema for this route
+    let schema_val = {
+        if let Some(route) = routes::find_route(&body.method, &body.path) {
+            route.input_schema
+        } else {
+            // Fallback: look in schematic nodes
+            let schematic = state.schematic.lock().unwrap();
+            schematic
+                .nodes
+                .iter()
+                .find_map(|n| n.input_schema.clone())
+        }
+    };
+
+    let Some(schema_val) = schema_val else {
+        return Err(policy_error(StatusCode::NOT_FOUND, "schema_not_found"));
+    };
+
+    let sample = match body.mode.as_str() {
+        "random" => schema::generate_sample(&schema_val),
+        _ => schema::generate_template(&schema_val),
+    };
+
+    Ok(inspector_envelope(
+        "inspector.route_sample.v1",
+        serde_json::json!({
+            "method": body.method,
+            "path": body.path,
+            "mode": body.mode,
+            "sample": sample
+        }),
+    ))
+}
+
+async fn api_post_relay(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+    Json(body): Json<relay::RelayRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+
+    // Guard: dev mode only
+    let mode = InspectorMode::from_env();
+    if mode != InspectorMode::Dev {
+        return Err(policy_error(
+            StatusCode::FORBIDDEN,
+            "relay_only_in_dev_mode",
+        ));
+    }
+
+    let Some(relay_state) = &state.relay_state else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "relay_not_configured",
+                "message": "No relay target configured. Use Inspector::with_relay_target() to enable."
+            })),
+        ));
+    };
+
+    match relay::execute_relay(relay_state, body).await {
+        Ok(response) => Ok(inspector_envelope(
+            "inspector.relay.v1",
+            serde_json::to_value(&response).unwrap_or(Value::Null),
+        )),
+        Err(err) => Err((
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::to_value(&err).unwrap_or(Value::Null)),
+        )),
+    }
 }
 
 #[cfg(test)]

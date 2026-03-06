@@ -157,6 +157,14 @@ pub struct Node {
     /// Points to the node ID that handles compensation for this node.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compensation_node_id: Option<String>,
+    /// JSON Schema for the node's input type.
+    /// Populated via `.with_input_schema::<T>()` or `#[transition(schema)]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<serde_json::Value>,
+    /// JSON Schema for the node's output type.
+    /// Populated via `.with_output_schema::<T>()` or `#[transition(schema)]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -411,6 +419,140 @@ mod tests {
 
         let not_found = registry.find_migration("1.0", "3.0");
         assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_node_deserializes_without_schema_fields() {
+        // RQ13: Backward compatibility — old JSON without input_schema/output_schema
+        let json = r#"{
+            "id": "node-1",
+            "kind": "Atom",
+            "label": "OldNode",
+            "input_type": "i32",
+            "output_type": "i32",
+            "resource_type": "()",
+            "metadata": {
+                "id": "00000000-0000-0000-0000-000000000000",
+                "label": "OldNode",
+                "description": null,
+                "inputs": [],
+                "outputs": []
+            }
+        }"#;
+        let node: Node = serde_json::from_str(json).unwrap();
+        assert_eq!(node.label, "OldNode");
+        assert!(node.input_schema.is_none());
+        assert!(node.output_schema.is_none());
+    }
+
+    #[test]
+    fn test_node_serializes_schema_fields_when_present() {
+        let node = Node {
+            id: "node-s".to_string(),
+            kind: NodeKind::Atom,
+            label: "WithSchema".to_string(),
+            description: None,
+            input_type: "MyInput".to_string(),
+            output_type: "MyOutput".to_string(),
+            resource_type: "()".to_string(),
+            metadata: StepMetadata::default(),
+            bus_capability: None,
+            source_location: None,
+            position: None,
+            compensation_node_id: None,
+            input_schema: Some(serde_json::json!({"type": "object"})),
+            output_schema: Some(serde_json::json!({"type": "string"})),
+        };
+        let json = serde_json::to_value(&node).unwrap();
+        assert_eq!(json["input_schema"], serde_json::json!({"type": "object"}));
+        assert_eq!(json["output_schema"], serde_json::json!({"type": "string"}));
+    }
+
+    #[test]
+    fn test_node_omits_schema_fields_when_none() {
+        let node = Node {
+            id: "node-n".to_string(),
+            kind: NodeKind::Atom,
+            label: "NoSchema".to_string(),
+            description: None,
+            input_type: "i32".to_string(),
+            output_type: "i32".to_string(),
+            resource_type: "()".to_string(),
+            metadata: StepMetadata::default(),
+            bus_capability: None,
+            source_location: None,
+            position: None,
+            compensation_node_id: None,
+            input_schema: None,
+            output_schema: None,
+        };
+        let json = serde_json::to_value(&node).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(!obj.contains_key("input_schema"));
+        assert!(!obj.contains_key("output_schema"));
+    }
+
+    #[test]
+    fn test_schematic_with_schema_nodes_roundtrip() {
+        let mut schematic = Schematic::new("SchemaTest");
+        schematic.nodes.push(Node {
+            id: "n1".to_string(),
+            kind: NodeKind::Atom,
+            label: "Step1".to_string(),
+            description: None,
+            input_type: "Request".to_string(),
+            output_type: "Response".to_string(),
+            resource_type: "()".to_string(),
+            metadata: StepMetadata::default(),
+            bus_capability: None,
+            source_location: None,
+            position: None,
+            compensation_node_id: None,
+            input_schema: Some(serde_json::json!({"type": "object", "required": ["name"]})),
+            output_schema: None,
+        });
+
+        let json = serde_json::to_string(&schematic).unwrap();
+        let deserialized: Schematic = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.nodes.len(), 1);
+        assert!(deserialized.nodes[0].input_schema.is_some());
+        assert!(deserialized.nodes[0].output_schema.is_none());
+        assert_eq!(
+            deserialized.nodes[0].input_schema.as_ref().unwrap()["required"][0],
+            "name"
+        );
+    }
+
+    #[test]
+    fn test_legacy_schematic_json_deserializes() {
+        // RQ13: Full schematic from pre-v0.20 (no input_schema/output_schema on nodes)
+        let json = r#"{
+            "schema_version": "1.0",
+            "id": "legacy-1",
+            "name": "LegacyCircuit",
+            "nodes": [{
+                "id": "n1",
+                "kind": "Ingress",
+                "label": "Start",
+                "input_type": "String",
+                "output_type": "String",
+                "resource_type": "()",
+                "metadata": {
+                    "id": "00000000-0000-0000-0000-000000000000",
+                    "label": "Start",
+                    "description": null,
+                    "inputs": [],
+                    "outputs": []
+                }
+            }],
+            "edges": []
+        }"#;
+        let schematic: Schematic = serde_json::from_str(json).unwrap();
+        assert_eq!(schematic.name, "LegacyCircuit");
+        assert_eq!(schematic.nodes.len(), 1);
+        assert!(schematic.nodes[0].input_schema.is_none());
+        assert!(schematic.nodes[0].output_schema.is_none());
     }
 
     #[test]

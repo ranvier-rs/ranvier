@@ -113,6 +113,14 @@ where
         None
     }
 
+    /// Optional JSON Schema for the input type of this transition.
+    ///
+    /// When `#[transition(schema)]` is used, this returns the JSON Schema
+    /// generated from the input type via `schemars::schema_for!()`.
+    fn input_schema(&self) -> Option<serde_json::Value> {
+        None
+    }
+
     /// Execute the transition.
     ///
     /// # Parameters
@@ -157,6 +165,10 @@ where
     fn bus_access_policy(&self) -> Option<BusAccessPolicy> {
         self.as_ref().bus_access_policy()
     }
+
+    fn input_schema(&self) -> Option<serde_json::Value> {
+        self.as_ref().input_schema()
+    }
 }
 
 #[cfg(test)]
@@ -185,5 +197,46 @@ mod tests {
         let mut bus = Bus::new();
         let result = AddOne.run(41, &(), &mut bus).await;
         assert!(matches!(result, Outcome::Next(42)));
+    }
+
+    #[test]
+    fn default_input_schema_returns_none() {
+        let t = AddOne;
+        assert!(t.input_schema().is_none());
+    }
+
+    struct WithSchema;
+
+    #[async_trait]
+    impl Transition<String, String> for WithSchema {
+        type Error = String;
+        type Resources = ();
+
+        fn input_schema(&self) -> Option<serde_json::Value> {
+            Some(serde_json::json!({"type": "string"}))
+        }
+
+        async fn run(
+            &self,
+            state: String,
+            _resources: &Self::Resources,
+            _bus: &mut Bus,
+        ) -> Outcome<String, Self::Error> {
+            Outcome::Next(state)
+        }
+    }
+
+    #[test]
+    fn custom_input_schema_returns_value() {
+        let t = WithSchema;
+        let schema = t.input_schema().unwrap();
+        assert_eq!(schema["type"], "string");
+    }
+
+    #[test]
+    fn arc_wrapped_transition_forwards_input_schema() {
+        let t: std::sync::Arc<WithSchema> = std::sync::Arc::new(WithSchema);
+        let schema = t.input_schema().unwrap();
+        assert_eq!(schema["type"], "string");
     }
 }

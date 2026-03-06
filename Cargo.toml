@@ -136,6 +136,8 @@ tower = { version = "0.5.3", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
+schemars = { version = "1.2.0", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json"] }
 quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
 proc-macro2 = "1.0"

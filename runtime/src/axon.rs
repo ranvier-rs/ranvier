@@ -197,6 +197,8 @@ where
             source_location: Some(SourceLocation::new(caller.file(), caller.line())),
             position: None,
             compensation_node_id: None,
+            input_schema: None,
+            output_schema: None,
         };
 
         let mut schematic = Schematic::new(label);
@@ -314,6 +316,63 @@ where
         ));
         self
     }
+
+    /// Attach a JSON Schema for the **last node's input type** in the schematic.
+    ///
+    /// Requires the `schema` feature and `T: schemars::JsonSchema`.
+    ///
+    /// ```rust,ignore
+    /// let axon = Axon::new("My Circuit")
+    ///     .then(ProcessStep)
+    ///     .with_input_schema::<CreateUserRequest>()
+    ///     .with_output_schema::<UserResponse>();
+    /// ```
+    #[cfg(feature = "schema")]
+    pub fn with_input_schema<T>(mut self) -> Self
+    where
+        T: schemars::JsonSchema,
+    {
+        if let Some(last_node) = self.schematic.nodes.last_mut() {
+            let schema = schemars::schema_for!(T);
+            last_node.input_schema =
+                Some(serde_json::to_value(schema).unwrap_or(serde_json::Value::Null));
+        }
+        self
+    }
+
+    /// Attach a JSON Schema for the **last node's output type** in the schematic.
+    ///
+    /// Requires the `schema` feature and `T: schemars::JsonSchema`.
+    #[cfg(feature = "schema")]
+    pub fn with_output_schema<T>(mut self) -> Self
+    where
+        T: schemars::JsonSchema,
+    {
+        if let Some(last_node) = self.schematic.nodes.last_mut() {
+            let schema = schemars::schema_for!(T);
+            last_node.output_schema =
+                Some(serde_json::to_value(schema).unwrap_or(serde_json::Value::Null));
+        }
+        self
+    }
+
+    /// Attach a raw JSON Schema value for the **last node's input type** in the schematic.
+    ///
+    /// Use this for pre-built schemas without requiring the `schema` feature.
+    pub fn with_input_schema_value(mut self, schema: serde_json::Value) -> Self {
+        if let Some(last_node) = self.schematic.nodes.last_mut() {
+            last_node.input_schema = Some(schema);
+        }
+        self
+    }
+
+    /// Attach a raw JSON Schema value for the **last node's output type** in the schematic.
+    pub fn with_output_schema_value(mut self, schema: serde_json::Value) -> Self {
+        if let Some(last_node) = self.schematic.nodes.last_mut() {
+            last_node.output_schema = Some(schema);
+        }
+        self
+    }
 }
 
 #[async_trait]
@@ -419,6 +478,8 @@ where
                 .position()
                 .map(|(x, y)| ranvier_core::schematic::Position { x, y }),
             compensation_node_id: None,
+            input_schema: transition.input_schema(),
+            output_schema: None,
         };
 
         let last_node_id = schematic
@@ -629,6 +690,8 @@ where
                 .position()
                 .map(|(x, y)| ranvier_core::schematic::Position { x, y }),
             compensation_node_id: Some(comp_node_id.clone()),
+            input_schema: None,
+            output_schema: None,
         };
 
         // 2. Add Compensation Node
@@ -647,6 +710,8 @@ where
                 .position()
                 .map(|(x, y)| ranvier_core::schematic::Position { x, y }),
             compensation_node_id: None,
+            input_schema: None,
+            output_schema: None,
         };
 
         let last_node_id = schematic
@@ -861,6 +926,8 @@ where
                 .position()
                 .map(|(x, y)| ranvier_core::schematic::Position { x, y }),
             compensation_node_id: None,
+            input_schema: None,
+            output_schema: None,
         };
 
         if let Some(last_node) = self.schematic.nodes.last_mut() {
@@ -896,6 +963,8 @@ where
             source_location: Some(SourceLocation::new(caller.file(), caller.line())),
             position: None,
             compensation_node_id: None,
+            input_schema: None,
+            output_schema: None,
         };
 
         self.schematic.nodes.push(branch_node);
@@ -3750,5 +3819,121 @@ mod tests {
 
             assert!(matches!(outcome, Outcome::Next(11)));
         }
+    }
+
+    // ── Schema Propagation Tests (M201-RQ9, RQ12) ──────────────────
+
+    #[derive(Clone)]
+    struct SchemaTransition;
+
+    #[async_trait]
+    impl Transition<String, String> for SchemaTransition {
+        type Error = String;
+        type Resources = ();
+
+        fn input_schema(&self) -> Option<serde_json::Value> {
+            Some(serde_json::json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": { "type": "string" }
+                }
+            }))
+        }
+
+        async fn run(
+            &self,
+            state: String,
+            _resources: &Self::Resources,
+            _bus: &mut Bus,
+        ) -> Outcome<String, Self::Error> {
+            Outcome::Next(state)
+        }
+    }
+
+    #[test]
+    fn then_auto_populates_input_schema_from_transition() {
+        let axon = Axon::<String, String, String>::new("SchemaTest").then(SchemaTransition);
+
+        // The last node (added by .then()) should have input_schema
+        let last_node = axon.schematic.nodes.last().unwrap();
+        assert!(last_node.input_schema.is_some());
+        let schema = last_node.input_schema.as_ref().unwrap();
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["required"][0], "name");
+    }
+
+    #[test]
+    fn then_leaves_input_schema_none_when_not_provided() {
+        let axon = Axon::<i32, i32, TestInfallible>::new("NoSchema").then(AddOne);
+
+        let last_node = axon.schematic.nodes.last().unwrap();
+        assert!(last_node.input_schema.is_none());
+    }
+
+    #[test]
+    fn with_input_schema_value_sets_on_last_node() {
+        let schema = serde_json::json!({"type": "integer"});
+        let axon = Axon::<i32, i32, TestInfallible>::new("ManualSchema")
+            .then(AddOne)
+            .with_input_schema_value(schema.clone());
+
+        let last_node = axon.schematic.nodes.last().unwrap();
+        assert_eq!(last_node.input_schema.as_ref().unwrap(), &schema);
+    }
+
+    #[test]
+    fn with_output_schema_value_sets_on_last_node() {
+        let schema = serde_json::json!({"type": "integer"});
+        let axon = Axon::<i32, i32, TestInfallible>::new("OutputSchema")
+            .then(AddOne)
+            .with_output_schema_value(schema.clone());
+
+        let last_node = axon.schematic.nodes.last().unwrap();
+        assert_eq!(last_node.output_schema.as_ref().unwrap(), &schema);
+    }
+
+    #[test]
+    fn schematic_export_includes_schema_fields() {
+        let axon = Axon::<String, String, String>::new("ExportTest")
+            .then(SchemaTransition)
+            .with_output_schema_value(serde_json::json!({"type": "string"}));
+
+        let json = serde_json::to_value(&axon.schematic).unwrap();
+        let nodes = json["nodes"].as_array().unwrap();
+        // Find the SchemaTransition node (last one)
+        let last = nodes.last().unwrap();
+        assert!(last.get("input_schema").is_some());
+        assert_eq!(last["input_schema"]["type"], "object");
+        assert_eq!(last["output_schema"]["type"], "string");
+    }
+
+    #[test]
+    fn schematic_export_omits_schema_fields_when_none() {
+        let axon = Axon::<i32, i32, TestInfallible>::new("NoSchemaExport").then(AddOne);
+
+        let json = serde_json::to_value(&axon.schematic).unwrap();
+        let nodes = json["nodes"].as_array().unwrap();
+        let last = nodes.last().unwrap();
+        let obj = last.as_object().unwrap();
+        assert!(!obj.contains_key("input_schema"));
+        assert!(!obj.contains_key("output_schema"));
+    }
+
+    #[test]
+    fn schematic_json_roundtrip_preserves_schemas() {
+        let axon = Axon::<String, String, String>::new("Roundtrip")
+            .then(SchemaTransition)
+            .with_output_schema_value(serde_json::json!({"type": "string"}));
+
+        let json_str = serde_json::to_string(&axon.schematic).unwrap();
+        let deserialized: ranvier_core::schematic::Schematic =
+            serde_json::from_str(&json_str).unwrap();
+
+        let last = deserialized.nodes.last().unwrap();
+        assert!(last.input_schema.is_some());
+        assert!(last.output_schema.is_some());
+        assert_eq!(last.input_schema.as_ref().unwrap()["required"][0], "name");
+        assert_eq!(last.output_schema.as_ref().unwrap()["type"], "string");
     }
 }
