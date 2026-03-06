@@ -59,13 +59,13 @@ Default features include the HTTP ingress adapter and std nodes.
 To slim down dependencies:
 
 ```toml
-ranvier = { version = "0.7.0", default-features = false }
+ranvier = { version = "0.18.0", default-features = false }
 ```
 
 You can enable features explicitly:
 
 ```toml
-ranvier = { version = "0.7.0", features = ["http", "std"] }
+ranvier = { version = "0.18.0", features = ["http", "std"] }
 ```
 
 ## Crates
@@ -78,4 +78,4 @@ ranvier = { version = "0.7.0", features = ["http", "std"] }
 
 ## MSRV
 
-- Rust `1.85.0` or newer.
+- Rust `1.93.0` or newer (Edition 2024).

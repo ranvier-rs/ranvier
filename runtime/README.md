@@ -29,4 +29,4 @@ let axon = Axon::start("MyCircuit")
 
 ## MSRV
 
-- Rust `1.85.0` or newer.
+- Rust `1.93.0` or newer (Edition 2024).

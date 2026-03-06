@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.18.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.18.0 — crates.io release (23 crates).**
+All 23 workspace crates published to crates.io at version 0.18.0. Inspector enrichment (v0.19 capability snapshot) landed: per-node metrics, payload capture, conditional breakpoints, and stall detection.
+
+### Added
+- **Inspector Metrics (M190–M191):** Sliding-window ring buffer collecting throughput, latency percentiles (p50/p95/p99), and error rate per node. REST query + WebSocket broadcast.
+- **Payload Capture & DLQ (M192):** Configurable capture policy (off/hash/full) via `RANVIER_INSPECTOR_CAPTURE_PAYLOADS`. Dead letter queue inspection endpoints.
+- **Conditional Breakpoints (M193):** JSON path `field op value` evaluator with CRUD REST API for setting breakpoints on node conditions.
+- **Stall Detection (M193):** Threshold-based stall detector (`RANVIER_INSPECTOR_STALL_THRESHOLD_MS`, default 30s) with REST + WebSocket alerts.
+- **Release Automation (M188):** `studio-tauri-release.yml` and `vscode-publish.yml` CI workflows.
+- **E2E CI (M189):** `e2e-dogfooding.yml` workflow with 5 integration jobs.
+
+---
+
+## [0.17.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.17.0 — VSCode Marketplace publish (v0.0.8), Studio stabilization, web manual guards.**
+
+### Added
+- **VSCode v0.0.8 (M184–M185):** Toolbox patterns, marketplace publish, limitation/boundary split rendering.
+- **Web Manual Guards (M186–M187):** 14 verification scripts, manual drift detection, CI pilot workflow.
+- **Studio Export Hardening (M35–M37):** Detached signature/checksum export, CI export verification smoke.
+- **Capability Registry v0.17:** Limitation taxonomy refined (product_boundary vs implementation_gap).
+
+### Changed
+- CAPABILITY_REGISTRY.json: `cannot_do` items reduced from 11 to 3 (all `product_boundary`).
+
+---
+
 ## [0.16.0] — 2026-03
 
 ### Summary

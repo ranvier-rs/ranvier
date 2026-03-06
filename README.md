@@ -8,14 +8,14 @@ diff, and validate.
 
 ---
 
-**What's new in v0.10.0**
+**Latest: v0.18.0** (23 crates on crates.io)
 
-- **Gate A Stabilized**: Core Execution and Decision Engine APIs are now frozen.
-- **Typed Fallbacks**: Typed fallback execution and error extraction in `ranvier-core`.
-- **Background Jobs**: New `ranvier-job` background job scheduling functionality.
-- **Cache & Sessions**: New `ranvier-session` cache and session management backends.
-- **Gate B Stabilized**: Official extensions (`ranvier-auth`, `ranvier-guard`, `ranvier-openapi`) stable.
-- **Ecosystem integrations**: SeaORM, Diesel, MQ, Search, Redis verified in Gate C.
+- **Inspector Enrichment (v0.19)**: Per-node metrics (throughput, latency percentiles, error rate), payload capture & DLQ, conditional breakpoints, stall detection via Inspector REST + WebSocket.
+- **Enterprise Production (v0.15–v0.16)**: Distributed execution, saga patterns, DLQ, MSRV 1.93.0 Edition 2024, API audit & CI hardening.
+- **Security & Performance (v0.14)**: HTTP/3, GraphQL, gRPC adapters, security hardening.
+- **Cross-Framework Benchmarks (v0.13)**: SSE, Multipart, gRPC, cross-framework comparison suite.
+- **Workflow Persistence (v0.11–v0.12)**: Router DSL, OpenTelemetry interop, migration automation, CLI templates.
+- **Stable Core (v0.10)**: API freeze, SemVer contract, enterprise adoption playbook.
 
 ---
 
