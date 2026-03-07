@@ -1,3 +1,6 @@
+/// Crate version, set at compile time from Cargo.toml.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub mod bus;
 pub mod cluster;
 pub mod config;
