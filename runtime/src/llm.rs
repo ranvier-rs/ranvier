@@ -538,7 +538,7 @@ impl Transition<String, String> for LlmTransition {
         } else if self.prompt_template.is_some() {
             // Input provided AND template exists: substitute the input into the
             // template as if it were a variable called "input".
-            let tpl = self.prompt_template.as_ref().unwrap();
+            let tpl = self.prompt_template.as_ref().expect("prompt_template guaranteed by is_some() guard");
             let with_input = tpl.replace("{{input}}", &input);
             match self.render_prompt(&with_input, bus) {
                 Ok(rendered) => rendered,

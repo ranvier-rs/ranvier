@@ -21,6 +21,15 @@
 //! - GET    /orders             — list orders for tenant
 //! - GET    /orders/:id         — get single order
 //! - GET    /inventory          — list current inventory
+//!
+//! ## Prerequisites
+//! - `hello-world` — basic Transition + Axon + HTTP ingress
+//! - `reference-todo-api` — CRUD patterns
+//! - `auth-jwt-role-demo` — JWT authentication
+//!
+//! ## Next Steps
+//! - `inspector-demo` — runtime observability for production pipelines
+//! - `production-config-demo` — RanvierConfig for production deployment
 
 mod auth;
 mod axons;
@@ -30,7 +39,9 @@ mod store;
 mod transitions;
 
 use anyhow::Result;
+use ranvier_core::prelude::*;
 use ranvier_http::Ranvier;
+use ranvier_macros::transition;
 use ranvier_runtime::Axon;
 use store::AppStore;
 
@@ -40,22 +51,8 @@ use transitions::{
     login::login,
 };
 
-fn login_circuit() -> Axon<(), serde_json::Value, String> {
-    Axon::<(), (), String>::new("login").then(login)
-}
-
-fn list_orders_circuit() -> Axon<(), serde_json::Value, String> {
-    Axon::<(), (), String>::new("list-orders").then(list_orders)
-}
-
-fn get_order_circuit() -> Axon<(), serde_json::Value, String> {
-    Axon::<(), (), String>::new("get-order").then(get_order)
-}
-
+/// Inventory listing uses an inline transition for simple read-only queries.
 fn inventory_circuit() -> Axon<(), serde_json::Value, String> {
-    use ranvier_core::prelude::*;
-    use ranvier_macros::transition;
-
     #[transition]
     async fn list_inventory(
         _input: (),
@@ -89,12 +86,14 @@ async fn main() -> Result<()> {
     println!("Saga Pipeline: CreateOrder → ProcessPayment → ReserveInventory → ScheduleShipping");
     println!("Compensation:  RefundPayment ← ReleaseInventory ← (LIFO on failure)");
 
+    // Simple single-transition routes are inlined directly.
+    // Complex pipelines (like order_pipeline_circuit) keep their factory function.
     Ranvier::http()
         .bind(&addr)
-        .post("/login", login_circuit())
+        .post("/login", Axon::<(), (), String>::new("login").then(login))
         .post("/orders", axons::order_pipeline::order_pipeline_circuit())
-        .get("/orders", list_orders_circuit())
-        .get("/orders/:id", get_order_circuit())
+        .get("/orders", Axon::<(), (), String>::new("list-orders").then(list_orders))
+        .get("/orders/:id", Axon::<(), (), String>::new("get-order").then(get_order))
         .get("/inventory", inventory_circuit())
         .run(())
         .await

@@ -12,30 +12,16 @@ cargo add ranvier
 ## Quick Start
 
 ```rust
-use async_trait::async_trait;
 use ranvier::prelude::*;
 
-#[derive(Clone)]
-struct Hello;
-
-#[async_trait]
-impl Transition<(), String> for Hello {
-    type Error = anyhow::Error;
-    type Resources = ();
-
-    async fn run(
-        &self,
-        _state: (),
-        _resources: &Self::Resources,
-        _bus: &mut Bus,
-    ) -> Outcome<String, Self::Error> {
-        Outcome::Next("Hello, Ranvier!".to_string())
-    }
+#[transition]
+async fn greet(_input: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, String> {
+    Outcome::Next("Hello, Ranvier!".to_string())
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let hello = Axon::<(), (), anyhow::Error>::new("Hello").then(Hello);
+    let hello = Axon::<(), (), String>::new("Hello").then(greet);
 
     Ranvier::http()
         .bind("127.0.0.1:3000")
@@ -59,16 +45,16 @@ Default features include the HTTP ingress adapter and std nodes.
 To slim down dependencies:
 
 ```toml
-ranvier = { version = "0.21.0", default-features = false }
+ranvier = { version = "0.27.0", default-features = false }
 ```
 
 You can enable features explicitly:
 
 ```toml
-ranvier = { version = "0.21.0", features = ["http", "std"] }
+ranvier = { version = "0.27.0", features = ["http", "std"] }
 ```
 
-## Crates (10-crate architecture, v0.21.0)
+## Crates (10-crate architecture, v0.27.0)
 
 | Tier | Crate | Purpose |
 |------|-------|---------|
@@ -83,7 +69,7 @@ ranvier = { version = "0.21.0", features = ["http", "std"] }
 | T4 | `ranvier-openapi` | OpenAPI spec generation |
 | T5 | `ranvier` | Facade crate (this crate) |
 
-13 wrapper crates were removed in v0.21.0. Use external libraries directly
+13 wrapper crates were removed in v0.27.0. Use external libraries directly
 with Transition-pattern examples.
 
 ## Examples

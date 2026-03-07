@@ -1043,7 +1043,7 @@ where
         );
         // 4. Register Saga Compensation if enabled
         {
-            let mut registry = saga_compensation_registry.write().unwrap();
+            let mut registry = saga_compensation_registry.write().expect("saga compensation registry lock poisoned");
             let comp_fn = compensation.clone();
             let transition_bus_policy = bus_policy_for_registry.clone();
 
@@ -1052,7 +1052,7 @@ where
                     let comp = comp_fn.clone();
                     let bus_policy = transition_bus_policy.clone();
                     Box::pin(async move {
-                        let input: Out = serde_json::from_slice(&input_data).unwrap();
+                        let input: Out = serde_json::from_slice(&input_data).expect("saga compensation input deserialization failed — type mismatch between snapshot and compensation handler");
                         bus.set_access_policy(comp.label(), bus_policy);
                         let res = comp.run(input, res, bus).await;
                         bus.clear_access_policy();
@@ -1924,7 +1924,7 @@ where
                 tracing::info!(trace_id = %trace_id, node_id = %task.node_id, "Compensating step: {}", task.node_label);
 
                 let handler = {
-                    let registry = self.saga_compensation_registry.read().unwrap();
+                    let registry = self.saga_compensation_registry.read().expect("saga compensation registry lock poisoned");
                     registry.get(&task.node_id)
                 };
                 if let Some(handler) = handler {

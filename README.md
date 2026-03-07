@@ -8,15 +8,11 @@ diff, and validate.
 
 ---
 
-**Latest: v0.18.0** (23 crates on crates.io)
+**Latest: v0.27.0** — 10 crates on [crates.io](https://crates.io/crates/ranvier)
 
-- **Schema Registry & Relay (v0.20)**: Inspector-side route discovery (`/api/v1/routes`), JSON Schema extraction (`/api/v1/routes/schema`, `/api/v1/routes/sample`), request relay (`/api/v1/relay`), `#[transition(schema)]` macro attribute.
-- **Inspector Enrichment (v0.19)**: Per-node metrics (throughput, latency percentiles, error rate), payload capture & DLQ, conditional breakpoints, stall detection via Inspector REST + WebSocket.
-- **Enterprise Production (v0.15–v0.16)**: Distributed execution, saga patterns, DLQ, MSRV 1.93.0 Edition 2024, API audit & CI hardening.
-- **Security & Performance (v0.14)**: HTTP/3, GraphQL, gRPC adapters, security hardening.
-- **Cross-Framework Benchmarks (v0.13)**: SSE, Multipart, gRPC, cross-framework comparison suite.
-- **Workflow Persistence (v0.11–v0.12)**: Router DSL, OpenTelemetry interop, migration automation, CLI templates.
-- **Stable Core (v0.10)**: API freeze, SemVer contract, enterprise adoption playbook.
+- **v0.27**: Guard Transition nodes, JWT auth, GraphQL/gRPC adapters, background jobs, distributed lock, DB patterns, TypeScript codegen, 8 new examples
+- **v0.26**: CLI `ranvier merge` + `ranvier codegen`, VSCode Schematic Diff Viewer, GraphQL/gRPC Explorer, Environment Manager, `LlmTransition`, `Axon::parallel()` FanOut/FanIn, Inspector production (BearerAuth, TraceStore, AlertHook)
+- **v0.21**: Crate consolidation 23 → 10 via Paradigm Test, Hyper 1.0 native (no Tower/Axum)
 
 ---
 
@@ -36,35 +32,20 @@ diff, and validate.
 cargo add ranvier
 cargo add tokio --features full
 cargo add anyhow
-cargo add async-trait
 ```
 
 ```rust
-use async_trait::async_trait;
 use ranvier::prelude::*;
 
-#[derive(Clone)]
-struct Hello;
-
-#[async_trait]
-impl Transition<(), String> for Hello {
-    type Error = anyhow::Error;
-    type Resources = ();
-
-    async fn run(
-        &self,
-        _state: (),
-        _resources: &Self::Resources,
-        _bus: &mut Bus,
-    ) -> Outcome<String, Self::Error> {
-        Outcome::Next("Hello, Ranvier!".to_string())
-    }
+#[transition]
+async fn greet(_input: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, String> {
+    Outcome::Next("Hello, Ranvier!".to_string())
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let hello = Axon::<(), (), anyhow::Error>::new("Hello")
-        .then(Hello);
+    let hello = Axon::<(), (), String>::new("Hello")
+        .then(greet);
 
     Ranvier::http()
         .bind("127.0.0.1:3000")
@@ -81,36 +62,120 @@ async fn main() -> anyhow::Result<()> {
 
 ---
 
-**Examples** — 47 runnable demos
+**Under the Hood**
+
+The `#[transition]` macro expands to a full `Transition` trait implementation.
+When you need custom resources or fine-grained control, implement the trait directly:
+
+```rust
+use async_trait::async_trait;
+use ranvier::prelude::*;
+
+#[derive(Clone)]
+struct Greet;
+
+#[async_trait]
+impl Transition<(), String> for Greet {
+    type Error = String;
+    type Resources = ();
+
+    async fn run(
+        &self,
+        _input: (),
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<String, Self::Error> {
+        Outcome::Next("Hello, Ranvier!".to_string())
+    }
+}
+```
+
+---
+
+**Error Type Guide**
+
+| Scenario | Recommended Type | Reason |
+|---|---|---|
+| Prototyping / demos | `String` | Simple, no extra dependencies |
+| Production services | Custom `enum` with `#[derive(Debug)]` | Domain-specific error handling |
+| Infallible transitions | `Never` | Compile-time guarantee of no errors |
+
+---
+
+**Bus Access Guide**
+
+| Method | Returns | When to use |
+|---|---|---|
+| `bus.try_require::<T>()` | `Result<&T, BusError>` | Default choice — clear error message if missing |
+| `bus.read::<T>()` | `Option<&T>` | Resource is optional (may not exist) |
+| `bus.require::<T>()` | `&T` (panics if missing) | Invariant guaranteed by prior step (e.g., after `with_iam()`) |
+
+---
+
+**Examples** — 54 runnable demos across 4 tiers
 
 ```bash
+# Tier A: Start here
 cargo run -p hello-world          # HTTP ingress baseline
 cargo run -p typed-state-tree     # Typed state progression
 cargo run -p basic-schematic      # Schematic export + runtime
-cargo run -p macros-demo          # #[transition] macro DX
+cargo run -p otel-concept         # OpenTelemetry concept baseline
+
+# Tier B: Advanced patterns
+cargo run -p macros-demo          # #[transition] macro before/after
+cargo run -p guard-demo           # CorsGuard, RateLimitGuard, IpFilterGuard
+cargo run -p auth-jwt-role-demo   # JWT + role-based access control
 cargo run -p inspector-demo       # Runtime observability server
-cargo run -p status-demo          # Static status page generation
+
+# Tier C: Ecosystem integration
+cargo run -p graphql-async-graphql-demo  # async-graphql direct usage
+cargo run -p grpc-tonic-demo             # tonic gRPC direct usage
+cargo run -p db-sqlx-demo                # SQLx direct usage
 ```
 
-See `examples/README.md` for the full tier-classified list (55 examples).
+See `examples/README.md` for the full tier-classified list.
 
 ---
 
 **MSRV**
 
-- Rust `1.93.0` or newer.
+- Rust `1.93.0` or newer (Edition 2024).
 
 ---
 
-**Workspace Structure**
+**Workspace Structure** (10 crates)
 
 1. `core/` — protocol-agnostic contracts (`Transition`, `Outcome`, `Bus`, `Schematic`)
-2. `runtime/` — Axon execution engine
-3. `http/` — Ingress/Egress adapter boundary
-4. `std/` — standard transitions and utilities
-5. `macros/` — macro helpers
-6. `extensions/` — optional ecosystem modules
-7. `examples/` — runnable reference apps
+2. `runtime/` — Axon execution engine, saga compensation, persistence
+3. `http/` — Ingress/Egress adapter boundary (Hyper 1.0 native)
+4. `std/` — standard transitions: Guard nodes, utilities
+5. `macros/` — `#[transition]`, `#[derive(ResourceRequirement)]`
+6. `kit/` — facade crate (re-exports all of the above as `ranvier`)
+7. `extensions/inspector/` — runtime observability server
+8. `extensions/audit/` — audit trail logging
+9. `extensions/compliance/` — PII detection, data classification
+10. `extensions/openapi/` — OpenAPI spec generation
+11. `examples/` — 54 runnable reference apps
+
+---
+
+**Built-in Production Features**
+
+| Feature | API | Status |
+|---|---|---|
+| Graceful Shutdown | `graceful_shutdown(timeout)` + `on_shutdown()` | Ready |
+| Health Check | `health_endpoint()`, `readiness_liveness_default()` | Ready |
+| Request ID | `request_id_layer()` — UUID v4, bidirectional header | Ready |
+| Config Loading | `config(&RanvierConfig)` — 4-layer: defaults → TOML → profile → env | Ready |
+| Guard Pipeline | `CorsGuard`, `RateLimitGuard`, `SecurityHeadersGuard`, `IpFilterGuard` | Ready |
+| JWT Auth | `Axon::with_iam(policy, verifier)` — `IamPolicy::RequireRole` | Ready |
+| Parallel Execution | `Axon::parallel()` — FanOut/FanIn with Bus isolation | Ready |
+| Saga Compensation | `Axon::compensate(rollback_fn)` — LIFO rollback on failure | Ready |
+| LLM Integration | `LlmTransition` — LLM-as-Transition pattern | Ready |
+| Compression | gzip via flate2 | Ready |
+| HTTP/2 | Hyper 1.0 native | Ready |
+| Static Files | `serve_dir()` + `spa_fallback()` | Ready |
+| Inspector | REST/WS metrics, BearerAuth, TraceStore, AlertHook | Ready |
 
 ---
 
@@ -127,3 +192,5 @@ See `examples/README.md` for the full tier-classified list (55 examples).
 
 - Website: https://ranvier.studio
 - Docs: https://github.com/ranvier-rs/docs
+- Crates.io: https://crates.io/crates/ranvier
+- GitHub Release: https://github.com/ranvier-rs/ranvier/releases

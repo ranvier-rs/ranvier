@@ -11,6 +11,21 @@ Demonstrates the **Flat API** pattern (Discussion 192-193):
 cargo run --bin hello-world
 # Open http://127.0.0.1:3000/ in browser
 ```
+
+## Prerequisites
+None — this is the first example to run.
+
+## Next Steps
+- `typed-state-tree` — typed state progression with enums
+- `macros-demo` — `#[transition]` macro before/after comparison
+- `basic-schematic` — Schematic export and runtime execution
+
+## Import Note
+This example uses workspace crate imports (`ranvier_core`, `ranvier_http`, etc.)
+because it lives inside the Ranvier workspace. For your own projects, use:
+```rust
+use ranvier::prelude::*;
+```
 */
 
 use ranvier_core::prelude::*;

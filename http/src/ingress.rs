@@ -189,7 +189,7 @@ fn timeout_middleware(timeout: Duration) -> ServiceLayer {
                                 .map_err(|never| match never {})
                                 .boxed(),
                         )
-                        .unwrap()),
+                        .expect("valid HTTP response construction")),
                 }
             }
         })
@@ -1355,7 +1355,7 @@ where
                                     .map_err(|never| match never {})
                                     .boxed(),
                             )
-                            .unwrap(),
+                            .expect("valid HTTP response construction"),
                     }
                 }
                 .instrument(span)
@@ -1395,7 +1395,7 @@ where
                                 .map_err(|never| match never {} as Infallible)
                                 .boxed(),
                         )
-                        .unwrap()
+                        .expect("valid HTTP response construction")
                 }) as Pin<Box<dyn Future<Output = HttpResponse> + Send>>
             });
 
@@ -1422,7 +1422,7 @@ where
                                 .map_err(|never| match never {} as Infallible)
                                 .boxed(),
                         )
-                        .unwrap()
+                        .expect("valid HTTP response construction")
                 }) as Pin<Box<dyn Future<Output = HttpResponse> + Send>>
             });
 
@@ -1680,7 +1680,7 @@ where
                                 .map_err(|never| match never {})
                                 .boxed(),
                         )
-                        .unwrap())
+                        .expect("valid HTTP response construction"))
                 };
 
                 #[cfg(feature = "http3")]
@@ -2108,7 +2108,7 @@ fn health_json_response(
                 .map_err(|never| match never {})
                 .boxed(),
         )
-        .unwrap()
+        .expect("valid HTTP response construction")
 }
 
 async fn shutdown_signal() {

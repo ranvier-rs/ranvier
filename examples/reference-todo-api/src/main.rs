@@ -14,6 +14,14 @@
 //! - GET    /todos/:id      — get a single todo
 //! - PUT    /todos/:id      — update a todo
 //! - DELETE /todos/:id      — delete a todo
+//!
+//! ## Prerequisites
+//! - `hello-world` — basic Transition + Axon + HTTP ingress
+//! - `macros-demo` — `#[transition]` macro usage
+//!
+//! ## Next Steps
+//! - `reference-ecommerce-order` — saga compensation, audit, multi-tenancy
+//! - `guard-demo` — Guard node pipeline patterns
 
 mod auth;
 mod errors;
@@ -35,30 +43,6 @@ use transitions::{
     update_todo::update_todo,
 };
 
-fn login_circuit() -> Axon<(), serde_json::Value, String> {
-    Axon::<(), (), String>::new("login").then(login)
-}
-
-fn list_circuit() -> Axon<(), serde_json::Value, String> {
-    Axon::<(), (), String>::new("list-todos").then(list_todos)
-}
-
-fn create_circuit() -> Axon<(), serde_json::Value, String> {
-    Axon::<(), (), String>::new("create-todo").then(create_todo)
-}
-
-fn get_circuit() -> Axon<(), serde_json::Value, String> {
-    Axon::<(), (), String>::new("get-todo").then(get_todo)
-}
-
-fn update_circuit() -> Axon<(), serde_json::Value, String> {
-    Axon::<(), (), String>::new("update-todo").then(update_todo)
-}
-
-fn delete_circuit() -> Axon<(), serde_json::Value, String> {
-    Axon::<(), (), String>::new("delete-todo").then(delete_todo)
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -77,12 +61,12 @@ async fn main() -> Result<()> {
 
     Ranvier::http()
         .bind(&addr)
-        .post("/login", login_circuit())
-        .get("/todos", list_circuit())
-        .post("/todos", create_circuit())
-        .get("/todos/:id", get_circuit())
-        .put("/todos/:id", update_circuit())
-        .delete("/todos/:id", delete_circuit())
+        .post("/login", Axon::<(), (), String>::new("login").then(login))
+        .get("/todos", Axon::<(), (), String>::new("list-todos").then(list_todos))
+        .post("/todos", Axon::<(), (), String>::new("create-todo").then(create_todo))
+        .get("/todos/:id", Axon::<(), (), String>::new("get-todo").then(get_todo))
+        .put("/todos/:id", Axon::<(), (), String>::new("update-todo").then(update_todo))
+        .delete("/todos/:id", Axon::<(), (), String>::new("delete-todo").then(delete_todo))
         .run(())
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;

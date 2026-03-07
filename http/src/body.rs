@@ -95,7 +95,7 @@ impl IntoResponse for JsonBodyError {
         Response::builder()
             .status(status)
             .body(Full::new(Bytes::from(self.to_string())).map_err(|e| match e {}).boxed())
-            .unwrap()
+            .expect("valid HTTP response construction")
     }
 }
 

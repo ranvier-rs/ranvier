@@ -195,7 +195,7 @@ where
         Err(e) => {
             error!("HTTP/3 service error: {}", e);
             // Internal Server Error
-            let res = Response::builder().status(500).body(()).unwrap();
+            let res = Response::builder().status(500).body(()).expect("valid HTTP response construction");
             stream.send_response(res).await?;
             stream.finish().await?;
         }
