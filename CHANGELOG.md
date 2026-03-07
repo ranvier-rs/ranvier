@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.29.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.29.0 — Level 4 "Production Ready" entry.**
+Prometheus metrics endpoint, OTLP auto-export, AccessLogGuard, PostgresAuditSink, OpenAPI SecurityScheme + ProblemDetail, Docker/K8s deployment templates, operations guide (EN/KO), cross-crate integration tests.
+
+### Added
+- **Inspector Prometheus `/metrics` endpoint (M240):** Per-node invocations, errors, error rate, throughput, latency percentiles in Prometheus exposition format. BearerAuth protected.
+- **`TelemetryConfig` in RanvierConfig (M240):** `[telemetry]` TOML section with `otlp_endpoint`, `otlp_protocol` (gRPC/HTTP), `service_name`, `sample_ratio`. Automatic TracerProvider initialization when endpoint is set; no-op otherwise.
+- **`AccessLogGuard` standard node (M240):** Pass-through Guard Transition that reads `AccessLogRequest` from Bus, applies configurable path redaction, writes `AccessLogEntry` to Bus.
+- **`PostgresAuditSink` (M241):** Feature-gated (`postgres`) sqlx-based audit event sink with hash chain integrity, migration SQL, `AuditSink` trait implementation (append/query/apply_retention). Connection pool configuration.
+- **PII detection: 4 Korean patterns (M241):** 주민등록번호 (resident number), 사업자등록번호 (business number), 여권번호 (passport), 운전면허번호 (driver's license). Total: 13 PII categories.
+- **OpenAPI `SecurityScheme` + `ProblemDetail` (M241):** `with_bearer_auth()` adds bearerAuth SecurityScheme. `with_problem_detail_errors()` adds RFC 7807 ProblemDetail schema and 400/404/500 error responses.
+- **Docker multi-stage build template (M242):** 2-stage Dockerfile (rust:1.93 builder → debian:bookworm-slim runtime) with dependency caching, non-root user, HEALTHCHECK.
+- **K8s deployment manifests (M242):** Deployment (readiness/liveness/startup probes, Prometheus annotations), Service (ClusterIP), ConfigMap (ranvier.toml), HPA (CPU/memory autoscaling).
+- **Operations guide EN/KO (M242):** 8-section guide covering graceful shutdown, health checks, request ID, config loading, structured logging, Inspector observability, Prometheus scraping, OTLP export.
+- **`production-operations-demo` example (M240):** Integrated demo combining config, health, metrics, access logging, and telemetry.
+- **Cross-crate integration tests (M243):** 9 tests verifying audit×runtime×core, compliance×audit, std×runtime×core, openapi×http×core combinations.
+
+### Changed
+- **Compliance tests:** 0 → 25 tests covering Sensitive<T>, PiiDetector, ErasureSink, ClassificationLevel.
+- **OpenAPI tests:** 4 → 12 tests covering SecurityScheme, ProblemDetail, multi-route consistency.
+- **Inspector tests:** Added Prometheus text format, multi-circuit rendering, latency quantile, help/type line count tests.
+- **Example count:** 59 → 60 examples (added production-operations-demo).
+
+---
+
 ## [0.28.0] — 2026-03
 
 ### Summary

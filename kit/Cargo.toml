@@ -28,5 +28,16 @@ ranvier-openapi = { workspace = true, optional = true }
 
 
 
+[dev-dependencies]
+ranvier-audit = { workspace = true }
+ranvier-compliance = { workspace = true }
+ranvier-inspector = { workspace = true }
+ranvier-openapi = { workspace = true }
+http = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
 [lints]
 workspace = true

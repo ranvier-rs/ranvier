@@ -12,6 +12,7 @@
 //! - `AuditLogger<S>` — generic logger parameterized by sink
 //! - `AuditEvent` — 5W audit payload (Who, What, Where, When, Why)
 //! - `FileAuditSink` — HMAC-SHA256 signed JSONL file sink
+//! - `PostgresAuditSink` — PostgreSQL sink with hash chain integrity (feature = "postgres")
 //! - `AuditSink` trait — implement for custom sinks (database, queue, etc.)
 //!
 //! ## Output

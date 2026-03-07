@@ -1,4 +1,6 @@
 pub mod file_sink;
+#[cfg(feature = "postgres")]
+pub mod postgres;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
@@ -168,11 +170,11 @@ impl Default for AuditChain {
 /// Builder for filtering audit events by time range, event type, actor, or resource.
 #[derive(Debug, Clone, Default)]
 pub struct AuditQuery {
-    time_start: Option<DateTime<Utc>>,
-    time_end: Option<DateTime<Utc>>,
-    action: Option<String>,
-    actor: Option<String>,
-    target: Option<String>,
+    pub(crate) time_start: Option<DateTime<Utc>>,
+    pub(crate) time_end: Option<DateTime<Utc>>,
+    pub(crate) action: Option<String>,
+    pub(crate) actor: Option<String>,
+    pub(crate) target: Option<String>,
 }
 
 impl AuditQuery {

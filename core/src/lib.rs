@@ -34,7 +34,7 @@ pub use static_gen::{
 // Prelude module for convenient imports
 pub mod prelude {
     pub use crate::bus::{Bus, BusAccessError, BusAccessPolicy, BusTypeRef};
-    pub use crate::config::{RanvierConfig, ServerConfig, LoggingConfig, TlsConfig, InspectorConfig, LogFormat, ConfigError};
+    pub use crate::config::{RanvierConfig, ServerConfig, LoggingConfig, TlsConfig, InspectorConfig, TelemetryConfig, OtlpProtocol, LogFormat, ConfigError};
     pub use crate::debug::{DebugControl, DebugState};
     pub use crate::event::{DeadLetter, DlqPolicy, DlqReader, DlqSink, EventSink, EventSource};
     pub use crate::iam::{

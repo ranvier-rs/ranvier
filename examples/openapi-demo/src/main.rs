@@ -155,6 +155,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .version("0.7.0")
         .description("Auto-generated route map with optional schema overrides")
         .with_schematic(&Schematic::new("openapi-demo"))
+        .with_bearer_auth()
+        .with_problem_detail_errors()
         .summary(http::Method::GET, "/users/:id", "Get a user by id")
         .summary(http::Method::POST, "/users", "Create a user")
         .json_request_schema_from_extractor::<CreateUserRequest>(http::Method::POST, "/users")

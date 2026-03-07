@@ -3,6 +3,7 @@ pub mod auth;
 pub mod breakpoint;
 pub mod metrics;
 pub mod payload;
+pub mod prometheus;
 pub mod relay;
 pub mod routes;
 pub mod schema;
@@ -73,7 +74,7 @@ pub enum TraceStatus {
     Faulted,
 }
 
-struct ActiveTraceRegistry {
+pub struct ActiveTraceRegistry {
     active: HashMap<String, TraceRecord>,
     recent: Vec<TraceRecord>,
     max_recent: usize,
@@ -146,9 +147,14 @@ impl ActiveTraceRegistry {
         result.sort_by(|a, b| b.started_at.cmp(&a.started_at));
         result
     }
+
+    /// Number of currently active (in-flight) traces.
+    pub fn active_count(&self) -> usize {
+        self.active.len()
+    }
 }
 
-fn get_trace_registry() -> Arc<Mutex<ActiveTraceRegistry>> {
+pub fn get_trace_registry() -> Arc<Mutex<ActiveTraceRegistry>> {
     TRACE_REGISTRY
         .get_or_init(|| Arc::new(Mutex::new(ActiveTraceRegistry::new())))
         .clone()
@@ -573,6 +579,7 @@ impl Inspector {
                 "/api/v1/state/:trace_id/resume",
                 axum::routing::post(api_post_resume),
             )
+            .route("/metrics", get(prometheus_metrics_handler))
             .layer(CorsLayer::permissive());
 
         if self.surface_policy.expose_internal {
@@ -946,6 +953,23 @@ async fn api_get_metrics_all(
             "count": snapshots.len(),
             "circuits": snapshots
         }),
+    ))
+}
+
+/// Prometheus exposition format endpoint — `GET /metrics`.
+///
+/// Protected by BearerAuth when configured. Returns per-node execution
+/// metrics (invocations, errors, throughput, latency percentiles) and
+/// active trace count in Prometheus text format.
+async fn prometheus_metrics_handler(
+    headers: HeaderMap,
+    State(state): State<InspectorState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    state.bearer_auth.validate(&headers)?;
+    let body = prometheus::render();
+    Ok((
+        [(header::CONTENT_TYPE, prometheus::CONTENT_TYPE)],
+        body,
     ))
 }
 

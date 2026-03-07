@@ -1,8 +1,9 @@
 pub use crate::nodes::debug::{ErrorNode, LogNode};
 pub use crate::nodes::flow::{DelayNode, IdentityNode};
 pub use crate::nodes::guard::{
-    ClientIdentity, ClientIp, CorsConfig, CorsGuard, CorsHeaders, IpFilterGuard, RateLimitGuard,
-    RequestOrigin, SecurityHeaders, SecurityHeadersGuard, SecurityPolicy,
+    AccessLogEntry, AccessLogGuard, AccessLogRequest, ClientIdentity, ClientIp, CorsConfig,
+    CorsGuard, CorsHeaders, IpFilterGuard, RateLimitGuard, RequestOrigin, SecurityHeaders,
+    SecurityHeadersGuard, SecurityPolicy,
 };
 pub use crate::nodes::logic::{FilterNode, RandomBranchNode, SwitchNode};
 pub use crate::nodes::math::{MathNode, MathOperation};

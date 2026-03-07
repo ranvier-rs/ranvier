@@ -18,7 +18,9 @@
 //! - `Serialize` output: actual value (assumes TLS-encrypted channel)
 //! - `expose()`: explicit unwrap for authorized access
 
-use ranvier_compliance::{PiiDetector, Redact, Sensitive};
+use ranvier_compliance::{
+    ErasureRequest, ErasureSink, InMemoryErasureSink, PiiDetector, Redact, Sensitive,
+};
 use serde::{Deserialize, Serialize};
 
 // ── Domain types with sensitive fields ────────────────────────────────────
@@ -191,4 +193,37 @@ fn main() {
         serde_json::to_string(&user.email).unwrap()
     );
     println!("   -> Actual value transmitted over TLS-encrypted channel.");
+    println!();
+
+    // ── 7. GDPR Right-to-Erasure (Article 17) ───────────────────
+    println!("7. GDPR Right-to-Erasure (Article 17)");
+    println!("   -----------------------------------");
+
+    let erasure_sink = InMemoryErasureSink::new();
+    erasure_sink.add_records(
+        "user-42",
+        vec![
+            "profile:jane.doe@example.com".into(),
+            "order:ORD-001".into(),
+            "payment:txn-2026-0001".into(),
+        ],
+    );
+
+    let request = ErasureRequest::new(
+        "erasure-req-001".into(),
+        "user-42".into(),
+        vec!["all".into()],
+    )
+    .with_reason("GDPR Article 17 — right to erasure");
+
+    println!("   Request: {:?}", request.id);
+    println!("   Subject: {}", request.subject);
+    println!("   Reason:  {:?}", request.reason);
+
+    let result = erasure_sink.erase(&request);
+    println!("   Result:  success={}, records_erased={}", result.success, result.records_erased);
+
+    // Verify erasure
+    let verify = erasure_sink.erase(&request);
+    println!("   Verify:  records_erased={} (should be 0 after erasure)", verify.records_erased);
 }

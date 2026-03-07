@@ -1,0 +1,19 @@
+[package]
+name = "production-operations-demo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "M240: Production Operations — config, health, metrics, access logging, telemetry"
+
+[dependencies]
+ranvier-core = { workspace = true }
+ranvier-runtime = { workspace = true }
+ranvier-http = { workspace = true }
+ranvier-std = { workspace = true }
+ranvier-inspector = { workspace = true }
+ranvier-macros = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }

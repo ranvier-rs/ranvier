@@ -500,4 +500,221 @@ mod tests {
         let result = guard.run("ok".into(), &(), &mut bus).await;
         assert!(matches!(result, Outcome::Next(_)));
     }
+
+    // --- AccessLogGuard tests ---
+
+    #[tokio::test]
+    async fn access_log_guard_passes_input_through() {
+        let guard = AccessLogGuard::<String>::new();
+        let mut bus = Bus::new();
+        bus.insert(AccessLogRequest {
+            method: "GET".into(),
+            path: "/users".into(),
+        });
+        let result = guard.run("payload".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(ref v) if v == "payload"));
+    }
+
+    #[tokio::test]
+    async fn access_log_guard_writes_entry_to_bus() {
+        let guard = AccessLogGuard::<String>::new();
+        let mut bus = Bus::new();
+        bus.insert(AccessLogRequest {
+            method: "POST".into(),
+            path: "/api/orders".into(),
+        });
+        let _result = guard.run("ok".into(), &(), &mut bus).await;
+        let entry = bus.read::<AccessLogEntry>().expect("entry should be in bus");
+        assert_eq!(entry.method, "POST");
+        assert_eq!(entry.path, "/api/orders");
+    }
+
+    #[tokio::test]
+    async fn access_log_guard_redacts_paths() {
+        let guard = AccessLogGuard::<String>::new().redact_paths(vec!["/auth/login".into()]);
+        let mut bus = Bus::new();
+        bus.insert(AccessLogRequest {
+            method: "POST".into(),
+            path: "/auth/login".into(),
+        });
+        let _result = guard.run("ok".into(), &(), &mut bus).await;
+        let entry = bus.read::<AccessLogEntry>().expect("entry should be in bus");
+        assert_eq!(entry.path, "[redacted]");
+    }
+
+    #[tokio::test]
+    async fn access_log_guard_works_without_request_in_bus() {
+        let guard = AccessLogGuard::<String>::new();
+        let mut bus = Bus::new();
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+        let entry = bus.read::<AccessLogEntry>().expect("entry should be in bus");
+        assert_eq!(entry.method, "");
+        assert_eq!(entry.path, "");
+    }
+
+    #[tokio::test]
+    async fn access_log_guard_default_works() {
+        let guard = AccessLogGuard::<String>::default();
+        let mut bus = Bus::new();
+        bus.insert(AccessLogRequest {
+            method: "DELETE".into(),
+            path: "/api/v1/users/42".into(),
+        });
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+    }
+
+    #[tokio::test]
+    async fn access_log_guard_entry_has_timestamp() {
+        let guard = AccessLogGuard::<String>::new();
+        let mut bus = Bus::new();
+        bus.insert(AccessLogRequest {
+            method: "GET".into(),
+            path: "/".into(),
+        });
+        let _result = guard.run("ok".into(), &(), &mut bus).await;
+        let entry = bus.read::<AccessLogEntry>().unwrap();
+        // Timestamp should be non-zero (milliseconds since epoch)
+        assert!(entry.timestamp_ms > 1_700_000_000_000);
+    }
+
+    #[tokio::test]
+    async fn access_log_guard_works_with_integer_type() {
+        let guard = AccessLogGuard::<i32>::new();
+        let mut bus = Bus::new();
+        bus.insert(AccessLogRequest {
+            method: "PUT".into(),
+            path: "/count".into(),
+        });
+        let result = guard.run(42, &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(42)));
+    }
+
+    #[tokio::test]
+    async fn access_log_guard_non_redacted_path_preserved() {
+        let guard = AccessLogGuard::<String>::new()
+            .redact_paths(vec!["/auth/login".into()]);
+        let mut bus = Bus::new();
+        bus.insert(AccessLogRequest {
+            method: "GET".into(),
+            path: "/api/public".into(),
+        });
+        let _result = guard.run("ok".into(), &(), &mut bus).await;
+        let entry = bus.read::<AccessLogEntry>().unwrap();
+        assert_eq!(entry.path, "/api/public");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AccessLogGuard
+// ---------------------------------------------------------------------------
+
+/// Request metadata injected into the Bus before `AccessLogGuard` runs.
+///
+/// Typically set by an HTTP extractor or middleware before the guard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessLogRequest {
+    pub method: String,
+    pub path: String,
+}
+
+/// Access log entry written to the Bus by `AccessLogGuard`.
+///
+/// Downstream nodes can read this to inspect what was logged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessLogEntry {
+    pub method: String,
+    pub path: String,
+    pub timestamp_ms: u64,
+}
+
+/// HTTP access log guard — logs request metadata and writes an [`AccessLogEntry`]
+/// to the Bus.
+///
+/// This is a **pass-through** guard: it always returns `Outcome::next(input)`.
+/// It never faults — if no [`AccessLogRequest`] is in the Bus, it logs an empty
+/// entry.
+///
+/// # Example
+///
+/// ```ignore
+/// Axon::new("api")
+///     .then(AccessLogGuard::new()
+///         .redact_paths(vec!["/auth/login".into()]))
+///     .then(CorsGuard::default())
+///     .then(business_logic)
+/// ```
+#[derive(Debug, Clone)]
+pub struct AccessLogGuard<T> {
+    redact_paths: Vec<String>,
+    _marker: PhantomData<T>,
+}
+
+impl<T> AccessLogGuard<T> {
+    /// Create a new `AccessLogGuard` with default settings.
+    pub fn new() -> Self {
+        Self {
+            redact_paths: Vec::new(),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Paths whose entries will have the path replaced with `"[redacted]"`.
+    ///
+    /// Use this for sensitive endpoints (e.g., login, token refresh) where
+    /// logging the path itself might leak information.
+    pub fn redact_paths(mut self, paths: Vec<String>) -> Self {
+        self.redact_paths = paths;
+        self
+    }
+}
+
+impl<T> Default for AccessLogGuard<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl<T> Transition<T, T> for AccessLogGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    type Error = String;
+    type Resources = ();
+
+    async fn run(
+        &self,
+        input: T,
+        _resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<T, Self::Error> {
+        let req = bus.read::<AccessLogRequest>().cloned();
+        let (method, raw_path) = match &req {
+            Some(r) => (r.method.clone(), r.path.clone()),
+            None => (String::new(), String::new()),
+        };
+
+        let display_path = if self.redact_paths.iter().any(|p| p == &raw_path) {
+            "[redacted]".to_string()
+        } else {
+            raw_path
+        };
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        tracing::info!(method = %method, path = %display_path, "access");
+
+        bus.insert(AccessLogEntry {
+            method,
+            path: display_path,
+            timestamp_ms: now_ms,
+        });
+
+        Outcome::next(input)
+    }
 }

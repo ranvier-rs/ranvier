@@ -12,6 +12,30 @@ pub struct OpenApiDocument {
     pub openapi: String,
     pub info: OpenApiInfo,
     pub paths: BTreeMap<String, OpenApiPathItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub components: Option<OpenApiComponents>,
+}
+
+/// OpenAPI components object (schemas, securitySchemes, etc.).
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct OpenApiComponents {
+    #[serde(rename = "securitySchemes", skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub security_schemes: BTreeMap<String, SecurityScheme>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub schemas: BTreeMap<String, Value>,
+}
+
+/// OpenAPI Security Scheme object.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SecurityScheme {
+    #[serde(rename = "type")]
+    pub scheme_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheme: Option<String>,
+    #[serde(rename = "bearerFormat", skip_serializing_if = "Option::is_none")]
+    pub bearer_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -162,6 +186,8 @@ pub struct OpenApiGenerator {
     description: Option<String>,
     patches: HashMap<String, OperationPatch>,
     schematic: Option<SchematicMetadata>,
+    bearer_auth: bool,
+    problem_detail_errors: bool,
 }
 
 impl OpenApiGenerator {
@@ -173,6 +199,8 @@ impl OpenApiGenerator {
             description: None,
             patches: HashMap::new(),
             schematic: None,
+            bearer_auth: false,
+            problem_detail_errors: false,
         }
     }
 
@@ -271,6 +299,24 @@ impl OpenApiGenerator {
         self.json_response_schema::<T>(method, path_pattern)
     }
 
+    /// Add a Bearer token SecurityScheme (`bearerAuth`) to the spec.
+    ///
+    /// When enabled, each operation will reference the `bearerAuth` security scheme,
+    /// and the Swagger UI will show a token input.
+    pub fn with_bearer_auth(mut self) -> Self {
+        self.bearer_auth = true;
+        self
+    }
+
+    /// Add RFC 7807 ProblemDetail error schemas for 4xx/5xx responses.
+    ///
+    /// When enabled, every operation gets `400`, `404`, and `500` response entries
+    /// with a `ProblemDetail` JSON schema.
+    pub fn with_problem_detail_errors(mut self) -> Self {
+        self.problem_detail_errors = true;
+        self
+    }
+
     pub fn build(self) -> OpenApiDocument {
         let mut paths = BTreeMap::new();
 
@@ -321,11 +367,72 @@ impl OpenApiGenerator {
                 patch.clone().apply(&mut operation);
             }
 
+            // Add ProblemDetail error responses
+            if self.problem_detail_errors {
+                let problem_ref = json!({"$ref": "#/components/schemas/ProblemDetail"});
+                let mut problem_content = BTreeMap::new();
+                problem_content.insert(
+                    "application/problem+json".to_string(),
+                    OpenApiMediaType {
+                        schema: problem_ref,
+                    },
+                );
+
+                for (code, desc) in [
+                    ("400", "Bad Request"),
+                    ("404", "Not Found"),
+                    ("500", "Internal Server Error"),
+                ] {
+                    operation.responses.entry(code.to_string()).or_insert(
+                        OpenApiResponse {
+                            description: desc.to_string(),
+                            content: Some(problem_content.clone()),
+                        },
+                    );
+                }
+            }
+
             paths
                 .entry(openapi_path)
                 .or_insert_with(OpenApiPathItem::default)
                 .set_operation(route.method(), operation);
         }
+
+        // Build components
+        let mut components = OpenApiComponents::default();
+
+        if self.bearer_auth {
+            components.security_schemes.insert(
+                "bearerAuth".to_string(),
+                SecurityScheme {
+                    scheme_type: "http".to_string(),
+                    scheme: Some("bearer".to_string()),
+                    bearer_format: Some("JWT".to_string()),
+                    description: Some("Bearer token authentication".to_string()),
+                },
+            );
+        }
+
+        if self.problem_detail_errors {
+            components.schemas.insert(
+                "ProblemDetail".to_string(),
+                json!({
+                    "type": "object",
+                    "description": "RFC 7807 Problem Detail",
+                    "properties": {
+                        "type": { "type": "string", "description": "URI reference identifying the problem type" },
+                        "title": { "type": "string", "description": "Short human-readable summary" },
+                        "status": { "type": "integer", "description": "HTTP status code" },
+                        "detail": { "type": "string", "description": "Human-readable explanation" },
+                        "instance": { "type": "string", "description": "URI reference identifying the specific occurrence" }
+                    },
+                    "required": ["type", "title", "status"]
+                }),
+            );
+        }
+
+        let has_components = !components.security_schemes.is_empty()
+            || !components.schemas.is_empty();
 
         OpenApiDocument {
             openapi: "3.0.3".to_string(),
@@ -335,6 +442,11 @@ impl OpenApiGenerator {
                 description: self.description,
             },
             paths,
+            components: if has_components {
+                Some(components)
+            } else {
+                None
+            },
         }
     }
 
@@ -419,7 +531,9 @@ where
 }
 
 pub mod prelude {
-    pub use crate::{OpenApiDocument, OpenApiGenerator, swagger_ui_html};
+    pub use crate::{
+        OpenApiComponents, OpenApiDocument, OpenApiGenerator, SecurityScheme, swagger_ui_html,
+    };
 }
 
 #[cfg(test)]
@@ -493,5 +607,142 @@ mod tests {
         let html = swagger_ui_html("/openapi.json", "API Docs");
         assert!(html.contains("/openapi.json"));
         assert!(html.contains("SwaggerUIBundle"));
+    }
+
+    // --- M241: SecurityScheme + ProblemDetail tests ---
+
+    #[test]
+    fn bearer_auth_adds_security_scheme() {
+        let doc = OpenApiGenerator::from_descriptors(vec![HttpRouteDescriptor::new(
+            Method::GET,
+            "/users",
+        )])
+        .with_bearer_auth()
+        .build();
+
+        let components = doc.components.expect("should have components");
+        let scheme = components
+            .security_schemes
+            .get("bearerAuth")
+            .expect("should have bearerAuth");
+        assert_eq!(scheme.scheme_type, "http");
+        assert_eq!(scheme.scheme.as_deref(), Some("bearer"));
+        assert_eq!(scheme.bearer_format.as_deref(), Some("JWT"));
+    }
+
+    #[test]
+    fn no_bearer_auth_means_no_components() {
+        let doc = OpenApiGenerator::from_descriptors(vec![HttpRouteDescriptor::new(
+            Method::GET,
+            "/users",
+        )])
+        .build();
+
+        assert!(doc.components.is_none());
+    }
+
+    #[test]
+    fn problem_detail_adds_error_responses() {
+        let doc = OpenApiGenerator::from_descriptors(vec![HttpRouteDescriptor::new(
+            Method::GET,
+            "/users",
+        )])
+        .with_problem_detail_errors()
+        .build();
+
+        let op = doc.paths["/users"].get.as_ref().unwrap();
+        assert!(op.responses.contains_key("400"));
+        assert!(op.responses.contains_key("404"));
+        assert!(op.responses.contains_key("500"));
+
+        let r404 = &op.responses["404"];
+        assert_eq!(r404.description, "Not Found");
+        let content = r404.content.as_ref().unwrap();
+        assert!(content.contains_key("application/problem+json"));
+    }
+
+    #[test]
+    fn problem_detail_schema_in_components() {
+        let doc = OpenApiGenerator::from_descriptors(vec![HttpRouteDescriptor::new(
+            Method::GET,
+            "/users",
+        )])
+        .with_problem_detail_errors()
+        .build();
+
+        let components = doc.components.expect("should have components");
+        let schema = components
+            .schemas
+            .get("ProblemDetail")
+            .expect("should have ProblemDetail schema");
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["type"].is_object());
+        assert!(schema["properties"]["title"].is_object());
+        assert!(schema["properties"]["status"].is_object());
+    }
+
+    #[test]
+    fn problem_detail_references_schema() {
+        let doc = OpenApiGenerator::from_descriptors(vec![HttpRouteDescriptor::new(
+            Method::POST,
+            "/orders",
+        )])
+        .with_problem_detail_errors()
+        .build();
+
+        let op = doc.paths["/orders"].post.as_ref().unwrap();
+        let content_500 = op.responses["500"].content.as_ref().unwrap();
+        let schema = &content_500["application/problem+json"].schema;
+        assert_eq!(schema["$ref"], "#/components/schemas/ProblemDetail");
+    }
+
+    #[test]
+    fn multiple_routes_all_get_error_responses() {
+        let doc = OpenApiGenerator::from_descriptors(vec![
+            HttpRouteDescriptor::new(Method::GET, "/users"),
+            HttpRouteDescriptor::new(Method::POST, "/users"),
+            HttpRouteDescriptor::new(Method::DELETE, "/users/:id"),
+        ])
+        .with_problem_detail_errors()
+        .build();
+
+        // All operations should have error responses
+        let get_op = doc.paths["/users"].get.as_ref().unwrap();
+        let post_op = doc.paths["/users"].post.as_ref().unwrap();
+        let delete_op = doc.paths["/users/{id}"].delete.as_ref().unwrap();
+
+        assert!(get_op.responses.contains_key("400"));
+        assert!(post_op.responses.contains_key("404"));
+        assert!(delete_op.responses.contains_key("500"));
+    }
+
+    #[test]
+    fn bearer_auth_and_problem_detail_combined() {
+        let doc = OpenApiGenerator::from_descriptors(vec![HttpRouteDescriptor::new(
+            Method::GET,
+            "/protected",
+        )])
+        .with_bearer_auth()
+        .with_problem_detail_errors()
+        .build();
+
+        let components = doc.components.expect("should have components");
+        assert!(components.security_schemes.contains_key("bearerAuth"));
+        assert!(components.schemas.contains_key("ProblemDetail"));
+    }
+
+    #[test]
+    fn bearer_auth_serializes_in_json() {
+        let doc = OpenApiGenerator::from_descriptors(vec![HttpRouteDescriptor::new(
+            Method::GET,
+            "/api",
+        )])
+        .with_bearer_auth()
+        .build_json();
+
+        let schemes = &doc["components"]["securitySchemes"];
+        assert_eq!(schemes["bearerAuth"]["type"], "http");
+        assert_eq!(schemes["bearerAuth"]["scheme"], "bearer");
+        assert_eq!(schemes["bearerAuth"]["bearerFormat"], "JWT");
     }
 }

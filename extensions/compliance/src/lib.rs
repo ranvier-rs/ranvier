@@ -246,6 +246,27 @@ impl FieldNamePiiDetector {
                     "date_of_birth",
                     ClassificationLevel::Confidential,
                 ),
+                // Korean PII patterns
+                (
+                    vec!["jumin", "jumin_number", "resident_number", "resident_registration"],
+                    "kr_resident_number",
+                    ClassificationLevel::Restricted,
+                ),
+                (
+                    vec!["business_number", "saeopja", "business_registration"],
+                    "kr_business_number",
+                    ClassificationLevel::Confidential,
+                ),
+                (
+                    vec!["passport", "passport_number", "yeokkwon"],
+                    "passport",
+                    ClassificationLevel::Restricted,
+                ),
+                (
+                    vec!["drivers_license", "driver_license", "license_number", "myeonheo"],
+                    "drivers_license",
+                    ClassificationLevel::Restricted,
+                ),
             ],
         }
     }
@@ -579,5 +600,128 @@ mod tests {
         let result = sink.erase(&request);
         assert!(result.success);
         assert_eq!(result.records_erased, 0);
+    }
+
+    // --- New tests for M241 ---
+
+    #[test]
+    fn sensitive_display_masking_all_levels() {
+        let public = Sensitive::with_classification("data", ClassificationLevel::Public);
+        let internal = Sensitive::with_classification("data", ClassificationLevel::Internal);
+        let confidential =
+            Sensitive::with_classification("data", ClassificationLevel::Confidential);
+        let restricted = Sensitive::with_classification("data", ClassificationLevel::Restricted);
+
+        assert_eq!(format!("{}", public), "[REDACTED]");
+        assert_eq!(format!("{}", internal), "[REDACTED]");
+        assert_eq!(format!("{}", confidential), "[REDACTED]");
+        assert_eq!(format!("{}", restricted), "[REDACTED]");
+    }
+
+    #[test]
+    fn sensitive_debug_includes_level() {
+        let public = Sensitive::with_classification("data", ClassificationLevel::Public);
+        let restricted = Sensitive::with_classification("data", ClassificationLevel::Restricted);
+
+        assert_eq!(format!("{:?}", public), "[REDACTED:Public]");
+        assert_eq!(format!("{:?}", restricted), "[REDACTED:Restricted]");
+    }
+
+    #[test]
+    fn pii_detector_korean_resident_number() {
+        let detector = FieldNamePiiDetector::new();
+        assert_eq!(
+            detector.classify("jumin_number"),
+            Some(ClassificationLevel::Restricted)
+        );
+        assert_eq!(
+            detector.classify("resident_registration"),
+            Some(ClassificationLevel::Restricted)
+        );
+    }
+
+    #[test]
+    fn pii_detector_korean_business_number() {
+        let detector = FieldNamePiiDetector::new();
+        assert_eq!(
+            detector.classify("business_number"),
+            Some(ClassificationLevel::Confidential)
+        );
+        assert_eq!(
+            detector.classify("business_registration"),
+            Some(ClassificationLevel::Confidential)
+        );
+    }
+
+    #[test]
+    fn pii_detector_passport() {
+        let detector = FieldNamePiiDetector::new();
+        assert_eq!(
+            detector.classify("passport_number"),
+            Some(ClassificationLevel::Restricted)
+        );
+    }
+
+    #[test]
+    fn pii_detector_drivers_license() {
+        let detector = FieldNamePiiDetector::new();
+        assert_eq!(
+            detector.classify("drivers_license"),
+            Some(ClassificationLevel::Restricted)
+        );
+        assert_eq!(
+            detector.classify("license_number"),
+            Some(ClassificationLevel::Restricted)
+        );
+    }
+
+    #[test]
+    fn classification_level_serde_roundtrip() {
+        let level = ClassificationLevel::Restricted;
+        let json = serde_json::to_string(&level).unwrap();
+        let deser: ClassificationLevel = serde_json::from_str(&json).unwrap();
+        assert_eq!(deser, level);
+    }
+
+    #[test]
+    fn erasure_request_with_reason() {
+        let req = ErasureRequest::new("r1".into(), "user1".into(), vec!["all".into()])
+            .with_reason("GDPR Article 17");
+        assert_eq!(req.reason.as_deref(), Some("GDPR Article 17"));
+    }
+
+    #[test]
+    fn in_memory_erasure_sink_verify_post_erasure() {
+        let sink = InMemoryErasureSink::new();
+        sink.add_records("user_1", vec!["rec1".into(), "rec2".into()]);
+
+        let req = ErasureRequest::new("r1".into(), "user_1".into(), vec!["all".into()]);
+        let result = sink.erase(&req);
+        assert_eq!(result.records_erased, 2);
+
+        // Second erasure should find nothing
+        let result2 = sink.erase(&req);
+        assert_eq!(result2.records_erased, 0);
+    }
+
+    #[test]
+    fn pii_detector_total_categories() {
+        let detector = FieldNamePiiDetector::new();
+        // 9 original + 4 Korean = 13 categories
+        assert_eq!(detector.patterns.len(), 13);
+    }
+
+    #[test]
+    fn sensitive_into_inner_returns_value() {
+        let s = Sensitive::new(42);
+        assert_eq!(s.into_inner(), 42);
+    }
+
+    #[test]
+    fn xor_encryption_different_keys_differ() {
+        let hook1 = XorEncryption::new(0x42);
+        let hook2 = XorEncryption::new(0xFF);
+        let data = b"test";
+        assert_ne!(hook1.encrypt(data), hook2.encrypt(data));
     }
 }

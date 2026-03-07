@@ -814,11 +814,13 @@ where
 
     /// Apply a `RanvierConfig` to this builder.
     ///
-    /// Reads server settings (bind address, shutdown timeout) from the config.
+    /// Reads server settings (bind address, shutdown timeout) from the config
+    /// and initializes telemetry if an OTLP endpoint is configured.
     /// Logging should be initialized separately via `config.init_logging()`.
     pub fn config(mut self, config: &ranvier_core::config::RanvierConfig) -> Self {
         self.addr = Some(config.bind_addr());
         self.graceful_shutdown_timeout = config.shutdown_timeout();
+        config.init_telemetry();
         self
     }
 

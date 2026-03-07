@@ -8,8 +8,9 @@ diff, and validate.
 
 ---
 
-**Latest: v0.28.0** — 10 crates on [crates.io](https://crates.io/crates/ranvier)
+**Latest: v0.29.0** — 10 crates on [crates.io](https://crates.io/crates/ranvier)
 
+- **v0.29**: Prometheus `/metrics` endpoint, OTLP auto-export, `AccessLogGuard`, `PostgresAuditSink`, OpenAPI `SecurityScheme` + `ProblemDetail`, Docker/K8s deployment templates, operations guide (EN/KO)
 - **v0.28**: Documentation overhaul, example normalization, API quality (`unwrap`→`expect`), CLI dynamic template versioning, `ranvier_core::VERSION` constant
 - **v0.27**: Guard Transition nodes, JWT auth, GraphQL/gRPC adapters, background jobs, distributed lock, DB patterns, TypeScript codegen, 8 new examples
 - **v0.26**: CLI `ranvier merge` + `ranvier codegen`, VSCode Schematic Diff Viewer, GraphQL/gRPC Explorer, Environment Manager, `LlmTransition`, `Axon::parallel()` FanOut/FanIn, Inspector production (BearerAuth, TraceStore, AlertHook)
@@ -113,7 +114,7 @@ impl Transition<(), String> for Greet {
 
 ---
 
-**Examples** — 54 runnable demos across 4 tiers
+**Examples** — 60 runnable demos across 4 tiers
 
 ```bash
 # Tier A: Start here
@@ -156,7 +157,7 @@ See `examples/README.md` for the full tier-classified list.
 8. `extensions/audit/` — audit trail logging
 9. `extensions/compliance/` — PII detection, data classification
 10. `extensions/openapi/` — OpenAPI spec generation
-11. `examples/` — 54 runnable reference apps
+11. `examples/` — 60 runnable reference apps
 
 ---
 
@@ -168,6 +169,7 @@ See `examples/README.md` for the full tier-classified list.
 | Health Check | `health_endpoint()`, `readiness_liveness_default()` | Ready |
 | Request ID | `request_id_layer()` — UUID v4, bidirectional header | Ready |
 | Config Loading | `config(&RanvierConfig)` — 4-layer: defaults → TOML → profile → env | Ready |
+| Access Logging | `AccessLogGuard` — structured request logging with path redaction | Ready |
 | Guard Pipeline | `CorsGuard`, `RateLimitGuard`, `SecurityHeadersGuard`, `IpFilterGuard` | Ready |
 | JWT Auth | `Axon::with_iam(policy, verifier)` — `IamPolicy::RequireRole` | Ready |
 | Parallel Execution | `Axon::parallel()` — FanOut/FanIn with Bus isolation | Ready |
@@ -176,6 +178,10 @@ See `examples/README.md` for the full tier-classified list.
 | Compression | gzip via flate2 | Ready |
 | HTTP/2 | Hyper 1.0 native | Ready |
 | Static Files | `serve_dir()` + `spa_fallback()` | Ready |
+| Prometheus Metrics | Inspector `/metrics` endpoint — Prometheus exposition format | Ready |
+| OTLP Export | `TelemetryConfig` — automatic TracerProvider initialization | Ready |
+| Audit (Postgres) | `PostgresAuditSink` — hash-chain audit log with sqlx | Ready |
+| OpenAPI Auth | `SecurityScheme` + `ProblemDetail` auto-registration | Ready |
 | Inspector | REST/WS metrics, BearerAuth, TraceStore, AlertHook | Ready |
 
 ---

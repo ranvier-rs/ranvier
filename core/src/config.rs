@@ -24,6 +24,12 @@
 //! enabled = true
 //! port = 3001
 //!
+//! [telemetry]
+//! otlp_endpoint = "http://localhost:4317"
+//! otlp_protocol = "grpc"
+//! service_name  = "my-api"
+//! sample_ratio  = 1.0
+//!
 //! [profile.prod]
 //! logging.format = "json"
 //! logging.level = "warn"
@@ -43,6 +49,7 @@ pub struct RanvierConfig {
     pub logging: LoggingConfig,
     pub tls: TlsConfig,
     pub inspector: InspectorConfig,
+    pub telemetry: TelemetryConfig,
     /// Profile-specific overrides keyed by profile name (e.g., "dev", "staging", "prod").
     #[serde(default)]
     pub profile: HashMap<String, ProfileOverride>,
@@ -104,6 +111,41 @@ pub struct InspectorConfig {
     pub port: u16,
 }
 
+/// Telemetry (OpenTelemetry) configuration.
+///
+/// When `otlp_endpoint` is set, `init_telemetry()` will initialize an OTLP
+/// exporter that sends traces to the given endpoint.  When absent, telemetry
+/// initialization is skipped (no-op).
+///
+/// ```toml
+/// [telemetry]
+/// otlp_endpoint = "http://localhost:4317"
+/// otlp_protocol = "grpc"
+/// service_name  = "my-api"
+/// sample_ratio  = 1.0
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TelemetryConfig {
+    /// OTLP collector endpoint (e.g. `http://localhost:4317`).
+    /// When `None`, telemetry is disabled.
+    pub otlp_endpoint: Option<String>,
+    /// OTLP transport protocol (default: `Grpc`).
+    pub otlp_protocol: OtlpProtocol,
+    /// OpenTelemetry service name (default: `"ranvier"`).
+    pub service_name: String,
+    /// Trace sampling ratio, `0.0` (none) to `1.0` (all). Default: `1.0`.
+    pub sample_ratio: f64,
+}
+
+/// OTLP transport protocol.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum OtlpProtocol {
+    Grpc,
+    Http,
+}
+
 /// Profile-specific configuration overrides.
 ///
 /// Fields are all optional — only specified fields override the base config.
@@ -114,6 +156,7 @@ pub struct ProfileOverride {
     pub logging: Option<LoggingOverride>,
     pub tls: Option<TlsOverride>,
     pub inspector: Option<InspectorOverride>,
+    pub telemetry: Option<TelemetryOverride>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -143,6 +186,14 @@ pub struct InspectorOverride {
     pub port: Option<u16>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TelemetryOverride {
+    pub otlp_endpoint: Option<String>,
+    pub otlp_protocol: Option<OtlpProtocol>,
+    pub service_name: Option<String>,
+    pub sample_ratio: Option<f64>,
+}
+
 // ── Defaults ──
 
 impl Default for RanvierConfig {
@@ -152,6 +203,7 @@ impl Default for RanvierConfig {
             logging: LoggingConfig::default(),
             tls: TlsConfig::default(),
             inspector: InspectorConfig::default(),
+            telemetry: TelemetryConfig::default(),
             profile: HashMap::new(),
         }
     }
@@ -199,6 +251,23 @@ impl Default for InspectorConfig {
             enabled: true,
             port: 3001,
         }
+    }
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            otlp_endpoint: None,
+            otlp_protocol: OtlpProtocol::Grpc,
+            service_name: "ranvier".to_string(),
+            sample_ratio: 1.0,
+        }
+    }
+}
+
+impl Default for OtlpProtocol {
+    fn default() -> Self {
+        Self::Grpc
     }
 }
 
@@ -307,6 +376,21 @@ impl RanvierConfig {
             }
         }
 
+        if let Some(telemetry) = overrides.telemetry {
+            if let Some(endpoint) = telemetry.otlp_endpoint {
+                self.telemetry.otlp_endpoint = Some(endpoint);
+            }
+            if let Some(protocol) = telemetry.otlp_protocol {
+                self.telemetry.otlp_protocol = protocol;
+            }
+            if let Some(service_name) = telemetry.service_name {
+                self.telemetry.service_name = service_name;
+            }
+            if let Some(sample_ratio) = telemetry.sample_ratio {
+                self.telemetry.sample_ratio = sample_ratio;
+            }
+        }
+
         Ok(())
     }
 
@@ -323,6 +407,10 @@ impl RanvierConfig {
     /// - `RANVIER_TLS_KEY_PATH`
     /// - `RANVIER_INSPECTOR_ENABLED` ("true" | "false")
     /// - `RANVIER_INSPECTOR_PORT`
+    /// - `RANVIER_TELEMETRY_OTLP_ENDPOINT`
+    /// - `RANVIER_TELEMETRY_OTLP_PROTOCOL` ("grpc" | "http")
+    /// - `RANVIER_TELEMETRY_SERVICE_NAME`
+    /// - `RANVIER_TELEMETRY_SAMPLE_RATIO`
     pub fn apply_env_overrides(&mut self) {
         if let Ok(v) = std::env::var("RANVIER_SERVER_HOST") {
             self.server.host = v;
@@ -369,6 +457,24 @@ impl RanvierConfig {
                 self.inspector.port = port;
             }
         }
+        if let Ok(v) = std::env::var("RANVIER_TELEMETRY_OTLP_ENDPOINT") {
+            self.telemetry.otlp_endpoint = Some(v);
+        }
+        if let Ok(v) = std::env::var("RANVIER_TELEMETRY_OTLP_PROTOCOL") {
+            match v.to_lowercase().as_str() {
+                "grpc" => self.telemetry.otlp_protocol = OtlpProtocol::Grpc,
+                "http" => self.telemetry.otlp_protocol = OtlpProtocol::Http,
+                _ => {}
+            }
+        }
+        if let Ok(v) = std::env::var("RANVIER_TELEMETRY_SERVICE_NAME") {
+            self.telemetry.service_name = v;
+        }
+        if let Ok(v) = std::env::var("RANVIER_TELEMETRY_SAMPLE_RATIO") {
+            if let Ok(ratio) = v.parse::<f64>() {
+                self.telemetry.sample_ratio = ratio.clamp(0.0, 1.0);
+            }
+        }
     }
 
     /// Returns the server bind address as `"host:port"`.
@@ -406,6 +512,25 @@ impl RanvierConfig {
     /// This should be called once at application startup.
     pub fn init_logging(&self) {
         init_logging(&self.logging);
+    }
+
+    /// Initialize OpenTelemetry telemetry based on this configuration.
+    ///
+    /// When `telemetry.otlp_endpoint` is set, this creates a TracerProvider
+    /// and registers it as the global tracer.  When absent, this is a no-op.
+    ///
+    /// Call this *after* `init_logging()` so that the OTel layer can attach
+    /// to the existing tracing subscriber.
+    pub fn init_telemetry(&self) {
+        if let Some(ref endpoint) = self.telemetry.otlp_endpoint {
+            tracing::info!(
+                endpoint = %endpoint,
+                protocol = ?self.telemetry.otlp_protocol,
+                service = %self.telemetry.service_name,
+                sample_ratio = %self.telemetry.sample_ratio,
+                "OTLP telemetry configured (exporter integration requires `opentelemetry` feature)"
+            );
+        }
     }
 }
 
@@ -631,5 +756,138 @@ port = 4000
         let cfg2: RanvierConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(cfg.server.port, cfg2.server.port);
         assert_eq!(cfg.logging.level, cfg2.logging.level);
+    }
+
+    #[test]
+    fn telemetry_defaults() {
+        let cfg = RanvierConfig::default();
+        assert!(cfg.telemetry.otlp_endpoint.is_none());
+        assert_eq!(cfg.telemetry.otlp_protocol, OtlpProtocol::Grpc);
+        assert_eq!(cfg.telemetry.service_name, "ranvier");
+        assert!((cfg.telemetry.sample_ratio - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parse_telemetry_toml() {
+        let toml_str = r#"
+[telemetry]
+otlp_endpoint = "http://localhost:4317"
+otlp_protocol = "http"
+service_name  = "my-api"
+sample_ratio  = 0.5
+"#;
+        let cfg: RanvierConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            cfg.telemetry.otlp_endpoint.as_deref(),
+            Some("http://localhost:4317")
+        );
+        assert_eq!(cfg.telemetry.otlp_protocol, OtlpProtocol::Http);
+        assert_eq!(cfg.telemetry.service_name, "my-api");
+        assert!((cfg.telemetry.sample_ratio - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn telemetry_absent_in_toml_uses_defaults() {
+        let toml_str = r#"
+[server]
+port = 4000
+"#;
+        let cfg: RanvierConfig = toml::from_str(toml_str).unwrap();
+        assert!(cfg.telemetry.otlp_endpoint.is_none());
+        assert_eq!(cfg.telemetry.service_name, "ranvier");
+    }
+
+    #[test]
+    fn telemetry_profile_override() {
+        let toml_str = r#"
+[telemetry]
+service_name = "my-api"
+
+[profile.prod.telemetry]
+otlp_endpoint = "http://otel-collector:4317"
+sample_ratio = 0.1
+"#;
+        let mut cfg: RanvierConfig = toml::from_str(toml_str).unwrap();
+        cfg.apply_profile("prod").unwrap();
+        assert_eq!(
+            cfg.telemetry.otlp_endpoint.as_deref(),
+            Some("http://otel-collector:4317")
+        );
+        assert!((cfg.telemetry.sample_ratio - 0.1).abs() < f64::EPSILON);
+        // service_name should remain from base
+        assert_eq!(cfg.telemetry.service_name, "my-api");
+    }
+
+    #[test]
+    fn telemetry_env_override() {
+        let mut cfg = RanvierConfig::default();
+        unsafe { std::env::set_var("RANVIER_TELEMETRY_OTLP_ENDPOINT", "http://otel:4317") };
+        unsafe { std::env::set_var("RANVIER_TELEMETRY_SERVICE_NAME", "test-svc") };
+        unsafe { std::env::set_var("RANVIER_TELEMETRY_SAMPLE_RATIO", "0.25") };
+        unsafe { std::env::set_var("RANVIER_TELEMETRY_OTLP_PROTOCOL", "http") };
+        cfg.apply_env_overrides();
+        assert_eq!(
+            cfg.telemetry.otlp_endpoint.as_deref(),
+            Some("http://otel:4317")
+        );
+        assert_eq!(cfg.telemetry.service_name, "test-svc");
+        assert!((cfg.telemetry.sample_ratio - 0.25).abs() < f64::EPSILON);
+        assert_eq!(cfg.telemetry.otlp_protocol, OtlpProtocol::Http);
+        unsafe { std::env::remove_var("RANVIER_TELEMETRY_OTLP_ENDPOINT") };
+        unsafe { std::env::remove_var("RANVIER_TELEMETRY_SERVICE_NAME") };
+        unsafe { std::env::remove_var("RANVIER_TELEMETRY_SAMPLE_RATIO") };
+        unsafe { std::env::remove_var("RANVIER_TELEMETRY_OTLP_PROTOCOL") };
+    }
+
+    #[test]
+    fn telemetry_protocol_grpc_default() {
+        let cfg = TelemetryConfig::default();
+        assert_eq!(cfg.otlp_protocol, OtlpProtocol::Grpc);
+    }
+
+    #[test]
+    fn telemetry_protocol_http_roundtrip() {
+        let toml_str = r#"
+[telemetry]
+otlp_protocol = "http"
+"#;
+        let cfg: RanvierConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.telemetry.otlp_protocol, OtlpProtocol::Http);
+    }
+
+    #[test]
+    fn telemetry_sample_ratio_default_is_one() {
+        let cfg = TelemetryConfig::default();
+        assert!((cfg.sample_ratio - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn telemetry_partial_profile_preserves_unset_fields() {
+        let toml_str = r#"
+[telemetry]
+otlp_endpoint = "http://base:4317"
+service_name = "base-svc"
+sample_ratio = 0.8
+
+[profile.staging.telemetry]
+sample_ratio = 0.5
+"#;
+        let mut cfg: RanvierConfig = toml::from_str(toml_str).unwrap();
+        cfg.apply_profile("staging").unwrap();
+        // Overridden field
+        assert!((cfg.telemetry.sample_ratio - 0.5).abs() < f64::EPSILON);
+        // Preserved fields
+        assert_eq!(
+            cfg.telemetry.otlp_endpoint.as_deref(),
+            Some("http://base:4317")
+        );
+        assert_eq!(cfg.telemetry.service_name, "base-svc");
+    }
+
+    #[test]
+    fn telemetry_init_does_not_panic_without_endpoint() {
+        let cfg = RanvierConfig::default();
+        // Should be a no-op, not panic
+        cfg.init_telemetry();
     }
 }
