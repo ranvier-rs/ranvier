@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.28.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.28.0 — Documentation overhaul, example normalization, API quality, CLI template versioning.**
+Macro-first Quickstart, comprehensive README rewrite, example learning DAG with Prerequisites/Next Steps, circuit factory inlining, production-path `unwrap()` → `expect()` conversion, and dynamic CLI template versioning.
+
+### Added
+- **`ranvier_core::VERSION` constant:** Compile-time crate version access via `env!("CARGO_PKG_VERSION")`. Used by CLI for dynamic template versioning.
+- **Error Type Guide:** README table explaining when to use `String` (prototyping), custom enum (production), or `Never` (infallible transitions).
+- **Bus Access Guide:** README table documenting `try_require()` (recommended), `read()` (optional), and `require()` (invariant) patterns.
+- **Learning DAG:** `hello-world`, `reference-todo-api`, `reference-ecommerce-order` now include Prerequisites and Next Steps for guided learning progression.
+- **Crate README expansion:** `ranvier-std` (Guard nodes table), `ranvier-audit` (Key Components), `ranvier-compliance` (Key Components + PII example), `ranvier-openapi` (Key Components + Swagger UI example).
+
+### Changed
+- **README.md rewritten:** Updated from v0.18.0/23 crates to v0.28.0/10 crates. Macro-first `#[transition]` Quickstart, "Under the Hood" manual impl section, 54 examples across 4 tiers, Built-in Production Features table.
+- **`kit/README.md`:** Quickstart updated to `#[transition]` macro, version references 0.21→0.28, 10-crate architecture table.
+- **`reference-todo-api`:** 6 single-transition circuit factory functions removed, inlined into `.route()` calls.
+- **`reference-ecommerce-order`:** 3 simple factory functions inlined; `inventory_circuit()` (inline transition) and `order_pipeline_circuit()` (saga) retained.
+- **`examples/README.md`:** Updated to v0.28.0, added 5 missing Tier B entries.
+- **CLI template versioning (M238):** `ranvier new` Cargo.toml templates now derive crate version from `ranvier_core::VERSION` instead of hardcoded `"0.22"`. Template edition updated `2021` → `2024`, removed unnecessary `async-trait` dependency.
+
+### Fixed
+- **12 production-path `unwrap()` → `expect()`:** `runtime/axon.rs` (3: saga compensation registry lock, deserialization), `runtime/llm.rs` (1: prompt template guard), `http/ingress.rs` (6: Response builder), `http/body.rs` (1), `http/http3.rs` (1). All with descriptive panic messages.
+
+---
+
 ## [0.27.0] — 2026-03
 
 ### Summary

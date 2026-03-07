@@ -9,10 +9,10 @@ name = "llm-content-moderation"
 path = "src/main.rs"
 
 [dependencies]
-ranvier-core    = { path = "../../core", version = "0.27.0" }
-ranvier-macros  = { path = "../../macros", version = "0.27.0" }
-ranvier-runtime = { path = "../../runtime", version = "0.27.0" }
-ranvier-http    = { path = "../../http", version = "0.27.0" }
+ranvier-core    = { path = "../../core", version = "0.28.0" }
+ranvier-macros  = { path = "../../macros", version = "0.28.0" }
+ranvier-runtime = { path = "../../runtime", version = "0.28.0" }
+ranvier-http    = { path = "../../http", version = "0.28.0" }
 async-trait     = "0.1"
 anyhow          = "1.0"
 serde           = { version = "1.0", features = ["derive"] }

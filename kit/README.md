@@ -45,16 +45,16 @@ Default features include the HTTP ingress adapter and std nodes.
 To slim down dependencies:
 
 ```toml
-ranvier = { version = "0.27.0", default-features = false }
+ranvier = { version = "0.28.0", default-features = false }
 ```
 
 You can enable features explicitly:
 
 ```toml
-ranvier = { version = "0.27.0", features = ["http", "std"] }
+ranvier = { version = "0.28.0", features = ["http", "std"] }
 ```
 
-## Crates (10-crate architecture, v0.27.0)
+## Crates (10-crate architecture, v0.28.0)
 
 | Tier | Crate | Purpose |
 |------|-------|---------|
@@ -69,7 +69,7 @@ ranvier = { version = "0.27.0", features = ["http", "std"] }
 | T4 | `ranvier-openapi` | OpenAPI spec generation |
 | T5 | `ranvier` | Facade crate (this crate) |
 
-13 wrapper crates were removed in v0.27.0. Use external libraries directly
+13 wrapper crates were removed in v0.28.0. Use external libraries directly
 with Transition-pattern examples.
 
 ## Examples
