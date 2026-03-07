@@ -21,8 +21,8 @@
 //! - `auth-jwt-role-demo` — authentication and role-based access
 //!
 //! ## Next Steps
-//! - `session-demo` — session management patterns
-//! - `guard-demo` — route-level guard policies
+//! - `session-pattern` — session management patterns
+//! - `guard-demo` — HTTP guard pipeline (CORS, rate limit, IP filter)
 
 use async_trait::async_trait;
 use ranvier_core::prelude::*;

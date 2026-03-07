@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.27.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.27.0 — Auth/Guard examples, ecosystem replacement coverage, CLI status page restoration.**
+Completes the v0.21 crate consolidation (23→10) by providing replacement examples for all 13 removed crates. Adds Guard pipeline and IAM/JWT role-based access control examples, 6 ecosystem integration demos, Web Auth & Security manual pages, and restores CLI status page HTML generation.
+
+### Added
+- **Guard demo (M232):** `guard-demo` example showcasing 4 Guard nodes (CorsGuard, RateLimitGuard, SecurityHeadersGuard, IpFilterGuard) composed in an Axon `.then()` chain.
+- **Auth JWT role demo (M232):** `auth-jwt-role-demo` example with `IamVerifier` implementation, `IamPolicy::RequireRole`, `Axon::with_iam()` boundary verification, and JWT token issuance.
+- **Web Auth category (M233):** Auth & Security manual pages (EN/KO), `auth-security` learning path, example cards for guard-demo/auth-jwt-role/session-pattern.
+- **Ecosystem replacement examples (M234):** `graphql-async-graphql-demo`, `grpc-tonic-demo`, `background-jobs-demo`, `distributed-lock-demo`, `db-sqlx-demo`, `typescript-codegen-demo` — covering all remaining gaps from removed crates.
+- **CLI status page restoration (M235):** `ranvier status build` and `ranvier status from-schematic` now generate self-contained HTML status pages. Previously stubs since v0.21 crate consolidation.
+
+### Changed
+- **Example count:** 51 → 59 workspace examples.
+- **CLI version:** 0.1.1 → 0.2.0.
+- `multitenancy-demo` doc comments fixed: broken `session-demo` reference → `session-pattern`.
+
+---
+
 ## [0.23.0] — 2026-03
 
 ### Summary

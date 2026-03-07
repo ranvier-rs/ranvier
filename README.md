@@ -92,7 +92,7 @@ cargo run -p inspector-demo       # Runtime observability server
 cargo run -p status-demo          # Static status page generation
 ```
 
-See `examples/README.md` for the full tier-classified list (47 examples).
+See `examples/README.md` for the full tier-classified list (55 examples).
 
 ---
 

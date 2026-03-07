@@ -52,6 +52,8 @@ These are maintained and useful, but not the first onboarding path.
 26. `compliance-demo`
 27. `macros-demo`
 28. `bus-capability-demo`
+29. `guard-demo`
+30. `auth-jwt-role-demo`
 
 ### Tier C: Ecosystem Integration
 
@@ -62,6 +64,12 @@ External library direct usage — no Ranvier wrapper crate needed.
 3. `ecosystem-seaorm-demo`
 4. `ecosystem-nats-demo`
 5. `ecosystem-meilisearch-demo`
+6. `graphql-async-graphql-demo`
+7. `grpc-tonic-demo`
+8. `background-jobs-demo`
+9. `distributed-lock-demo`
+10. `db-sqlx-demo`
+11. `typescript-codegen-demo`
 
 ### Tier D: Experimental (not authoritative for architecture)
 
@@ -79,16 +87,16 @@ Retained for exploration. May not represent the current recommended direction.
 The following examples were removed because the crates they depended on were
 consolidated or removed (23 → 10 crate consolidation):
 
-- `auth-jwt-role-demo` → use `ranvier_core::iam::AuthContext` directly
-- `guard-demo` → use Transition-based access control
+- ~~`auth-jwt-role-demo`~~ → **restored in v0.27** using `ranvier_core::iam` + `Axon::with_iam()`
+- ~~`guard-demo`~~ → **restored in v0.27** using `ranvier_std` Guard nodes
 - `observe-http-demo` → use `otel-concept` or `otel-ops-demo` with external OTEL crates
 - `otel-demo` → replaced by `otel-concept`
-- `graphql-service-demo` → use `async-graphql` directly
-- `grpc-service-demo` → use `tonic` directly
-- `db-example` → use `ecosystem-diesel-demo` or `ecosystem-seaorm-demo`
-- `cluster-demo` → use `ecosystem-nats-demo` for distributed messaging
+- ~~`graphql-service-demo`~~ → **restored in v0.27** as `graphql-async-graphql-demo`
+- ~~`grpc-service-demo`~~ → **restored in v0.27** as `grpc-tonic-demo`
+- ~~`db-example`~~ → **covered by** `ecosystem-diesel-demo`, `ecosystem-seaorm-demo`, `db-sqlx-demo`
+- ~~`cluster-demo`~~ → **restored in v0.27** as `distributed-lock-demo`
 - `status-demo` → implement as Transition node
-- `job-scheduler-demo` → use `tokio` cron patterns directly
+- ~~`job-scheduler-demo`~~ → **restored in v0.27** as `background-jobs-demo`
 - `session-demo` → use `session-pattern` for Transition-based sessions
 
 ---
