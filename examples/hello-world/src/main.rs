@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
     //    This is the "what to do" - depth = 1
     //    Note: Axon::new("label") creates an identity Axon<T, T, E>
     //          We start with () and transform to String via transitions
-    let hello = Axon::<(), (), String>::new("HelloWorld")
+    let hello = Axon::simple::<String>("HelloWorld")
         .then(greet)
         .then(exclaim);
 

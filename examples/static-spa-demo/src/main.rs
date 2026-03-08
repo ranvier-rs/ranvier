@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .compression_layer()
         .get(
             "/api/ping",
-            Axon::<(), (), String, ()>::new("ApiPing").then(ApiPing),
+            Axon::simple::<String>("ApiPing").then(ApiPing),
         )
         .run(())
         .await

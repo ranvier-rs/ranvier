@@ -38,8 +38,8 @@ async fn main() {
     bus.insert(7_i32);
     bus.insert("secret".to_string());
 
-    let allow_axon = Axon::<(), (), String>::new("AllowRead").then(allowed_read);
-    let deny_axon = Axon::<(), (), String>::new("BlockRead").then(blocked_read);
+    let allow_axon = Axon::simple::<String>("AllowRead").then(allowed_read);
+    let deny_axon = Axon::simple::<String>("BlockRead").then(blocked_read);
 
     let allow_result = allow_axon.execute((), &(), &mut bus).await;
     let deny_result = deny_axon.execute((), &(), &mut bus).await;

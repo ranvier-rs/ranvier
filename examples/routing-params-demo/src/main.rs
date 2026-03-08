@@ -67,15 +67,15 @@ async fn not_found_route(_state: (), _resources: &(), _bus: &mut Bus) -> Outcome
 }
 
 fn order_circuit() -> Axon<(), String, String> {
-    Axon::<(), (), String>::new("OrderRoute").then(order_route)
+    Axon::simple::<String>("OrderRoute").then(order_route)
 }
 
 fn asset_circuit() -> Axon<(), String, String> {
-    Axon::<(), (), String>::new("AssetRoute").then(asset_route)
+    Axon::simple::<String>("AssetRoute").then(asset_route)
 }
 
 fn fallback_circuit() -> Axon<(), String, String> {
-    Axon::<(), (), String>::new("FallbackRoute").then(not_found_route)
+    Axon::simple::<String>("FallbackRoute").then(not_found_route)
 }
 
 #[transition]
@@ -106,15 +106,15 @@ async fn internal_route(
 }
 
 fn unauthorized_circuit() -> Axon<(), String, DemoRouteError> {
-    Axon::<(), (), DemoRouteError>::new("UnauthorizedRoute").then(unauthorized_route)
+    Axon::simple::<DemoRouteError>("UnauthorizedRoute").then(unauthorized_route)
 }
 
 fn missing_circuit() -> Axon<(), String, DemoRouteError> {
-    Axon::<(), (), DemoRouteError>::new("MissingRoute").then(missing_route)
+    Axon::simple::<DemoRouteError>("MissingRoute").then(missing_route)
 }
 
 fn internal_circuit() -> Axon<(), String, DemoRouteError> {
-    Axon::<(), (), DemoRouteError>::new("InternalRoute").then(internal_route)
+    Axon::simple::<DemoRouteError>("InternalRoute").then(internal_route)
 }
 
 fn custom_error_response(error: &DemoRouteError) -> HttpResponse {

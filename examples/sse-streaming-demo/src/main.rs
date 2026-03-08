@@ -77,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Starting Ranvier SSE Demo Server on http://127.0.0.1:3000/");
     println!("To test: curl -N http://127.0.0.1:3000/events");
 
-    let handler = Axon::<(), (), String, ()>::new("sse").then(SseHandler);
+    let handler = Axon::simple::<String>("sse").then(SseHandler);
     let app = HttpIngress::new().get("/events", handler);
 
     app.bind("127.0.0.1:3000")

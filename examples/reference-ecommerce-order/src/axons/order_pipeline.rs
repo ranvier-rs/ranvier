@@ -21,7 +21,7 @@ use crate::transitions::{
 ///   - ReserveInventory failure: RefundPayment (LIFO)
 ///   - ScheduleShipping failure: ReleaseInventory → RefundPayment (LIFO)
 pub fn order_pipeline_circuit() -> Axon<(), serde_json::Value, String> {
-    Axon::<(), (), String>::new("order-pipeline")
+    Axon::simple::<String>("order-pipeline")
         .with_saga_policy(SagaPolicy::Enabled)
         .then(create_order)
         .then_compensated(process_payment, refund_payment)

@@ -77,8 +77,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let counter = Arc::new(AtomicU64::new(0));
 
-    let hello_circuit = Axon::<(), (), String>::new("hello").then(hello);
-    let status_circuit = Axon::<(), (), String>::new("status").then(health_status);
+    let hello_circuit = Axon::simple::<String>("hello").then(hello);
+    let status_circuit = Axon::simple::<String>("status").then(health_status);
 
     Ranvier::http()
         .config(&config)

@@ -67,19 +67,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .readiness_liveness_default()
         .post(
             "/login",
-            Axon::<(), (), String>::new("login").then(login),
+            Axon::simple::<String>("login").then(login),
         )
         .get(
             "/rooms",
-            Axon::<(), (), String>::new("list_rooms").then(list_rooms),
+            Axon::simple::<String>("list_rooms").then(list_rooms),
         )
         .post(
             "/rooms",
-            Axon::<(), (), String>::new("create_room").then(create_room),
+            Axon::simple::<String>("create_room").then(create_room),
         )
         .get(
             "/rooms/:id/history",
-            Axon::<(), (), String>::new("room_history").then(room_history),
+            Axon::simple::<String>("room_history").then(room_history),
         )
         .ws("/ws", ws::handler::handle_ws)
         .bus_injector(move |parts, bus| {

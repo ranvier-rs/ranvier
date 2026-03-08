@@ -36,7 +36,7 @@ use transitions::{
 ///
 /// Flow: ExtractContent → ModerateContent → ApplyPolicy
 fn moderation_circuit() -> Axon<(), serde_json::Value, String> {
-    Axon::<(), (), String>::new("content-moderation")
+    Axon::simple::<String>("content-moderation")
         .then(extract_content)
         .then(moderate_content)
         .then(apply_policy)
@@ -59,7 +59,7 @@ fn health_circuit() -> Axon<(), serde_json::Value, String> {
         }))
     }
 
-    Axon::<(), (), String>::new("health").then(health_check)
+    Axon::simple::<String>("health").then(health_check)
 }
 
 #[tokio::main]

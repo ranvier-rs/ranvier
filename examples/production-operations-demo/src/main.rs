@@ -81,11 +81,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
 
     // 2. Build circuits with AccessLogGuard
-    let order_circuit = Axon::<(), (), String>::new("OrderPipeline")
+    let order_circuit = Axon::simple::<String>("OrderPipeline")
         .then(AccessLogGuard::new().redact_paths(vec!["/auth/login".into()]))
         .then(order_handler);
 
-    let hello_circuit = Axon::<(), (), String>::new("Hello")
+    let hello_circuit = Axon::simple::<String>("Hello")
         .then(AccessLogGuard::new())
         .then(hello);
 

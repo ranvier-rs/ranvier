@@ -149,15 +149,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Public circuit: no IAM policy
     let public_circuit =
-        Axon::<(), (), String>::new("public-endpoint").then(PublicEndpoint);
+        Axon::simple::<String>("public-endpoint").then(PublicEndpoint);
 
     // User circuit: requires any valid identity
-    let user_circuit = Axon::<(), (), String>::new("user-profile")
+    let user_circuit = Axon::simple::<String>("user-profile")
         .with_iam(IamPolicy::RequireIdentity, verifier.clone())
         .then(UserProfile);
 
     // Admin circuit: requires "admin" role
-    let admin_circuit = Axon::<(), (), String>::new("admin-dashboard")
+    let admin_circuit = Axon::simple::<String>("admin-dashboard")
         .with_iam(
             IamPolicy::RequireRole("admin".into()),
             verifier.clone(),

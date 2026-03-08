@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let order_route = Axon::<(), (), String, ()>::new("AcceptOrder").then(AcceptOrder);
+    let order_route = Axon::simple::<String>("AcceptOrder").then(AcceptOrder);
 
     println!("Serving embedded frontend at http://127.0.0.1:3030");
     println!("API endpoint: POST http://127.0.0.1:3030/api/order");

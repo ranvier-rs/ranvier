@@ -66,7 +66,7 @@ fn inventory_circuit() -> Axon<(), serde_json::Value, String> {
         Outcome::Next(serde_json::json!({ "inventory": inventory }))
     }
 
-    Axon::<(), (), String>::new("list-inventory").then(list_inventory)
+    Axon::simple::<String>("list-inventory").then(list_inventory)
 }
 
 #[tokio::main]
@@ -90,10 +90,10 @@ async fn main() -> Result<()> {
     // Complex pipelines (like order_pipeline_circuit) keep their factory function.
     Ranvier::http()
         .bind(&addr)
-        .post("/login", Axon::<(), (), String>::new("login").then(login))
+        .post("/login", Axon::simple::<String>("login").then(login))
         .post("/orders", axons::order_pipeline::order_pipeline_circuit())
-        .get("/orders", Axon::<(), (), String>::new("list-orders").then(list_orders))
-        .get("/orders/:id", Axon::<(), (), String>::new("get-order").then(get_order))
+        .get("/orders", Axon::simple::<String>("list-orders").then(list_orders))
+        .get("/orders/:id", Axon::simple::<String>("get-order").then(get_order))
         .get("/inventory", inventory_circuit())
         .run(())
         .await

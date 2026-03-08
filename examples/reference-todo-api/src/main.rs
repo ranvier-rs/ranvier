@@ -61,12 +61,12 @@ async fn main() -> Result<()> {
 
     Ranvier::http()
         .bind(&addr)
-        .post("/login", Axon::<(), (), String>::new("login").then(login))
-        .get("/todos", Axon::<(), (), String>::new("list-todos").then(list_todos))
-        .post("/todos", Axon::<(), (), String>::new("create-todo").then(create_todo))
-        .get("/todos/:id", Axon::<(), (), String>::new("get-todo").then(get_todo))
-        .put("/todos/:id", Axon::<(), (), String>::new("update-todo").then(update_todo))
-        .delete("/todos/:id", Axon::<(), (), String>::new("delete-todo").then(delete_todo))
+        .post("/login", Axon::simple::<String>("login").then(login))
+        .get("/todos", Axon::simple::<String>("list-todos").then(list_todos))
+        .post("/todos", Axon::simple::<String>("create-todo").then(create_todo))
+        .get("/todos/:id", Axon::simple::<String>("get-todo").then(get_todo))
+        .put("/todos/:id", Axon::simple::<String>("update-todo").then(update_todo))
+        .delete("/todos/:id", Axon::simple::<String>("delete-todo").then(delete_todo))
         .run(())
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
