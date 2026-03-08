@@ -8,8 +8,9 @@ diff, and validate.
 
 ---
 
-**Latest: v0.29.0** — 10 crates on [crates.io](https://crates.io/crates/ranvier)
+**Latest: v0.30.0** — 10 crates on [crates.io](https://crates.io/crates/ranvier)
 
+- **v0.30**: `Axon::simple()` convenience constructor, HttpIngress rustdoc grouping, telemetry-otel-demo, web manual operations/deployment pages (EN/KO)
 - **v0.29**: Prometheus `/metrics` endpoint, OTLP auto-export, `AccessLogGuard`, `PostgresAuditSink`, OpenAPI `SecurityScheme` + `ProblemDetail`, Docker/K8s deployment templates, operations guide (EN/KO)
 - **v0.28**: Documentation overhaul, example normalization, API quality (`unwrap`→`expect`), CLI dynamic template versioning, `ranvier_core::VERSION` constant
 - **v0.27**: Guard Transition nodes, JWT auth, GraphQL/gRPC adapters, background jobs, distributed lock, DB patterns, TypeScript codegen, 8 new examples
@@ -114,7 +115,7 @@ impl Transition<(), String> for Greet {
 
 ---
 
-**Examples** — 60 runnable demos across 4 tiers
+**Examples** — 61 runnable demos across 4 tiers
 
 ```bash
 # Tier A: Start here
@@ -157,7 +158,7 @@ See `examples/README.md` for the full tier-classified list.
 8. `extensions/audit/` — audit trail logging
 9. `extensions/compliance/` — PII detection, data classification
 10. `extensions/openapi/` — OpenAPI spec generation
-11. `examples/` — 60 runnable reference apps
+11. `examples/` — 61 runnable reference apps
 
 ---
 

@@ -1,6 +1,6 @@
 # Ranvier HTTP (`ranvier-http`)
 
-> **The Ingress:** Tower-native HTTP adapter for Ranvier.
+> **The Ingress:** Hyper 1.0 native HTTP adapter for Ranvier.
 
 ## 🎯 Purpose
 

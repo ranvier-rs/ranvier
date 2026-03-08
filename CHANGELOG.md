@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.30.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.30.0 — Framework DX completion.**
+`Axon::simple()` convenience constructor, HttpIngress rustdoc grouping, `telemetry-otel-demo` example, web manual operations/deployment pages (EN/KO), remaining `unwrap()` → `expect()` conversions.
+
+### Added
+- **`Axon::simple::<E>(label)` convenience constructor (M244):** Reduces `Axon::<(), (), String>::new("name")` to `Axon::simple::<String>("name")` for the most common pipeline pattern (no input state, no resources). Method-level generic supports turbofish syntax.
+- **HttpIngress rustdoc section headers (M244):** 36 public methods organized into 10 categories (Server Configuration, Policies & Intervention, Lifecycle Hooks, Middleware Layers, Introspection, Static Assets, WebSocket, Health & Readiness, Routing, Execution) via section-header comments.
+- **`telemetry-otel-demo` example (M245):** Demonstrates `RanvierConfig` 4-layer loading, `init_logging()`, `TelemetryConfig` OTLP auto-initialization, and `Axon::simple()` convenience constructor.
+- **Web manual operations page EN/KO (M246):** Configuration system, health & readiness, request pipeline, structured logging, telemetry & OTLP.
+- **Web manual deployment page EN/KO (M246):** Docker multi-stage builds, Kubernetes manifests, environment configuration, health probes.
+
+### Changed
+- **Example count:** 60 → 61 examples (added telemetry-otel-demo).
+- **`ranvier-http` README:** "Tower-native" → "Hyper 1.0 native" (accuracy fix).
+- **Examples README:** Updated to v0.30.0, added `telemetry-otel-demo` to Tier B.
+
+### Fixed
+- **11 `debug.rs` `unwrap()` → `expect("debug mutex poisoned")` (M244):** All Mutex lock calls in `DebugControl` now use descriptive panic messages.
+
+---
+
 ## [0.29.0] — 2026-03
 
 ### Summary

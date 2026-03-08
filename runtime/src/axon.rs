@@ -238,6 +238,31 @@ where
     }
 }
 
+impl Axon<(), (), (), ()> {
+    /// Convenience constructor for simple pipelines with no input state or resources.
+    ///
+    /// Reduces the common `Axon::<(), (), E>::new("label")` turbofish to
+    /// `Axon::simple::<E>("label")`, requiring only the error type parameter.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Before: 3 type parameters, 2 of which are always ()
+    /// let axon = Axon::<(), (), String>::new("pipeline");
+    ///
+    /// // After: only the error type
+    /// let axon = Axon::simple::<String>("pipeline");
+    /// ```
+    #[track_caller]
+    pub fn simple<E>(label: &str) -> Axon<(), (), E, ()>
+    where
+        E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let caller = Location::caller();
+        <Axon<(), (), E, ()>>::start_with_source(label, caller)
+    }
+}
+
 impl<In, Out, E, Res> Axon<In, Out, E, Res>
 where
     In: Send + Sync + Serialize + DeserializeOwned + 'static,
@@ -4847,5 +4872,56 @@ mod tests {
 
         assert_eq!(fanout_enters, 1, "Should have 1 FanOut enter");
         assert_eq!(fanin_enters, 1, "Should have 1 FanIn enter");
+    }
+
+    // ── Axon::simple() convenience constructor ───────────────────────────────
+
+    #[derive(Clone)]
+    struct Greet;
+
+    #[async_trait]
+    impl Transition<(), String> for Greet {
+        type Error = String;
+        type Resources = ();
+
+        async fn run(
+            &self,
+            _state: (),
+            _resources: &Self::Resources,
+            _bus: &mut Bus,
+        ) -> Outcome<String, Self::Error> {
+            Outcome::Next("Hello from simple!".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn axon_simple_creates_pipeline() {
+        let axon = Axon::simple::<String>("SimpleTest").then(Greet);
+
+        let mut bus = Bus::new();
+        let result = axon.execute((), &(), &mut bus).await;
+
+        match result {
+            Outcome::Next(msg) => assert_eq!(msg, "Hello from simple!"),
+            other => panic!("Expected Outcome::Next, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn axon_simple_equivalent_to_explicit() {
+        // Axon::simple::<E>("label") should behave identically to Axon::<(), (), E>::new("label")
+        let simple = Axon::simple::<String>("Equiv").then(Greet);
+        let explicit = Axon::<(), (), String>::new("Equiv").then(Greet);
+
+        let mut bus1 = Bus::new();
+        let mut bus2 = Bus::new();
+
+        let r1 = simple.execute((), &(), &mut bus1).await;
+        let r2 = explicit.execute((), &(), &mut bus2).await;
+
+        match (r1, r2) {
+            (Outcome::Next(a), Outcome::Next(b)) => assert_eq!(a, b),
+            _ => panic!("Both should produce Outcome::Next"),
+        }
     }
 }

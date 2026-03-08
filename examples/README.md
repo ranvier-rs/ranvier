@@ -1,7 +1,7 @@
 # Ranvier Examples
 
 **Updated:** 2026-03-07
-**Workspace:** v0.28.0 — 10 crates, Hyper 1.0 native (no tower/tower-http)
+**Workspace:** v0.30.0 — 10 crates, Hyper 1.0 native (no tower/tower-http)
 **Purpose:** Keep examples aligned with the Typed Decision Engine direction:
 1. Axon execution is explicit.
 2. Schematic is analysis data, not an executable graph.
@@ -59,6 +59,8 @@ These are maintained and useful, but not the first onboarding path.
 33. `reference-chat-server`
 34. `production-config-demo`
 35. `llm-content-moderation`
+36. `production-operations-demo`
+37. `telemetry-otel-demo`
 
 ### Tier C: Ecosystem Integration
 

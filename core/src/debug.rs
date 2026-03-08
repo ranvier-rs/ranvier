@@ -43,30 +43,30 @@ impl DebugControl {
 
     /// Add a breakpoint for a specific node ID.
     pub fn set_breakpoint(&self, node_id: String) {
-        self.inner.breakpoints.lock().unwrap().insert(node_id);
+        self.inner.breakpoints.lock().expect("debug mutex poisoned").insert(node_id);
     }
 
     /// Remove a breakpoint for a specific node ID.
     pub fn remove_breakpoint(&self, node_id: &str) {
-        self.inner.breakpoints.lock().unwrap().remove(node_id);
+        self.inner.breakpoints.lock().expect("debug mutex poisoned").remove(node_id);
     }
 
     /// Request execution to pause at the next available node.
     pub fn pause(&self) {
-        *self.inner.pause_next.lock().unwrap() = true;
+        *self.inner.pause_next.lock().expect("debug mutex poisoned") = true;
     }
 
     /// Resume execution from a paused state.
     pub fn resume(&self) {
-        *self.inner.pause_next.lock().unwrap() = false;
-        *self.inner.state.lock().unwrap() = DebugState::Running;
+        *self.inner.pause_next.lock().expect("debug mutex poisoned") = false;
+        *self.inner.state.lock().expect("debug mutex poisoned") = DebugState::Running;
         self.inner.notify.notify_waiters();
     }
 
     /// Resume execution but pause again at the very next node.
     pub fn step(&self) {
-        *self.inner.pause_next.lock().unwrap() = true;
-        *self.inner.state.lock().unwrap() = DebugState::Running;
+        *self.inner.pause_next.lock().expect("debug mutex poisoned") = true;
+        *self.inner.state.lock().expect("debug mutex poisoned") = DebugState::Running;
         self.inner.notify.notify_waiters();
     }
 
@@ -74,8 +74,8 @@ impl DebugControl {
     ///
     /// This consumes the internal "pause_next" flag if it was set.
     pub fn should_pause(&self, node_id: &str) -> bool {
-        let breakpoints = self.inner.breakpoints.lock().unwrap();
-        let mut pause_next = self.inner.pause_next.lock().unwrap();
+        let breakpoints = self.inner.breakpoints.lock().expect("debug mutex poisoned");
+        let mut pause_next = self.inner.pause_next.lock().expect("debug mutex poisoned");
         let hit_breakpoint = breakpoints.contains(node_id);
         let pause_requested = *pause_next;
 
@@ -89,7 +89,7 @@ impl DebugControl {
 
     /// Explicitly transition to Paused state and wait for a resume signal.
     pub async fn wait(&self) {
-        *self.inner.state.lock().unwrap() = DebugState::Paused;
+        *self.inner.state.lock().expect("debug mutex poisoned") = DebugState::Paused;
         // Wait for resume() or step() to notify
         self.inner.notify.notified().await;
     }
@@ -105,7 +105,7 @@ impl DebugControl {
 
     /// Get the current debugger state.
     pub fn state(&self) -> DebugState {
-        *self.inner.state.lock().unwrap()
+        *self.inner.state.lock().expect("debug mutex poisoned")
     }
 
     /// List all currently set breakpoint node IDs.

@@ -1,0 +1,21 @@
+[package]
+name = "telemetry-otel-demo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "M245: TelemetryConfig + OTLP auto-init, structured logging, RanvierConfig"
+
+[dependencies]
+ranvier-core = { workspace = true }
+ranvier-runtime = { workspace = true }
+ranvier-http = { workspace = true }
+ranvier-macros = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

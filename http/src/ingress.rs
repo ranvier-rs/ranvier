@@ -768,11 +768,15 @@ where
         }
     }
 
+    // ── Server Configuration ─────────────────────────────────────────────
+
     /// Set the bind address for the server.
     pub fn bind(mut self, addr: impl Into<String>) -> Self {
         self.addr = Some(addr.into());
         self
     }
+
+    // ── Policies & Intervention ───────────────────────────────────────────
 
     /// Enable active intervention endpoints (`/_system/intervene/*`).
     /// These endpoints allow external tooling (like Ranvier Studio) to pause,
@@ -787,6 +791,8 @@ where
         self.policy_registry = Some(registry);
         self
     }
+
+    // ── Lifecycle Hooks ───────────────────────────────────────────────────
 
     /// Register a lifecycle callback invoked when the server starts listening.
     pub fn on_start<F>(mut self, callback: F) -> Self
@@ -834,6 +840,8 @@ where
         self
     }
 
+    // ── Middleware Layers ──────────────────────────────────────────────────
+
     /// Add built-in timeout middleware that returns `408 Request Timeout`
     /// when the inner service call exceeds `timeout`.
     pub fn timeout_layer(mut self, timeout: Duration) -> Self {
@@ -875,6 +883,8 @@ where
         self
     }
 
+    // ── Introspection ────────────────────────────────────────────────────
+
     /// Export route metadata snapshot for external tooling.
     pub fn route_descriptors(&self) -> Vec<HttpRouteDescriptor> {
         let mut descriptors = self
@@ -895,6 +905,8 @@ where
 
         descriptors
     }
+
+    // ── Static Assets ────────────────────────────────────────────────────
 
     /// Mount a static directory under a path prefix.
     ///
@@ -933,6 +945,8 @@ where
         self.static_assets.enable_compression = true;
         self
     }
+
+    // ── WebSocket ─────────────────────────────────────────────────────────
 
     /// Register a WebSocket upgrade endpoint and session handler.
     ///
@@ -1024,6 +1038,8 @@ where
         self
     }
 
+    // ── Health & Readiness ────────────────────────────────────────────────
+
     /// Enable built-in health endpoint at the given path.
     ///
     /// The endpoint returns JSON with status and check results.
@@ -1073,6 +1089,8 @@ where
     pub fn readiness_liveness_default(self) -> Self {
         self.readiness_liveness("/ready", "/live")
     }
+
+    // ── Routing ──────────────────────────────────────────────────────────
 
     /// Register a route with GET method.
     pub fn route<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
@@ -1368,6 +1386,8 @@ where
         self.fallback = Some(handler);
         self
     }
+
+    // ── Execution ────────────────────────────────────────────────────────
 
     /// Run the HTTP server with required resources.
     pub async fn run(self, resources: R) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
