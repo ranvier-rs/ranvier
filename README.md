@@ -29,6 +29,24 @@ diff, and validate.
 
 ---
 
+**Philosophy**
+
+Ranvier follows the **Opinionated Core, Flexible Edges** principle:
+
+- **Opinionated Core**: Ranvier enforces Transition/Outcome/Bus/Schematic for internal architecture. This is what makes Ranvier, Ranvier — a schematic-first, visualizable framework with clear identity, one learning path, and consistent codebases.
+
+- **Flexible Edges**: At boundaries, use any Rust tool you want — Tower, actix, Axum, sqlx, diesel, redis. Integrate with the ecosystem, migrate gradually, choose your infrastructure.
+
+**When to use what:**
+- Business logic → Ranvier way (Transition-based, visualized)
+- Infrastructure (CORS, auth, DB) → Your choice (Tower, ecosystem libraries)
+- Complex workflows → Ranvier shines (multi-step, state machines)
+- Simple CRUD → Ecosystem tools OK
+
+Read the full philosophy document: [PHILOSOPHY.md](docs/PHILOSOPHY.md)
+
+---
+
 **Quickstart**
 
 ```bash

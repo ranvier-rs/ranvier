@@ -2,6 +2,9 @@
 //!
 //! This crate re-exports core, runtime, http, and std crates with a single entry point.
 //! `Ranvier::http()` remains an ingress builder, not a web server.
+//!
+//! For design philosophy, see [PHILOSOPHY.md](../docs/PHILOSOPHY.md).
+//! For architecture decisions, see [DESIGN_PRINCIPLES.md](../docs/DESIGN_PRINCIPLES.md).
 
 pub use ranvier_core as core;
 #[cfg(feature = "http")]

@@ -1,0 +1,31 @@
+[package]
+name = "auth-tower-integration"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "auth-tower-integration"
+path = "src/main.rs"
+
+[dependencies]
+ranvier-core = { workspace = true }
+ranvier-runtime = { workspace = true }
+ranvier-http = { workspace = true }
+ranvier-macros = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["auth"] }
+jsonwebtoken = "9"
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = "0.4"
+http = "1"
+
+[lints]
+workspace = true

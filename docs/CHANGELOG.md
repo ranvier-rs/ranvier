@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.31.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.31.0 — Framework philosophy formalized.**
+"Opinionated Core, Flexible Edges" principle documentation, Transition vs Tower authentication examples, integration guides (Tower/actix/Axum), comprehensive auth comparison.
+
+### Added
+- **PHILOSOPHY.md** — "Opinionated Core, Flexible Edges" framework design principle (EN/KO)
+  - Core Paradigm, Decision Framework, Decision Tree (6 sections)
+  - Code examples: Transition-based vs Tower-based auth patterns
+- **DESIGN_PRINCIPLES.md** — Architecture decision records (ADR format)
+  - DP-1: Paradigm Test (23→10 crate consolidation rationale)
+  - DP-2: Tower Separation (Hyper 1.0 native migration rationale)
+  - DP-3: Opinionated Core (non-negotiable paradigm enforcement)
+- **Examples: Authentication patterns (2 approaches)**
+  - `examples/auth-transition/` — Transition/Outcome/Bus-based auth (Ranvier recommended)
+    - JWT validation, role-based authorization, Bus context propagation
+    - 4 demo scenarios, Schematic visualization, README EN/KO
+  - `examples/auth-tower-integration/` — Tower Service layer integration (ecosystem compatibility)
+    - Two implementations: AsyncAuthorizeRequest (recommended) + manual Layer/Service (educational)
+    - Tower validates → stores in request.extensions → Ranvier handles business logic
+    - README EN/KO with trade-offs analysis
+- **Guides: `docs/guides/auth-comparison.md`** — Transition vs Tower comparison (EN/KO)
+  - 7-feature comparison table (context propagation, Schematic visualization, ecosystem compatibility, testing, etc.)
+  - Performance benchmark (both ~1-2μs overhead, negligible)
+  - When to use which: Decision tree, migration paths
+  - Real-world examples: E-commerce platform (Transition), SaaS migration (Tower)
+- **Web: Integration Guides** (`ranvier.rs/guides/integration`)
+  - Landing page: "Flexible Edges in Action" (EN/KO)
+  - Tower integration guide: Service/Layer patterns, auth example walkthrough (EN/KO)
+  - actix-web integration guide: Extractor + Transition patterns, code snippets (EN/KO)
+  - Axum integration guide: State sharing, extractor usage, code snippets (EN/KO)
+
+### Changed
+- **README.md**: Philosophy section added (links to PHILOSOPHY.md)
+- **Web navigation**: "Integration" menu item added (routes to `/guides/integration`)
+- **Web code-blocks.ts**: Integration example code blocks (Tower, actix, Axum)
+- **Example count**: 61 → 63 examples (added auth-transition, auth-tower-integration)
+
+### Notes
+- **No crate code changes**: Documentation and examples only (version bump for API contract formalization)
+- **No crates.io publish**: Local workspace version 0.31.0 for Git tag, crate code unchanged from 0.30.0
+- **Philosophy documentation as API contract**: PHILOSOPHY.md clarifies when to use Ranvier paradigm vs ecosystem tools
+
+---
+
 ## [0.30.0] — 2026-03
 
 ### Summary
