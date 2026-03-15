@@ -843,6 +843,162 @@ where
         }
     }
 
+    /// Chain a transition to this Axon with a timeout guard.
+    ///
+    /// If the transition does not complete within the specified duration,
+    /// the execution is cancelled and a `Fault` is returned using the
+    /// provided error factory.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use std::time::Duration;
+    ///
+    /// let pipeline = Axon::simple::<String>("API")
+    ///     .then_with_timeout(
+    ///         slow_handler,
+    ///         Duration::from_secs(5),
+    ///         || "Request timed out after 5 seconds".to_string(),
+    ///     );
+    /// ```
+    #[track_caller]
+    pub fn then_with_timeout<Next, Trans, F>(
+        self,
+        transition: Trans,
+        duration: std::time::Duration,
+        make_timeout_error: F,
+    ) -> Axon<In, Next, E, Res>
+    where
+        Next: Send + Sync + Serialize + DeserializeOwned + 'static,
+        Trans: Transition<Out, Next, Resources = Res, Error = E> + Clone + Send + Sync + 'static,
+        F: Fn() -> E + Clone + Send + Sync + 'static,
+    {
+        let caller = Location::caller();
+        let Axon {
+            mut schematic,
+            executor: prev_executor,
+            execution_mode,
+            persistence_store,
+            audit_sink,
+            dlq_sink,
+            dlq_policy,
+            dynamic_dlq_policy,
+            saga_policy,
+            dynamic_saga_policy,
+            saga_compensation_registry,
+            iam_handle,
+        } = self;
+
+        let next_node_id = uuid::Uuid::new_v4().to_string();
+        let next_node = Node {
+            id: next_node_id.clone(),
+            kind: NodeKind::Atom,
+            label: transition.label(),
+            description: transition.description(),
+            input_type: type_name_of::<Out>(),
+            output_type: type_name_of::<Next>(),
+            resource_type: type_name_of::<Res>(),
+            metadata: Default::default(),
+            bus_capability: bus_capability_schema_from_policy(transition.bus_access_policy()),
+            source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            position: transition
+                .position()
+                .map(|(x, y)| ranvier_core::schematic::Position { x, y }),
+            compensation_node_id: None,
+            input_schema: transition.input_schema(),
+            output_schema: None,
+        };
+
+        let last_node_id = schematic
+            .nodes
+            .last()
+            .map(|n| n.id.clone())
+            .unwrap_or_default();
+
+        schematic.nodes.push(next_node);
+        schematic.edges.push(Edge {
+            from: last_node_id,
+            to: next_node_id.clone(),
+            kind: EdgeType::Linear,
+            label: Some("Next (timeout-guarded)".to_string()),
+        });
+
+        let node_id_for_exec = next_node_id.clone();
+        let node_label_for_exec = transition.label();
+        let bus_policy_for_exec = transition.bus_access_policy();
+        let bus_policy_clone = bus_policy_for_exec.clone();
+        let current_step_idx = schematic.nodes.len() as u64 - 1;
+        let next_executor: Executor<In, Next, E, Res> = Arc::new(
+            move |input: In, res: &Res, bus: &mut Bus| -> BoxFuture<'_, Outcome<Next, E>> {
+                let prev = prev_executor.clone();
+                let trans = transition.clone();
+                let timeline_node_id = node_id_for_exec.clone();
+                let timeline_node_label = node_label_for_exec.clone();
+                let transition_bus_policy = bus_policy_clone.clone();
+                let step_idx = current_step_idx;
+                let timeout_duration = duration;
+                let error_factory = make_timeout_error.clone();
+
+                Box::pin(async move {
+                    // Run previous step
+                    let prev_result = prev(input, res, bus).await;
+                    let state = match prev_result {
+                        Outcome::Next(t) => t,
+                        other => return other.map(|_| unreachable!()),
+                    };
+
+                    // Execute with timeout
+                    match tokio::time::timeout(
+                        timeout_duration,
+                        run_this_step::<Out, Next, E, Res>(
+                            &trans,
+                            state,
+                            res,
+                            bus,
+                            &timeline_node_id,
+                            &timeline_node_label,
+                            &transition_bus_policy,
+                            step_idx,
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_elapsed) => {
+                            tracing::warn!(
+                                node_id = %timeline_node_id,
+                                timeout_ms = timeout_duration.as_millis() as u64,
+                                "Transition timed out"
+                            );
+                            if let Some(timeline) = bus.read_mut::<Timeline>() {
+                                timeline.push(TimelineEvent::NodeTimeout {
+                                    node_id: timeline_node_id.clone(),
+                                    timeout_ms: timeout_duration.as_millis() as u64,
+                                    timestamp: now_ms(),
+                                });
+                            }
+                            Outcome::Fault(error_factory())
+                        }
+                    }
+                })
+            },
+        );
+        Axon {
+            schematic,
+            executor: next_executor,
+            execution_mode,
+            persistence_store,
+            audit_sink,
+            dlq_sink,
+            dlq_policy,
+            dynamic_dlq_policy,
+            saga_policy,
+            dynamic_saga_policy,
+            saga_compensation_registry,
+            iam_handle,
+        }
+    }
+
     /// Chain a transition to this Axon with a Saga compensation step.
     ///
     /// If the transition fails, the compensation transition will be executed

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.33.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.33.0 — Developer Confidence Sprint.**
+Outcome variant dedicated example, Bus access pattern guide, `then_with_timeout()` resilience method, service call demo (HTTP client as Transition), production readiness checklist, v1.0 stabilization criteria draft, ranvier-runtime README overhaul.
+
+### Added
+- **`then_with_timeout()` (ranvier-runtime):** Axon-level execution time limit using `tokio::time::timeout`. Returns `Outcome::Fault` with user-provided error factory on timeout. `TimelineEvent::NodeTimeout` variant for observability. Complements existing `then_with_retry()`.
+- **`TimelineEvent::NodeTimeout` (ranvier-core):** New timeline event variant capturing node_id, timeout_ms, and timestamp when a transition exceeds the configured duration.
+- **Example: `outcome-variants-demo`** — Demonstrates all 5 Outcome variants (Next, Fault, Branch, Jump, Emit) with a ticket processing domain. Tier A canonical example.
+- **Example: `resilience-patterns-demo`** — Demonstrates `then_with_retry()` with exponential backoff and `then_with_timeout()` with success/timeout scenarios. Combined pipeline with both resilience methods.
+- **Example: `service-call-demo`** — HTTP client (reqwest) wrapped as a Transition with Outcome-based error mapping: 2xx → Next, 4xx → Branch, 5xx/network → Fault. Integration with `then_with_timeout()`.
+- **Guide: `bus_access_patterns.md`** — Decision tree for Bus method selection (require/read/get/try_require), comparison table, anti-patterns.
+- **Guide: `production_readiness_checklist.md`** — 7-category pre-deployment checklist (auth, security, observability, resilience, data, deployment, CI/CD) with 24+ items and GitHub Actions YAML template.
+- **Discussion: `246_v1_stabilization_criteria.md`** — v1.0 stabilization criteria draft covering API compatibility, test coverage, production validation, community, and infrastructure targets.
+
+### Changed
+- **ranvier-runtime README.md** — Complete rewrite with Axon builder usage, resilience method reference, persistence store comparison table, and example links.
+- **`state-persistence-demo`** — Added PostgresPersistenceStore production usage note in module docs.
+- **`examples/README.md`** — Added `auth-transition`, `auth-tower-integration`, `resilience-patterns-demo`, `service-call-demo` to Tier B.
+
+---
+
 ## [0.32.0] — 2026-03
 
 ### Summary

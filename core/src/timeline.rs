@@ -34,6 +34,12 @@ pub enum TimelineEvent {
         total_attempts: u32,
         timestamp: u64,
     },
+    /// A node execution exceeded the configured timeout
+    NodeTimeout {
+        node_id: String,
+        timeout_ms: u64,
+        timestamp: u64,
+    },
 }
 
 /// A sequential record of an execution session.
@@ -60,6 +66,7 @@ impl Timeline {
             TimelineEvent::Branchtaken { timestamp, .. } => *timestamp,
             TimelineEvent::NodeRetry { timestamp, .. } => *timestamp,
             TimelineEvent::DlqExhausted { timestamp, .. } => *timestamp,
+            TimelineEvent::NodeTimeout { timestamp, .. } => *timestamp,
         });
     }
 }

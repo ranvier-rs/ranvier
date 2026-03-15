@@ -20,6 +20,20 @@
 //! - `hello-world` — basic Transition + Axon usage
 //! - `retry-dlq-demo` — retry and DLQ patterns
 //!
+//! ## Production Storage
+//! This demo uses `InMemoryPersistenceStore` for simplicity. For production,
+//! enable a durable backend:
+//! ```toml
+//! # Cargo.toml
+//! ranvier-runtime = { version = "0.32", features = ["persistence-postgres"] }
+//! ```
+//! ```rust,ignore
+//! use ranvier_runtime::PostgresPersistenceStore;
+//! let store = PostgresPersistenceStore::new(pg_pool);
+//! store.ensure_schema().await?;
+//! ```
+//! See also: `persistence-redis` feature for ephemeral/fast checkpoints.
+//!
 //! ## Next Steps
 //! - `multitenancy-demo` — tenant isolation patterns
 //! - `order-processing-demo` — production-style multi-step workflow

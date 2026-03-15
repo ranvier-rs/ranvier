@@ -24,6 +24,7 @@ These are the first examples users should run.
 2. `typed-state-tree` — typed state progression baseline
 3. `basic-schematic` — schematic export + runtime baseline
 4. `otel-concept` — minimal OpenTelemetry concept baseline
+5. `outcome-variants-demo` — Outcome 5 variants (Next/Fault/Branch/Jump/Emit) baseline
 
 ### Tier B: Supported (advanced/reference)
 
@@ -66,6 +67,10 @@ These are maintained and useful, but not the first onboarding path.
 35. `llm-content-moderation`
 36. `production-operations-demo`
 37. `telemetry-otel-demo`
+38. `auth-transition`
+39. `auth-tower-integration`
+40. `resilience-patterns-demo`
+41. `service-call-demo`
 
 ### Tier C: Ecosystem Integration
 
