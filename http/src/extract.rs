@@ -173,8 +173,62 @@ pub struct CookieJar {
     cookies: HashMap<String, String>,
 }
 
+/// Validate a cookie name against the HTTP token grammar (RFC 7230 §3.2.6).
+///
+/// token = 1*tchar
+/// tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." /
+///         DIGIT / ALPHA / "^" / "_" / "`" / "|" / "~"
+fn is_valid_cookie_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.bytes().all(|b| matches!(b,
+            b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.' |
+            b'0'..=b'9' | b'A'..=b'Z' | b'^' | b'_' | b'`' | b'a'..=b'z' | b'|' | b'~'
+        ))
+}
+
+/// Strip surrounding double-quotes from a cookie value (RFC 6265 §4.1.1).
+fn unquote_cookie_value(value: &str) -> &str {
+    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    }
+}
+
+/// Percent-decode a cookie value (e.g., `hello%20world` → `hello world`).
+fn percent_decode_cookie(input: &str) -> String {
+    let mut result = Vec::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_value(bytes[i + 1]), hex_value(bytes[i + 2])) {
+                result.push(hi * 16 + lo);
+                i += 3;
+                continue;
+            }
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&result).into_owned()
+}
+
+fn hex_value(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 impl CookieJar {
-    /// Parse cookies from request parts.
+    /// Parse cookies from request parts with RFC 6265 validation.
+    ///
+    /// Cookie names are validated against the HTTP token grammar (RFC 7230 §3.2.6).
+    /// Invalid names are silently skipped with a `tracing::warn!` log entry.
+    /// Cookie values are percent-decoded and unquoted.
     pub fn from_parts(parts: &http::request::Parts) -> Self {
         let mut cookies = HashMap::new();
         if let Some(header) = parts.headers.get(http::header::COOKIE) {
@@ -182,7 +236,16 @@ impl CookieJar {
                 for pair in value.split(';') {
                     let pair = pair.trim();
                     if let Some((key, val)) = pair.split_once('=') {
-                        cookies.insert(key.trim().to_string(), val.trim().to_string());
+                        let name = key.trim();
+                        if !is_valid_cookie_name(name) {
+                            tracing::warn!(
+                                cookie_name = name,
+                                "skipping cookie with invalid name"
+                            );
+                            continue;
+                        }
+                        let val = unquote_cookie_value(val.trim());
+                        cookies.insert(name.to_string(), percent_decode_cookie(val));
                     }
                 }
             }
@@ -622,5 +685,67 @@ mod tests {
             json["fields"]["token"][0],
             "token_prefix: token must start with tok_"
         );
+    }
+
+    // ── CookieJar tests ──
+
+    fn make_parts_with_cookie(cookie_value: &str) -> http::request::Parts {
+        let (parts, _) = Request::builder()
+            .header(http::header::COOKIE, cookie_value)
+            .body(())
+            .expect("request build")
+            .into_parts();
+        parts
+    }
+
+    #[test]
+    fn cookiejar_parses_standard_cookies() {
+        let parts = make_parts_with_cookie("session=abc123; lang=en");
+        let jar = CookieJar::from_parts(&parts);
+        assert_eq!(jar.get("session"), Some("abc123"));
+        assert_eq!(jar.get("lang"), Some("en"));
+    }
+
+    #[test]
+    fn cookiejar_skips_invalid_names() {
+        // Spaces and commas are not valid token characters
+        let parts = make_parts_with_cookie("good=yes; bad name=no; also,bad=no; ok=fine");
+        let jar = CookieJar::from_parts(&parts);
+        assert_eq!(jar.get("good"), Some("yes"));
+        assert_eq!(jar.get("ok"), Some("fine"));
+        assert!(jar.get("bad name").is_none());
+        assert!(jar.get("also,bad").is_none());
+    }
+
+    #[test]
+    fn cookiejar_unquotes_values() {
+        let parts = make_parts_with_cookie("token=\"quoted_value\"");
+        let jar = CookieJar::from_parts(&parts);
+        assert_eq!(jar.get("token"), Some("quoted_value"));
+    }
+
+    #[test]
+    fn cookiejar_percent_decodes_values() {
+        let parts = make_parts_with_cookie("msg=hello%20world; path=%2Fapi%2Fv1");
+        let jar = CookieJar::from_parts(&parts);
+        assert_eq!(jar.get("msg"), Some("hello world"));
+        assert_eq!(jar.get("path"), Some("/api/v1"));
+    }
+
+    #[test]
+    fn cookiejar_handles_empty_header() {
+        let parts = make_parts_with_cookie("");
+        let jar = CookieJar::from_parts(&parts);
+        assert!(jar.get("anything").is_none());
+    }
+
+    #[test]
+    fn cookiejar_name_validation() {
+        assert!(is_valid_cookie_name("session_id"));
+        assert!(is_valid_cookie_name("__Host-token"));
+        assert!(!is_valid_cookie_name(""));
+        assert!(!is_valid_cookie_name("bad name"));
+        assert!(!is_valid_cookie_name("bad,name"));
+        assert!(!is_valid_cookie_name("bad(name)"));
     }
 }

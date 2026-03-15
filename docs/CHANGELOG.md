@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.32.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.32.0 — Security Hardening Sprint.**
+SQL injection prevention, timing-attack-safe token comparison, XOR deprecation/feature-gate, RFC 6265 cookie parsing, `Sensitive<T>` release-mode redaction, Bus panic elimination, JWT secret enforcement in examples, studio-server JWT validation + CORS restriction, web security headers, privacy policy, SECURITY.md guide.
+
+### Added
+- **`SECURITY.md` — Comprehensive security guide** covering auth patterns, secret management, CORS, security headers, `Sensitive<T>` usage, Bus access policies, OWASP Top 10 mapping, and vulnerability reporting process.
+- **CookieJar RFC 6265 compliance (ranvier-http):** Cookie name validation (`is_valid_cookie_name`), quoted-value handling (`unquote_cookie_value`), percent-decoding (`percent_decode_cookie`), `tracing::warn` for invalid cookie names. 6 new tests.
+- **Studio-server JWT validation:** `jsonwebtoken` crate integration, `Claims` struct with `sub`/`role`, signature verification when `RANVIER_JWT_SECRET` is set, fallback to header-based role when not configured.
+- **Studio-server CORS restriction:** `build_cors_layer()` replaces `CorsLayer::permissive()`, reads `RANVIER_CORS_ORIGINS` env var, defaults to localhost dev ports.
+- **Web `_headers` file:** HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, Content-Security-Policy for Cloudflare Pages.
+- **Web privacy policy pages:** EN/KO bilingual `/privacy` and KO-only `/ko/privacy` with GA data collection disclosure, cookie table, GDPR legal basis, data retention, user rights.
+- **Examples README security notice:** Banner directing users to SECURITY.md before production deployment.
+
+### Changed
+- **`Sensitive<T>` serialization (ranvier-compliance):** Release builds serialize `"[REDACTED]"` instead of actual value; debug builds retain full serialization for development.
+- **Bus policy violations no longer panic (ranvier-core):** `read()`, `read_mut()`, `has()`, `remove()` now use `tracing::error!` and return `None`/`false` instead of panicking. 2 new tests.
+- **JWT secrets in examples:** 3 examples (`auth-jwt-role-demo`, `reference-todo-api`, `reference-ecommerce-order`) changed from hardcoded `const` to `LazyLock<String>` reading `JWT_SECRET` env var. `auth-tower-integration` removed `"default-secret-key"` fallback.
+- **Web `svelte.config.js`:** `precompress: true`, `strict: true` for production hardening.
+- **Web GA anonymize_ip:** Added `anonymize_ip: true` to gtag config.
+- **Web footer:** Privacy policy links added to EN and KO pages.
+
+### Security (Breaking Changes)
+- **`XorEncryption` deprecated and feature-gated (ranvier-compliance):** Now behind `#[cfg(feature = "xor-demo")]` with `#[deprecated]` warning. Use AES-256-GCM (`aes-gcm` crate) for production encryption.
+- **SQL injection prevention (ranvier-audit):** `PostgresAuditSink` validates table names with `[a-zA-Z_][a-zA-Z0-9_]{0,62}` regex at construction time.
+- **Timing-attack-safe token comparison (ranvier-inspector):** `BearerAuth` uses `subtle::ConstantTimeEq` instead of `==` for bearer token validation.
+- **Environment-aware error responses (ranvier-http):** `outcome_to_response()` uses `cfg!(debug_assertions)` — debug builds include `Debug` output, release builds return generic `"Internal server error"` JSON.
+
+---
+
 ## [0.31.0] — 2026-03
 
 ### Summary

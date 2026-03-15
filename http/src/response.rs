@@ -283,17 +283,33 @@ where
     }
 }
 
+/// Convert an `Outcome` to an HTTP response with a safe default error handler.
+///
+/// In **debug builds** (`cfg(debug_assertions)`), the error's `Debug` output is
+/// included in the response body to aid local development. In **release builds**,
+/// only a generic "Internal server error" message is returned to prevent
+/// information leakage (database details, file paths, internal types, etc.).
+///
+/// For custom error formatting, use [`outcome_to_response_with_error`] or
+/// [`outcome_to_problem_response`] with [`IntoProblemDetail`].
 pub fn outcome_to_response<Out, E>(outcome: Outcome<Out, E>) -> HttpResponse
 where
     Out: IntoResponse,
     E: std::fmt::Debug,
 {
     outcome_to_response_with_error(outcome, |error| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Error: {:?}", error),
-        )
-            .into_response()
+        if cfg!(debug_assertions) {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Error: {:?}", error),
+            )
+                .into_response()
+        } else {
+            json_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error",
+            )
+        }
     })
 }
 

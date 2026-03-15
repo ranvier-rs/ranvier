@@ -115,7 +115,10 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Starting auth-tower-integration example (Tower + Ranvier)");
 
-    let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| "default-secret-key".to_string());
+    let jwt_secret = env::var("JWT_SECRET").expect(
+        "JWT_SECRET environment variable must be set. \
+         Example: JWT_SECRET=your-secret-here cargo run",
+    );
 
     // ── Tower Layer Setup ────────────────────────────────────────────────
     //

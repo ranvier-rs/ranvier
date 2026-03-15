@@ -62,10 +62,42 @@ impl PostgresAuditConfig {
         self
     }
 
-    pub fn table_name(mut self, name: impl Into<String>) -> Self {
-        self.table_name = name.into();
-        self
+    /// Set the table name for audit events.
+    ///
+    /// The name is validated against `[a-zA-Z_][a-zA-Z0-9_]{0,62}` to prevent
+    /// SQL injection (table names cannot be parameterized in PostgreSQL).
+    pub fn table_name(mut self, name: impl Into<String>) -> Result<Self, AuditError> {
+        let name = name.into();
+        validate_table_name(&name)?;
+        self.table_name = name;
+        Ok(self)
     }
+}
+
+/// Validate a SQL table name to prevent injection attacks.
+///
+/// Only allows identifiers matching `[a-zA-Z_][a-zA-Z0-9_]{0,62}`.
+/// PostgreSQL limits unquoted identifiers to 63 bytes (NAMEDATALEN - 1).
+fn validate_table_name(name: &str) -> Result<(), AuditError> {
+    if name.is_empty() || name.len() > 63 {
+        return Err(AuditError::InvalidTableName(format!(
+            "table name must be 1-63 characters, got {}",
+            name.len()
+        )));
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return Err(AuditError::InvalidTableName(format!(
+            "must start with ASCII letter or underscore, got '{first}'"
+        )));
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(AuditError::InvalidTableName(format!(
+            "contains invalid characters: '{name}'"
+        )));
+    }
+    Ok(())
 }
 
 /// PostgreSQL-backed audit sink with hash chain integrity.
@@ -411,10 +443,40 @@ mod tests {
         let cfg = PostgresAuditConfig::new("postgres://localhost/test")
             .max_connections(10)
             .min_connections(2)
-            .table_name("custom_audit");
+            .table_name("custom_audit")
+            .unwrap();
         assert_eq!(cfg.max_connections, 10);
         assert_eq!(cfg.min_connections, 2);
         assert_eq!(cfg.table_name, "custom_audit");
+    }
+
+    #[test]
+    fn table_name_rejects_sql_injection() {
+        let result = PostgresAuditConfig::new("postgres://localhost/test")
+            .table_name("events; DROP TABLE users; --");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn table_name_rejects_empty() {
+        let result = PostgresAuditConfig::new("postgres://localhost/test")
+            .table_name("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn table_name_rejects_leading_digit() {
+        let result = PostgresAuditConfig::new("postgres://localhost/test")
+            .table_name("1events");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn table_name_accepts_underscore_prefix() {
+        let cfg = PostgresAuditConfig::new("postgres://localhost/test")
+            .table_name("_audit_events")
+            .unwrap();
+        assert_eq!(cfg.table_name, "_audit_events");
     }
 
     #[test]

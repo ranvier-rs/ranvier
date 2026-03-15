@@ -23,6 +23,7 @@ tracing-subscriber = { workspace = true, features = ["registry"] }
 schemars = { workspace = true }
 reqwest = { workspace = true }
 rand = "0.9"
+subtle = "2"
 uuid = { workspace = true }
 
 [dev-dependencies]

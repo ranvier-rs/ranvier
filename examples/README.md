@@ -1,11 +1,16 @@
 # Ranvier Examples
 
-**Updated:** 2026-03-07
-**Workspace:** v0.30.0 — 10 crates, Hyper 1.0 native (no tower/tower-http)
+**Updated:** 2026-03-15
+**Workspace:** v0.32.0 — 10 crates, Hyper 1.0 native (no tower/tower-http)
 **Purpose:** Keep examples aligned with the Typed Decision Engine direction:
 1. Axon execution is explicit.
 2. Schematic is analysis data, not an executable graph.
 3. Protocol concerns stay in adapter layers.
+
+> **Security Notice:** These examples are for **educational purposes only**.
+> Before deploying to production, review the [Security Guide](../SECURITY.md)
+> and ensure all secrets are loaded from environment variables, not hardcoded.
+> Authentication examples require: `JWT_SECRET=your-secret-here cargo run`
 
 ---
 

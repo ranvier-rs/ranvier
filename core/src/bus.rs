@@ -186,7 +186,13 @@ impl Bus {
 
     /// Read a resource from the Bus.
     ///
-    /// Returns `None` if the resource type is not present.
+    /// Returns `None` if the resource type is not present **or** if access is
+    /// denied by an active [`BusAccessPolicy`]. Policy violations are logged
+    /// via `tracing::error!` instead of panicking, so a misconfigured policy
+    /// cannot crash the server.
+    ///
+    /// For explicit error handling, use [`get`](Bus::get) which returns
+    /// `Result<&T, BusAccessError>`.
     ///
     /// # Example
     ///
@@ -202,19 +208,28 @@ impl Bus {
         match self.get::<T>() {
             Ok(value) => Some(value),
             Err(BusAccessError::NotFound { .. }) => None,
-            Err(err) => panic!("{err}"),
+            Err(err) => {
+                tracing::error!("{err}");
+                None
+            }
         }
     }
 
     /// Read a mutable reference to a resource from the Bus.
     ///
-    /// Returns `None` if the resource type is not present.
+    /// Returns `None` if the resource type is not present or access is denied.
+    /// Policy violations are logged via `tracing::error!` instead of panicking.
+    ///
+    /// For explicit error handling, use [`get_mut`](Bus::get_mut).
     #[inline]
     pub fn read_mut<T: Any + Send + Sync + 'static>(&mut self) -> Option<&mut T> {
         match self.get_mut::<T>() {
             Ok(value) => Some(value),
             Err(BusAccessError::NotFound { .. }) => None,
-            Err(err) => panic!("{err}"),
+            Err(err) => {
+                tracing::error!("{err}");
+                None
+            }
         }
     }
 
@@ -245,10 +260,14 @@ impl Bus {
     }
 
     /// Check if a resource type exists in the Bus.
+    ///
+    /// Returns `false` if access is denied by an active policy (logged via
+    /// `tracing::error!`).
     #[inline]
     pub fn has<T: Any + Send + Sync + 'static>(&self) -> bool {
         if let Err(err) = self.ensure_access::<T>() {
-            panic!("{err}");
+            tracing::error!("{err}");
+            return false;
         }
         let type_id = std::any::TypeId::of::<T>();
         self.resources.contains_key(&type_id)
@@ -257,9 +276,12 @@ impl Bus {
     /// Remove a resource from the Bus.
     ///
     /// Returns the resource if it was present, `None` otherwise.
+    /// Returns `None` if access is denied by an active policy (logged via
+    /// `tracing::error!`).
     pub fn remove<T: Any + Send + Sync + 'static>(&mut self) -> Option<T> {
         if let Err(err) = self.ensure_access::<T>() {
-            panic!("{err}");
+            tracing::error!("{err}");
+            return None;
         }
         let type_id = std::any::TypeId::of::<T>();
         self.resources
@@ -633,5 +655,37 @@ mod tests {
         assert_eq!(*bus.read::<f64>().unwrap(), 3.14);
         assert_eq!(bus.read::<String>().unwrap(), "hello");
         assert_eq!(*bus.read::<bool>().unwrap(), true);
+    }
+
+    #[test]
+    fn bus_policy_violation_returns_none_instead_of_panic() {
+        let mut bus = Bus::new();
+        bus.insert(42i32);
+        bus.insert("hello".to_string());
+        bus.set_access_policy(
+            "OnlyInt",
+            Some(BusAccessPolicy::allow_only(vec![BusTypeRef::of::<i32>()])),
+        );
+
+        // read() should return None instead of panicking on policy violation
+        assert!(bus.read::<String>().is_none());
+        // has() should return false instead of panicking
+        assert!(!bus.has::<String>());
+        // Allowed type should still work
+        assert_eq!(*bus.read::<i32>().unwrap(), 42);
+        assert!(bus.has::<i32>());
+    }
+
+    #[test]
+    fn bus_policy_violation_remove_returns_none() {
+        let mut bus = Bus::new();
+        bus.insert("hello".to_string());
+        bus.set_access_policy(
+            "DenyString",
+            Some(BusAccessPolicy::deny_only(vec![BusTypeRef::of::<String>()])),
+        );
+
+        // remove() should return None instead of panicking
+        assert!(bus.remove::<String>().is_none());
     }
 }

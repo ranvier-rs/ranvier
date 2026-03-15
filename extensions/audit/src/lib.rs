@@ -22,6 +22,8 @@ pub enum AuditError {
     Internal(String),
     #[error("Integrity violation at event index {index}: {reason}")]
     IntegrityViolation { index: usize, reason: String },
+    #[error("Invalid table name: {0}")]
+    InvalidTableName(String),
 }
 
 /// The main Audit Event payload reflecting the 5 W's.

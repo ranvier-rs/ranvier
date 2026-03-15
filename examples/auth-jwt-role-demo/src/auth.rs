@@ -6,8 +6,20 @@ use async_trait::async_trait;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use ranvier_core::iam::{IamError, IamIdentity, IamVerifier};
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 
-const JWT_SECRET: &str = "demo-secret-change-in-production";
+/// JWT secret loaded from the `JWT_SECRET` environment variable.
+///
+/// # Panics
+///
+/// Panics at first access if the variable is not set.
+/// Run with: `JWT_SECRET=your-secret-here cargo run --example auth-jwt-role-demo`
+static JWT_SECRET: LazyLock<String> = LazyLock::new(|| {
+    std::env::var("JWT_SECRET").expect(
+        "JWT_SECRET environment variable must be set. \
+         Example: JWT_SECRET=your-secret-here cargo run",
+    )
+});
 
 /// JWT claims payload.
 #[derive(Debug, Serialize, Deserialize)]

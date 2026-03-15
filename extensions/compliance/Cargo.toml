@@ -11,6 +11,10 @@ keywords.workspace = true
 categories.workspace = true
 description = "Compliance helpers (GDPR, HIPAA) for Ranvier"
 
+[features]
+default = []
+xor-demo = []
+
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

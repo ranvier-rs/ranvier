@@ -94,13 +94,25 @@ impl<T> fmt::Display for Sensitive<T> {
     }
 }
 
-// Implement standard transparent Serialization (assume transmission over TLS is secure)
+/// Serialization for `Sensitive<T>`.
+///
+/// In **debug builds** (`cfg(debug_assertions)`), the inner value is serialized
+/// transparently so that local development and testing work as expected.
+///
+/// In **release builds**, the value is replaced with the string `"[REDACTED]"`
+/// to prevent accidental PII/PHI leakage into logs, API responses, or external
+/// systems. Use [`Sensitive::expose()`] to access the underlying value when
+/// explicit transmission is required.
 impl<T: Serialize> Serialize for Sensitive<T> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        self.value.serialize(serializer)
+        if cfg!(debug_assertions) {
+            self.value.serialize(serializer)
+        } else {
+            serializer.serialize_str("[REDACTED]")
+        }
     }
 }
 
@@ -140,17 +152,34 @@ impl EncryptionHook for NoOpEncryption {
 }
 
 /// XOR-based encryption hook for testing/demo purposes.
-/// NOT SUITABLE FOR PRODUCTION — use AES-GCM or similar for real encryption.
+///
+/// # Security Warning
+///
+/// **NOT SUITABLE FOR PRODUCTION.** This uses a single-byte key (256 possible
+/// values) and is trivially breakable via brute force. Use AES-GCM,
+/// ChaCha20Poly1305, or similar authenticated encryption for real workloads.
+///
+/// This struct is gated behind the `xor-demo` feature to prevent accidental
+/// use in production builds.
+#[cfg(feature = "xor-demo")]
+#[deprecated(
+    since = "0.32.0",
+    note = "XOR encryption is cryptographically broken. Use AES-GCM or ChaCha20Poly1305 for production."
+)]
 pub struct XorEncryption {
     key: u8,
 }
 
+#[cfg(feature = "xor-demo")]
+#[allow(deprecated)]
 impl XorEncryption {
     pub fn new(key: u8) -> Self {
         Self { key }
     }
 }
 
+#[cfg(feature = "xor-demo")]
+#[allow(deprecated)]
 impl EncryptionHook for XorEncryption {
     fn encrypt(&self, data: &[u8]) -> Vec<u8> {
         data.iter().map(|b| b ^ self.key).collect()
@@ -490,7 +519,9 @@ mod tests {
         assert_eq!(decrypted, data);
     }
 
+    #[cfg(feature = "xor-demo")]
     #[test]
+    #[allow(deprecated)]
     fn xor_encryption_roundtrip() {
         let hook = XorEncryption::new(0x42);
         let data = b"sensitive data";
@@ -717,7 +748,9 @@ mod tests {
         assert_eq!(s.into_inner(), 42);
     }
 
+    #[cfg(feature = "xor-demo")]
     #[test]
+    #[allow(deprecated)]
     fn xor_encryption_different_keys_differ() {
         let hook1 = XorEncryption::new(0x42);
         let hook2 = XorEncryption::new(0xFF);

@@ -6,6 +6,7 @@
 
 use axum::http::{HeaderMap, StatusCode};
 use serde_json::Value;
+use subtle::ConstantTimeEq;
 
 /// Bearer token authentication configuration.
 #[derive(Clone, Debug)]
@@ -49,7 +50,12 @@ impl BearerAuth {
             .unwrap_or("");
 
         if let Some(token) = auth_header.strip_prefix("Bearer ") {
-            if token.trim() == expected.as_str() {
+            let provided = token.trim().as_bytes();
+            let expected_bytes = expected.as_bytes();
+            // Use constant-time comparison to prevent timing attacks.
+            if provided.len() == expected_bytes.len()
+                && provided.ct_eq(expected_bytes).into()
+            {
                 return Ok(());
             }
             return Err((

@@ -1,7 +1,16 @@
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 
-const JWT_SECRET: &str = "ranvier-ecommerce-demo-secret";
+/// JWT secret loaded from the `JWT_SECRET` environment variable.
+///
+/// Run with: `JWT_SECRET=your-secret-here cargo run --example reference-ecommerce-order`
+static JWT_SECRET: LazyLock<String> = LazyLock::new(|| {
+    std::env::var("JWT_SECRET").expect(
+        "JWT_SECRET environment variable must be set. \
+         Example: JWT_SECRET=your-secret-here cargo run",
+    )
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
