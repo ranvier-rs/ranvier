@@ -1,7 +1,9 @@
 # Ranvier Design Principles
 
-**Version:** 0.31.0
-**Last Updated:** 2026-03-11
+**Version:** 0.33.0
+**Updated:** 2026-03-15
+**Applies to:** ranvier-core, ranvier-runtime, ranvier-http
+**Category:** Architecture
 
 ---
 
@@ -331,8 +333,8 @@ When adding new design decisions:
 - [PHILOSOPHY.md](PHILOSOPHY.md) — Design philosophy (why Ranvier exists, when to use it)
 - [README.md](README.md) — Project overview and quickstart
 - [CHANGELOG.md](CHANGELOG.md) — Version history and migration guides
-- [examples/README.md](examples/README.md) — 61 reference implementations
+- [examples/README.md](examples/README.md) — 66 reference implementations
 
 ---
 
-*This document is part of Ranvier v0.31.0. Last updated: 2026-03-11.*
+*This document is part of Ranvier v0.33.0. Last updated: 2026-03-15.*

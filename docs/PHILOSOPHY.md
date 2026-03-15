@@ -1,7 +1,9 @@
 # Ranvier Philosophy: Opinionated Core, Flexible Edges
 
-**Version:** 0.31.0
-**Last Updated:** 2026-03-11
+**Version:** 0.33.0
+**Updated:** 2026-03-15
+**Applies to:** ranvier-core, ranvier-runtime
+**Category:** Architecture
 
 ---
 
@@ -1372,7 +1374,7 @@ authenticate → parse_order → ┬─ check_inventory ─┐
 - [DESIGN_PRINCIPLES.md](DESIGN_PRINCIPLES.md) — Architecture decision records (ADR)
 - [examples/auth-transition/](examples/auth-transition/) — Ranvier way authentication
 - [examples/auth-tower-integration/](examples/auth-tower-integration/) — Tower integration
-- [docs/guides/auth-comparison.md](docs/guides/auth-comparison.md) — Transition vs Tower comparison
+- [guides/auth-comparison.md](guides/auth-comparison.md) — Transition vs Tower comparison
 - [Web Integration Guides](https://ranvier.rs/guides/integration) — Tower/actix/Axum guides
 
 ---
@@ -1385,4 +1387,4 @@ This philosophy document evolves with the framework. If you have feedback or que
 
 ---
 
-*This document is part of Ranvier v0.31.0. Last updated: 2026-03-11.*
+*This document is part of Ranvier v0.33.0. Last updated: 2026-03-15.*
