@@ -26,6 +26,7 @@
 //! ```
 
 pub mod extract;
+pub mod guard_integration;
 pub mod ingress;
 pub mod response;
 pub mod service;
@@ -44,6 +45,10 @@ pub use response::{
     Html, HttpResponse, IntoProblemDetail, IntoResponse, ProblemDetail, json_error_response,
     outcome_to_problem_response, outcome_to_response, outcome_to_response_with_error,
 };
+pub use guard_integration::{
+    BusInjectorFn, GuardExec, GuardIntegration, PreflightConfig, RegisteredGuard,
+    ResponseExtractorFn,
+};
 pub use service::RanvierService;
 pub use sse::{Sse, SseEvent};
 pub use test_harness::{TestApp, TestHarnessError, TestRequest, TestResponse};
@@ -58,6 +63,10 @@ pub mod prelude {
     pub use crate::response::{
         Html, HttpResponse, IntoProblemDetail, IntoResponse, ProblemDetail, json_error_response,
         outcome_to_problem_response, outcome_to_response, outcome_to_response_with_error,
+    };
+    pub use crate::guard_integration::{
+        BusInjectorFn, GuardExec, GuardIntegration, PreflightConfig, RegisteredGuard,
+        ResponseExtractorFn,
     };
     pub use crate::service::RanvierService;
     pub use crate::sse::{Sse, SseEvent};

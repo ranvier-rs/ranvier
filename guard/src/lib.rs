@@ -102,6 +102,11 @@ impl<T> CorsGuard<T> {
             _marker: PhantomData,
         }
     }
+
+    /// Returns a reference to the CORS configuration.
+    pub fn cors_config(&self) -> &CorsConfig {
+        &self.config
+    }
 }
 
 /// CORS headers to be applied to the response.
@@ -201,6 +206,16 @@ impl<T> RateLimitGuard<T> {
             buckets: Arc::new(Mutex::new(std::collections::HashMap::new())),
             _marker: PhantomData,
         }
+    }
+
+    /// Returns the maximum requests per window.
+    pub fn max_requests(&self) -> u64 {
+        self.max_requests
+    }
+
+    /// Returns the window duration in milliseconds.
+    pub fn window_ms(&self) -> u64 {
+        self.window_ms
     }
 }
 
@@ -327,6 +342,11 @@ impl<T> SecurityHeadersGuard<T> {
             _marker: PhantomData,
         }
     }
+
+    /// Returns a reference to the security policy.
+    pub fn policy(&self) -> &SecurityPolicy {
+        &self.policy
+    }
 }
 
 #[async_trait]
@@ -385,6 +405,14 @@ impl<T> IpFilterGuard<T> {
     pub fn deny_list(ips: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
             mode: IpFilterMode::DenyList(ips.into_iter().map(|s| s.into()).collect()),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Clone the guard configuration as `IpFilterGuard<()>` for type-erased execution.
+    pub fn clone_as_unit(&self) -> IpFilterGuard<()> {
+        IpFilterGuard {
+            mode: self.mode.clone(),
             _marker: PhantomData,
         }
     }
@@ -489,6 +517,14 @@ impl<T> AccessLogGuard<T> {
     pub fn redact_paths(mut self, paths: Vec<String>) -> Self {
         self.redact_paths = paths;
         self
+    }
+
+    /// Clone the guard configuration as `AccessLogGuard<()>` for type-erased execution.
+    pub fn clone_as_unit(&self) -> AccessLogGuard<()> {
+        AccessLogGuard {
+            redact_paths: self.redact_paths.clone(),
+            _marker: PhantomData,
+        }
     }
 }
 

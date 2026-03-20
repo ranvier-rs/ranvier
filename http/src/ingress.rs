@@ -41,6 +41,7 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Error as WsWireError, Message as WsWireMessage};
 use tracing::Instrument;
 
+use crate::guard_integration::{GuardExec, GuardIntegration, PreflightConfig, ResponseExtractorFn};
 use crate::response::{HttpResponse, IntoResponse, json_error_response, outcome_to_response_with_error};
 
 /// The Ranvier Framework entry point.
@@ -749,6 +750,12 @@ pub struct HttpIngress<R = ()> {
     active_intervention: bool,
     /// Optional policy registry for hot-reloads
     policy_registry: Option<ranvier_core::policy::PolicyRegistry>,
+    /// Guard executors registered via `guard()`.
+    guard_execs: Vec<Arc<dyn GuardExec>>,
+    /// Response extractors from guard registrations.
+    guard_response_extractors: Vec<ResponseExtractorFn>,
+    /// CORS preflight configuration from guards that handle preflight.
+    preflight_config: Option<PreflightConfig>,
     _phantom: std::marker::PhantomData<R>,
 }
 
@@ -777,6 +784,9 @@ where
             alt_svc_h3_port: None,
             active_intervention: false,
             policy_registry: None,
+            guard_execs: Vec::new(),
+            guard_response_extractors: Vec::new(),
+            preflight_config: None,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -879,6 +889,42 @@ where
         F: Fn(&http::request::Parts, &mut Bus) + Send + Sync + 'static,
     {
         self.bus_injectors.push(Arc::new(injector));
+        self
+    }
+
+    /// Register a Guard for HTTP request validation.
+    ///
+    /// Guards are executed after Bus injection but before the circuit runs.
+    /// They can inject data into the Bus (e.g., parsed headers), validate
+    /// requests (returning error responses on rejection), and extract
+    /// Bus data into response headers.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use ranvier_guard::{CorsGuard, CorsConfig, SecurityHeadersGuard, SecurityPolicy};
+    ///
+    /// Ranvier::http()
+    ///     .guard(CorsGuard::new(CorsConfig::default()))
+    ///     .guard(SecurityHeadersGuard::new(SecurityPolicy::default()))
+    ///     .get("/api/data", data_circuit)
+    ///     .run(())
+    ///     .await
+    /// ```
+    pub fn guard(mut self, guard: impl GuardIntegration) -> Self {
+        let registration = guard.register();
+        for injector in registration.bus_injectors {
+            self.bus_injectors.push(injector);
+        }
+        self.guard_execs.push(registration.exec);
+        if let Some(extractor) = registration.response_extractor {
+            self.guard_response_extractors.push(extractor);
+        }
+        if registration.handles_preflight {
+            if let Some(config) = registration.preflight_config {
+                self.preflight_config = Some(config);
+            }
+        }
         self
     }
 
@@ -998,6 +1044,7 @@ where
             Box::pin(handler(connection, resources, bus))
         });
         let bus_injectors = Arc::new(self.bus_injectors.clone());
+        let ws_guard_execs = Arc::new(self.guard_execs.clone());
         let path_for_pattern = path_str.clone();
         let path_for_handler = path_str;
 
@@ -1005,6 +1052,7 @@ where
             Arc::new(move |parts: http::request::Parts, res: &R| {
                 let ws_handler = ws_handler.clone();
                 let bus_injectors = bus_injectors.clone();
+                let ws_guard_execs = ws_guard_execs.clone();
                 let resources = Arc::new(res.clone());
                 let path = path_for_handler.clone();
 
@@ -1020,6 +1068,11 @@ where
                         let mut bus = Bus::new();
                         for injector in bus_injectors.iter() {
                             injector(&parts, &mut bus);
+                        }
+                        for guard_exec in ws_guard_execs.iter() {
+                            if let Err(msg) = guard_exec.exec_guard(&mut bus).await {
+                                return json_error_response(StatusCode::FORBIDDEN, &msg);
+                            }
                         }
 
                         // Reconstruct a dummy Request for WebSocket extraction
@@ -1204,6 +1257,8 @@ where
         let circuit = Arc::new(circuit);
         let error_handler = Arc::new(error_handler);
         let route_bus_injectors = Arc::new(self.bus_injectors.clone());
+        let route_guard_execs = Arc::new(self.guard_execs.clone());
+        let route_response_extractors = Arc::new(self.guard_response_extractors.clone());
         let path_for_pattern = path_str.clone();
         let path_for_handler = path_str;
         let method_for_pattern = method.clone();
@@ -1213,6 +1268,8 @@ where
             let circuit = circuit.clone();
             let error_handler = error_handler.clone();
             let route_bus_injectors = route_bus_injectors.clone();
+            let route_guard_execs = route_guard_execs.clone();
+            let route_response_extractors = route_response_extractors.clone();
             let res = res.clone();
             let path = path_for_handler.clone();
             let method = method_for_handler.clone();
@@ -1231,8 +1288,21 @@ where
                     for injector in route_bus_injectors.iter() {
                         injector(&parts, &mut bus);
                     }
+                    for guard_exec in route_guard_execs.iter() {
+                        if let Err(msg) = guard_exec.exec_guard(&mut bus).await {
+                            let mut response = json_error_response(StatusCode::FORBIDDEN, &msg);
+                            for extractor in route_response_extractors.iter() {
+                                extractor(&bus, response.headers_mut());
+                            }
+                            return response;
+                        }
+                    }
                     let result = circuit.execute((), &res, &mut bus).await;
-                    outcome_to_response_with_error(result, |error| error_handler(error))
+                    let mut response = outcome_to_response_with_error(result, |error| error_handler(error));
+                    for extractor in route_response_extractors.iter() {
+                        extractor(&bus, response.headers_mut());
+                    }
+                    response
                 }
                 .instrument(span)
                 .await
@@ -1267,6 +1337,8 @@ where
         let path_str: String = path.into();
         let circuit = Arc::new(circuit);
         let route_bus_injectors = Arc::new(self.bus_injectors.clone());
+        let route_guard_execs = Arc::new(self.guard_execs.clone());
+        let route_response_extractors = Arc::new(self.guard_response_extractors.clone());
         let path_for_pattern = path_str.clone();
         let path_for_handler = path_str;
         let method_for_pattern = method.clone();
@@ -1275,6 +1347,8 @@ where
         let handler: RouteHandler<R> = Arc::new(move |parts: http::request::Parts, res: &R| {
             let circuit = circuit.clone();
             let route_bus_injectors = route_bus_injectors.clone();
+            let route_guard_execs = route_guard_execs.clone();
+            let route_response_extractors = route_response_extractors.clone();
             let res = res.clone();
             let path = path_for_handler.clone();
             let method = method_for_handler.clone();
@@ -1311,8 +1385,17 @@ where
                     for injector in route_bus_injectors.iter() {
                         injector(&parts, &mut bus);
                     }
+                    for guard_exec in route_guard_execs.iter() {
+                        if let Err(msg) = guard_exec.exec_guard(&mut bus).await {
+                            let mut response = json_error_response(StatusCode::FORBIDDEN, &msg);
+                            for extractor in route_response_extractors.iter() {
+                                extractor(&bus, response.headers_mut());
+                            }
+                            return response;
+                        }
+                    }
                     let result = circuit.execute(input, &res, &mut bus).await;
-                    outcome_to_response_with_error(result, |error| {
+                    let mut response = outcome_to_response_with_error(result, |error| {
                         if cfg!(debug_assertions) {
                             (
                                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1325,7 +1408,11 @@ where
                                 "Internal server error",
                             )
                         }
-                    })
+                    });
+                    for extractor in route_response_extractors.iter() {
+                        extractor(&bus, response.headers_mut());
+                    }
+                    response
                 }
                 .instrument(span)
                 .await
@@ -1530,10 +1617,14 @@ where
     {
         let circuit = Arc::new(circuit);
         let fallback_bus_injectors = Arc::new(self.bus_injectors.clone());
+        let fallback_guard_execs = Arc::new(self.guard_execs.clone());
+        let fallback_response_extractors = Arc::new(self.guard_response_extractors.clone());
 
         let handler: RouteHandler<R> = Arc::new(move |parts: http::request::Parts, res: &R| {
             let circuit = circuit.clone();
             let fallback_bus_injectors = fallback_bus_injectors.clone();
+            let fallback_guard_execs = fallback_guard_execs.clone();
+            let fallback_response_extractors = fallback_response_extractors.clone();
             let res = res.clone();
             Box::pin(async move {
                 let request_id = uuid::Uuid::new_v4().to_string();
@@ -1548,10 +1639,19 @@ where
                     for injector in fallback_bus_injectors.iter() {
                         injector(&parts, &mut bus);
                     }
+                    for guard_exec in fallback_guard_execs.iter() {
+                        if let Err(msg) = guard_exec.exec_guard(&mut bus).await {
+                            let mut response = json_error_response(StatusCode::FORBIDDEN, &msg);
+                            for extractor in fallback_response_extractors.iter() {
+                                extractor(&bus, response.headers_mut());
+                            }
+                            return response;
+                        }
+                    }
                     let result: ranvier_core::Outcome<Out, E> =
                         circuit.execute((), &res, &mut bus).await;
 
-                    match result {
+                    let mut response = match result {
                         Outcome::Next(output) => {
                             let mut response = output.into_response();
                             *response.status_mut() = StatusCode::NOT_FOUND;
@@ -1565,7 +1665,11 @@ where
                                     .boxed(),
                             )
                             .expect("valid HTTP response construction"),
+                    };
+                    for extractor in fallback_response_extractors.iter() {
+                        extractor(&bus, response.headers_mut());
                     }
+                    response
                 }
                 .instrument(span)
                 .await
@@ -1652,6 +1756,7 @@ where
         let layers = Arc::new(self.layers);
         let health = Arc::new(self.health);
         let static_assets = Arc::new(self.static_assets);
+        let preflight_config = Arc::new(self.preflight_config);
         let on_start = self.on_start;
         let on_shutdown = self.on_shutdown;
         let graceful_shutdown_timeout = self.graceful_shutdown_timeout;
@@ -1694,6 +1799,7 @@ where
                     let layers = layers.clone();
                     let health = health.clone();
                     let static_assets = static_assets.clone();
+                    let preflight_config = preflight_config.clone();
                     #[cfg(feature = "http3")]
                     let alt_svc_h3_port = self.alt_svc_h3_port;
 
@@ -1708,6 +1814,7 @@ where
                             layers,
                             health,
                             static_assets,
+                            preflight_config,
                             #[cfg(feature = "http3")] alt_svc_h3_port,
                         );
 
@@ -1780,6 +1887,7 @@ where
         let layers = Arc::new(self.layers);
         let health = Arc::new(self.health);
         let static_assets = Arc::new(self.static_assets);
+        let preflight_config = Arc::new(self.preflight_config);
         let resources = Arc::new(resources);
 
         RawIngressService {
@@ -1788,6 +1896,7 @@ where
             layers,
             health,
             static_assets,
+            preflight_config,
             resources,
         }
     }
@@ -1800,6 +1909,7 @@ fn build_http_service<R>(
     layers: Arc<Vec<ServiceLayer>>,
     health: Arc<HealthConfig<R>>,
     static_assets: Arc<StaticAssetsConfig>,
+    preflight_config: Arc<Option<PreflightConfig>>,
     #[cfg(feature = "http3")] alt_svc_port: Option<u16>,
 ) -> BoxHttpService
 where
@@ -1812,6 +1922,7 @@ where
         let layers = layers.clone();
         let health = health.clone();
         let static_assets = static_assets.clone();
+        let preflight_config = preflight_config.clone();
 
         async move {
             let mut req = req;
@@ -1822,6 +1933,56 @@ where
                 maybe_handle_health_request(&method, &path, &health, resources.clone()).await
             {
                 return Ok::<_, Infallible>(response.into_response());
+            }
+
+            // Handle CORS preflight (OPTIONS) before route matching
+            if method == Method::OPTIONS {
+                if let Some(ref config) = *preflight_config {
+                    let origin = req
+                        .headers()
+                        .get("origin")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("");
+                    let is_wildcard = config.allowed_origins.iter().any(|o| o == "*");
+                    let is_allowed = is_wildcard
+                        || config.allowed_origins.iter().any(|o| o == origin);
+
+                    if is_allowed || origin.is_empty() {
+                        let allow_origin = if is_wildcard {
+                            "*".to_string()
+                        } else {
+                            origin.to_string()
+                        };
+                        let mut response = Response::builder()
+                            .status(StatusCode::NO_CONTENT)
+                            .body(
+                                Full::new(Bytes::new())
+                                    .map_err(|never| match never {})
+                                    .boxed(),
+                            )
+                            .expect("valid preflight response");
+                        let headers = response.headers_mut();
+                        if let Ok(v) = allow_origin.parse() {
+                            headers.insert("access-control-allow-origin", v);
+                        }
+                        if let Ok(v) = config.allowed_methods.parse() {
+                            headers.insert("access-control-allow-methods", v);
+                        }
+                        if let Ok(v) = config.allowed_headers.parse() {
+                            headers.insert("access-control-allow-headers", v);
+                        }
+                        if let Ok(v) = config.max_age.parse() {
+                            headers.insert("access-control-max-age", v);
+                        }
+                        if config.allow_credentials {
+                            headers.insert(
+                                "access-control-allow-credentials",
+                                "true".parse().expect("valid header value"),
+                            );
+                        }
+                        return Ok(response);
+                    }
+                }
             }
 
             if let Some((entry, params)) = find_matching_route(routes.as_slice(), &method, &path) {
@@ -2537,6 +2698,7 @@ pub struct RawIngressService<R> {
     layers: Arc<Vec<ServiceLayer>>,
     health: Arc<HealthConfig<R>>,
     static_assets: Arc<StaticAssetsConfig>,
+    preflight_config: Arc<Option<PreflightConfig>>,
     resources: Arc<R>,
 }
 
@@ -2554,6 +2716,7 @@ where
         let layers = self.layers.clone();
         let health = self.health.clone();
         let static_assets = self.static_assets.clone();
+        let preflight_config = self.preflight_config.clone();
         let resources = self.resources.clone();
 
         Box::pin(async move {
@@ -2564,6 +2727,7 @@ where
                 layers,
                 health,
                 static_assets,
+                preflight_config,
                 #[cfg(feature = "http3")]
                 None,
             );
