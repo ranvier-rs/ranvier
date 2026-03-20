@@ -7,6 +7,8 @@
 //! For architecture decisions, see [DESIGN_PRINCIPLES.md](../docs/DESIGN_PRINCIPLES.md).
 
 pub use ranvier_core as core;
+#[cfg(feature = "guard")]
+pub use ranvier_guard as guard;
 #[cfg(feature = "http")]
 pub use ranvier_http as http;
 pub use ranvier_macros as macros;
@@ -31,6 +33,8 @@ pub use ranvier_runtime::Axon;
 
 pub mod prelude {
     pub use ranvier_core::prelude::*;
+    #[cfg(feature = "guard")]
+    pub use ranvier_guard::prelude::*;
     pub use ranvier_macros::ResourceRequirement;
     #[cfg(feature = "http")]
     pub use ranvier_http::prelude::*;

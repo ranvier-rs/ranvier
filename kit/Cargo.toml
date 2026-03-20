@@ -13,9 +13,10 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-default = ["http", "std"]
+default = ["http", "std", "guard"]
 http = ["dep:ranvier-http"]
 std = ["dep:ranvier-std"]
+guard = ["dep:ranvier-guard"]
 openapi = ["dep:ranvier-openapi"]
 
 [dependencies]
@@ -24,6 +25,7 @@ ranvier-macros = { workspace = true }
 ranvier-runtime = { workspace = true }
 ranvier-http = { workspace = true, optional = true }
 ranvier-std = { workspace = true, optional = true }
+ranvier-guard = { workspace = true, optional = true }
 ranvier-openapi = { workspace = true, optional = true }
 
 
