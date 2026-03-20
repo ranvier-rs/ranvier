@@ -1,0 +1,24 @@
+[package]
+name = "ranvier-guard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Guard nodes for Ranvier — HTTP security/policy Transitions replacing Tower middleware"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["ranvier", "guard", "middleware", "security"]
+
+[dependencies]
+ranvier-core = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+
+[lints]
+workspace = true
