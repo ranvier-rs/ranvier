@@ -58,6 +58,7 @@ members = [
     "examples/production-config-demo",
     "examples/reference-chat-server",
     "examples/reference-ecommerce-order",
+    "examples/closure-transition-demo",
     "examples/llm-content-moderation",
     "examples/guard-demo",
     "examples/auth-jwt-role-demo",

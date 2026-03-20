@@ -41,7 +41,6 @@ mod transitions;
 use anyhow::Result;
 use ranvier_core::prelude::*;
 use ranvier_http::Ranvier;
-use ranvier_macros::transition;
 use ranvier_runtime::Axon;
 use store::AppStore;
 
@@ -51,22 +50,18 @@ use transitions::{
     login::login,
 };
 
-/// Inventory listing uses an inline transition for simple read-only queries.
+/// Inventory listing uses a closure transition for simple read-only queries.
+///
+/// This demonstrates `then_fn()` — the lightweight alternative to `#[transition]`
+/// for steps that don't need async or separate files.
 fn inventory_circuit() -> Axon<(), serde_json::Value, String> {
-    #[transition]
-    async fn list_inventory(
-        _input: (),
-        _res: &(),
-        bus: &mut Bus,
-    ) -> Outcome<serde_json::Value, String> {
+    Axon::simple::<String>("list-inventory").then_fn("list-inventory", |_input: (), bus: &mut Bus| {
         let inventory = bus
             .read::<AppStore>()
             .map(|s| s.get_inventory())
             .unwrap_or_default();
         Outcome::Next(serde_json::json!({ "inventory": inventory }))
-    }
-
-    Axon::simple::<String>("list-inventory").then(list_inventory)
+    })
 }
 
 #[tokio::main]

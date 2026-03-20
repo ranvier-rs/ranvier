@@ -1,0 +1,22 @@
+[package]
+name = "closure-transition-demo"
+version = "0.1.0"
+edition = "2024"
+description = "M288: Closure Transition demo — then_fn() + post_typed() mixed usage"
+
+[[bin]]
+name = "closure-transition-demo"
+path = "src/main.rs"
+
+[dependencies]
+ranvier-core    = { path = "../../core", version = "0.33.0" }
+ranvier-macros  = { path = "../../macros", version = "0.33.0" }
+ranvier-runtime = { path = "../../runtime", version = "0.33.0" }
+ranvier-http    = { path = "../../http", version = "0.33.0" }
+async-trait     = "0.1"
+anyhow          = "1.0"
+serde           = { version = "1.0", features = ["derive"] }
+serde_json      = "1.0"
+tokio           = { version = "1", features = ["full"] }
+tracing         = "0.1"
+tracing-subscriber = "0.3"

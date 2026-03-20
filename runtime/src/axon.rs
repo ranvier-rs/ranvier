@@ -261,6 +261,34 @@ impl Axon<(), (), (), ()> {
         let caller = Location::caller();
         <Axon<(), (), E, ()>>::start_with_source(label, caller)
     }
+
+    /// Convenience constructor for pipelines with a typed input.
+    ///
+    /// Creates an identity Axon `In → In` with no resources, useful with
+    /// `HttpIngress::post_typed::<T>()` where the Axon's input type must
+    /// match the deserialized request body.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// #[derive(Deserialize, Serialize)]
+    /// struct CreateOrder { product_id: u64, qty: u32 }
+    ///
+    /// let axon = Axon::typed::<CreateOrder, String>("create-order")
+    ///     .then_fn("validate", |order: CreateOrder, _bus| {
+    ///         if order.qty == 0 { Outcome::Fault("empty order".into()) }
+    ///         else { Outcome::Next(order) }
+    ///     });
+    /// ```
+    #[track_caller]
+    pub fn typed<In, E>(label: &str) -> Axon<In, In, E, ()>
+    where
+        In: Send + Sync + Serialize + DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let caller = Location::caller();
+        <Axon<In, In, E, ()>>::start_with_source(label, caller)
+    }
 }
 
 impl<In, Out, E, Res> Axon<In, Out, E, Res>
