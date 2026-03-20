@@ -8,13 +8,13 @@ diff, and validate.
 
 ---
 
-**Latest: v0.30.0** — 10 crates on [crates.io](https://crates.io/crates/ranvier)
+**Latest: v0.34.0** — 11 crates on [crates.io](https://crates.io/crates/ranvier)
 
-- **v0.30**: `Axon::simple()` convenience constructor, HttpIngress rustdoc grouping, telemetry-otel-demo, web manual operations/deployment pages (EN/KO)
-- **v0.29**: Prometheus `/metrics` endpoint, OTLP auto-export, `AccessLogGuard`, `PostgresAuditSink`, OpenAPI `SecurityScheme` + `ProblemDetail`, Docker/K8s deployment templates, operations guide (EN/KO)
-- **v0.28**: Documentation overhaul, example normalization, API quality (`unwrap`→`expect`), CLI dynamic template versioning, `ranvier_core::VERSION` constant
-- **v0.27**: Guard Transition nodes, JWT auth, GraphQL/gRPC adapters, background jobs, distributed lock, DB patterns, TypeScript codegen, 8 new examples
-- **v0.26**: CLI `ranvier merge` + `ranvier codegen`, VSCode Schematic Diff Viewer, GraphQL/gRPC Explorer, Environment Manager, `LlmTransition`, `Axon::parallel()` FanOut/FanIn, Inspector production (BearerAuth, TraceStore, AlertHook)
+- **v0.34**: Closure Transitions (`then_fn()`), type-safe HTTP body (`post_typed()`), Askama template rendering, static serving 304/immutable cache, `TransitionErrorContext`, `ranvier-test` utility crate
+- **v0.33**: `then_with_timeout()`, outcome-variants-demo, resilience-patterns-demo, service-call-demo, production readiness checklist
+- **v0.32**: Security hardening — SQL injection prevention, timing-safe auth, `Sensitive<T>`, CookieJar RFC 6265, SECURITY.md
+- **v0.31**: Framework philosophy — "Opinionated Core, Flexible Edges", auth comparison guide
+- **v0.30**: `Axon::simple()`, HttpIngress rustdoc, telemetry-otel-demo
 - **v0.21**: Crate consolidation 23 → 10 via Paradigm Test, Hyper 1.0 native (no Tower/Axum)
 
 ---

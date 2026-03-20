@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.34.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.34.0 — Developer Experience Sprint.**
+Closure-based inline Transitions (`then_fn()`), typed HTTP body injection (`post_typed()`), Askama template rendering, static file serving enhancements (304/MIME/immutable cache), pipeline error context auto-injection, new `ranvier-test` utility crate.
+
+### Added
+- **`ClosureTransition<F>` + `Axon::then_fn()` (ranvier-runtime):** Lightweight closure wrapper implementing the `Transition` trait. Sync closures `Fn(In, &mut Bus) -> Outcome<Out, E>` can be chained with `then_fn("label", closure)` alongside traditional `#[transition]` macro steps. Eliminates boilerplate for simple data transformations.
+- **`Axon::typed::<In, E>()` (ranvier-runtime):** Convenience constructor for pipelines with a typed input, creating `Axon<In, In, E>`. Pairs with `post_typed()` for end-to-end type-safe HTTP request handling.
+- **`HttpIngress::post_typed::<T>()` / `put_typed()` / `patch_typed()` (ranvier-http):** Type-safe JSON body deserialization — request body auto-parsed as `T: DeserializeOwned` and passed as Axon input. Returns 400 Bad Request on parse failure.
+- **`TemplateResponse<T>` (ranvier-http, feature-gated: `askama`):** Askama template wrapper implementing `IntoResponse`. Renders templates to `text/html` with 500 error fallback.
+- **Static file serving enhancements (ranvier-http):**
+  - `guess_mime()` expanded with 8 types: `.avif`, `.webp`, `.webm`, `.mp4`, `.map`, `.ts`, `.tsx`, `.yaml`
+  - `directory_index("index.html")` — automatic index file serving on directory paths
+  - 304 Not Modified — `If-None-Match` vs ETag comparison
+  - `immutable_cache()` — hashed filename detection (`name.HASH.ext`) with 1-year immutable Cache-Control
+- **`TransitionErrorContext` (ranvier-core):** Struct auto-injected into Bus on pipeline fault, capturing `pipeline_name`, `transition_name`, `step_index`. `tracing::error!` with structured fields on every fault.
+- **`ranvier-test` crate (new):** Test utilities for Ranvier pipelines.
+  - `TestBus::new().with(val)` — fluent Bus builder for test data injection
+  - `TestAxon::run(axon, input, res, bus)` — single-call pipeline execution returning `(Outcome, Bus)`
+  - `assert_outcome_ok!()` / `assert_outcome_err!()` — typed Outcome assertion macros
+- **Example: `closure-transition-demo`** — Mixed closure + macro Transition pipeline with `post_typed()` usage.
+
+### Changed
+- **`reference-ecommerce-order` example:** `inventory_circuit()` converted from `#[transition]` macro to `then_fn()` closure, demonstrating ergonomic improvement.
+
+---
+
 ## [0.33.0] — 2026-03
 
 ### Summary
