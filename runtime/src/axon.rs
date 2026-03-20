@@ -2785,6 +2785,28 @@ where
     if let Some(target) = outcome_target(&result) {
         node_span.record("ranvier.outcome_target", tracing::field::display(&target));
     }
+
+    // Inject TransitionErrorContext on fault
+    if let Outcome::Fault(ref err) = result {
+        let pipeline_name = bus
+            .read::<ranvier_core::schematic::Schematic>()
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        let ctx = ranvier_core::error::TransitionErrorContext {
+            pipeline_name: pipeline_name.clone(),
+            transition_name: label.clone(),
+            step_index: step_idx as usize,
+        };
+        tracing::error!(
+            pipeline = %pipeline_name,
+            transition = %label,
+            step = step_idx,
+            error = ?err,
+            "Transition fault"
+        );
+        bus.insert(ctx);
+    }
+
     let duration_ms = started.elapsed().as_millis() as u64;
     let exit_ts = now_ms();
 
@@ -4842,6 +4864,27 @@ mod tests {
 
         let outcome = axon.execute(5, &(), &mut bus).await;
         assert!(matches!(outcome, Outcome::Fault(msg) if msg == "boom"));
+    }
+
+    #[tokio::test]
+    async fn fault_injects_transition_error_context_into_bus() {
+        let mut bus = Bus::new();
+
+        // 3-step chain: AddOneString → AlwaysFault → AddTenString
+        let axon = Axon::<i32, i32, String>::start("my-pipeline")
+            .then(AddOneString)
+            .then(AlwaysFault)
+            .then(AddTenString);
+
+        let outcome = axon.execute(5, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Fault(_)));
+
+        let ctx = bus
+            .read::<ranvier_core::error::TransitionErrorContext>()
+            .expect("TransitionErrorContext should be in Bus after fault");
+        assert_eq!(ctx.pipeline_name, "my-pipeline");
+        assert_eq!(ctx.transition_name, "AlwaysFault");
+        assert_eq!(ctx.step_index, 2); // 0=ingress, 1=AddOneString, 2=AlwaysFault
     }
 
     #[test]
