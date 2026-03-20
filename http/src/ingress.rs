@@ -41,7 +41,9 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Error as WsWireError, Message as WsWireMessage};
 use tracing::Instrument;
 
-use crate::guard_integration::{GuardExec, GuardIntegration, PreflightConfig, ResponseExtractorFn};
+use crate::guard_integration::{
+    GuardExec, GuardIntegration, PreflightConfig, ResponseBodyTransformFn, ResponseExtractorFn,
+};
 use crate::response::{HttpResponse, IntoResponse, json_error_response, outcome_to_response_with_error};
 
 /// The Ranvier Framework entry point.
@@ -754,6 +756,8 @@ pub struct HttpIngress<R = ()> {
     guard_execs: Vec<Arc<dyn GuardExec>>,
     /// Response extractors from guard registrations.
     guard_response_extractors: Vec<ResponseExtractorFn>,
+    /// Response body transforms from guard registrations (e.g., compression).
+    guard_body_transforms: Vec<ResponseBodyTransformFn>,
     /// CORS preflight configuration from guards that handle preflight.
     preflight_config: Option<PreflightConfig>,
     _phantom: std::marker::PhantomData<R>,
@@ -786,6 +790,7 @@ where
             policy_registry: None,
             guard_execs: Vec::new(),
             guard_response_extractors: Vec::new(),
+            guard_body_transforms: Vec::new(),
             preflight_config: None,
             _phantom: std::marker::PhantomData,
         }
@@ -919,6 +924,9 @@ where
         self.guard_execs.push(registration.exec);
         if let Some(extractor) = registration.response_extractor {
             self.guard_response_extractors.push(extractor);
+        }
+        if let Some(transform) = registration.response_body_transform {
+            self.guard_body_transforms.push(transform);
         }
         if registration.handles_preflight {
             if let Some(config) = registration.preflight_config {
@@ -1070,8 +1078,8 @@ where
                             injector(&parts, &mut bus);
                         }
                         for guard_exec in ws_guard_execs.iter() {
-                            if let Err(msg) = guard_exec.exec_guard(&mut bus).await {
-                                return json_error_response(StatusCode::FORBIDDEN, &msg);
+                            if let Err(rejection) = guard_exec.exec_guard(&mut bus).await {
+                                return json_error_response(rejection.status, &rejection.message);
                             }
                         }
 
@@ -1259,6 +1267,7 @@ where
         let route_bus_injectors = Arc::new(self.bus_injectors.clone());
         let route_guard_execs = Arc::new(self.guard_execs.clone());
         let route_response_extractors = Arc::new(self.guard_response_extractors.clone());
+        let route_body_transforms = Arc::new(self.guard_body_transforms.clone());
         let path_for_pattern = path_str.clone();
         let path_for_handler = path_str;
         let method_for_pattern = method.clone();
@@ -1270,6 +1279,7 @@ where
             let route_bus_injectors = route_bus_injectors.clone();
             let route_guard_execs = route_guard_execs.clone();
             let route_response_extractors = route_response_extractors.clone();
+            let route_body_transforms = route_body_transforms.clone();
             let res = res.clone();
             let path = path_for_handler.clone();
             let method = method_for_handler.clone();
@@ -1289,8 +1299,8 @@ where
                         injector(&parts, &mut bus);
                     }
                     for guard_exec in route_guard_execs.iter() {
-                        if let Err(msg) = guard_exec.exec_guard(&mut bus).await {
-                            let mut response = json_error_response(StatusCode::FORBIDDEN, &msg);
+                        if let Err(rejection) = guard_exec.exec_guard(&mut bus).await {
+                            let mut response = json_error_response(rejection.status, &rejection.message);
                             for extractor in route_response_extractors.iter() {
                                 extractor(&bus, response.headers_mut());
                             }
@@ -1301,6 +1311,9 @@ where
                     let mut response = outcome_to_response_with_error(result, |error| error_handler(error));
                     for extractor in route_response_extractors.iter() {
                         extractor(&bus, response.headers_mut());
+                    }
+                    if !route_body_transforms.is_empty() {
+                        response = apply_body_transforms(response, &bus, &route_body_transforms).await;
                     }
                     response
                 }
@@ -1339,6 +1352,7 @@ where
         let route_bus_injectors = Arc::new(self.bus_injectors.clone());
         let route_guard_execs = Arc::new(self.guard_execs.clone());
         let route_response_extractors = Arc::new(self.guard_response_extractors.clone());
+        let route_body_transforms = Arc::new(self.guard_body_transforms.clone());
         let path_for_pattern = path_str.clone();
         let path_for_handler = path_str;
         let method_for_pattern = method.clone();
@@ -1349,6 +1363,7 @@ where
             let route_bus_injectors = route_bus_injectors.clone();
             let route_guard_execs = route_guard_execs.clone();
             let route_response_extractors = route_response_extractors.clone();
+            let route_body_transforms = route_body_transforms.clone();
             let res = res.clone();
             let path = path_for_handler.clone();
             let method = method_for_handler.clone();
@@ -1386,8 +1401,8 @@ where
                         injector(&parts, &mut bus);
                     }
                     for guard_exec in route_guard_execs.iter() {
-                        if let Err(msg) = guard_exec.exec_guard(&mut bus).await {
-                            let mut response = json_error_response(StatusCode::FORBIDDEN, &msg);
+                        if let Err(rejection) = guard_exec.exec_guard(&mut bus).await {
+                            let mut response = json_error_response(rejection.status, &rejection.message);
                             for extractor in route_response_extractors.iter() {
                                 extractor(&bus, response.headers_mut());
                             }
@@ -1411,6 +1426,9 @@ where
                     });
                     for extractor in route_response_extractors.iter() {
                         extractor(&bus, response.headers_mut());
+                    }
+                    if !route_body_transforms.is_empty() {
+                        response = apply_body_transforms(response, &bus, &route_body_transforms).await;
                     }
                     response
                 }
@@ -1619,12 +1637,14 @@ where
         let fallback_bus_injectors = Arc::new(self.bus_injectors.clone());
         let fallback_guard_execs = Arc::new(self.guard_execs.clone());
         let fallback_response_extractors = Arc::new(self.guard_response_extractors.clone());
+        let fallback_body_transforms = Arc::new(self.guard_body_transforms.clone());
 
         let handler: RouteHandler<R> = Arc::new(move |parts: http::request::Parts, res: &R| {
             let circuit = circuit.clone();
             let fallback_bus_injectors = fallback_bus_injectors.clone();
             let fallback_guard_execs = fallback_guard_execs.clone();
             let fallback_response_extractors = fallback_response_extractors.clone();
+            let fallback_body_transforms = fallback_body_transforms.clone();
             let res = res.clone();
             Box::pin(async move {
                 let request_id = uuid::Uuid::new_v4().to_string();
@@ -1640,8 +1660,8 @@ where
                         injector(&parts, &mut bus);
                     }
                     for guard_exec in fallback_guard_execs.iter() {
-                        if let Err(msg) = guard_exec.exec_guard(&mut bus).await {
-                            let mut response = json_error_response(StatusCode::FORBIDDEN, &msg);
+                        if let Err(rejection) = guard_exec.exec_guard(&mut bus).await {
+                            let mut response = json_error_response(rejection.status, &rejection.message);
                             for extractor in fallback_response_extractors.iter() {
                                 extractor(&bus, response.headers_mut());
                             }
@@ -1668,6 +1688,9 @@ where
                     };
                     for extractor in fallback_response_extractors.iter() {
                         extractor(&bus, response.headers_mut());
+                    }
+                    if !fallback_body_transforms.is_empty() {
+                        response = apply_body_transforms(response, &bus, &fallback_body_transforms).await;
                     }
                     response
                 }
@@ -1900,6 +1923,48 @@ where
             resources,
         }
     }
+}
+
+/// Apply registered body transforms (e.g., gzip compression) to the response.
+///
+/// Collects the response body into bytes, runs each transform, and rebuilds
+/// the response with the transformed body.
+async fn apply_body_transforms(
+    response: HttpResponse,
+    bus: &Bus,
+    transforms: &[ResponseBodyTransformFn],
+) -> HttpResponse {
+    use http_body_util::BodyExt;
+
+    let (parts, body) = response.into_parts();
+
+    // Collect body bytes
+    let collected = match body.collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => {
+            // If body collection fails, return a 500 response
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(
+                    Full::new(Bytes::from("body collection failed"))
+                        .map_err(|never| match never {})
+                        .boxed(),
+                )
+                .expect("valid response");
+        }
+    };
+
+    let mut transformed = collected;
+    for transform in transforms {
+        transformed = transform(bus, transformed);
+    }
+
+    Response::from_parts(
+        parts,
+        Full::new(transformed)
+            .map_err(|never| match never {})
+            .boxed(),
+    )
 }
 
 fn build_http_service<R>(

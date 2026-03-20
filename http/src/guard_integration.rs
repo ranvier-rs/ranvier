@@ -12,6 +12,7 @@
 //!   → Guard.exec_guard (validate Bus, write Bus)
 //!   → Pipeline (circuit.execute)
 //!   → ResponseExtractorFn (Bus → response headers)
+//!   → ResponseBodyTransformFn (Bus + body bytes → compressed body)
 //! HTTP Response
 //! ```
 //!
@@ -31,21 +32,84 @@ pub type BusInjectorFn = Arc<dyn Fn(&http::request::Parts, &mut Bus) + Send + Sy
 pub type ResponseExtractorFn =
     Arc<dyn Fn(&Bus, &mut http::HeaderMap) + Send + Sync + 'static>;
 
+/// Function that transforms the response body (e.g., compression).
+///
+/// Takes the Bus (to read configuration like `CompressionConfig`) and the
+/// original body bytes, returns the (possibly transformed) body bytes.
+pub type ResponseBodyTransformFn =
+    Arc<dyn Fn(&Bus, bytes::Bytes) -> bytes::Bytes + Send + Sync + 'static>;
+
+/// A guard rejection with an HTTP status code and message.
+///
+/// Guards return this instead of a plain error string so the HTTP layer
+/// can respond with the correct status code (e.g., 401, 403, 413, 429).
+#[derive(Debug, Clone)]
+pub struct GuardRejection {
+    pub status: http::StatusCode,
+    pub message: String,
+}
+
+impl GuardRejection {
+    pub fn new(status: http::StatusCode, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+        }
+    }
+
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::new(http::StatusCode::FORBIDDEN, message)
+    }
+
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self::new(http::StatusCode::UNAUTHORIZED, message)
+    }
+
+    pub fn too_many_requests(message: impl Into<String>) -> Self {
+        Self::new(http::StatusCode::TOO_MANY_REQUESTS, message)
+    }
+
+    pub fn payload_too_large(message: impl Into<String>) -> Self {
+        Self::new(http::StatusCode::PAYLOAD_TOO_LARGE, message)
+    }
+}
+
 /// A type-erased guard executor that can run guard logic against a Bus.
 ///
 /// Guards read from and write to the Bus. If the guard rejects the request,
-/// it returns `Err(message)` which will be converted to an HTTP error response.
+/// it returns `Err(GuardRejection)` which will be converted to an HTTP error response
+/// with the appropriate status code.
 #[async_trait]
 pub trait GuardExec: Send + Sync {
     /// Execute guard logic against the Bus.
     ///
-    /// Returns `Ok(())` if the request passes, or `Err(message)` if rejected.
-    async fn exec_guard(&self, bus: &mut Bus) -> Result<(), String>;
+    /// Returns `Ok(())` if the request passes, or `Err(GuardRejection)` if rejected.
+    async fn exec_guard(&self, bus: &mut Bus) -> Result<(), GuardRejection>;
 }
 
 /// Wrapper that adapts a `Transition<(), ()>` Guard into a [`GuardExec`].
+///
+/// The `default_status` is used when the Guard's error message does not start
+/// with a 3-digit HTTP status code. Guards can override by prefixing their
+/// error messages with `"NNN "` (e.g., `"401 Unauthorized: missing token"`).
 struct TransitionGuardExec<G> {
     guard: G,
+    default_status: http::StatusCode,
+}
+
+/// Parse an optional status code prefix from a Guard error message.
+///
+/// If the message starts with `"NNN "` where NNN is a valid HTTP status code,
+/// returns `(StatusCode, rest_of_message)`. Otherwise returns the default status.
+fn parse_status_prefix(msg: &str, default: http::StatusCode) -> (http::StatusCode, String) {
+    if msg.len() >= 4 && msg.as_bytes()[3] == b' ' {
+        if let Ok(code) = msg[..3].parse::<u16>() {
+            if let Ok(status) = http::StatusCode::from_u16(code) {
+                return (status, msg[4..].to_string());
+            }
+        }
+    }
+    (default, msg.to_string())
 }
 
 #[async_trait]
@@ -53,10 +117,13 @@ impl<G> GuardExec for TransitionGuardExec<G>
 where
     G: Transition<(), (), Error = String, Resources = ()> + Send + Sync + 'static,
 {
-    async fn exec_guard(&self, bus: &mut Bus) -> Result<(), String> {
+    async fn exec_guard(&self, bus: &mut Bus) -> Result<(), GuardRejection> {
         match self.guard.run((), &(), bus).await {
             Outcome::Next(_) => Ok(()),
-            Outcome::Fault(e) => Err(e),
+            Outcome::Fault(e) => {
+                let (status, message) = parse_status_prefix(&e, self.default_status);
+                Err(GuardRejection { status, message })
+            }
             _ => Ok(()),
         }
     }
@@ -68,6 +135,8 @@ pub struct RegisteredGuard {
     pub bus_injectors: Vec<BusInjectorFn>,
     /// Optional response extractor that applies Bus data to response headers.
     pub response_extractor: Option<ResponseExtractorFn>,
+    /// Optional response body transform (e.g., compression).
+    pub response_body_transform: Option<ResponseBodyTransformFn>,
     /// Type-erased guard executor.
     pub exec: Arc<dyn GuardExec>,
     /// Whether this guard handles OPTIONS preflight requests.
@@ -153,7 +222,11 @@ where
                     }
                 }
             })),
-            exec: Arc::new(TransitionGuardExec { guard: exec_guard }),
+            response_body_transform: None,
+            exec: Arc::new(TransitionGuardExec {
+                guard: exec_guard,
+                default_status: http::StatusCode::FORBIDDEN,
+            }),
             handles_preflight: true,
             preflight_config: Some(preflight),
         }
@@ -182,7 +255,11 @@ where
                 bus.insert(ranvier_guard::ClientIdentity(identity));
             })],
             response_extractor: None,
-            exec: Arc::new(TransitionGuardExec { guard: exec_guard }),
+            response_body_transform: None,
+            exec: Arc::new(TransitionGuardExec {
+                guard: exec_guard,
+                default_status: http::StatusCode::TOO_MANY_REQUESTS,
+            }),
             handles_preflight: false,
             preflight_config: None,
         }
@@ -223,7 +300,11 @@ where
                     }
                 }
             })),
-            exec: Arc::new(TransitionGuardExec { guard: exec_guard }),
+            response_body_transform: None,
+            exec: Arc::new(TransitionGuardExec {
+                guard: exec_guard,
+                default_status: http::StatusCode::INTERNAL_SERVER_ERROR,
+            }),
             handles_preflight: false,
             preflight_config: None,
         }
@@ -248,7 +329,11 @@ where
                 bus.insert(ranvier_guard::ClientIp(ip));
             })],
             response_extractor: None,
-            exec: Arc::new(TransitionGuardExec { guard: exec_guard }),
+            response_body_transform: None,
+            exec: Arc::new(TransitionGuardExec {
+                guard: exec_guard,
+                default_status: http::StatusCode::FORBIDDEN,
+            }),
             handles_preflight: false,
             preflight_config: None,
         }
@@ -270,7 +355,194 @@ where
                 });
             })],
             response_extractor: None,
-            exec: Arc::new(TransitionGuardExec { guard: exec_guard }),
+            response_body_transform: None,
+            exec: Arc::new(TransitionGuardExec {
+                guard: exec_guard,
+                default_status: http::StatusCode::INTERNAL_SERVER_ERROR,
+            }),
+            handles_preflight: false,
+            preflight_config: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GuardIntegration implementations for M293 Guards
+// ---------------------------------------------------------------------------
+
+impl<T> GuardIntegration for ranvier_guard::CompressionGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    fn register(self) -> RegisteredGuard {
+        let min_body_size = self.min_body_size();
+        let preferred = self.preferred_encodings().to_vec();
+
+        let mut exec_guard = ranvier_guard::CompressionGuard::<()>::new()
+            .with_min_body_size(min_body_size);
+        if preferred.first() == Some(&ranvier_guard::CompressionEncoding::Brotli) {
+            exec_guard = exec_guard.prefer_brotli();
+        }
+
+        RegisteredGuard {
+            bus_injectors: vec![Arc::new(|parts: &http::request::Parts, bus: &mut Bus| {
+                if let Some(accept) = parts.headers.get("accept-encoding") {
+                    if let Ok(s) = accept.to_str() {
+                        bus.insert(ranvier_guard::AcceptEncoding(s.to_string()));
+                    }
+                }
+            })],
+            response_extractor: Some(Arc::new(|bus: &Bus, headers: &mut http::HeaderMap| {
+                if let Some(config) = bus.read::<ranvier_guard::CompressionConfig>() {
+                    if config.encoding != ranvier_guard::CompressionEncoding::Identity {
+                        if let Ok(v) = config.encoding.as_str().parse() {
+                            headers.insert("content-encoding", v);
+                        }
+                    }
+                    if let Ok(v) = "accept-encoding".parse() {
+                        headers.insert("vary", v);
+                    }
+                }
+            })),
+            response_body_transform: Some(Arc::new(move |bus: &Bus, body: bytes::Bytes| {
+                let Some(config) = bus.read::<ranvier_guard::CompressionConfig>() else {
+                    return body;
+                };
+                if body.len() < config.min_body_size {
+                    return body;
+                }
+                match config.encoding {
+                    ranvier_guard::CompressionEncoding::Gzip => {
+                        use flate2::write::GzEncoder;
+                        use flate2::Compression;
+                        use std::io::Write;
+                        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+                        if encoder.write_all(&body).is_err() {
+                            return body;
+                        }
+                        match encoder.finish() {
+                            Ok(compressed) => bytes::Bytes::from(compressed),
+                            Err(_) => body,
+                        }
+                    }
+                    ranvier_guard::CompressionEncoding::Identity => body,
+                    // Brotli/Zstd: fall through to identity (requires additional deps)
+                    _ => body,
+                }
+            })),
+            exec: Arc::new(TransitionGuardExec {
+                guard: exec_guard,
+                default_status: http::StatusCode::INTERNAL_SERVER_ERROR,
+            }),
+            handles_preflight: false,
+            preflight_config: None,
+        }
+    }
+}
+
+impl<T> GuardIntegration for ranvier_guard::RequestSizeLimitGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    fn register(self) -> RegisteredGuard {
+        let exec_guard = ranvier_guard::RequestSizeLimitGuard::<()>::new(self.max_bytes());
+
+        RegisteredGuard {
+            bus_injectors: vec![Arc::new(|parts: &http::request::Parts, bus: &mut Bus| {
+                if let Some(len) = parts.headers.get("content-length") {
+                    if let Ok(s) = len.to_str() {
+                        if let Ok(n) = s.parse::<u64>() {
+                            bus.insert(ranvier_guard::ContentLength(n));
+                        }
+                    }
+                }
+            })],
+            response_extractor: None,
+            response_body_transform: None,
+            exec: Arc::new(TransitionGuardExec {
+                guard: exec_guard,
+                default_status: http::StatusCode::PAYLOAD_TOO_LARGE,
+            }),
+            handles_preflight: false,
+            preflight_config: None,
+        }
+    }
+}
+
+impl<T> GuardIntegration for ranvier_guard::RequestIdGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    fn register(self) -> RegisteredGuard {
+        let exec_guard = ranvier_guard::RequestIdGuard::<()>::new();
+
+        RegisteredGuard {
+            bus_injectors: vec![Arc::new(|parts: &http::request::Parts, bus: &mut Bus| {
+                // Extract X-Request-Id from request headers if present
+                if let Some(rid) = parts.headers.get("x-request-id") {
+                    if let Ok(s) = rid.to_str() {
+                        bus.insert(ranvier_guard::RequestId(s.to_string()));
+                    }
+                }
+                // If no header, the Guard Transition will generate a UUID v4
+            })],
+            response_extractor: Some(Arc::new(|bus: &Bus, headers: &mut http::HeaderMap| {
+                if let Some(rid) = bus.read::<ranvier_guard::RequestId>() {
+                    if let Ok(v) = rid.0.parse() {
+                        headers.insert("x-request-id", v);
+                    }
+                }
+            })),
+            response_body_transform: None,
+            exec: Arc::new(TransitionGuardExec {
+                guard: exec_guard,
+                default_status: http::StatusCode::INTERNAL_SERVER_ERROR,
+            }),
+            handles_preflight: false,
+            preflight_config: None,
+        }
+    }
+}
+
+impl<T> GuardIntegration for ranvier_guard::AuthGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    fn register(self) -> RegisteredGuard {
+        // Determine the header to extract based on strategy
+        let header_name: &'static str = match self.strategy() {
+            ranvier_guard::AuthStrategy::ApiKey { header_name, .. } => {
+                // Leak a static string for the header name.
+                // This is acceptable because Guards are typically created once at startup.
+                Box::leak(header_name.clone().into_boxed_str())
+            }
+            _ => "authorization",
+        };
+
+        let exec_guard = ranvier_guard::AuthGuard::<()>::new(self.strategy().clone())
+            .with_policy(self.iam_policy().clone());
+
+        RegisteredGuard {
+            bus_injectors: vec![Arc::new(move |parts: &http::request::Parts, bus: &mut Bus| {
+                if let Some(value) = parts.headers.get(header_name) {
+                    if let Ok(s) = value.to_str() {
+                        bus.insert(ranvier_guard::AuthorizationHeader(s.to_string()));
+                    }
+                }
+            })],
+            response_extractor: Some(Arc::new(|bus: &Bus, headers: &mut http::HeaderMap| {
+                // Set WWW-Authenticate on 401 responses (downstream can check IamIdentity absence)
+                if bus.read::<ranvier_core::iam::IamIdentity>().is_none() {
+                    if let Ok(v) = "Bearer".parse() {
+                        headers.insert("www-authenticate", v);
+                    }
+                }
+            })),
+            response_body_transform: None,
+            exec: Arc::new(TransitionGuardExec {
+                guard: exec_guard,
+                default_status: http::StatusCode::UNAUTHORIZED,
+            }),
             handles_preflight: false,
             preflight_config: None,
         }

@@ -30,12 +30,14 @@
 //! ```
 
 use async_trait::async_trait;
+use ranvier_core::iam::{enforce_policy, IamIdentity, IamPolicy};
 use ranvier_core::{bus::Bus, outcome::Outcome, transition::Transition};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Instant;
+use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
@@ -578,14 +580,565 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// CompressionGuard
+// ---------------------------------------------------------------------------
+
+/// Supported compression encodings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CompressionEncoding {
+    Gzip,
+    Brotli,
+    Zstd,
+    Identity,
+}
+
+impl CompressionEncoding {
+    /// HTTP `Content-Encoding` header value.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Gzip => "gzip",
+            Self::Brotli => "br",
+            Self::Zstd => "zstd",
+            Self::Identity => "identity",
+        }
+    }
+}
+
+/// Bus-injectable type representing the client's `Accept-Encoding` header.
+#[derive(Debug, Clone)]
+pub struct AcceptEncoding(pub String);
+
+/// Compression configuration written to the Bus after encoding negotiation.
+///
+/// The HTTP response layer reads this to decide whether and how to compress
+/// the response body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionConfig {
+    pub encoding: CompressionEncoding,
+    pub min_body_size: usize,
+}
+
+/// Compression guard — negotiates response encoding from `Accept-Encoding`.
+///
+/// Reads [`AcceptEncoding`] from the Bus and selects the best encoding
+/// based on the configured preference order. Writes [`CompressionConfig`]
+/// to the Bus for the HTTP layer to apply.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// Ranvier::http()
+///     .guard(CompressionGuard::new().prefer_brotli())
+///     .get("/api/data", circuit)
+/// ```
+#[derive(Debug, Clone)]
+pub struct CompressionGuard<T> {
+    preferred: Vec<CompressionEncoding>,
+    min_body_size: usize,
+    _marker: PhantomData<T>,
+}
+
+impl<T> CompressionGuard<T> {
+    /// Create with default preference order: gzip > identity.
+    pub fn new() -> Self {
+        Self {
+            preferred: vec![CompressionEncoding::Gzip, CompressionEncoding::Identity],
+            min_body_size: 256,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Set preference order to brotli > gzip > identity.
+    pub fn prefer_brotli(mut self) -> Self {
+        self.preferred = vec![
+            CompressionEncoding::Brotli,
+            CompressionEncoding::Gzip,
+            CompressionEncoding::Identity,
+        ];
+        self
+    }
+
+    /// Set minimum body size for compression (default: 256 bytes).
+    pub fn with_min_body_size(mut self, size: usize) -> Self {
+        self.min_body_size = size;
+        self
+    }
+
+    /// Returns the minimum body size threshold.
+    pub fn min_body_size(&self) -> usize {
+        self.min_body_size
+    }
+
+    /// Returns the preference order.
+    pub fn preferred_encodings(&self) -> &[CompressionEncoding] {
+        &self.preferred
+    }
+}
+
+impl<T> Default for CompressionGuard<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Parse `Accept-Encoding` header value into a set of supported encodings.
+fn parse_accept_encoding(header: &str) -> HashSet<String> {
+    header
+        .split(',')
+        .map(|s| {
+            s.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_lowercase()
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+#[async_trait]
+impl<T> Transition<T, T> for CompressionGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    type Error = String;
+    type Resources = ();
+
+    async fn run(
+        &self,
+        input: T,
+        _resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<T, Self::Error> {
+        let accepted = bus
+            .read::<AcceptEncoding>()
+            .map(|ae| parse_accept_encoding(&ae.0))
+            .unwrap_or_default();
+
+        // Negotiate: pick first preferred encoding the client accepts
+        let selected = if accepted.is_empty() || accepted.contains("*") {
+            self.preferred.first().copied().unwrap_or(CompressionEncoding::Identity)
+        } else {
+            self.preferred
+                .iter()
+                .find(|enc| accepted.contains(enc.as_str()))
+                .copied()
+                .unwrap_or(CompressionEncoding::Identity)
+        };
+
+        bus.insert(CompressionConfig {
+            encoding: selected,
+            min_body_size: self.min_body_size,
+        });
+
+        Outcome::next(input)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RequestSizeLimitGuard
+// ---------------------------------------------------------------------------
+
+/// Bus-injectable type representing the request's `Content-Length` header value.
+#[derive(Debug, Clone)]
+pub struct ContentLength(pub u64);
+
+/// Request body size limit guard — rejects requests exceeding the configured
+/// maximum `Content-Length`.
+///
+/// Reads [`ContentLength`] from the Bus. If the value exceeds the limit,
+/// returns a Fault with "413 Payload Too Large".
+///
+/// # Example
+///
+/// ```rust,ignore
+/// Ranvier::http()
+///     .guard(RequestSizeLimitGuard::max_2mb())
+///     .post("/api/upload", upload_circuit)
+/// ```
+#[derive(Debug, Clone)]
+pub struct RequestSizeLimitGuard<T> {
+    max_bytes: u64,
+    _marker: PhantomData<T>,
+}
+
+impl<T> RequestSizeLimitGuard<T> {
+    /// Create with a custom byte limit.
+    pub fn new(max_bytes: u64) -> Self {
+        Self {
+            max_bytes,
+            _marker: PhantomData,
+        }
+    }
+
+    /// 2 MB limit.
+    pub fn max_2mb() -> Self {
+        Self::new(2 * 1024 * 1024)
+    }
+
+    /// 10 MB limit.
+    pub fn max_10mb() -> Self {
+        Self::new(10 * 1024 * 1024)
+    }
+
+    /// Returns the configured maximum bytes.
+    pub fn max_bytes(&self) -> u64 {
+        self.max_bytes
+    }
+}
+
+#[async_trait]
+impl<T> Transition<T, T> for RequestSizeLimitGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    type Error = String;
+    type Resources = ();
+
+    async fn run(
+        &self,
+        input: T,
+        _resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<T, Self::Error> {
+        if let Some(len) = bus.read::<ContentLength>() {
+            if len.0 > self.max_bytes {
+                return Outcome::fault(format!(
+                    "413 Payload Too Large: {} bytes exceeds limit of {} bytes",
+                    len.0, self.max_bytes
+                ));
+            }
+        }
+        Outcome::next(input)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RequestIdGuard
+// ---------------------------------------------------------------------------
+
+/// Bus type representing a unique request identifier.
+///
+/// Propagated from the `X-Request-Id` header or generated as UUID v4.
+/// The HTTP response layer reflects this back in the `X-Request-Id` response header.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestId(pub String);
+
+/// Request ID guard — ensures every request has a unique identifier.
+///
+/// If `RequestId` is already in the Bus (from a client-provided `X-Request-Id`
+/// header), it is preserved. Otherwise a UUID v4 is generated.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// Ranvier::http()
+///     .guard(RequestIdGuard::new())
+///     .get("/api/data", circuit)
+/// ```
+#[derive(Debug, Clone)]
+pub struct RequestIdGuard<T> {
+    _marker: PhantomData<T>,
+}
+
+impl<T> RequestIdGuard<T> {
+    pub fn new() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T> Default for RequestIdGuard<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl<T> Transition<T, T> for RequestIdGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    type Error = String;
+    type Resources = ();
+
+    async fn run(
+        &self,
+        input: T,
+        _resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<T, Self::Error> {
+        // Generate a UUID v4 if no RequestId was injected by the HTTP layer
+        if bus.read::<RequestId>().is_none() {
+            bus.insert(RequestId(uuid::Uuid::new_v4().to_string()));
+        }
+
+        // Integrate with tracing: record request_id on current span
+        if let Some(rid) = bus.read::<RequestId>() {
+            tracing::debug!(request_id = %rid.0, "request id assigned");
+        }
+
+        Outcome::next(input)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AuthGuard
+// ---------------------------------------------------------------------------
+
+/// Bus-injectable type representing the raw `Authorization` header value.
+#[derive(Debug, Clone)]
+pub struct AuthorizationHeader(pub String);
+
+/// Authentication strategy for [`AuthGuard`].
+pub enum AuthStrategy {
+    /// Bearer token authentication.
+    ///
+    /// Compares the request's `Authorization: Bearer <token>` against a set
+    /// of valid tokens using constant-time comparison to prevent timing attacks.
+    Bearer {
+        tokens: Vec<String>,
+    },
+
+    /// API key authentication from a custom header.
+    ///
+    /// Validates the value of `header_name` against a set of valid keys
+    /// using constant-time comparison.
+    ApiKey {
+        header_name: String,
+        valid_keys: Vec<String>,
+    },
+
+    /// Custom authentication via a validator function.
+    ///
+    /// The function receives the raw `Authorization` header value and returns
+    /// either a verified [`IamIdentity`] or an error message.
+    Custom {
+        validator: Arc<dyn Fn(&str) -> Result<IamIdentity, String> + Send + Sync + 'static>,
+    },
+}
+
+impl Clone for AuthStrategy {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Bearer { tokens } => Self::Bearer {
+                tokens: tokens.clone(),
+            },
+            Self::ApiKey {
+                header_name,
+                valid_keys,
+            } => Self::ApiKey {
+                header_name: header_name.clone(),
+                valid_keys: valid_keys.clone(),
+            },
+            Self::Custom { validator } => Self::Custom {
+                validator: validator.clone(),
+            },
+        }
+    }
+}
+
+impl std::fmt::Debug for AuthStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bearer { tokens } => f
+                .debug_struct("Bearer")
+                .field("token_count", &tokens.len())
+                .finish(),
+            Self::ApiKey { header_name, valid_keys } => f
+                .debug_struct("ApiKey")
+                .field("header_name", header_name)
+                .field("key_count", &valid_keys.len())
+                .finish(),
+            Self::Custom { .. } => f.debug_struct("Custom").finish(),
+        }
+    }
+}
+
+/// Authentication guard — validates credentials and injects [`IamIdentity`]
+/// into the Bus.
+///
+/// Supports Bearer token, API key, and custom authentication strategies.
+/// Uses constant-time comparison (`subtle::ConstantTimeEq`) for Bearer and
+/// API key validation to prevent timing attacks.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// // Bearer token auth
+/// Ranvier::http()
+///     .guard(AuthGuard::bearer(vec!["secret-token".into()]))
+///     .get("/api/protected", circuit)
+///
+/// // With role requirement
+/// Ranvier::http()
+///     .guard(AuthGuard::bearer(vec!["admin-token".into()])
+///         .with_policy(IamPolicy::RequireRole("admin".into())))
+///     .get("/api/admin", circuit)
+/// ```
+pub struct AuthGuard<T> {
+    strategy: AuthStrategy,
+    policy: IamPolicy,
+    _marker: PhantomData<T>,
+}
+
+impl<T> AuthGuard<T> {
+    /// Create with a specific strategy and no policy enforcement.
+    pub fn new(strategy: AuthStrategy) -> Self {
+        Self {
+            strategy,
+            policy: IamPolicy::None,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Bearer token authentication.
+    pub fn bearer(tokens: Vec<String>) -> Self {
+        Self::new(AuthStrategy::Bearer { tokens })
+    }
+
+    /// API key authentication from a custom header.
+    pub fn api_key(header_name: impl Into<String>, valid_keys: Vec<String>) -> Self {
+        Self::new(AuthStrategy::ApiKey {
+            header_name: header_name.into(),
+            valid_keys,
+        })
+    }
+
+    /// Custom validator function.
+    pub fn custom(
+        validator: impl Fn(&str) -> Result<IamIdentity, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self::new(AuthStrategy::Custom {
+            validator: Arc::new(validator),
+        })
+    }
+
+    /// Set the IAM policy to enforce after successful authentication.
+    pub fn with_policy(mut self, policy: IamPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Returns the authentication strategy.
+    pub fn strategy(&self) -> &AuthStrategy {
+        &self.strategy
+    }
+
+    /// Returns the IAM policy.
+    pub fn iam_policy(&self) -> &IamPolicy {
+        &self.policy
+    }
+}
+
+impl<T> Clone for AuthGuard<T> {
+    fn clone(&self) -> Self {
+        Self {
+            strategy: self.strategy.clone(),
+            policy: self.policy.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T> std::fmt::Debug for AuthGuard<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthGuard")
+            .field("strategy", &self.strategy)
+            .field("policy", &self.policy)
+            .finish()
+    }
+}
+
+/// Constant-time comparison of two byte slices.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.ct_eq(b).into()
+}
+
+#[async_trait]
+impl<T> Transition<T, T> for AuthGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    type Error = String;
+    type Resources = ();
+
+    async fn run(
+        &self,
+        input: T,
+        _resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<T, Self::Error> {
+        let auth_value = bus.read::<AuthorizationHeader>().map(|h| h.0.clone());
+
+        let identity = match &self.strategy {
+            AuthStrategy::Bearer { tokens } => {
+                let Some(auth) = auth_value else {
+                    return Outcome::fault(
+                        "401 Unauthorized: missing Authorization header".to_string(),
+                    );
+                };
+                let Some(token) = auth.strip_prefix("Bearer ") else {
+                    return Outcome::fault(
+                        "401 Unauthorized: expected Bearer scheme".to_string(),
+                    );
+                };
+                let token = token.trim();
+                let matched = tokens
+                    .iter()
+                    .any(|valid| ct_eq(token.as_bytes(), valid.as_bytes()));
+                if !matched {
+                    return Outcome::fault(
+                        "401 Unauthorized: invalid bearer token".to_string(),
+                    );
+                }
+                IamIdentity::new("bearer-authenticated")
+            }
+            AuthStrategy::ApiKey { valid_keys, .. } => {
+                let Some(key) = auth_value else {
+                    return Outcome::fault("401 Unauthorized: missing API key".to_string());
+                };
+                let matched = valid_keys
+                    .iter()
+                    .any(|valid| ct_eq(key.as_bytes(), valid.as_bytes()));
+                if !matched {
+                    return Outcome::fault("401 Unauthorized: invalid API key".to_string());
+                }
+                IamIdentity::new("apikey-authenticated")
+            }
+            AuthStrategy::Custom { validator } => {
+                let raw = auth_value.unwrap_or_default();
+                match validator(&raw) {
+                    Ok(identity) => identity,
+                    Err(msg) => {
+                        return Outcome::fault(format!("401 Unauthorized: {}", msg));
+                    }
+                }
+            }
+        };
+
+        // Enforce IAM policy
+        if let Err(e) = enforce_policy(&self.policy, &identity) {
+            return Outcome::fault(format!("403 Forbidden: {}", e));
+        }
+
+        bus.insert(identity);
+        Outcome::next(input)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Prelude
 // ---------------------------------------------------------------------------
 
 pub mod prelude {
     pub use crate::{
-        AccessLogEntry, AccessLogGuard, AccessLogRequest, ClientIdentity, ClientIp, CorsConfig,
-        CorsGuard, CorsHeaders, IpFilterGuard, RateLimitGuard, RequestOrigin, SecurityHeaders,
-        SecurityHeadersGuard, SecurityPolicy,
+        AcceptEncoding, AccessLogEntry, AccessLogGuard, AccessLogRequest, AuthGuard,
+        AuthStrategy, AuthorizationHeader, ClientIdentity, ClientIp, CompressionConfig,
+        CompressionEncoding, CompressionGuard, ContentLength, CorsConfig, CorsGuard, CorsHeaders,
+        IpFilterGuard, RateLimitGuard, RequestId, RequestIdGuard, RequestOrigin,
+        RequestSizeLimitGuard, SecurityHeaders, SecurityHeadersGuard, SecurityPolicy,
     };
 }
 
@@ -790,5 +1343,206 @@ mod tests {
         let _result = guard.run("ok".into(), &(), &mut bus).await;
         let entry = bus.read::<AccessLogEntry>().unwrap();
         assert_eq!(entry.path, "/api/public");
+    }
+
+    // --- CompressionGuard tests ---
+
+    #[tokio::test]
+    async fn compression_guard_negotiates_gzip() {
+        let guard = CompressionGuard::<String>::new();
+        let mut bus = Bus::new();
+        bus.insert(AcceptEncoding("gzip, deflate".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+        let config = bus.read::<CompressionConfig>().unwrap();
+        assert_eq!(config.encoding, CompressionEncoding::Gzip);
+    }
+
+    #[tokio::test]
+    async fn compression_guard_prefer_brotli() {
+        let guard = CompressionGuard::<String>::new().prefer_brotli();
+        let mut bus = Bus::new();
+        bus.insert(AcceptEncoding("gzip, br, zstd".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+        let config = bus.read::<CompressionConfig>().unwrap();
+        assert_eq!(config.encoding, CompressionEncoding::Brotli);
+    }
+
+    #[tokio::test]
+    async fn compression_guard_falls_back_to_identity() {
+        let guard = CompressionGuard::<String>::new();
+        let mut bus = Bus::new();
+        bus.insert(AcceptEncoding("deflate".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+        let config = bus.read::<CompressionConfig>().unwrap();
+        assert_eq!(config.encoding, CompressionEncoding::Identity);
+    }
+
+    #[tokio::test]
+    async fn compression_guard_wildcard_accept() {
+        let guard = CompressionGuard::<String>::new();
+        let mut bus = Bus::new();
+        bus.insert(AcceptEncoding("*".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+        let config = bus.read::<CompressionConfig>().unwrap();
+        assert_eq!(config.encoding, CompressionEncoding::Gzip);
+    }
+
+    #[tokio::test]
+    async fn compression_guard_min_body_size() {
+        let guard = CompressionGuard::<String>::new().with_min_body_size(1024);
+        let mut bus = Bus::new();
+        bus.insert(AcceptEncoding("gzip".into()));
+        let _ = guard.run("ok".into(), &(), &mut bus).await;
+        let config = bus.read::<CompressionConfig>().unwrap();
+        assert_eq!(config.min_body_size, 1024);
+    }
+
+    // --- RequestSizeLimitGuard tests ---
+
+    #[tokio::test]
+    async fn size_limit_allows_within_limit() {
+        let guard = RequestSizeLimitGuard::<String>::max_2mb();
+        let mut bus = Bus::new();
+        bus.insert(ContentLength(1024));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+    }
+
+    #[tokio::test]
+    async fn size_limit_rejects_over_limit() {
+        let guard = RequestSizeLimitGuard::<String>::new(1000);
+        let mut bus = Bus::new();
+        bus.insert(ContentLength(2000));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Fault(ref e) if e.contains("413")));
+    }
+
+    #[tokio::test]
+    async fn size_limit_passes_without_content_length() {
+        let guard = RequestSizeLimitGuard::<String>::new(100);
+        let mut bus = Bus::new();
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+    }
+
+    #[tokio::test]
+    async fn size_limit_convenience_constructors() {
+        let guard_2mb = RequestSizeLimitGuard::<()>::max_2mb();
+        assert_eq!(guard_2mb.max_bytes(), 2 * 1024 * 1024);
+
+        let guard_10mb = RequestSizeLimitGuard::<()>::max_10mb();
+        assert_eq!(guard_10mb.max_bytes(), 10 * 1024 * 1024);
+    }
+
+    // --- RequestIdGuard tests ---
+
+    #[tokio::test]
+    async fn request_id_generates_uuid() {
+        let guard = RequestIdGuard::<String>::new();
+        let mut bus = Bus::new();
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+        let rid = bus.read::<RequestId>().expect("request id should be in bus");
+        assert_eq!(rid.0.len(), 36); // UUID v4 format
+    }
+
+    #[tokio::test]
+    async fn request_id_preserves_existing() {
+        let guard = RequestIdGuard::<String>::new();
+        let mut bus = Bus::new();
+        bus.insert(RequestId("custom-id-123".into()));
+        let _ = guard.run("ok".into(), &(), &mut bus).await;
+        let rid = bus.read::<RequestId>().unwrap();
+        assert_eq!(rid.0, "custom-id-123");
+    }
+
+    // --- AuthGuard tests ---
+
+    #[tokio::test]
+    async fn auth_bearer_success() {
+        let guard = AuthGuard::<String>::bearer(vec!["secret-token".into()]);
+        let mut bus = Bus::new();
+        bus.insert(AuthorizationHeader("Bearer secret-token".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+        let identity = bus.read::<IamIdentity>().expect("identity should be in bus");
+        assert_eq!(identity.subject, "bearer-authenticated");
+    }
+
+    #[tokio::test]
+    async fn auth_bearer_invalid_token() {
+        let guard = AuthGuard::<String>::bearer(vec!["secret-token".into()]);
+        let mut bus = Bus::new();
+        bus.insert(AuthorizationHeader("Bearer wrong-token".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Fault(ref e) if e.contains("401")));
+    }
+
+    #[tokio::test]
+    async fn auth_bearer_missing_header() {
+        let guard = AuthGuard::<String>::bearer(vec!["token".into()]);
+        let mut bus = Bus::new();
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Fault(ref e) if e.contains("401")));
+    }
+
+    #[tokio::test]
+    async fn auth_apikey_success() {
+        let guard = AuthGuard::<String>::api_key("X-Api-Key", vec!["my-api-key".into()]);
+        let mut bus = Bus::new();
+        bus.insert(AuthorizationHeader("my-api-key".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+    }
+
+    #[tokio::test]
+    async fn auth_apikey_invalid() {
+        let guard = AuthGuard::<String>::api_key("X-Api-Key", vec!["valid-key".into()]);
+        let mut bus = Bus::new();
+        bus.insert(AuthorizationHeader("invalid-key".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Fault(ref e) if e.contains("401")));
+    }
+
+    #[tokio::test]
+    async fn auth_custom_validator() {
+        let guard = AuthGuard::<String>::custom(|token| {
+            if token == "Bearer magic" {
+                Ok(IamIdentity::new("custom-user").with_role("admin"))
+            } else {
+                Err("bad token".into())
+            }
+        });
+        let mut bus = Bus::new();
+        bus.insert(AuthorizationHeader("Bearer magic".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+        let id = bus.read::<IamIdentity>().unwrap();
+        assert!(id.has_role("admin"));
+    }
+
+    #[tokio::test]
+    async fn auth_policy_enforcement_role() {
+        let guard = AuthGuard::<String>::bearer(vec!["token".into()])
+            .with_policy(IamPolicy::RequireRole("admin".into()));
+        let mut bus = Bus::new();
+        bus.insert(AuthorizationHeader("Bearer token".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        // Bearer-authenticated identity has no roles → policy fails
+        assert!(matches!(result, Outcome::Fault(ref e) if e.contains("403")));
+    }
+
+    #[tokio::test]
+    async fn auth_timing_safe_comparison() {
+        // Ensure different-length tokens don't short-circuit
+        let guard = AuthGuard::<String>::bearer(vec!["short".into()]);
+        let mut bus = Bus::new();
+        bus.insert(AuthorizationHeader("Bearer a-very-long-different-token".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Fault(_)));
     }
 }

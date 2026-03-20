@@ -46,8 +46,8 @@ pub use response::{
     outcome_to_problem_response, outcome_to_response, outcome_to_response_with_error,
 };
 pub use guard_integration::{
-    BusInjectorFn, GuardExec, GuardIntegration, PreflightConfig, RegisteredGuard,
-    ResponseExtractorFn,
+    BusInjectorFn, GuardExec, GuardIntegration, GuardRejection, PreflightConfig, RegisteredGuard,
+    ResponseBodyTransformFn, ResponseExtractorFn,
 };
 pub use service::RanvierService;
 pub use sse::{Sse, SseEvent};
@@ -65,8 +65,8 @@ pub mod prelude {
         outcome_to_problem_response, outcome_to_response, outcome_to_response_with_error,
     };
     pub use crate::guard_integration::{
-        BusInjectorFn, GuardExec, GuardIntegration, PreflightConfig, RegisteredGuard,
-        ResponseExtractorFn,
+        BusInjectorFn, GuardExec, GuardIntegration, GuardRejection, PreflightConfig,
+        RegisteredGuard, ResponseBodyTransformFn, ResponseExtractorFn,
     };
     pub use crate::service::RanvierService;
     pub use crate::sse::{Sse, SseEvent};

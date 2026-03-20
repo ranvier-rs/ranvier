@@ -19,6 +19,7 @@ http3 = ["dep:quinn", "dep:h3", "dep:h3-quinn", "dep:rustls", "dep:rustls-pemfil
 [dependencies]
 # Internal
 ranvier-core = { workspace = true }
+ranvier-guard = { workspace = true }
 ranvier-runtime = { workspace = true }
 
 # Async
@@ -35,7 +36,7 @@ http = { workspace = true }
 http-body = "1"
 http-body-util = { workspace = true }
 bytes = { workspace = true }
-flate2 = "1"
+flate2 = { workspace = true }
 
 # Utilities
 thiserror = { workspace = true }

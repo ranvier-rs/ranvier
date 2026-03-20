@@ -16,6 +16,8 @@ async-trait = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
+uuid = { workspace = true }
+subtle = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
