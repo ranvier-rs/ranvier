@@ -41,7 +41,7 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Error as WsWireError, Message as WsWireMessage};
 use tracing::Instrument;
 
-use crate::response::{HttpResponse, IntoResponse, outcome_to_response_with_error};
+use crate::response::{HttpResponse, IntoResponse, json_error_response, outcome_to_response_with_error};
 
 /// The Ranvier Framework entry point.
 ///
@@ -543,6 +543,11 @@ impl RoutePattern {
     }
 }
 
+/// Body bytes extracted from `Request<Incoming>` for typed route handlers.
+/// Stored in `Parts::extensions` so handlers can access the raw body.
+#[derive(Clone)]
+struct BodyBytes(Bytes);
+
 #[derive(Clone)]
 struct RouteEntry<R> {
     method: Method,
@@ -550,6 +555,9 @@ struct RouteEntry<R> {
     handler: RouteHandler<R>,
     layers: Arc<Vec<ServiceLayer>>,
     apply_global_layers: bool,
+    /// When true, the dispatch layer reads the request body and stores it
+    /// in `Parts::extensions` as `BodyBytes` before calling the handler.
+    needs_body: bool,
 }
 
 fn path_segments(path: &str) -> Vec<&str> {
@@ -1033,6 +1041,7 @@ where
             handler: route_handler,
             layers: Arc::new(Vec::new()),
             apply_global_layers: true,
+            needs_body: false,
         });
 
         self
@@ -1210,6 +1219,100 @@ where
             handler,
             layers: route_layers,
             apply_global_layers,
+            needs_body: false,
+        });
+        self
+    }
+
+    /// Internal: register a typed-body route. The dispatch layer reads the request
+    /// body into `BodyBytes` in `Parts::extensions`; this handler deserializes it
+    /// as `T` and passes it as the Axon input.
+    fn route_method_typed<T, Out, E>(
+        mut self,
+        method: Method,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let path_str: String = path.into();
+        let circuit = Arc::new(circuit);
+        let route_bus_injectors = Arc::new(self.bus_injectors.clone());
+        let path_for_pattern = path_str.clone();
+        let path_for_handler = path_str;
+        let method_for_pattern = method.clone();
+        let method_for_handler = method;
+
+        let handler: RouteHandler<R> = Arc::new(move |parts: http::request::Parts, res: &R| {
+            let circuit = circuit.clone();
+            let route_bus_injectors = route_bus_injectors.clone();
+            let res = res.clone();
+            let path = path_for_handler.clone();
+            let method = method_for_handler.clone();
+
+            Box::pin(async move {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let span = tracing::info_span!(
+                    "HTTPRequest",
+                    ranvier.http.method = %method,
+                    ranvier.http.path = %path,
+                    ranvier.http.request_id = %request_id
+                );
+
+                async move {
+                    // Extract body bytes from extensions (set by dispatch layer)
+                    let body_bytes = parts
+                        .extensions
+                        .get::<BodyBytes>()
+                        .map(|b| b.0.clone())
+                        .unwrap_or_default();
+
+                    // Deserialize the body as T
+                    let input: T = match serde_json::from_slice(&body_bytes) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return json_error_response(
+                                StatusCode::BAD_REQUEST,
+                                &format!("Invalid request body: {}", e),
+                            );
+                        }
+                    };
+
+                    let mut bus = Bus::new();
+                    for injector in route_bus_injectors.iter() {
+                        injector(&parts, &mut bus);
+                    }
+                    let result = circuit.execute(input, &res, &mut bus).await;
+                    outcome_to_response_with_error(result, |error| {
+                        if cfg!(debug_assertions) {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("Error: {:?}", error),
+                            )
+                                .into_response()
+                        } else {
+                            json_error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "Internal server error",
+                            )
+                        }
+                    })
+                }
+                .instrument(span)
+                .await
+            }) as Pin<Box<dyn Future<Output = HttpResponse> + Send>>
+        });
+
+        self.routes.push(RouteEntry {
+            method: method_for_pattern,
+            pattern: RoutePattern::parse(&path_for_pattern),
+            handler,
+            layers: Arc::new(Vec::new()),
+            apply_global_layers: true,
+            needs_body: true,
         });
         self
     }
@@ -1242,6 +1345,66 @@ where
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
         self.route_method(Method::POST, path, circuit)
+    }
+
+    /// Register a POST route with type-safe JSON body deserialization.
+    ///
+    /// The request body is automatically deserialized as `T` and passed as
+    /// the Axon input. Returns `400 Bad Request` on deserialization failure.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// #[derive(Deserialize, Serialize, Clone)]
+    /// struct CreateOrder { product_id: String, quantity: u32 }
+    ///
+    /// let ingress = HttpIngress::new()
+    ///     .post_typed::<CreateOrder, _, _>("/api/orders", order_pipeline());
+    /// // order_pipeline() is Axon<CreateOrder, OrderResponse, E, R>
+    /// ```
+    pub fn post_typed<T, Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_typed::<T, Out, E>(Method::POST, path, circuit)
+    }
+
+    /// Register a PUT route with type-safe JSON body deserialization.
+    ///
+    /// See [`post_typed`](Self::post_typed) for details.
+    pub fn put_typed<T, Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_typed::<T, Out, E>(Method::PUT, path, circuit)
+    }
+
+    /// Register a PATCH route with type-safe JSON body deserialization.
+    ///
+    /// See [`post_typed`](Self::post_typed) for details.
+    pub fn patch_typed<T, Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_typed::<T, Out, E>(Method::PATCH, path, circuit)
     }
 
     pub fn put<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
@@ -1427,6 +1590,7 @@ where
                 handler,
                 layers: Arc::new(Vec::new()),
                 apply_global_layers: true,
+                needs_body: false,
             });
         }
 
@@ -1454,6 +1618,7 @@ where
                 handler,
                 layers: Arc::new(Vec::new()),
                 apply_global_layers: true,
+                needs_body: false,
             });
         }
         let routes = Arc::new(raw_routes);
@@ -1642,7 +1807,18 @@ where
                 };
 
                 if effective_layers.is_empty() {
-                    let (parts, _) = req.into_parts();
+                    let (mut parts, body) = req.into_parts();
+                    if entry.needs_body {
+                        match BodyExt::collect(body).await {
+                            Ok(collected) => { parts.extensions.insert(BodyBytes(collected.to_bytes())); }
+                            Err(_) => {
+                                return Ok(json_error_response(
+                                    StatusCode::BAD_REQUEST,
+                                    "Failed to read request body",
+                                ));
+                            }
+                        }
+                    }
                     #[allow(unused_mut)]
                     let mut res = (entry.handler)(parts, &resources).await;
                     #[cfg(feature = "http3")]
@@ -1659,6 +1835,7 @@ where
                         entry.handler.clone(),
                         resources.clone(),
                         effective_layers,
+                        entry.needs_body,
                     );
                     #[allow(unused_mut)]
                     let mut res = route_service.call(req).await;
@@ -1691,7 +1868,7 @@ where
                         Ok(fb(parts, &resources).await)
                     } else {
                         let fallback_service =
-                            build_route_service(fb.clone(), resources.clone(), layers.clone());
+                            build_route_service(fb.clone(), resources.clone(), layers.clone(), false);
                         fallback_service.call(req).await
                     }
                 } else {
@@ -1726,6 +1903,7 @@ fn build_route_service<R>(
     handler: RouteHandler<R>,
     resources: Arc<R>,
     layers: Arc<Vec<ServiceLayer>>,
+    needs_body: bool,
 ) -> BoxHttpService
 where
     R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
@@ -1734,7 +1912,18 @@ where
         let handler = handler.clone();
         let resources = resources.clone();
         async move {
-            let (parts, _) = req.into_parts();
+            let (mut parts, body) = req.into_parts();
+            if needs_body {
+                match BodyExt::collect(body).await {
+                    Ok(collected) => { parts.extensions.insert(BodyBytes(collected.to_bytes())); }
+                    Err(_) => {
+                        return Ok(json_error_response(
+                            StatusCode::BAD_REQUEST,
+                            "Failed to read request body",
+                        ));
+                    }
+                }
+            }
             Ok::<_, Infallible>(handler(parts, &resources).await)
         }
     });
