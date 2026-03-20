@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.36.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.36.0 — API Discovery & Documentation Sprint.**
+OpenAPI auto-schema extraction from `post_typed()` via schemars, path parameter auto-documentation, htmx Bus integration, pre-compressed static file serving, Range request support, 6 Cookbook practical guides (EN/KO), and DD-4 StreamingTransition architecture draft.
+
+### Added
+- **OpenAPI auto-schema extraction (ranvier-openapi, M296):** `post_typed::<T>()` / `put_typed()` / `patch_typed()` now capture `T: schemars::JsonSchema` request body schema automatically. Generates `requestBody` with `application/json` media type in OpenAPI spec.
+- **OpenAPI path parameter auto-documentation (ranvier-openapi, M296):** Route paths with `:param` segments (e.g., `/api/orders/:id`) are automatically converted to OpenAPI `{param}` format with `PathParameter` objects (type: string, required: true).
+- **OpenAPI response schema manual registration (ranvier-openapi, M296):** `DocumentedRoute` builder with `.response::<T>(status, description)` for annotating response types via schemars.
+- **htmx Bus integration (ranvier-http, M297, feature: `htmx`):** `HxRequest`, `HxTarget`, `HxTrigger`, `HxCurrentUrl`, `HxBoosted` types auto-injected into Bus from htmx request headers. `HttpIngress::htmx_support()` registration method. Response headers (`HX-Redirect`, `HX-Refresh`, `HX-Retarget`) via `ResponseBusExtractor`.
+- **Pre-compressed static file serving (ranvier-http, M297):** `serve_precompressed()` builder — prioritizes `.br` (Brotli) → `.gz` (Gzip) → original file with correct `Content-Encoding` header. Transparent to clients with `Accept-Encoding` negotiation.
+- **Range request support (ranvier-http, M297):** `enable_range_requests()` builder — `Accept-Ranges: bytes` header, `Range: bytes=X-Y` parsing, 206 Partial Content responses with `Content-Range` header. Supports single-range requests for media streaming.
+- **Cookbook guides (docs, M298):** 6 practical pattern guides (EN/KO = 12 files):
+  - Guard Patterns — global/per-route, `guards![]`, custom Guard, auth patterns
+  - HttpIngress Patterns — post vs post_typed, path params, bus_injector, serve_dir
+  - Bus Patterns — access methods, newtype safety, DB pool sharing, testing
+  - Saga Compensation — then_compensated, LIFO order, retry, PostgresPersistenceStore
+  - LLM Pipeline — LlmTransition, parallel tools, PII filtering, conversation history
+  - DB Migration — sqlx-cli/refinery setup, Ranvier tables, Docker Compose, CI/CD
+- **DD-4 StreamingTransition Architecture draft (docs/discussion, M298):** Design decision document analyzing Option A (StreamingTransition trait — recommended), Option B (Outcome::Stream variant), Option C (HttpIngress SSE-only). Covers Schematic representation, Bus integration models, error handling strategies. Implementation target: v0.37.0.
+
+### Changed
+- **`openapi-demo` example:** Updated to demonstrate auto-schema extraction from `post_typed()` and path parameter documentation.
+- **`docs-manifest.json`:** New "Cookbook" category with 6 entries between Guides and Integration.
+- **Web documentation:** 100 pages indexed (was 88), 9311 words (was 5029).
+
+---
+
 ## [0.35.0] — 2026-03
 
 ### Summary

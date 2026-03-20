@@ -8,13 +8,13 @@ diff, and validate.
 
 ---
 
-**Latest: v0.35.0** — 12 crates on [crates.io](https://crates.io/crates/ranvier)
+**Latest: v0.36.0** — 12 crates on [crates.io](https://crates.io/crates/ranvier)
 
+- **v0.36**: OpenAPI auto-schema from `post_typed()`, path param docs, htmx Bus integration, pre-compressed serving, Range requests, 6 Cookbook guides
 - **v0.35**: Pipeline-First Middleware — `ranvier-guard` crate (15 Guards), `HttpIngress::guard()`, per-route `guards![]`, Tower complete replacement
 - **v0.34**: Closure Transitions (`then_fn()`), type-safe HTTP body (`post_typed()`), Askama template rendering, `TransitionErrorContext`, `ranvier-test`
 - **v0.33**: `then_with_timeout()`, outcome-variants-demo, resilience-patterns-demo, production readiness checklist
 - **v0.32**: Security hardening — SQL injection prevention, timing-safe auth, `Sensitive<T>`, SECURITY.md
-- **v0.31**: Framework philosophy — "Opinionated Core, Flexible Edges", auth comparison guide
 - **v0.21**: Crate consolidation 23 → 10 via Paradigm Test, Hyper 1.0 native (no Tower/Axum)
 
 ---
@@ -198,10 +198,12 @@ See `examples/README.md` for the full tier-classified list.
 | LLM Integration | `LlmTransition` — LLM-as-Transition pattern | Ready |
 | Compression | gzip via flate2 | Ready |
 | HTTP/2 | Hyper 1.0 native | Ready |
-| Static Files | `serve_dir()` + `spa_fallback()` | Ready |
+| Static Files | `serve_dir()` + `spa_fallback()` + `serve_precompressed()` + `enable_range_requests()` | Ready |
+| htmx Integration | `htmx_support()` — auto Bus injection of HX-Request/Target/Trigger headers | Ready |
 | Prometheus Metrics | Inspector `/metrics` endpoint — Prometheus exposition format | Ready |
 | OTLP Export | `TelemetryConfig` — automatic TracerProvider initialization | Ready |
 | Audit (Postgres) | `PostgresAuditSink` — hash-chain audit log with sqlx | Ready |
+| OpenAPI Auto-Schema | `post_typed()` auto-captures JSON Schema via schemars, path param docs | Ready |
 | OpenAPI Auth | `SecurityScheme` + `ProblemDetail` auto-registration | Ready |
 | Inspector | REST/WS metrics, BearerAuth, TraceStore, AlertHook | Ready |
 
