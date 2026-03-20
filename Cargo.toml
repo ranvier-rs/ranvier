@@ -7,6 +7,7 @@ members = [
     "http",
     "std",
     "macros",
+    "testing",
     "kit",
     "examples/hello-world",
     "examples/routing-params-demo",
