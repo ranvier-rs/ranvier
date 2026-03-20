@@ -39,12 +39,12 @@ use ranvier_runtime::Axon;
 
 // ── Typed request models ────────────────────────────────────────────
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 struct GreetRequest {
     name: String,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 struct TransformRequest {
     text: String,
     multiplier: usize,

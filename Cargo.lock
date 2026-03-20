@@ -1127,6 +1127,7 @@ dependencies = [
  "ranvier-http",
  "ranvier-macros",
  "ranvier-runtime",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",
@@ -3391,7 +3392,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "http 1.4.0",
- "hyper",
  "ranvier-core",
  "ranvier-http",
  "ranvier-openapi",
@@ -4260,6 +4260,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "rustls-pemfile",
+ "schemars",
  "serde",
  "serde_json",
  "serde_urlencoded",

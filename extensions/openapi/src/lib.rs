@@ -360,6 +360,22 @@ impl OpenApiGenerator {
                 }),
             };
 
+            // Auto-apply body_schema from post_typed / put_typed / patch_typed
+            if let Some(schema) = route.body_schema() {
+                let mut content = BTreeMap::new();
+                content.insert(
+                    "application/json".to_string(),
+                    OpenApiMediaType {
+                        schema: schema.clone(),
+                    },
+                );
+                operation.request_body = Some(OpenApiRequestBody {
+                    required: true,
+                    content,
+                });
+            }
+
+            // Manual patches override auto-captured schemas
             if let Some(patch) = self
                 .patches
                 .get(&operation_key(route.method(), route.path_pattern()))
@@ -744,5 +760,51 @@ mod tests {
         assert_eq!(schemes["bearerAuth"]["type"], "http");
         assert_eq!(schemes["bearerAuth"]["scheme"], "bearer");
         assert_eq!(schemes["bearerAuth"]["bearerFormat"], "JWT");
+    }
+
+    // --- M296: body_schema auto-application tests ---
+
+    #[test]
+    fn body_schema_auto_applied_to_request_body() {
+        let schema = schema_value::<CreateUserRequest>();
+        let mut desc = HttpRouteDescriptor::new(Method::POST, "/users");
+        desc.body_schema = Some(schema.clone());
+
+        let doc = OpenApiGenerator::from_descriptors(vec![desc]).build();
+
+        let operation = doc.paths["/users"].post.as_ref().expect("post operation");
+        let body = operation.request_body.as_ref().expect("request body");
+        assert!(body.required);
+        let media = body.content.get("application/json").expect("json content");
+        assert_eq!(media.schema, schema);
+    }
+
+    #[test]
+    fn manual_patch_overrides_auto_body_schema() {
+        let auto_schema = schema_value::<CreateUserRequest>();
+        let manual_schema = schema_value::<CreateUserResponse>();
+        let mut desc = HttpRouteDescriptor::new(Method::POST, "/users");
+        desc.body_schema = Some(auto_schema);
+
+        let doc = OpenApiGenerator::from_descriptors(vec![desc])
+            .json_request_schema::<CreateUserResponse>(Method::POST, "/users")
+            .build();
+
+        let operation = doc.paths["/users"].post.as_ref().expect("post operation");
+        let body = operation.request_body.as_ref().expect("request body");
+        let media = body.content.get("application/json").expect("json content");
+        assert_eq!(media.schema, manual_schema);
+    }
+
+    #[test]
+    fn no_body_schema_means_no_request_body() {
+        let doc = OpenApiGenerator::from_descriptors(vec![HttpRouteDescriptor::new(
+            Method::GET,
+            "/users",
+        )])
+        .build();
+
+        let operation = doc.paths["/users"].get.as_ref().expect("get operation");
+        assert!(operation.request_body.is_none());
     }
 }

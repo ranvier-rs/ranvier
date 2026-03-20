@@ -9,10 +9,10 @@
 //!
 //! ## Key Concepts
 //! - OpenApiGenerator extracts routes from Ingress
-//! - Schema inference from `FromRequest`/`IntoResponse` types
+//! - `post_typed()` auto-captures request body JSON Schema (v0.36+)
+//! - Manual schema overrides for response types
 //! - Embedded Swagger UI with interactive docs
 
-use hyper::body::Incoming;
 use ranvier_core::prelude::*;
 use ranvier_http::prelude::*;
 use ranvier_openapi::prelude::*;
@@ -45,19 +45,19 @@ impl Transition<(), CreateUserResponse> for GetUser {
 struct CreateUser;
 
 #[async_trait::async_trait]
-impl Transition<(), CreateUserResponse> for CreateUser {
+impl Transition<CreateUserRequest, CreateUserResponse> for CreateUser {
     type Error = String;
     type Resources = DocsResources;
 
     async fn run(
         &self,
-        _state: (),
+        input: CreateUserRequest,
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<CreateUserResponse, Self::Error> {
         Outcome::next(CreateUserResponse {
             id: "43".to_string(),
-            email: "created@example.com".to_string(),
+            email: input.email,
         })
     }
 }
@@ -109,14 +109,6 @@ struct CreateUserResponse {
     email: String,
 }
 
-#[async_trait::async_trait]
-impl FromRequest<Incoming> for CreateUserRequest {
-    async fn from_request(req: &mut http::Request<Incoming>) -> Result<Self, ExtractError> {
-        let Json(payload) = Json::<CreateUserRequest>::from_request(req).await?;
-        Ok(payload)
-    }
-}
-
 impl IntoResponse for CreateUserResponse {
     fn into_response(self) -> HttpResponse {
         serde_json::json!({
@@ -138,7 +130,9 @@ impl ranvier_core::transition::ResourceRequirement for DocsResources {}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let get_user = Axon::<(), (), String, DocsResources>::new("GetUser").then(GetUser);
-    let create_user = Axon::<(), (), String, DocsResources>::new("CreateUser").then(CreateUser);
+    let create_user =
+        Axon::<CreateUserRequest, CreateUserRequest, String, DocsResources>::new("CreateUser")
+            .then(CreateUser);
     let openapi_route =
         Axon::<(), (), String, DocsResources>::new("ServeOpenApi").then(ServeOpenApi);
     let docs_route = Axon::<(), (), String, DocsResources>::new("ServeDocs").then(ServeDocs);
@@ -146,7 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ingress = Ranvier::http::<DocsResources>()
         .bind("127.0.0.1:3111")
         .get("/users/:id", get_user)
-        .post("/users", create_user)
+        .post_typed("/users", create_user)
         .get("/openapi.json", openapi_route)
         .get("/docs", docs_route);
 
@@ -159,7 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_problem_detail_errors()
         .summary(http::Method::GET, "/users/:id", "Get a user by id")
         .summary(http::Method::POST, "/users", "Create a user")
-        .json_request_schema_from_extractor::<CreateUserRequest>(http::Method::POST, "/users")
+        // Request body schema auto-captured from post_typed::<CreateUserRequest>()
         .json_response_schema_from_into_response::<CreateUserResponse>(http::Method::POST, "/users")
         .build_json();
 

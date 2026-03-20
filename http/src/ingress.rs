@@ -239,10 +239,12 @@ pub struct PathParams {
 }
 
 /// Public route descriptor snapshot for tooling integrations (e.g., OpenAPI generation).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct HttpRouteDescriptor {
     method: Method,
     path_pattern: String,
+    /// JSON Schema for the request body (auto-captured from `post_typed` etc.).
+    pub body_schema: Option<serde_json::Value>,
 }
 
 impl HttpRouteDescriptor {
@@ -250,6 +252,7 @@ impl HttpRouteDescriptor {
         Self {
             method,
             path_pattern: path_pattern.into(),
+            body_schema: None,
         }
     }
 
@@ -259,6 +262,14 @@ impl HttpRouteDescriptor {
 
     pub fn path_pattern(&self) -> &str {
         &self.path_pattern
+    }
+
+    /// Returns the JSON Schema for the request body, if available.
+    ///
+    /// Automatically populated when routes are registered via `post_typed`,
+    /// `put_typed`, or `patch_typed` (requires `T: JsonSchema`).
+    pub fn body_schema(&self) -> Option<&serde_json::Value> {
+        self.body_schema.as_ref()
     }
 }
 
@@ -567,6 +578,8 @@ struct RouteEntry<R> {
     /// When true, the dispatch layer reads the request body and stores it
     /// in `Parts::extensions` as `BodyBytes` before calling the handler.
     needs_body: bool,
+    /// JSON Schema for the request body type (from `post_typed` etc.).
+    body_schema: Option<serde_json::Value>,
 }
 
 fn path_segments(path: &str) -> Vec<&str> {
@@ -958,7 +971,11 @@ where
         let mut descriptors = self
             .routes
             .iter()
-            .map(|entry| HttpRouteDescriptor::new(entry.method.clone(), entry.pattern.raw.clone()))
+            .map(|entry| {
+                let mut desc = HttpRouteDescriptor::new(entry.method.clone(), entry.pattern.raw.clone());
+                desc.body_schema = entry.body_schema.clone();
+                desc
+            })
             .collect::<Vec<_>>();
 
         if let Some(path) = &self.health.health_path {
@@ -1130,6 +1147,7 @@ where
             layers: Arc::new(Vec::new()),
             apply_global_layers: true,
             needs_body: false,
+            body_schema: None,
         });
 
         self
@@ -1371,6 +1389,7 @@ where
             layers: route_layers,
             apply_global_layers,
             needs_body: false,
+            body_schema: None,
         });
         self
     }
@@ -1378,6 +1397,8 @@ where
     /// Internal: register a typed-body route. The dispatch layer reads the request
     /// body into `BodyBytes` in `Parts::extensions`; this handler deserializes it
     /// as `T` and passes it as the Axon input.
+    ///
+    /// `T: JsonSchema` enables automatic OpenAPI request body schema generation.
     fn route_method_typed<T, Out, E>(
         mut self,
         method: Method,
@@ -1385,10 +1406,11 @@ where
         circuit: Axon<T, Out, E, R>,
     ) -> Self
     where
-        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + schemars::JsonSchema + 'static,
         Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
+        let body_schema = serde_json::to_value(schemars::schema_for!(T)).ok();
         let path_str: String = path.into();
         let circuit = Arc::new(circuit);
         let route_bus_injectors = Arc::new(self.bus_injectors.clone());
@@ -1527,6 +1549,7 @@ where
             layers: Arc::new(Vec::new()),
             apply_global_layers: true,
             needs_body: true,
+            body_schema,
         });
         self
     }
@@ -1582,7 +1605,7 @@ where
         circuit: Axon<T, Out, E, R>,
     ) -> Self
     where
-        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + schemars::JsonSchema + 'static,
         Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
@@ -1598,7 +1621,7 @@ where
         circuit: Axon<T, Out, E, R>,
     ) -> Self
     where
-        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + schemars::JsonSchema + 'static,
         Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
@@ -1614,7 +1637,7 @@ where
         circuit: Axon<T, Out, E, R>,
     ) -> Self
     where
-        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + schemars::JsonSchema + 'static,
         Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
@@ -1980,6 +2003,7 @@ where
                 layers: Arc::new(Vec::new()),
                 apply_global_layers: true,
                 needs_body: false,
+                body_schema: None,
             });
         }
 
@@ -2008,6 +2032,7 @@ where
                 layers: Arc::new(Vec::new()),
                 apply_global_layers: true,
                 needs_body: false,
+                body_schema: None,
             });
         }
         let routes = Arc::new(raw_routes);
