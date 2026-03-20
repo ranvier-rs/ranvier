@@ -32,6 +32,8 @@ pub mod response;
 pub mod service;
 pub mod sse;
 
+#[cfg(feature = "htmx")]
+pub mod htmx;
 #[cfg(feature = "http3")]
 pub mod http3;
 pub mod test_harness;

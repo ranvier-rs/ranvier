@@ -153,6 +153,10 @@ struct StaticAssetsConfig {
     /// When true, detect hashed filenames (e.g., `app.a1b2c3.js`) and apply
     /// `Cache-Control: public, max-age=31536000, immutable`.
     immutable_cache: bool,
+    /// When true, check for pre-compressed `.br` / `.gz` variants before serving.
+    serve_precompressed: bool,
+    /// When true, support `Range: bytes=X-Y` requests with 206 Partial Content.
+    enable_range_requests: bool,
 }
 
 #[derive(Clone)]
@@ -911,6 +915,22 @@ where
         self
     }
 
+    /// Enable htmx header integration.
+    ///
+    /// Registers a Bus injector that extracts htmx request headers
+    /// (`HX-Request`, `HX-Target`, `HX-Trigger`, `HX-Current-URL`, `HX-Boosted`)
+    /// and a response extractor that applies `HxResponseHeaders` from the Bus.
+    ///
+    /// Requires the `htmx` feature flag.
+    #[cfg(feature = "htmx")]
+    pub fn htmx_support(mut self) -> Self {
+        self.bus_injectors
+            .push(Arc::new(crate::htmx::inject_htmx_headers));
+        self.guard_response_extractors
+            .push(Arc::new(crate::htmx::extract_htmx_response_headers));
+        self
+    }
+
     /// Register a Guard for HTTP request validation.
     ///
     /// Guards are executed after Bus injection but before the circuit runs.
@@ -1043,6 +1063,25 @@ where
     /// receive `Cache-Control: public, max-age=31536000, immutable`.
     pub fn immutable_cache(mut self) -> Self {
         self.static_assets.immutable_cache = true;
+        self
+    }
+
+    /// Serve pre-compressed static file variants (`.br`, `.gz`).
+    ///
+    /// When enabled, the server checks for Brotli (`.br`) and gzip (`.gz`)
+    /// variants of requested files, serving them with the appropriate
+    /// `Content-Encoding` header. Priority: `.br` > `.gz` > original.
+    pub fn serve_precompressed(mut self) -> Self {
+        self.static_assets.serve_precompressed = true;
+        self
+    }
+
+    /// Enable HTTP Range request support for static file serving.
+    ///
+    /// When enabled, the server responds with `Accept-Ranges: bytes` and
+    /// handles `Range: bytes=X-Y` requests with `206 Partial Content`.
+    pub fn enable_range_requests(mut self) -> Self {
+        self.static_assets.enable_range_requests = true;
         self
     }
 
@@ -2530,6 +2569,8 @@ async fn serve_static_file(
     file_subpath: &str,
     config: &StaticAssetsConfig,
     if_none_match: Option<&http::HeaderValue>,
+    accept_encoding: Option<&http::HeaderValue>,
+    range_header: Option<&http::HeaderValue>,
 ) -> Result<Response<Full<Bytes>>, std::io::Error> {
     let subpath = file_subpath.trim_start_matches('/');
 
@@ -2586,8 +2627,60 @@ async fn serve_static_file(
         }
     }
 
-    let content = tokio::fs::read(&canonical).await?;
+    // Pre-compressed file serving: check for .br / .gz variants
+    let (serve_path, content_encoding) = if config.serve_precompressed {
+        let client_accepts = accept_encoding
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let canonical_str = canonical.to_str().unwrap_or("");
+
+        if client_accepts.contains("br") {
+            let br_path = format!("{}.br", canonical_str);
+            if tokio::fs::metadata(&br_path).await.is_ok() {
+                (std::path::PathBuf::from(br_path), Some("br"))
+            } else if client_accepts.contains("gzip") {
+                let gz_path = format!("{}.gz", canonical_str);
+                if tokio::fs::metadata(&gz_path).await.is_ok() {
+                    (std::path::PathBuf::from(gz_path), Some("gzip"))
+                } else {
+                    (canonical.clone(), None)
+                }
+            } else {
+                (canonical.clone(), None)
+            }
+        } else if client_accepts.contains("gzip") {
+            let gz_path = format!("{}.gz", canonical_str);
+            if tokio::fs::metadata(&gz_path).await.is_ok() {
+                (std::path::PathBuf::from(gz_path), Some("gzip"))
+            } else {
+                (canonical.clone(), None)
+            }
+        } else {
+            (canonical.clone(), None)
+        }
+    } else {
+        (canonical.clone(), None)
+    };
+
+    let content = tokio::fs::read(&serve_path).await?;
+    // MIME type from original path, not compressed variant
     let mime = guess_mime(canonical.to_str().unwrap_or(""));
+
+    // Range request support
+    if config.enable_range_requests {
+        if let Some(range_val) = range_header {
+            if let Some(response) = handle_range_request(
+                range_val,
+                &content,
+                mime,
+                etag.as_deref(),
+                content_encoding,
+            ) {
+                return Ok(response);
+            }
+        }
+    }
+
     let mut response = Response::new(Full::new(Bytes::from(content)));
     if let Ok(value) = http::HeaderValue::from_str(mime) {
         response
@@ -2598,6 +2691,18 @@ async fn serve_static_file(
         if let Ok(value) = http::HeaderValue::from_str(etag_val) {
             response.headers_mut().insert(http::header::ETAG, value);
         }
+    }
+    if let Some(encoding) = content_encoding {
+        if let Ok(value) = http::HeaderValue::from_str(encoding) {
+            response
+                .headers_mut()
+                .insert(http::header::CONTENT_ENCODING, value);
+        }
+    }
+    if config.enable_range_requests {
+        response
+            .headers_mut()
+            .insert(http::header::ACCEPT_RANGES, http::HeaderValue::from_static("bytes"));
     }
 
     // Immutable cache for hashed filenames (e.g., app.a1b2c3d4.js)
@@ -2616,6 +2721,90 @@ async fn serve_static_file(
     }
 
     Ok(response)
+}
+
+/// Handle a Range request, returning a 206 Partial Content response.
+///
+/// Returns `None` if the Range header is malformed or unsatisfiable.
+fn handle_range_request(
+    range_header: &http::HeaderValue,
+    content: &[u8],
+    mime: &str,
+    etag: Option<&str>,
+    content_encoding: Option<&str>,
+) -> Option<Response<Full<Bytes>>> {
+    let range_str = range_header.to_str().ok()?;
+    let range_spec = range_str.strip_prefix("bytes=")?;
+    let total = content.len();
+    if total == 0 {
+        return None;
+    }
+
+    let (start, end) = if let Some(suffix) = range_spec.strip_prefix('-') {
+        // bytes=-N  (last N bytes)
+        let n: usize = suffix.parse().ok()?;
+        if n == 0 || n > total {
+            return Some(range_not_satisfiable(total));
+        }
+        (total - n, total - 1)
+    } else if range_spec.ends_with('-') {
+        // bytes=N-  (from N to end)
+        let start: usize = range_spec.trim_end_matches('-').parse().ok()?;
+        if start >= total {
+            return Some(range_not_satisfiable(total));
+        }
+        (start, total - 1)
+    } else {
+        // bytes=N-M
+        let mut parts = range_spec.splitn(2, '-');
+        let start: usize = parts.next()?.parse().ok()?;
+        let end: usize = parts.next()?.parse().ok()?;
+        if start > end || start >= total {
+            return Some(range_not_satisfiable(total));
+        }
+        (start, end.min(total - 1))
+    };
+
+    let slice = &content[start..=end];
+    let content_range = format!("bytes {}-{}/{}", start, end, total);
+
+    let mut response = Response::new(Full::new(Bytes::copy_from_slice(slice)));
+    *response.status_mut() = StatusCode::PARTIAL_CONTENT;
+    if let Ok(v) = http::HeaderValue::from_str(&content_range) {
+        response.headers_mut().insert(http::header::CONTENT_RANGE, v);
+    }
+    if let Ok(v) = http::HeaderValue::from_str(mime) {
+        response
+            .headers_mut()
+            .insert(http::header::CONTENT_TYPE, v);
+    }
+    response
+        .headers_mut()
+        .insert(http::header::ACCEPT_RANGES, http::HeaderValue::from_static("bytes"));
+    if let Some(etag_val) = etag {
+        if let Ok(v) = http::HeaderValue::from_str(etag_val) {
+            response.headers_mut().insert(http::header::ETAG, v);
+        }
+    }
+    if let Some(encoding) = content_encoding {
+        if let Ok(v) = http::HeaderValue::from_str(encoding) {
+            response
+                .headers_mut()
+                .insert(http::header::CONTENT_ENCODING, v);
+        }
+    }
+    Some(response)
+}
+
+/// Return a 416 Range Not Satisfiable response.
+fn range_not_satisfiable(total: usize) -> Response<Full<Bytes>> {
+    let content_range = format!("bytes */{}", total);
+    let mut response = Response::new(Full::new(Bytes::from("Range Not Satisfiable")));
+    *response.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
+    if let Ok(v) = http::HeaderValue::from_str(&content_range) {
+        response.headers_mut().insert(http::header::CONTENT_RANGE, v);
+    }
+    response
 }
 
 /// Check if a filename contains a content hash (e.g., `app.a1b2c3d4.js`).
@@ -2693,6 +2882,7 @@ async fn maybe_handle_static_request(
     {
         let accept_encoding = req.headers().get(http::header::ACCEPT_ENCODING).cloned();
         let if_none_match = req.headers().get(http::header::IF_NONE_MATCH).cloned();
+        let range_header = req.headers().get(http::header::RANGE).cloned();
         let Some(stripped_path) = strip_mount_prefix(path, &mount.route_prefix) else {
             return Ok(req);
         };
@@ -2701,6 +2891,8 @@ async fn maybe_handle_static_request(
             &stripped_path,
             static_assets,
             if_none_match.as_ref(),
+            accept_encoding.as_ref(),
+            range_header.as_ref(),
         )
         .await
         {
@@ -3578,6 +3770,84 @@ mod tests {
             .await
             .expect("server join")
             .expect("server shutdown should succeed");
+    }
+
+    // ── Range request tests ─────────────────────────────────────────
+
+    fn extract_body(response: Response<Full<Bytes>>) -> Bytes {
+        use http_body_util::BodyExt;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let collected = response.into_body().collect().await.unwrap();
+            collected.to_bytes()
+        })
+    }
+
+    #[test]
+    fn handle_range_bytes_start_end() {
+        let content = b"Hello, World!";
+        let range = http::HeaderValue::from_static("bytes=0-4");
+        let response =
+            super::handle_range_request(&range, content, "text/plain", None, None).unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response.headers().get(http::header::CONTENT_RANGE).unwrap(),
+            "bytes 0-4/13"
+        );
+        assert_eq!(extract_body(response), "Hello");
+    }
+
+    #[test]
+    fn handle_range_suffix() {
+        let content = b"Hello, World!";
+        let range = http::HeaderValue::from_static("bytes=-6");
+        let response =
+            super::handle_range_request(&range, content, "text/plain", None, None).unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response.headers().get(http::header::CONTENT_RANGE).unwrap(),
+            "bytes 7-12/13"
+        );
+    }
+
+    #[test]
+    fn handle_range_from_offset() {
+        let content = b"Hello, World!";
+        let range = http::HeaderValue::from_static("bytes=7-");
+        let response =
+            super::handle_range_request(&range, content, "text/plain", None, None).unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response.headers().get(http::header::CONTENT_RANGE).unwrap(),
+            "bytes 7-12/13"
+        );
+    }
+
+    #[test]
+    fn handle_range_out_of_bounds_returns_416() {
+        let content = b"Hello";
+        let range = http::HeaderValue::from_static("bytes=10-20");
+        let response =
+            super::handle_range_request(&range, content, "text/plain", None, None).unwrap();
+        assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(
+            response.headers().get(http::header::CONTENT_RANGE).unwrap(),
+            "bytes */5"
+        );
+    }
+
+    #[test]
+    fn handle_range_includes_accept_ranges_header() {
+        let content = b"Hello, World!";
+        let range = http::HeaderValue::from_static("bytes=0-0");
+        let response =
+            super::handle_range_request(&range, content, "text/plain", None, None).unwrap();
+        assert_eq!(
+            response.headers().get(http::header::ACCEPT_RANGES).unwrap(),
+            "bytes"
+        );
     }
 
 }
