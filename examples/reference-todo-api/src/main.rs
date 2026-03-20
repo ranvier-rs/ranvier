@@ -2,9 +2,15 @@
 //!
 //! A complete CRUD application with JWT authentication built on Ranvier.
 //!
+//! ## Key v0.36 Features Demonstrated
+//! - `post_typed()` / `put_typed()` — auto-deserialized JSON body as Axon input
+//! - `Axon::typed::<T, E>()` — typed-input pipeline declaration
+//! - `bus_injector()` — inject shared state + path params into Bus
+//! - `PathParams` — type-safe path parameter extraction from Bus
+//!
 //! ## Run
 //! ```bash
-//! cargo run -p reference-todo-api
+//! JWT_SECRET=your-secret cargo run -p reference-todo-api
 //! ```
 //!
 //! ## Endpoints
@@ -17,11 +23,11 @@
 //!
 //! ## Prerequisites
 //! - `hello-world` — basic Transition + Axon + HTTP ingress
-//! - `macros-demo` — `#[transition]` macro usage
+//! - `closure-transition-demo` — `then_fn()`, `Axon::typed()`, `post_typed()`
 //!
 //! ## Next Steps
 //! - `reference-ecommerce-order` — saga compensation, audit, multi-tenancy
-//! - `guard-demo` — Guard node pipeline patterns
+//! - `guard-integration-demo` — Guard pipeline patterns
 
 mod auth;
 mod errors;
@@ -30,7 +36,7 @@ mod transitions;
 
 use anyhow::Result;
 use models::Todo;
-use ranvier_http::Ranvier;
+use ranvier_http::{PathParams, Ranvier};
 use ranvier_runtime::Axon;
 use std::sync::{Arc, Mutex};
 
@@ -56,16 +62,29 @@ async fn main() -> Result<()> {
     println!("  PUT    /todos/:id");
     println!("  DELETE /todos/:id");
 
-    // Shared in-memory store injected via Bus
-    let _store: Arc<Mutex<Vec<Todo>>> = Arc::new(Mutex::new(Vec::new()));
+    // Shared in-memory store — injected into Bus via bus_injector
+    let store: Arc<Mutex<Vec<Todo>>> = Arc::new(Mutex::new(Vec::new()));
 
     Ranvier::http()
         .bind(&addr)
-        .post("/login", Axon::simple::<String>("login").then(login))
+        .bus_injector({
+            let store = store.clone();
+            move |parts: &http::request::Parts, bus: &mut ranvier_core::prelude::Bus| {
+                // Inject shared store into Bus for all routes
+                bus.insert(store.clone());
+                // Inject path params into Bus for :id routes
+                if let Some(params) = parts.extensions.get::<PathParams>() {
+                    bus.insert(params.clone());
+                }
+            }
+        })
+        // Typed body routes — JSON auto-deserialized as Axon input
+        .post_typed("/login", Axon::typed::<models::LoginRequest, String>("login").then(login))
+        .post_typed("/todos", Axon::typed::<models::CreateTodoRequest, String>("create-todo").then(create_todo))
+        .put_typed("/todos/:id", Axon::typed::<models::UpdateTodoRequest, String>("update-todo").then(update_todo))
+        // Non-body routes — input is ()
         .get("/todos", Axon::simple::<String>("list-todos").then(list_todos))
-        .post("/todos", Axon::simple::<String>("create-todo").then(create_todo))
         .get("/todos/:id", Axon::simple::<String>("get-todo").then(get_todo))
-        .put("/todos/:id", Axon::simple::<String>("update-todo").then(update_todo))
         .delete("/todos/:id", Axon::simple::<String>("delete-todo").then(delete_todo))
         .run(())
         .await

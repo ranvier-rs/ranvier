@@ -40,7 +40,7 @@ mod transitions;
 
 use anyhow::Result;
 use ranvier_core::prelude::*;
-use ranvier_http::Ranvier;
+use ranvier_http::{PathParams, Ranvier};
 use ranvier_runtime::Axon;
 use store::AppStore;
 
@@ -69,7 +69,6 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
-    let _store = AppStore::new();
 
     println!("Reference E-commerce Order API starting on {addr}");
     println!("  POST   /login             — authenticate (merchant/merchant123)");
@@ -81,12 +80,32 @@ async fn main() -> Result<()> {
     println!("Saga Pipeline: CreateOrder → ProcessPayment → ReserveInventory → ScheduleShipping");
     println!("Compensation:  RefundPayment ← ReleaseInventory ← (LIFO on failure)");
 
-    // Simple single-transition routes are inlined directly.
-    // Complex pipelines (like order_pipeline_circuit) keep their factory function.
+    let store = AppStore::new();
+
+    // bus_injector bridges HTTP request parts into Bus:
+    // - AppStore for order/inventory persistence
+    // - PathParams for :id route parameters
+    // - Authorization headers for JWT validation
     Ranvier::http()
         .bind(&addr)
-        .post("/login", Axon::simple::<String>("login").then(login))
-        .post("/orders", axons::order_pipeline::order_pipeline_circuit())
+        .bus_injector({
+            let store = store.clone();
+            move |parts: &http::request::Parts, bus: &mut Bus| {
+                bus.insert(store.clone());
+                if let Some(params) = parts.extensions.get::<PathParams>() {
+                    bus.insert(params.clone());
+                }
+                // Inject headers for auth extraction in transitions
+                let headers: Vec<(String, String)> = parts
+                    .headers
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                    .collect();
+                bus.insert(headers);
+            }
+        })
+        .post_typed("/login", Axon::typed::<models::LoginReq, String>("login").then(login))
+        .post_typed("/orders", axons::order_pipeline::order_pipeline_circuit())
         .get("/orders", Axon::simple::<String>("list-orders").then(list_orders))
         .get("/orders/:id", Axon::simple::<String>("get-order").then(get_order))
         .get("/inventory", inventory_circuit())

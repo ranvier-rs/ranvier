@@ -2,29 +2,16 @@ use ranvier_core::prelude::*;
 use ranvier_macros::transition;
 use crate::models::ContentInput;
 
-/// Extract user content from the Bus (HTTP body -> ContentInput).
+/// Extract and validate user content received via `post_typed()`.
 ///
-/// The HTTP adapter places the raw request body into the Bus as a `String`.
-/// This transition parses it into a typed `ContentInput` and forwards it as
-/// serialized JSON for the next stage.
+/// No manual JSON parsing needed: the HTTP ingress auto-deserializes
+/// the request body into `ContentInput` and passes it as the pipeline input.
 #[transition]
 pub async fn extract_content(
-    _input: (),
+    content: ContentInput,
     _res: &(),
-    bus: &mut Bus,
+    _bus: &mut Bus,
 ) -> Outcome<serde_json::Value, String> {
-    let body = bus.read::<String>().cloned().unwrap_or_default();
-
-    let content: ContentInput = match serde_json::from_str(&body) {
-        Ok(c) => c,
-        Err(_) => {
-            return Outcome::Fault(
-                "Invalid JSON body — expected { \"text\": \"...\", \"user_id\": \"...\" }"
-                    .to_string(),
-            );
-        }
-    };
-
     if content.text.trim().is_empty() {
         return Outcome::Fault("Content text cannot be empty".to_string());
     }

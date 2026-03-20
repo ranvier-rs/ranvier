@@ -4,13 +4,19 @@ use crate::auth;
 use crate::models::{CreateOrderRequest, Order};
 use crate::store::AppStore;
 
+/// Create order transition — receives `CreateOrderRequest` directly via `post_typed()`.
+///
+/// No manual `serde_json::from_str` needed: the HTTP ingress auto-deserializes
+/// the JSON body and passes the typed struct as the saga pipeline input.
+///
+/// Auth header is read from Bus (injected by `bus_injector`).
 #[transition]
 pub async fn create_order(
-    _input: (),
+    request: CreateOrderRequest,
     _res: &(),
     bus: &mut Bus,
 ) -> Outcome<serde_json::Value, String> {
-    // Extract JWT from Authorization header (injected by HTTP adapter)
+    // Extract JWT from Authorization header (injected into Bus by bus_injector)
     let auth_header = bus
         .read::<Vec<(String, String)>>()
         .and_then(|headers| {
@@ -28,12 +34,6 @@ pub async fn create_order(
     let claims = match auth::verify_token(token) {
         Some(c) => c,
         None => return Outcome::Fault("Unauthorized: invalid or missing JWT".to_string()),
-    };
-
-    let body = bus.read::<String>().cloned().unwrap_or_default();
-    let request: CreateOrderRequest = match serde_json::from_str(&body) {
-        Ok(r) => r,
-        Err(_) => return Outcome::Fault("Invalid JSON body".to_string()),
     };
 
     if request.items.is_empty() {

@@ -1,27 +1,18 @@
 use ranvier_core::prelude::*;
 use ranvier_macros::transition;
 use crate::auth;
+use crate::models::LoginReq;
 
+/// Login transition — receives `LoginReq` directly via `post_typed()`.
+///
+/// No manual JSON parsing needed: the HTTP ingress auto-deserializes
+/// the request body and passes it as the typed Axon input.
 #[transition]
 pub async fn login(
-    _input: (),
+    req: LoginReq,
     _res: &(),
-    bus: &mut Bus,
+    _bus: &mut Bus,
 ) -> Outcome<serde_json::Value, String> {
-    let body = bus.read::<String>().cloned().unwrap_or_default();
-
-    #[derive(serde::Deserialize)]
-    struct LoginReq {
-        username: String,
-        password: String,
-        tenant_id: String,
-    }
-
-    let req: LoginReq = match serde_json::from_str(&body) {
-        Ok(r) => r,
-        Err(_) => return Outcome::Fault("Invalid JSON: expected {username, password, tenant_id}".to_string()),
-    };
-
     // Demo credentials
     if req.username == "merchant" && req.password == "merchant123" {
         let token = auth::create_token(&req.username, &req.tenant_id, "merchant");

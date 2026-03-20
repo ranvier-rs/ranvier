@@ -26,6 +26,7 @@ use anyhow::Result;
 use ranvier_http::Ranvier;
 use ranvier_runtime::Axon;
 
+use models::ContentInput;
 use transitions::{
     extract_content::extract_content,
     moderate::moderate_content,
@@ -34,9 +35,12 @@ use transitions::{
 
 /// Build the 3-stage content-moderation pipeline.
 ///
+/// Uses `Axon::typed()` so the pipeline accepts `ContentInput` directly
+/// from `post_typed()` — no manual JSON parsing in the first transition.
+///
 /// Flow: ExtractContent → ModerateContent → ApplyPolicy
-fn moderation_circuit() -> Axon<(), serde_json::Value, String> {
-    Axon::simple::<String>("content-moderation")
+fn moderation_circuit() -> Axon<ContentInput, serde_json::Value, String> {
+    Axon::typed::<ContentInput, String>("content-moderation")
         .then(extract_content)
         .then(moderate_content)
         .then(apply_policy)
@@ -76,7 +80,7 @@ async fn main() -> Result<()> {
 
     Ranvier::http()
         .bind(&addr)
-        .post("/moderate", moderation_circuit())
+        .post_typed("/moderate", moderation_circuit())
         .get("/health", health_circuit())
         .run(())
         .await

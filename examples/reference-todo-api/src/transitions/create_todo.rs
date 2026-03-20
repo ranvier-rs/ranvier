@@ -3,25 +3,23 @@ use ranvier_macros::transition;
 use crate::models::{CreateTodoRequest, Todo};
 use std::sync::{Arc, Mutex};
 
+/// Create todo transition — receives `CreateTodoRequest` directly via `post_typed()`.
+///
+/// No manual `serde_json::from_str` needed: the HTTP ingress auto-deserializes
+/// the JSON body and passes the typed struct as the Axon input.
 #[transition]
 pub async fn create_todo(
-    _input: (),
+    request: CreateTodoRequest,
     _res: &(),
     bus: &mut Bus,
 ) -> Outcome<serde_json::Value, String> {
-    let body = bus.read::<String>().cloned().unwrap_or_default();
-    let request: CreateTodoRequest = match serde_json::from_str(&body) {
-        Ok(r) => r,
-        Err(_) => return Outcome::Fault("Invalid JSON body".to_string()),
-    };
-
     if request.title.trim().is_empty() {
         return Outcome::Fault("Title cannot be empty".to_string());
     }
 
     let todo = Todo::new(request.title);
 
-    // Store in shared state via Bus
+    // Store in shared state via Bus (injected by bus_injector)
     if let Some(store) = bus.read::<Arc<Mutex<Vec<Todo>>>>() {
         let mut todos = store.lock().unwrap();
         todos.push(todo.clone());

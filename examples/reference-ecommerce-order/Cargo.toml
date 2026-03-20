@@ -26,3 +26,4 @@ jsonwebtoken    = "9"
 thiserror       = "1.0"
 uuid            = { version = "1.6", features = ["v4"] }
 chrono          = { version = "0.4", features = ["serde"] }
+schemars        = { version = "1", features = ["derive"] }

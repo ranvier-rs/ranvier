@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -15,7 +16,7 @@ pub enum OrderStatus {
     Compensated,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OrderItem {
     pub product_id: String,
     pub quantity: u32,
@@ -50,7 +51,7 @@ impl Order {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CreateOrderRequest {
     pub customer_id: String,
     pub items: Vec<OrderItem>,
@@ -76,6 +77,13 @@ pub struct InventoryReservation {
 pub struct ShippingInfo {
     pub shipping_id: String,
     pub estimated_days: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LoginReq {
+    pub username: String,
+    pub password: String,
+    pub tenant_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
