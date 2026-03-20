@@ -10,7 +10,7 @@ description = "M240: Production Operations — config, health, metrics, access l
 ranvier-core = { workspace = true }
 ranvier-runtime = { workspace = true }
 ranvier-http = { workspace = true }
-ranvier-std = { workspace = true }
+ranvier-guard = { workspace = true }
 ranvier-inspector = { workspace = true }
 ranvier-macros = { workspace = true }
 async-trait = { workspace = true }

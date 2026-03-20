@@ -7,7 +7,7 @@
 //! | Configuration       | `RanvierConfig::load()` / `config()` |
 //! | Health checks       | `health_endpoint()` / `readiness_liveness_default()` |
 //! | Request IDs         | `request_id_layer()`             |
-//! | Access logging      | `AccessLogGuard` (ranvier-std)   |
+//! | Access logging      | `AccessLogGuard` (ranvier-guard) |
 //! | Prometheus metrics  | Inspector `/metrics`             |
 //! | Telemetry config    | `[telemetry]` in ranvier.toml    |
 //!
@@ -33,7 +33,7 @@ use ranvier_http::Ranvier;
 use ranvier_inspector::Inspector;
 use ranvier_macros::transition;
 use ranvier_runtime::Axon;
-use ranvier_std::prelude::*;
+use ranvier_guard::prelude::*;
 
 // ── Transitions ───────────────────────────────────────────────────────────
 

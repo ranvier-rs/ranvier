@@ -1,6 +1,6 @@
 //! # Guard Demo
 //!
-//! Demonstrates the four Guard Transition nodes from `ranvier-std` that replace
+//! Demonstrates the four Guard Transition nodes from `ranvier-guard` that replace
 //! traditional Tower/Axum middleware with visible, traceable Transition steps.
 //!
 //! ## Run
@@ -30,7 +30,7 @@
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
-use ranvier_std::prelude::*;
+use ranvier_guard::prelude::*;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================

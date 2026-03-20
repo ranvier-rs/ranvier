@@ -7,6 +7,7 @@
 use async_trait::async_trait;
 use ranvier::prelude::*;
 use ranvier_audit::{AuditChain, AuditEvent, AuditLogger, InMemoryAuditSink};
+use ranvier_guard::{AccessLogEntry, AccessLogGuard, AccessLogRequest};
 use ranvier_compliance::Sensitive;
 use ranvier_core::bus::Bus;
 use ranvier_core::config::RanvierConfig;
@@ -71,7 +72,7 @@ impl Transition<UserRequest, AuditedResult> for AuditingTransition {
 }
 
 /// Transition that reads AccessLogRequest from Bus and writes AccessLogEntry.
-/// Crosses: ranvier-runtime × ranvier-std × ranvier-core (Bus)
+/// Crosses: ranvier-runtime × ranvier-guard × ranvier-core (Bus)
 #[derive(Clone)]
 struct AccessLogVerifier;
 
@@ -197,10 +198,10 @@ async fn test_audit_chain_integrity() {
     }
 }
 
-/// Test: AccessLogGuard (ranvier-std) writes AccessLogEntry to Bus, which is then
+/// Test: AccessLogGuard (ranvier-guard) writes AccessLogEntry to Bus, which is then
 /// readable by downstream transitions in the same Axon pipeline.
 ///
-/// Crosses: std (AccessLogGuard) × runtime (Axon) × core (Bus)
+/// Crosses: guard (AccessLogGuard) × runtime (Axon) × core (Bus)
 #[tokio::test]
 async fn test_access_log_guard_pipeline() {
     let axon = Axon::<UserRequest, UserRequest, String>::new("AccessLogPipeline")
@@ -230,7 +231,7 @@ async fn test_access_log_guard_pipeline() {
 
 /// Test: AccessLogGuard path redaction works in pipeline context.
 ///
-/// Crosses: std × runtime × core (Bus)
+/// Crosses: guard × runtime × core (Bus)
 #[tokio::test]
 async fn test_access_log_redaction_in_pipeline() {
     let axon = Axon::<UserRequest, UserRequest, String>::new("RedactPipeline")
@@ -317,7 +318,7 @@ fn test_config_telemetry_default_no_op() {
 /// Test: Full pipeline combining AccessLogGuard + AuditLogger + Compliance types
 /// in a single Axon execution.
 ///
-/// Crosses: std × audit × compliance × runtime × core
+/// Crosses: guard × audit × compliance × runtime × core
 #[tokio::test]
 async fn test_full_operations_pipeline() {
     // Setup audit logger
