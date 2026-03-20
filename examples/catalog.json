@@ -1,7 +1,8 @@
 {
-  "schema_version": "1.0",
-  "generated_at": "2026-03-05T00:00:00Z",
+  "schema_version": "2.0",
+  "generated_at": "2026-03-20T00:00:00Z",
   "source": "ranvier-rs/ranvier",
+  "workspace_version": "0.36.0",
   "entries": [
     {
       "name": "hello-world",
@@ -28,17 +29,25 @@
       "has_prebuilt_schematic": true
     },
     {
-      "name": "otel-demo",
+      "name": "otel-concept",
       "tier": "A",
-      "description": "Minimal OpenTelemetry trace wiring",
+      "description": "Minimal OpenTelemetry concept with Traced wrapper",
       "tags": ["starter", "observability"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "outcome-variants-demo",
+      "tier": "A",
+      "description": "All 5 Outcome variants: Next, Fault, Branch, Jump, Emit",
+      "tags": ["starter", "outcome"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
     },
     {
       "name": "flat-api-demo",
       "tier": "B",
-      "description": "Flat API structure pattern",
+      "description": "Flat API structure with @transition and @ranvier_router",
       "tags": ["http", "api"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
@@ -46,7 +55,7 @@
     {
       "name": "routing-demo",
       "tier": "B",
-      "description": "HTTP routing patterns",
+      "description": "Decision tree routing with Outcome::Branch",
       "tags": ["http", "routing"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
@@ -54,7 +63,7 @@
     {
       "name": "routing-params-demo",
       "tier": "B",
-      "description": "Route parameter extraction",
+      "description": "Path, query, and body parameter extraction",
       "tags": ["http", "routing"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
@@ -62,7 +71,7 @@
     {
       "name": "session-pattern",
       "tier": "B",
-      "description": "Session management pattern",
+      "description": "Session lifecycle management pattern",
       "tags": ["session", "state"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
@@ -70,39 +79,31 @@
     {
       "name": "std-lib-demo",
       "tier": "B",
-      "description": "Standard library utilities",
+      "description": "Standard library: FilterNode, SwitchNode, LogNode",
       "tags": ["stdlib"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "otel-concept",
-      "tier": "B",
-      "description": "OpenTelemetry concepts and patterns",
-      "tags": ["observability"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "db-example",
-      "tier": "B",
-      "description": "Database resource injection",
-      "tags": ["database", "resource"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
     },
     {
       "name": "static-build-demo",
       "tier": "B",
-      "description": "Static build artifact generation",
-      "tags": ["build", "static"],
+      "description": "Static file serving from configurable directories",
+      "tags": ["http", "static"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "static-spa-demo",
+      "tier": "B",
+      "description": "Single-page application hosting with fallback routing",
+      "tags": ["http", "spa"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
     },
     {
       "name": "studio-demo",
       "tier": "B",
-      "description": "Ranvier Studio integration",
+      "description": "Ranvier Studio visual debugger integration",
       "tags": ["studio", "visualization"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
@@ -110,15 +111,23 @@
     {
       "name": "websocket-loop",
       "tier": "B",
-      "description": "WebSocket event loop pattern",
+      "description": "Bidirectional WebSocket echo loop",
       "tags": ["websocket"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "websocket-ingress-demo",
+      "tier": "B",
+      "description": "WebSocket ingress with event-based messaging",
+      "tags": ["websocket", "ingress"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
     },
     {
       "name": "complex-schematic",
       "tier": "B",
-      "description": "Complex multi-node schematic structure",
+      "description": "Advanced multi-branch Axon topology",
       "tags": ["schematic"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
@@ -126,8 +135,8 @@
     {
       "name": "synapse-demo",
       "tier": "B",
-      "description": "TypeScript codegen from schematic",
-      "tags": ["codegen", "typescript"],
+      "description": "Core Synapse trait for external service calls",
+      "tags": ["synapse", "integration"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
     },
@@ -140,98 +149,10 @@
       "has_prebuilt_schematic": false
     },
     {
-      "name": "auth-jwt-role-demo",
+      "name": "multitenancy-demo",
       "tier": "B",
-      "description": "JWT role-based authentication",
-      "tags": ["auth", "jwt"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "bus-capability-demo",
-      "tier": "B",
-      "description": "Bus capability injection patterns",
-      "tags": ["bus", "capability"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "custom-error-types",
-      "tier": "B",
-      "description": "Structured domain error handling",
-      "tags": ["errors", "domain"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "ecosystem-diesel-demo",
-      "tier": "B",
-      "description": "Diesel ORM integration",
-      "tags": ["ecosystem", "database"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "ecosystem-meilisearch-demo",
-      "tier": "B",
-      "description": "Meilisearch search integration",
-      "tags": ["ecosystem", "search"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "ecosystem-nats-demo",
-      "tier": "B",
-      "description": "NATS messaging integration",
-      "tags": ["ecosystem", "messaging"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "ecosystem-redis-demo",
-      "tier": "B",
-      "description": "Redis cache integration",
-      "tags": ["ecosystem", "cache"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "ecosystem-seaorm-demo",
-      "tier": "B",
-      "description": "SeaORM integration",
-      "tags": ["ecosystem", "database"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "graphql-service-demo",
-      "tier": "B",
-      "description": "GraphQL service endpoint",
-      "tags": ["graphql", "api"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "grpc-service-demo",
-      "tier": "B",
-      "description": "gRPC service endpoint",
-      "tags": ["grpc", "api"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "guard-demo",
-      "tier": "B",
-      "description": "Guard middleware patterns",
-      "tags": ["guard", "middleware"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "job-scheduler-demo",
-      "tier": "B",
-      "description": "Job scheduling patterns",
-      "tags": ["scheduler", "jobs"],
+      "description": "Tenant isolation with Bus-injected TenantId",
+      "tags": ["multitenancy", "isolation"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
     },
@@ -244,145 +165,81 @@
       "has_prebuilt_schematic": false
     },
     {
-      "name": "multitenancy-demo",
-      "tier": "B",
-      "description": "Tenant isolation patterns",
-      "tags": ["multitenancy", "isolation"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "observe-http-demo",
-      "tier": "B",
-      "description": "HTTP observability instrumentation",
-      "tags": ["observability", "http"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "openapi-demo",
-      "tier": "B",
-      "description": "OpenAPI spec generation",
-      "tags": ["openapi", "api"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "otel-ops-demo",
-      "tier": "B",
-      "description": "OpenTelemetry operations patterns",
-      "tags": ["observability", "operations"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "persistence-production-demo",
-      "tier": "B",
-      "description": "Production persistence patterns",
-      "tags": ["persistence", "production"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "retry-dlq-demo",
-      "tier": "B",
-      "description": "Retry and dead letter queue patterns",
-      "tags": ["retry", "dlq", "resilience"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "session-demo",
-      "tier": "B",
-      "description": "Session management",
-      "tags": ["session"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
       "name": "sse-streaming-demo",
       "tier": "B",
-      "description": "Server-sent events streaming",
+      "description": "Server-Sent Events real-time streaming",
       "tags": ["sse", "streaming"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "state-persistence-demo",
-      "tier": "B",
-      "description": "State persistence and recovery",
-      "tags": ["persistence", "recovery"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "static-spa-demo",
-      "tier": "B",
-      "description": "Single page application static build",
-      "tags": ["build", "spa"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
     },
     {
       "name": "testing-patterns",
       "tier": "B",
-      "description": "Unit testing transitions and pipelines",
+      "description": "Unit and integration testing for Transitions and Axon chains",
       "tags": ["testing"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
     },
     {
-      "name": "websocket-ingress-demo",
+      "name": "custom-error-types",
       "tier": "B",
-      "description": "WebSocket ingress handling",
-      "tags": ["websocket", "ingress"],
+      "description": "Domain-specific error enums with thiserror",
+      "tags": ["errors", "domain"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
     },
     {
-      "name": "experimental/fullstack-demo",
-      "tier": "C",
-      "description": "Full-stack application (experimental)",
-      "tags": ["experimental", "fullstack"],
+      "name": "retry-dlq-demo",
+      "tier": "B",
+      "description": "Retry with exponential backoff and dead letter queue",
+      "tags": ["retry", "dlq", "resilience"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
     },
     {
-      "name": "experimental/persistence-recovery-demo",
-      "tier": "C",
-      "description": "Persistence recovery (experimental)",
-      "tags": ["experimental", "persistence"],
+      "name": "state-persistence-demo",
+      "tier": "B",
+      "description": "Durable workflow with fault recovery and checkpointing",
+      "tags": ["persistence", "recovery"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
     },
     {
-      "name": "experimental/replay-demo",
-      "tier": "C",
-      "description": "Timeline replay (experimental)",
-      "tags": ["experimental", "replay"],
+      "name": "persistence-production-demo",
+      "tier": "B",
+      "description": "Production persistence with PostgreSQL and Redis stores",
+      "tags": ["persistence", "production"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
     },
     {
-      "name": "experimental/state-tree-demo",
-      "tier": "C",
-      "description": "State tree (experimental)",
-      "tags": ["experimental", "state"],
+      "name": "otel-ops-demo",
+      "tier": "B",
+      "description": "Production OpenTelemetry with Jaeger and Prometheus",
+      "tags": ["observability", "operations"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
     },
     {
       "name": "inspector-demo",
       "tier": "B",
-      "description": "Inspector runtime observability server with metrics, payload capture, and stall detection",
+      "description": "Runtime observability with metrics, payload capture, and stall detection",
       "tags": ["inspector", "observability", "metrics"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "openapi-demo",
+      "tier": "B",
+      "description": "OpenAPI/Swagger auto-generation with schemars",
+      "tags": ["openapi", "api"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
     },
     {
       "name": "audit-demo",
       "tier": "B",
-      "description": "Tamper-evident audit logging with HMAC-signed file sink and Bus injection",
+      "description": "Tamper-evident audit logging with HMAC-signed file sink",
       "tags": ["audit", "compliance", "logging"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
@@ -390,32 +247,264 @@
     {
       "name": "compliance-demo",
       "tier": "B",
-      "description": "PII handling with Sensitive<T> wrapper, custom Redact, and PiiDetector",
+      "description": "PII handling with Sensitive<T>, Redact, and PiiDetector",
       "tags": ["compliance", "pii", "gdpr"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "cluster-demo",
-      "tier": "B",
-      "description": "Distributed lock, store, and bus with in-memory mock (Redis-swappable)",
-      "tags": ["cluster", "distributed", "lock"],
-      "schematic_url": null,
-      "has_prebuilt_schematic": false
-    },
-    {
-      "name": "status-demo",
-      "tier": "B",
-      "description": "Static status page generation with circuit health, incidents, and timeline projections",
-      "tags": ["status", "monitoring", "html"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
     },
     {
       "name": "macros-demo",
       "tier": "B",
-      "description": "Procedural macros: #[transition], bus_allow, bus_deny for reduced boilerplate",
+      "description": "#[transition] proc macro with bus_allow/bus_deny access control",
       "tags": ["macros", "transition", "bus"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "bus-capability-demo",
+      "tier": "B",
+      "description": "Declarative allow/deny Bus access control",
+      "tags": ["bus", "capability"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "guard-demo",
+      "tier": "B",
+      "description": "Guard pipeline with CorsGuard, RateLimitGuard, SecurityHeadersGuard",
+      "tags": ["guard", "middleware"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "auth-jwt-role-demo",
+      "tier": "B",
+      "description": "JWT role-based authentication with IamVerifier",
+      "tags": ["auth", "jwt"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "auth-transition",
+      "tier": "B",
+      "description": "Authentication as a Transition node pattern",
+      "tags": ["auth", "transition"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "auth-tower-integration",
+      "tier": "B",
+      "description": "Tower middleware authentication comparison",
+      "tags": ["auth", "tower"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "production-config-demo",
+      "tier": "B",
+      "description": "ranvier.toml config, profiles, structured logging, graceful shutdown",
+      "tags": ["config", "production"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "production-operations-demo",
+      "tier": "B",
+      "description": "Production operations patterns and health checks",
+      "tags": ["operations", "production"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "telemetry-otel-demo",
+      "tier": "B",
+      "description": "OTLP auto-export telemetry pipeline",
+      "tags": ["telemetry", "otlp"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "resilience-patterns-demo",
+      "tier": "B",
+      "description": "Timeout, retry, circuit breaker resilience patterns",
+      "tags": ["resilience", "timeout", "retry"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "service-call-demo",
+      "tier": "B",
+      "description": "External service calls with reqwest as Transition",
+      "tags": ["http", "service-call"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "closure-transition-demo",
+      "tier": "B",
+      "description": "Closure-based inline transitions with then_fn() and Axon::typed()",
+      "tags": ["transition", "closure", "typed"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "guard-integration-demo",
+      "tier": "B",
+      "description": "GuardIntegration with 10 Guards, per-route guards![] macro",
+      "tags": ["guard", "integration", "per-route"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "llm-content-moderation",
+      "tier": "B",
+      "description": "3-stage LLM pipeline: extraction, classification, policy enforcement",
+      "tags": ["llm", "moderation", "pipeline"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "reference-todo-api",
+      "tier": "B",
+      "description": "Complete CRUD with JWT auth, Bus DI, HTTP routing",
+      "tags": ["reference", "crud", "auth"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "reference-ecommerce-order",
+      "tier": "B",
+      "description": "Saga pipeline with compensation, audit, multi-tenancy, RFC 7807",
+      "tags": ["reference", "saga", "ecommerce"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "reference-chat-server",
+      "tier": "B",
+      "description": "Multi-room WebSocket chat with JWT auth and message persistence",
+      "tags": ["reference", "websocket", "chat"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "ecosystem-redis-demo",
+      "tier": "C",
+      "description": "Redis session storage and caching integration",
+      "tags": ["ecosystem", "cache"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "ecosystem-diesel-demo",
+      "tier": "C",
+      "description": "Diesel ORM with r2d2 connection pooling",
+      "tags": ["ecosystem", "database"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "ecosystem-seaorm-demo",
+      "tier": "C",
+      "description": "SeaORM with migrations and active models",
+      "tags": ["ecosystem", "database"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "ecosystem-nats-demo",
+      "tier": "C",
+      "description": "NATS pub/sub messaging integration",
+      "tags": ["ecosystem", "messaging"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "ecosystem-meilisearch-demo",
+      "tier": "C",
+      "description": "Meilisearch full-text search integration",
+      "tags": ["ecosystem", "search"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "graphql-async-graphql-demo",
+      "tier": "C",
+      "description": "async-graphql Schema in Ranvier Transition",
+      "tags": ["graphql", "api"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "grpc-tonic-demo",
+      "tier": "C",
+      "description": "tonic gRPC server with Axon pipeline delegation",
+      "tags": ["grpc", "api"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "background-jobs-demo",
+      "tier": "C",
+      "description": "Periodic Axon execution with tokio-cron-scheduler",
+      "tags": ["scheduler", "jobs"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "distributed-lock-demo",
+      "tier": "C",
+      "description": "Redis SETNX-based distributed locking",
+      "tags": ["distributed", "lock"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "db-sqlx-demo",
+      "tier": "C",
+      "description": "SQLx pool injected via Bus with in-memory SQLite",
+      "tags": ["database", "sqlx"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "typescript-codegen-demo",
+      "tier": "C",
+      "description": "TypeScript type generation from Rust structs via ts-rs",
+      "tags": ["codegen", "typescript"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "experimental/fullstack-demo",
+      "tier": "D",
+      "description": "Full-stack application (experimental)",
+      "tags": ["experimental", "fullstack"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "experimental/replay-demo",
+      "tier": "D",
+      "description": "Timeline replay (experimental)",
+      "tags": ["experimental", "replay"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "experimental/state-tree-demo",
+      "tier": "D",
+      "description": "State tree (experimental)",
+      "tags": ["experimental", "state"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "experimental/persistence-recovery-demo",
+      "tier": "D",
+      "description": "Persistence recovery (experimental)",
+      "tags": ["experimental", "persistence"],
       "schematic_url": null,
       "has_prebuilt_schematic": false
     }

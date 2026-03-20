@@ -1,7 +1,7 @@
 # Ranvier Examples
 
-**Updated:** 2026-03-15
-**Workspace:** v0.32.0 — 10 crates, Hyper 1.0 native (no tower/tower-http)
+**Updated:** 2026-03-20
+**Workspace:** v0.36.0 — 12 crates, Hyper 1.0 native (no tower/tower-http)
 **Purpose:** Keep examples aligned with the Typed Decision Engine direction:
 1. Axon execution is explicit.
 2. Schematic is analysis data, not an executable graph.
@@ -71,6 +71,8 @@ These are maintained and useful, but not the first onboarding path.
 39. `auth-tower-integration`
 40. `resilience-patterns-demo`
 41. `service-call-demo`
+42. `closure-transition-demo` — v0.34: `then_fn()`, `Axon::typed()`, `post_typed()`
+43. `guard-integration-demo` — v0.35: `GuardIntegration`, per-route `guards![]` macro
 
 ### Tier C: Ecosystem Integration
 
