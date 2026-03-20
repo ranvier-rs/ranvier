@@ -63,6 +63,7 @@ members = [
     "examples/closure-transition-demo",
     "examples/llm-content-moderation",
     "examples/guard-demo",
+    "examples/guard-integration-demo",
     "examples/auth-jwt-role-demo",
     "examples/graphql-async-graphql-demo",
     "examples/grpc-tonic-demo",
