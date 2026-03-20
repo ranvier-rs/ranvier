@@ -328,6 +328,49 @@ where
     }
 }
 
+/// A wrapper for Askama templates that implements `IntoResponse`.
+///
+/// Renders the template to HTML and returns a `200 OK` response with
+/// `text/html; charset=utf-8` content type. On render error, returns
+/// `500 Internal Server Error` with a JSON error body.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use askama::Template;
+/// use ranvier_http::response::TemplateResponse;
+///
+/// #[derive(Template)]
+/// #[template(path = "index.html")]
+/// struct IndexPage { title: String }
+///
+/// let response = TemplateResponse(IndexPage { title: "Home".into() });
+/// // response.into_response() → 200 OK, text/html
+/// ```
+#[cfg(feature = "askama")]
+pub struct TemplateResponse<T: askama::Template>(pub T);
+
+#[cfg(feature = "askama")]
+impl<T: askama::Template> IntoResponse for TemplateResponse<T> {
+    fn into_response(self) -> HttpResponse {
+        match self.0.render() {
+            Ok(html) => Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "text/html; charset=utf-8")
+                .body(
+                    Full::new(Bytes::from(html))
+                        .map_err(|never| match never {})
+                        .boxed(),
+                )
+                .expect("valid HTTP response construction"),
+            Err(e) => json_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Template render error: {}", e),
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
