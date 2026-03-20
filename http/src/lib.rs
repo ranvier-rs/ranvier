@@ -53,6 +53,32 @@ pub use service::RanvierService;
 pub use sse::{Sse, SseEvent};
 pub use test_harness::{TestApp, TestHarnessError, TestRequest, TestResponse};
 
+/// Collects Guard registrations for per-route Guard configuration.
+///
+/// Returns a `Vec<RegisteredGuard>` for use with `post_with_guards()`,
+/// `get_with_guards()`, and other per-route Guard methods.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use ranvier_http::guards;
+/// use ranvier_guard::prelude::*;
+///
+/// Ranvier::http()
+///     .guard(AccessLogGuard::new())  // global guard
+///     .post_with_guards("/api/orders", order_circuit, guards![
+///         ContentTypeGuard::json(),
+///         IdempotencyGuard::ttl_5min(),
+///     ])
+///     .get("/api/orders", list_circuit)  // no extra guards
+/// ```
+#[macro_export]
+macro_rules! guards {
+    [$($guard:expr),* $(,)?] => {
+        vec![$( $crate::GuardIntegration::register($guard) ),*]
+    };
+}
+
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::extract::{CookieJar, DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Header, Json, Path, Query};

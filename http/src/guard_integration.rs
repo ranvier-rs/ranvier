@@ -548,3 +548,98 @@ where
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// GuardIntegration implementations for M294 Guards
+// ---------------------------------------------------------------------------
+
+impl<T> GuardIntegration for ranvier_guard::ContentTypeGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    fn register(self) -> RegisteredGuard {
+        let allowed_types = self.allowed_types().to_vec();
+        let exec_guard = ranvier_guard::ContentTypeGuard::<()>::new(allowed_types);
+
+        RegisteredGuard {
+            bus_injectors: vec![Arc::new(|parts: &http::request::Parts, bus: &mut Bus| {
+                if let Some(ct) = parts.headers.get("content-type") {
+                    if let Ok(s) = ct.to_str() {
+                        bus.insert(ranvier_guard::RequestContentType(s.to_string()));
+                    }
+                }
+            })],
+            response_extractor: None,
+            response_body_transform: None,
+            exec: Arc::new(TransitionGuardExec {
+                guard: exec_guard,
+                default_status: http::StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            }),
+            handles_preflight: false,
+            preflight_config: None,
+        }
+    }
+}
+
+impl<T> GuardIntegration for ranvier_guard::TimeoutGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    fn register(self) -> RegisteredGuard {
+        let exec_guard = ranvier_guard::TimeoutGuard::<()>::new(self.timeout());
+
+        RegisteredGuard {
+            bus_injectors: vec![],
+            response_extractor: None,
+            response_body_transform: None,
+            exec: Arc::new(TransitionGuardExec {
+                guard: exec_guard,
+                default_status: http::StatusCode::REQUEST_TIMEOUT,
+            }),
+            handles_preflight: false,
+            preflight_config: None,
+        }
+    }
+}
+
+impl<T> GuardIntegration for ranvier_guard::IdempotencyGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    fn register(self) -> RegisteredGuard {
+        let cache = self.cache().clone();
+        let exec_guard = self.clone_as_unit();
+
+        RegisteredGuard {
+            bus_injectors: vec![Arc::new(|parts: &http::request::Parts, bus: &mut Bus| {
+                if let Some(key) = parts.headers.get("idempotency-key") {
+                    if let Ok(s) = key.to_str() {
+                        bus.insert(ranvier_guard::IdempotencyKey(s.to_string()));
+                    }
+                }
+            })],
+            response_extractor: Some(Arc::new(|bus: &Bus, headers: &mut http::HeaderMap| {
+                if bus.read::<ranvier_guard::IdempotencyCachedResponse>().is_some() {
+                    if let Ok(v) = "true".parse() {
+                        headers.insert("idempotency-replayed", v);
+                    }
+                }
+            })),
+            response_body_transform: Some(Arc::new(move |bus: &Bus, body: bytes::Bytes| {
+                // Cache the response body on cache miss
+                if let Some(key) = bus.read::<ranvier_guard::IdempotencyKey>() {
+                    if bus.read::<ranvier_guard::IdempotencyCachedResponse>().is_none() {
+                        cache.insert(key.0.clone(), body.to_vec());
+                    }
+                }
+                body
+            })),
+            exec: Arc::new(TransitionGuardExec {
+                guard: exec_guard,
+                default_status: http::StatusCode::INTERNAL_SERVER_ERROR,
+            }),
+            handles_preflight: false,
+            preflight_config: None,
+        }
+    }
+}

@@ -42,7 +42,8 @@ use tokio_tungstenite::tungstenite::{Error as WsWireError, Message as WsWireMess
 use tracing::Instrument;
 
 use crate::guard_integration::{
-    GuardExec, GuardIntegration, PreflightConfig, ResponseBodyTransformFn, ResponseExtractorFn,
+    GuardExec, GuardIntegration, PreflightConfig, RegisteredGuard, ResponseBodyTransformFn,
+    ResponseExtractorFn,
 };
 use crate::response::{HttpResponse, IntoResponse, json_error_response, outcome_to_response_with_error};
 
@@ -1307,7 +1308,48 @@ where
                             return response;
                         }
                     }
-                    let result = circuit.execute((), &res, &mut bus).await;
+                    // Idempotency cache hit → skip circuit
+                    if let Some(cached) = bus.read::<ranvier_guard::IdempotencyCachedResponse>() {
+                        let body = Bytes::from(cached.body.clone());
+                        let mut response = Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "application/json")
+                            .body(Full::new(body).map_err(|n: Infallible| match n {}).boxed())
+                            .unwrap();
+                        for extractor in route_response_extractors.iter() {
+                            extractor(&bus, response.headers_mut());
+                        }
+                        return response;
+                    }
+                    // Timeout enforcement from TimeoutGuard
+                    let result = if let Some(td) = bus.read::<ranvier_guard::TimeoutDeadline>() {
+                        let remaining = td.remaining();
+                        if remaining.is_zero() {
+                            let mut response = json_error_response(
+                                StatusCode::REQUEST_TIMEOUT,
+                                "Request timeout: pipeline deadline exceeded",
+                            );
+                            for extractor in route_response_extractors.iter() {
+                                extractor(&bus, response.headers_mut());
+                            }
+                            return response;
+                        }
+                        match tokio::time::timeout(remaining, circuit.execute((), &res, &mut bus)).await {
+                            Ok(result) => result,
+                            Err(_) => {
+                                let mut response = json_error_response(
+                                    StatusCode::REQUEST_TIMEOUT,
+                                    "Request timeout: pipeline deadline exceeded",
+                                );
+                                for extractor in route_response_extractors.iter() {
+                                    extractor(&bus, response.headers_mut());
+                                }
+                                return response;
+                            }
+                        }
+                    } else {
+                        circuit.execute((), &res, &mut bus).await
+                    };
                     let mut response = outcome_to_response_with_error(result, |error| error_handler(error));
                     for extractor in route_response_extractors.iter() {
                         extractor(&bus, response.headers_mut());
@@ -1409,7 +1451,48 @@ where
                             return response;
                         }
                     }
-                    let result = circuit.execute(input, &res, &mut bus).await;
+                    // Idempotency cache hit → skip circuit
+                    if let Some(cached) = bus.read::<ranvier_guard::IdempotencyCachedResponse>() {
+                        let body = Bytes::from(cached.body.clone());
+                        let mut response = Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "application/json")
+                            .body(Full::new(body).map_err(|n: Infallible| match n {}).boxed())
+                            .unwrap();
+                        for extractor in route_response_extractors.iter() {
+                            extractor(&bus, response.headers_mut());
+                        }
+                        return response;
+                    }
+                    // Timeout enforcement from TimeoutGuard
+                    let result = if let Some(td) = bus.read::<ranvier_guard::TimeoutDeadline>() {
+                        let remaining = td.remaining();
+                        if remaining.is_zero() {
+                            let mut response = json_error_response(
+                                StatusCode::REQUEST_TIMEOUT,
+                                "Request timeout: pipeline deadline exceeded",
+                            );
+                            for extractor in route_response_extractors.iter() {
+                                extractor(&bus, response.headers_mut());
+                            }
+                            return response;
+                        }
+                        match tokio::time::timeout(remaining, circuit.execute(input, &res, &mut bus)).await {
+                            Ok(result) => result,
+                            Err(_) => {
+                                let mut response = json_error_response(
+                                    StatusCode::REQUEST_TIMEOUT,
+                                    "Request timeout: pipeline deadline exceeded",
+                                );
+                                for extractor in route_response_extractors.iter() {
+                                    extractor(&bus, response.headers_mut());
+                                }
+                                return response;
+                            }
+                        }
+                    } else {
+                        circuit.execute(input, &res, &mut bus).await
+                    };
                     let mut response = outcome_to_response_with_error(result, |error| {
                         if cfg!(debug_assertions) {
                             (
@@ -1616,6 +1699,159 @@ where
         H: Fn(&E) -> HttpResponse + Send + Sync + 'static,
     {
         self.route_method_with_error(Method::PATCH, path, circuit, error_handler)
+    }
+
+    // ── Per-Route Guard API ─────────────────────────────────────────────
+
+    /// Internal: apply extra `RegisteredGuard`s, register a route, then restore
+    /// the global guard state. The route handler captures the combined
+    /// (global + per-route) guard state via `Arc::clone` at registration time.
+    fn route_method_with_extra_guards<Out, E>(
+        mut self,
+        method: Method,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        extra_guards: Vec<RegisteredGuard>,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        // Save current guard state lengths
+        let saved_injectors = self.bus_injectors.len();
+        let saved_execs = self.guard_execs.len();
+        let saved_extractors = self.guard_response_extractors.len();
+        let saved_transforms = self.guard_body_transforms.len();
+
+        // Apply per-route guards
+        for registration in extra_guards {
+            for injector in registration.bus_injectors {
+                self.bus_injectors.push(injector);
+            }
+            self.guard_execs.push(registration.exec);
+            if let Some(extractor) = registration.response_extractor {
+                self.guard_response_extractors.push(extractor);
+            }
+            if let Some(transform) = registration.response_body_transform {
+                self.guard_body_transforms.push(transform);
+            }
+        }
+
+        // Register route (clones current guard state into Arc)
+        self = self.route_method(method, path, circuit);
+
+        // Restore global guard state
+        self.bus_injectors.truncate(saved_injectors);
+        self.guard_execs.truncate(saved_execs);
+        self.guard_response_extractors.truncate(saved_extractors);
+        self.guard_body_transforms.truncate(saved_transforms);
+
+        self
+    }
+
+    /// Register a GET route with additional per-route Guards.
+    ///
+    /// Per-route Guards are combined with global Guards for this route only.
+    /// Use the [`guards!`](crate::guards) macro to build the guard list.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use ranvier_http::guards;
+    /// use ranvier_guard::prelude::*;
+    ///
+    /// Ranvier::http()
+    ///     .guard(AccessLogGuard::new())  // global
+    ///     .get_with_guards("/api/admin", admin_circuit, guards![
+    ///         AuthGuard::bearer(vec!["admin-token".into()]),
+    ///     ])
+    /// ```
+    pub fn get_with_guards<Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        extra_guards: Vec<RegisteredGuard>,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_with_extra_guards(Method::GET, path, circuit, extra_guards)
+    }
+
+    /// Register a POST route with additional per-route Guards.
+    ///
+    /// Per-route Guards are combined with global Guards for this route only.
+    /// Ideal for applying `ContentTypeGuard` and `IdempotencyGuard` to
+    /// write endpoints without affecting read endpoints.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use ranvier_http::guards;
+    /// use ranvier_guard::prelude::*;
+    ///
+    /// Ranvier::http()
+    ///     .guard(AccessLogGuard::new())  // global
+    ///     .post_with_guards("/api/orders", order_circuit, guards![
+    ///         ContentTypeGuard::json(),
+    ///         IdempotencyGuard::ttl_5min(),
+    ///     ])
+    ///     .get("/api/orders", list_circuit)  // no extra guards
+    /// ```
+    pub fn post_with_guards<Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        extra_guards: Vec<RegisteredGuard>,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_with_extra_guards(Method::POST, path, circuit, extra_guards)
+    }
+
+    /// Register a PUT route with additional per-route Guards.
+    pub fn put_with_guards<Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        extra_guards: Vec<RegisteredGuard>,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_with_extra_guards(Method::PUT, path, circuit, extra_guards)
+    }
+
+    /// Register a DELETE route with additional per-route Guards.
+    pub fn delete_with_guards<Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        extra_guards: Vec<RegisteredGuard>,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_with_extra_guards(Method::DELETE, path, circuit, extra_guards)
+    }
+
+    /// Register a PATCH route with additional per-route Guards.
+    pub fn patch_with_guards<Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+        extra_guards: Vec<RegisteredGuard>,
+    ) -> Self
+    where
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_with_extra_guards(Method::PATCH, path, circuit, extra_guards)
     }
 
     /// Set a fallback circuit for unmatched routes.

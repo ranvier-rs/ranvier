@@ -1129,6 +1129,420 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// ContentTypeGuard
+// ---------------------------------------------------------------------------
+
+/// Bus-injectable type representing the request's `Content-Type` header value.
+#[derive(Debug, Clone)]
+pub struct RequestContentType(pub String);
+
+/// Content-Type validation guard — rejects requests with unsupported media types.
+///
+/// Reads [`RequestContentType`] from the Bus. If the content type does not
+/// match any of the allowed types, returns a Fault with "415 Unsupported Media Type".
+///
+/// Useful as a per-route guard: apply to POST/PUT/PATCH endpoints while
+/// leaving GET/DELETE endpoints unrestricted.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// Ranvier::http()
+///     .post_with_guards("/api/data", circuit, guards![
+///         ContentTypeGuard::json(),
+///     ])
+/// ```
+#[derive(Debug, Clone)]
+pub struct ContentTypeGuard<T> {
+    allowed_types: Vec<String>,
+    _marker: PhantomData<T>,
+}
+
+impl<T> ContentTypeGuard<T> {
+    /// Create with specific allowed content types.
+    pub fn new(allowed_types: Vec<String>) -> Self {
+        Self {
+            allowed_types,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Accept only `application/json`.
+    pub fn json() -> Self {
+        Self::new(vec!["application/json".into()])
+    }
+
+    /// Accept only `application/x-www-form-urlencoded`.
+    pub fn form() -> Self {
+        Self::new(vec!["application/x-www-form-urlencoded".into()])
+    }
+
+    /// Accept specific content types.
+    pub fn accept(types: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self::new(types.into_iter().map(|t| t.into()).collect())
+    }
+
+    /// Returns the allowed content types.
+    pub fn allowed_types(&self) -> &[String] {
+        &self.allowed_types
+    }
+}
+
+#[async_trait]
+impl<T> Transition<T, T> for ContentTypeGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    type Error = String;
+    type Resources = ();
+
+    async fn run(
+        &self,
+        input: T,
+        _resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<T, Self::Error> {
+        let content_type = bus.read::<RequestContentType>().map(|ct| ct.0.clone());
+
+        // If no Content-Type header, allow (GET/DELETE may not have body)
+        let Some(ct) = content_type else {
+            return Outcome::next(input);
+        };
+
+        // Compare the media type portion (before any ;charset=... parameters)
+        let media_type = ct.split(';').next().unwrap_or("").trim().to_lowercase();
+        let matched = self
+            .allowed_types
+            .iter()
+            .any(|allowed| allowed.to_lowercase() == media_type);
+
+        if matched {
+            Outcome::next(input)
+        } else {
+            Outcome::fault(format!(
+                "415 Unsupported Media Type: expected one of [{}], got '{}'",
+                self.allowed_types.join(", "),
+                media_type,
+            ))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TimeoutGuard
+// ---------------------------------------------------------------------------
+
+/// Deadline for the current request pipeline.
+///
+/// Written to the Bus by [`TimeoutGuard`]. The HTTP ingress layer reads this
+/// to enforce the deadline by wrapping circuit execution with
+/// `tokio::time::timeout()`.
+///
+/// Complements `Axon::then_with_timeout()`: TimeoutGuard sets the global
+/// pipeline deadline, while `then_with_timeout()` adds per-node timeouts.
+#[derive(Debug, Clone)]
+pub struct TimeoutDeadline {
+    created_at: std::time::Instant,
+    timeout: std::time::Duration,
+}
+
+impl TimeoutDeadline {
+    /// Create a new deadline starting from now.
+    pub fn new(timeout: std::time::Duration) -> Self {
+        Self {
+            created_at: std::time::Instant::now(),
+            timeout,
+        }
+    }
+
+    /// Returns the remaining time until the deadline.
+    pub fn remaining(&self) -> std::time::Duration {
+        self.timeout.saturating_sub(self.created_at.elapsed())
+    }
+
+    /// Returns true if the deadline has passed.
+    pub fn is_expired(&self) -> bool {
+        self.created_at.elapsed() >= self.timeout
+    }
+
+    /// Returns the configured timeout duration.
+    pub fn duration(&self) -> std::time::Duration {
+        self.timeout
+    }
+}
+
+/// Pipeline timeout guard — sets a [`TimeoutDeadline`] in the Bus.
+///
+/// This is a **pass-through** guard that writes the deadline. The HTTP
+/// ingress layer enforces it by wrapping circuit execution with
+/// `tokio::time::timeout()`.
+///
+/// # Relationship with `Axon::then_with_timeout()`
+///
+/// - `TimeoutGuard`: outer boundary — limits total pipeline duration
+/// - `Axon::then_with_timeout()`: inner granularity — limits a single node
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use std::time::Duration;
+///
+/// Ranvier::http()
+///     .guard(TimeoutGuard::new(Duration::from_secs(30)))
+///     .post("/api/slow", slow_circuit)
+/// ```
+#[derive(Debug, Clone)]
+pub struct TimeoutGuard<T> {
+    timeout: std::time::Duration,
+    _marker: PhantomData<T>,
+}
+
+impl<T> TimeoutGuard<T> {
+    /// Create with a specific timeout.
+    pub fn new(timeout: std::time::Duration) -> Self {
+        Self {
+            timeout,
+            _marker: PhantomData,
+        }
+    }
+
+    /// 5-second timeout.
+    pub fn secs_5() -> Self {
+        Self::new(std::time::Duration::from_secs(5))
+    }
+
+    /// 30-second timeout.
+    pub fn secs_30() -> Self {
+        Self::new(std::time::Duration::from_secs(30))
+    }
+
+    /// 60-second timeout.
+    pub fn secs_60() -> Self {
+        Self::new(std::time::Duration::from_secs(60))
+    }
+
+    /// Returns the configured timeout.
+    pub fn timeout(&self) -> std::time::Duration {
+        self.timeout
+    }
+}
+
+#[async_trait]
+impl<T> Transition<T, T> for TimeoutGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    type Error = String;
+    type Resources = ();
+
+    async fn run(
+        &self,
+        input: T,
+        _resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<T, Self::Error> {
+        bus.insert(TimeoutDeadline::new(self.timeout));
+        Outcome::next(input)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IdempotencyGuard
+// ---------------------------------------------------------------------------
+
+/// Bus-injectable type representing the `Idempotency-Key` header value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdempotencyKey(pub String);
+
+/// Cached response from a previous idempotent request.
+///
+/// When found in the Bus after guard execution, the HTTP ingress skips
+/// circuit execution and returns the cached response directly with an
+/// `Idempotency-Replayed: true` header.
+#[derive(Debug, Clone)]
+pub struct IdempotencyCachedResponse {
+    pub body: Vec<u8>,
+}
+
+/// TTL-based in-memory cache entry for idempotency.
+struct IdempotencyCacheEntry {
+    body: Vec<u8>,
+    expires_at: std::time::Instant,
+}
+
+/// Shared TTL-based in-memory cache for idempotency key tracking.
+#[derive(Clone)]
+pub struct IdempotencyCache {
+    inner: Arc<std::sync::Mutex<std::collections::HashMap<String, IdempotencyCacheEntry>>>,
+    ttl: std::time::Duration,
+}
+
+impl IdempotencyCache {
+    /// Create a new cache with the given TTL.
+    pub fn new(ttl: std::time::Duration) -> Self {
+        Self {
+            inner: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            ttl,
+        }
+    }
+
+    /// Look up a cached response body by key. Returns `None` if not found or expired.
+    pub fn get(&self, key: &str) -> Option<Vec<u8>> {
+        let mut cache = self.inner.lock().ok()?;
+        let now = std::time::Instant::now();
+        if let Some(entry) = cache.get(key) {
+            if entry.expires_at > now {
+                return Some(entry.body.clone());
+            }
+            cache.remove(key);
+        }
+        None
+    }
+
+    /// Insert a response body into the cache.
+    pub fn insert(&self, key: String, body: Vec<u8>) {
+        if let Ok(mut cache) = self.inner.lock() {
+            let now = std::time::Instant::now();
+            // Lazy cleanup: remove a few expired entries on insert
+            let expired: Vec<String> = cache
+                .iter()
+                .filter(|(_, e)| e.expires_at <= now)
+                .take(5)
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in expired {
+                cache.remove(&k);
+            }
+            cache.insert(
+                key,
+                IdempotencyCacheEntry {
+                    body,
+                    expires_at: now + self.ttl,
+                },
+            );
+        }
+    }
+
+    /// Returns the configured TTL.
+    pub fn ttl(&self) -> std::time::Duration {
+        self.ttl
+    }
+}
+
+impl std::fmt::Debug for IdempotencyCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdempotencyCache")
+            .field("ttl", &self.ttl)
+            .finish()
+    }
+}
+
+/// Idempotency guard — prevents duplicate request processing via an
+/// in-memory TTL cache.
+///
+/// Reads [`IdempotencyKey`] from the Bus (extracted from the `Idempotency-Key`
+/// HTTP header). On cache hit, writes [`IdempotencyCachedResponse`] to the
+/// Bus to signal the ingress layer to skip circuit execution.
+///
+/// On cache miss, the HTTP ingress layer caches the response body after
+/// circuit execution via `ResponseBodyTransformFn`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use std::time::Duration;
+///
+/// Ranvier::http()
+///     .post_with_guards("/api/orders", order_circuit, guards![
+///         ContentTypeGuard::json(),
+///         IdempotencyGuard::new(Duration::from_secs(300)),
+///     ])
+/// ```
+pub struct IdempotencyGuard<T> {
+    cache: IdempotencyCache,
+    _marker: PhantomData<T>,
+}
+
+impl<T> IdempotencyGuard<T> {
+    /// Create with a specific TTL for cached entries.
+    pub fn new(ttl: std::time::Duration) -> Self {
+        Self {
+            cache: IdempotencyCache::new(ttl),
+            _marker: PhantomData,
+        }
+    }
+
+    /// 5-minute TTL (default for most APIs).
+    pub fn ttl_5min() -> Self {
+        Self::new(std::time::Duration::from_secs(300))
+    }
+
+    /// Returns the configured TTL.
+    pub fn ttl(&self) -> std::time::Duration {
+        self.cache.ttl()
+    }
+
+    /// Returns a reference to the internal cache.
+    pub fn cache(&self) -> &IdempotencyCache {
+        &self.cache
+    }
+
+    /// Clone the guard configuration as `IdempotencyGuard<()>` for type-erased execution.
+    pub fn clone_as_unit(&self) -> IdempotencyGuard<()> {
+        IdempotencyGuard {
+            cache: self.cache.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T> Clone for IdempotencyGuard<T> {
+    fn clone(&self) -> Self {
+        Self {
+            cache: self.cache.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T> std::fmt::Debug for IdempotencyGuard<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdempotencyGuard")
+            .field("ttl", &self.cache.ttl())
+            .finish()
+    }
+}
+
+#[async_trait]
+impl<T> Transition<T, T> for IdempotencyGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    type Error = String;
+    type Resources = ();
+
+    async fn run(
+        &self,
+        input: T,
+        _resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<T, Self::Error> {
+        let Some(key) = bus.read::<IdempotencyKey>().map(|k| k.0.clone()) else {
+            return Outcome::next(input);
+        };
+
+        if let Some(body) = self.cache.get(&key) {
+            bus.insert(IdempotencyCachedResponse { body });
+            tracing::debug!(idempotency_key = %key, "idempotency cache hit");
+        } else {
+            tracing::debug!(idempotency_key = %key, "idempotency cache miss");
+        }
+
+        Outcome::next(input)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Prelude
 // ---------------------------------------------------------------------------
 
@@ -1136,9 +1550,11 @@ pub mod prelude {
     pub use crate::{
         AcceptEncoding, AccessLogEntry, AccessLogGuard, AccessLogRequest, AuthGuard,
         AuthStrategy, AuthorizationHeader, ClientIdentity, ClientIp, CompressionConfig,
-        CompressionEncoding, CompressionGuard, ContentLength, CorsConfig, CorsGuard, CorsHeaders,
-        IpFilterGuard, RateLimitGuard, RequestId, RequestIdGuard, RequestOrigin,
-        RequestSizeLimitGuard, SecurityHeaders, SecurityHeadersGuard, SecurityPolicy,
+        CompressionEncoding, CompressionGuard, ContentLength, ContentTypeGuard, CorsConfig,
+        CorsGuard, CorsHeaders, IdempotencyCache, IdempotencyCachedResponse, IdempotencyGuard,
+        IdempotencyKey, IpFilterGuard, RateLimitGuard, RequestContentType, RequestId,
+        RequestIdGuard, RequestOrigin, RequestSizeLimitGuard, SecurityHeaders,
+        SecurityHeadersGuard, SecurityPolicy, TimeoutDeadline, TimeoutGuard,
     };
 }
 
@@ -1544,5 +1960,137 @@ mod tests {
         bus.insert(AuthorizationHeader("Bearer a-very-long-different-token".into()));
         let result = guard.run("ok".into(), &(), &mut bus).await;
         assert!(matches!(result, Outcome::Fault(_)));
+    }
+
+    // --- ContentTypeGuard tests ---
+
+    #[tokio::test]
+    async fn content_type_json_match() {
+        let guard = ContentTypeGuard::<String>::json();
+        let mut bus = Bus::new();
+        bus.insert(RequestContentType("application/json".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+    }
+
+    #[tokio::test]
+    async fn content_type_json_with_charset() {
+        let guard = ContentTypeGuard::<String>::json();
+        let mut bus = Bus::new();
+        bus.insert(RequestContentType("application/json; charset=utf-8".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+    }
+
+    #[tokio::test]
+    async fn content_type_mismatch() {
+        let guard = ContentTypeGuard::<String>::json();
+        let mut bus = Bus::new();
+        bus.insert(RequestContentType("text/plain".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Fault(ref e) if e.contains("415")));
+    }
+
+    #[tokio::test]
+    async fn content_type_no_header_allows() {
+        let guard = ContentTypeGuard::<String>::json();
+        let mut bus = Bus::new();
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+    }
+
+    #[tokio::test]
+    async fn content_type_form() {
+        let guard = ContentTypeGuard::<String>::form();
+        let mut bus = Bus::new();
+        bus.insert(RequestContentType("application/x-www-form-urlencoded".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+    }
+
+    #[tokio::test]
+    async fn content_type_accept_multiple() {
+        let guard = ContentTypeGuard::<String>::accept(["application/json", "text/xml"]);
+        let mut bus = Bus::new();
+        bus.insert(RequestContentType("text/xml".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+    }
+
+    // --- TimeoutGuard tests ---
+
+    #[tokio::test]
+    async fn timeout_sets_deadline() {
+        let guard = TimeoutGuard::<String>::secs_30();
+        let mut bus = Bus::new();
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+        let deadline = bus.read::<TimeoutDeadline>().expect("deadline should be in bus");
+        assert!(!deadline.is_expired());
+        assert!(deadline.remaining().as_secs() >= 29);
+    }
+
+    #[tokio::test]
+    async fn timeout_convenience_constructors() {
+        assert_eq!(TimeoutGuard::<()>::secs_5().timeout().as_secs(), 5);
+        assert_eq!(TimeoutGuard::<()>::secs_30().timeout().as_secs(), 30);
+        assert_eq!(TimeoutGuard::<()>::secs_60().timeout().as_secs(), 60);
+    }
+
+    // --- IdempotencyGuard tests ---
+
+    #[tokio::test]
+    async fn idempotency_no_key_passes_through() {
+        let guard = IdempotencyGuard::<String>::ttl_5min();
+        let mut bus = Bus::new();
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+        assert!(bus.read::<IdempotencyCachedResponse>().is_none());
+    }
+
+    #[tokio::test]
+    async fn idempotency_cache_miss() {
+        let guard = IdempotencyGuard::<String>::ttl_5min();
+        let mut bus = Bus::new();
+        bus.insert(IdempotencyKey("key-1".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+        assert!(bus.read::<IdempotencyCachedResponse>().is_none());
+    }
+
+    #[tokio::test]
+    async fn idempotency_cache_hit() {
+        let guard = IdempotencyGuard::<String>::ttl_5min();
+        // Pre-populate cache
+        guard.cache().insert("key-1".into(), b"cached-body".to_vec());
+
+        let mut bus = Bus::new();
+        bus.insert(IdempotencyKey("key-1".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+        let cached = bus.read::<IdempotencyCachedResponse>().expect("cached response");
+        assert_eq!(cached.body, b"cached-body");
+    }
+
+    #[tokio::test]
+    async fn idempotency_cache_shared_across_clones() {
+        let guard1 = IdempotencyGuard::<String>::ttl_5min();
+        let guard2 = guard1.clone();
+        guard1.cache().insert("shared-key".into(), b"data".to_vec());
+        assert!(guard2.cache().get("shared-key").is_some());
+    }
+
+    #[tokio::test]
+    async fn idempotency_expired_entry_treated_as_miss() {
+        let guard = IdempotencyGuard::<String>::new(std::time::Duration::from_millis(1));
+        guard.cache().insert("key-1".into(), b"old".to_vec());
+        // Wait for expiry
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        let mut bus = Bus::new();
+        bus.insert(IdempotencyKey("key-1".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+        assert!(bus.read::<IdempotencyCachedResponse>().is_none());
     }
 }

@@ -39,9 +39,24 @@
 //! # OPTIONS preflight
 //! curl -v -X OPTIONS -H "Origin: https://app.example.com" \
 //!   http://127.0.0.1:3456/api/hello
+//!
+//! # POST with wrong Content-Type (per-route ContentTypeGuard)
+//! curl -v -X POST -H "Content-Type: text/plain" \
+//!   -H "Authorization: Bearer demo-token" \
+//!   -d '{"name":"test"}' \
+//!   http://127.0.0.1:3456/api/orders
+//!
+//! # POST with Idempotency-Key (per-route IdempotencyGuard)
+//! curl -v -X POST -H "Content-Type: application/json" \
+//!   -H "Authorization: Bearer demo-token" \
+//!   -H "Idempotency-Key: order-abc-123" \
+//!   -d '{"name":"test"}' \
+//!   http://127.0.0.1:3456/api/orders
 //! ```
 //!
-//! ## Registered Guards (9 total — Tower complete replacement)
+//! ## Registered Guards
+//!
+//! ### Global Guards (7)
 //!
 //! | Guard | Purpose | Status Code on Rejection |
 //! |-------|---------|--------------------------|
@@ -53,21 +68,34 @@
 //! | RequestIdGuard | X-Request-Id generation/propagation | — (pass-through) |
 //! | AuthGuard | Bearer token authentication | 401 Unauthorized |
 //!
+//! ### Per-Route Guards (POST /api/orders only)
+//!
+//! | Guard | Purpose | Status Code on Rejection |
+//! |-------|---------|--------------------------|
+//! | TimeoutGuard | 30-second pipeline deadline | 408 Request Timeout |
+//! | ContentTypeGuard | Require application/json | 415 Unsupported Media Type |
+//! | IdempotencyGuard | Duplicate request prevention | — (cache replay) |
+//!
 //! ## Key Concepts
 //! - `HttpIngress::guard()` auto-wires Bus injection from HTTP headers
 //! - Guards execute before the circuit, rejecting with correct status codes
 //! - Response extractors apply Bus data (CORS, security, request-id) to responses
 //! - Response body transforms apply compression when negotiated
 //! - OPTIONS preflight is auto-handled when CorsGuard is registered
+//! - `post_with_guards()` + `guards![]` macro for per-route Guard composition
+//! - TimeoutGuard → ingress enforces via `tokio::time::timeout()`
+//! - IdempotencyGuard → cache hit skips circuit, cache miss caches response
 
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_guard::prelude::*;
 use ranvier_http::prelude::*;
+use ranvier_http::guards;
 use ranvier_runtime::Axon;
+use std::time::Duration;
 
 // ============================================================================
-// Business Logic Transition
+// Business Logic Transitions
 // ============================================================================
 
 /// Simple API handler that reads guard-injected Bus data.
@@ -119,6 +147,40 @@ impl Transition<(), String> for HelloHandler {
     }
 }
 
+/// Order creation handler — used for per-route Guard demo.
+#[derive(Clone)]
+struct CreateOrderHandler;
+
+#[async_trait]
+impl Transition<(), String> for CreateOrderHandler {
+    type Error = String;
+    type Resources = ();
+
+    async fn run(
+        &self,
+        _input: (),
+        _resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<String, Self::Error> {
+        // Check if we have a timeout deadline
+        let timeout_remaining = bus
+            .read::<TimeoutDeadline>()
+            .map(|td| format!("{}s", td.remaining().as_secs()))
+            .unwrap_or_else(|| "none".into());
+
+        // Check idempotency key
+        let idem_key = bus
+            .read::<IdempotencyKey>()
+            .map(|k| k.0.clone())
+            .unwrap_or_else(|| "none".into());
+
+        Outcome::next(format!(
+            "{{\"order_id\": \"ord-001\", \"status\": \"created\", \"timeout_remaining\": \"{}\", \"idempotency_key\": \"{}\"}}",
+            timeout_remaining, idem_key
+        ))
+    }
+}
+
 // ============================================================================
 // Server Setup
 // ============================================================================
@@ -127,23 +189,23 @@ impl Transition<(), String> for HelloHandler {
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt::init();
 
-    println!("=== Guard Integration Demo (M293 — Tower Complete Replacement) ===");
-    println!("9 Guards registered via HttpIngress::guard() — no Tower middleware needed\n");
+    println!("=== Guard Integration Demo (M294 — per-route Guards + Timeout + Idempotency) ===");
+    println!("12 Guards total: 7 global + 3 per-route on POST /api/orders\n");
 
-    // Build Axon circuit
+    // Build Axon circuits
     let hello_circuit = Axon::simple::<String>("hello-api").then(HelloHandler);
+    let order_circuit = Axon::simple::<String>("create-order").then(CreateOrderHandler);
 
-    // Build guarded HTTP server — all 9 Guards demonstrate Tower replacement
+    // Build guarded HTTP server — all Guards demonstrate Tower replacement
     Ranvier::http()
         .bind("127.0.0.1:3456")
-        // --- Pass-through Guards (logging, headers, negotiation) ---
+        // --- Global Guards (7) ---
         .guard(AccessLogGuard::<()>::new())
         .guard(SecurityHeadersGuard::<()>::new(
             SecurityPolicy::new().with_csp("default-src 'self'; script-src 'self'"),
         ))
         .guard(CompressionGuard::<()>::new())
         .guard(RequestIdGuard::<()>::new())
-        // --- Validation Guards (reject with appropriate status codes) ---
         .guard(CorsGuard::<()>::new(CorsConfig {
             allowed_origins: vec![
                 "https://app.example.com".into(),
@@ -158,13 +220,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .guard(AuthGuard::<()>::bearer(vec!["demo-token".into()]))
         .on_start(|| {
             println!("Server listening on http://127.0.0.1:3456");
-            println!("  GET  /api/hello  — guarded endpoint (7 Guards active)");
+            println!("  GET  /api/hello   — 7 global Guards");
+            println!("  POST /api/orders  — 7 global + 3 per-route Guards (Timeout + ContentType + Idempotency)");
             println!();
             println!("  Try: curl -v -H 'Origin: https://app.example.com' \\");
             println!("    -H 'Authorization: Bearer demo-token' \\");
             println!("    http://127.0.0.1:3456/api/hello");
+            println!();
+            println!("  Try: curl -v -X POST -H 'Content-Type: application/json' \\");
+            println!("    -H 'Authorization: Bearer demo-token' \\");
+            println!("    -H 'Idempotency-Key: test-123' \\");
+            println!("    -d '{{}}' http://127.0.0.1:3456/api/orders");
         })
         .get("/api/hello", hello_circuit)
+        // --- Per-Route Guards: POST /api/orders ---
+        // TimeoutGuard (30s), ContentTypeGuard (json), IdempotencyGuard (5min)
+        .post_with_guards("/api/orders", order_circuit, guards![
+            TimeoutGuard::<()>::new(Duration::from_secs(30)),
+            ContentTypeGuard::<()>::json(),
+            IdempotencyGuard::<()>::ttl_5min(),
+        ])
         .run(())
         .await
 }
