@@ -1542,6 +1542,16 @@ where
     }
 }
 
+// ===========================================================================
+// Tier 3 Guards (feature-gated: `advanced`)
+// ===========================================================================
+
+#[cfg(feature = "advanced")]
+mod advanced_guards;
+
+#[cfg(feature = "advanced")]
+pub use advanced_guards::*;
+
 // ---------------------------------------------------------------------------
 // Prelude
 // ---------------------------------------------------------------------------
@@ -1555,6 +1565,12 @@ pub mod prelude {
         IdempotencyKey, IpFilterGuard, RateLimitGuard, RequestContentType, RequestId,
         RequestIdGuard, RequestOrigin, RequestSizeLimitGuard, SecurityHeaders,
         SecurityHeadersGuard, SecurityPolicy, TimeoutDeadline, TimeoutGuard,
+    };
+
+    #[cfg(feature = "advanced")]
+    pub use crate::advanced_guards::{
+        ConditionalRequestGuard, DecompressionGuard, ETag, IfModifiedSince, IfNoneMatch,
+        LastModified, RedirectGuard, RedirectRule, RequestBody,
     };
 }
 

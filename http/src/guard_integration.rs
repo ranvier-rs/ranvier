@@ -643,3 +643,106 @@ where
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// GuardIntegration implementations for Tier 3 Guards (feature: advanced)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "advanced")]
+impl<T> GuardIntegration for ranvier_guard::DecompressionGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    fn register(self) -> RegisteredGuard {
+        let exec_guard = ranvier_guard::DecompressionGuard::<()>::new();
+
+        RegisteredGuard {
+            bus_injectors: vec![Arc::new(|parts: &http::request::Parts, bus: &mut Bus| {
+                if let Some(ce) = parts.headers.get("content-encoding") {
+                    if let Ok(s) = ce.to_str() {
+                        bus.insert(ranvier_guard::RequestContentEncoding(s.to_string()));
+                    }
+                }
+            })],
+            response_extractor: None,
+            response_body_transform: None,
+            exec: Arc::new(TransitionGuardExec {
+                guard: exec_guard,
+                default_status: http::StatusCode::BAD_REQUEST,
+            }),
+            handles_preflight: false,
+            preflight_config: None,
+        }
+    }
+}
+
+#[cfg(feature = "advanced")]
+impl<T> GuardIntegration for ranvier_guard::ConditionalRequestGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    fn register(self) -> RegisteredGuard {
+        let exec_guard = ranvier_guard::ConditionalRequestGuard::<()>::new();
+
+        RegisteredGuard {
+            bus_injectors: vec![Arc::new(|parts: &http::request::Parts, bus: &mut Bus| {
+                if let Some(inm) = parts.headers.get("if-none-match") {
+                    if let Ok(s) = inm.to_str() {
+                        bus.insert(ranvier_guard::IfNoneMatch(s.to_string()));
+                    }
+                }
+                if let Some(ims) = parts.headers.get("if-modified-since") {
+                    if let Ok(s) = ims.to_str() {
+                        bus.insert(ranvier_guard::IfModifiedSince(s.to_string()));
+                    }
+                }
+            })],
+            response_extractor: Some(Arc::new(|bus: &Bus, headers: &mut http::HeaderMap| {
+                if let Some(etag) = bus.read::<ranvier_guard::ETag>() {
+                    if let Ok(v) = etag.0.parse() {
+                        headers.insert("etag", v);
+                    }
+                }
+                if let Some(lm) = bus.read::<ranvier_guard::LastModified>() {
+                    if let Ok(v) = lm.0.parse() {
+                        headers.insert("last-modified", v);
+                    }
+                }
+            })),
+            response_body_transform: None,
+            exec: Arc::new(TransitionGuardExec {
+                guard: exec_guard,
+                default_status: http::StatusCode::NOT_MODIFIED,
+            }),
+            handles_preflight: false,
+            preflight_config: None,
+        }
+    }
+}
+
+#[cfg(feature = "advanced")]
+impl<T> GuardIntegration for ranvier_guard::RedirectGuard<T>
+where
+    T: Send + Sync + 'static,
+{
+    fn register(self) -> RegisteredGuard {
+        let rules: Vec<_> = self.rules().to_vec();
+        let exec_guard = ranvier_guard::RedirectGuard::<()>::new(rules);
+
+        RegisteredGuard {
+            bus_injectors: vec![Arc::new(|parts: &http::request::Parts, bus: &mut Bus| {
+                bus.insert(ranvier_guard::RedirectRequestPath(
+                    parts.uri.path().to_string(),
+                ));
+            })],
+            response_extractor: None,
+            response_body_transform: None,
+            exec: Arc::new(TransitionGuardExec {
+                guard: exec_guard,
+                default_status: http::StatusCode::MOVED_PERMANENTLY,
+            }),
+            handles_preflight: false,
+            preflight_config: None,
+        }
+    }
+}

@@ -4224,6 +4224,7 @@ name = "ranvier-guard"
 version = "0.34.0"
 dependencies = [
  "async-trait",
+ "flate2",
  "ranvier-core",
  "serde",
  "subtle",

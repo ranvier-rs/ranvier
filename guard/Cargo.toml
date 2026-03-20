@@ -10,6 +10,10 @@ repository.workspace = true
 homepage.workspace = true
 keywords = ["ranvier", "guard", "middleware", "security"]
 
+[features]
+default = []
+advanced = ["dep:flate2"]
+
 [dependencies]
 ranvier-core = { workspace = true }
 async-trait = { workspace = true }
@@ -18,6 +22,7 @@ tracing = { workspace = true }
 serde = { workspace = true }
 uuid = { workspace = true }
 subtle = { workspace = true }
+flate2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
