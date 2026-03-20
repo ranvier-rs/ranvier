@@ -144,6 +144,11 @@ struct StaticAssetsConfig {
     spa_fallback: Option<String>,
     cache_control: Option<String>,
     enable_compression: bool,
+    /// Default index filename for directory requests (e.g., "index.html").
+    directory_index: Option<String>,
+    /// When true, detect hashed filenames (e.g., `app.a1b2c3.js`) and apply
+    /// `Cache-Control: public, max-age=31536000, immutable`.
+    immutable_cache: bool,
 }
 
 #[derive(Clone)]
@@ -945,6 +950,27 @@ where
     /// Override default Cache-Control for static responses.
     pub fn static_cache_control(mut self, cache_control: impl Into<String>) -> Self {
         self.static_assets.cache_control = Some(cache_control.into());
+        self
+    }
+
+    /// Set the default index filename for directory requests.
+    ///
+    /// When a request path ends with `/` or matches a directory, the server
+    /// appends this filename and attempts to serve the result.
+    ///
+    /// Example: `.directory_index("index.html")` causes `/static/` to serve
+    /// `/static/index.html`.
+    pub fn directory_index(mut self, filename: impl Into<String>) -> Self {
+        self.static_assets.directory_index = Some(filename.into());
+        self
+    }
+
+    /// Enable immutable cache headers for hashed static filenames.
+    ///
+    /// Files matching the pattern `name.HASH.ext` (where HASH is 6+ hex chars)
+    /// receive `Cache-Control: public, max-age=31536000, immutable`.
+    pub fn immutable_cache(mut self) -> Self {
+        self.static_assets.immutable_cache = true;
         self
     }
 
@@ -2015,15 +2041,31 @@ async fn serve_single_file(file_path: &str) -> Result<Response<Full<Bytes>>, std
 async fn serve_static_file(
     directory: &str,
     file_subpath: &str,
+    config: &StaticAssetsConfig,
+    if_none_match: Option<&http::HeaderValue>,
 ) -> Result<Response<Full<Bytes>>, std::io::Error> {
     let subpath = file_subpath.trim_start_matches('/');
-    if subpath.is_empty() || subpath == "/" {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "empty path",
-        ));
+
+    // Directory index: redirect empty or trailing-slash paths to index file
+    let resolved_subpath;
+    if subpath.is_empty() || subpath.ends_with('/') {
+        if let Some(ref index) = config.directory_index {
+            resolved_subpath = if subpath.is_empty() {
+                index.clone()
+            } else {
+                format!("{}{}", subpath, index)
+            };
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "empty path",
+            ));
+        }
+    } else {
+        resolved_subpath = subpath.to_string();
     }
-    let full_path = std::path::Path::new(directory).join(subpath);
+
+    let full_path = std::path::Path::new(directory).join(&resolved_subpath);
     // Path traversal protection
     let canonical = tokio::fs::canonicalize(&full_path).await?;
     let dir_canonical = tokio::fs::canonicalize(directory).await?;
@@ -2033,6 +2075,30 @@ async fn serve_static_file(
             "path traversal detected",
         ));
     }
+
+    // Compute ETag from modification time
+    let etag = if let Ok(metadata) = tokio::fs::metadata(&canonical).await {
+        metadata
+            .modified()
+            .ok()
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| format!("\"{}\"", d.as_secs()))
+    } else {
+        None
+    };
+
+    // 304 Not Modified: compare If-None-Match with ETag
+    if let (Some(client_etag), Some(server_etag)) = (if_none_match, &etag) {
+        if client_etag.as_bytes() == server_etag.as_bytes() {
+            let mut response = Response::new(Full::new(Bytes::new()));
+            *response.status_mut() = StatusCode::NOT_MODIFIED;
+            if let Ok(value) = http::HeaderValue::from_str(server_etag) {
+                response.headers_mut().insert(http::header::ETAG, value);
+            }
+            return Ok(response);
+        }
+    }
+
     let content = tokio::fs::read(&canonical).await?;
     let mime = guess_mime(canonical.to_str().unwrap_or(""));
     let mut response = Response::new(Full::new(Bytes::from(content)));
@@ -2041,37 +2107,66 @@ async fn serve_static_file(
             .headers_mut()
             .insert(http::header::CONTENT_TYPE, value);
     }
-    if let Ok(metadata) = tokio::fs::metadata(&canonical).await {
-        if let Ok(modified) = metadata.modified() {
-            if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
-                let etag = format!("\"{}\"", duration.as_secs());
-                if let Ok(value) = http::HeaderValue::from_str(&etag) {
-                    response.headers_mut().insert(http::header::ETAG, value);
+    if let Some(ref etag_val) = etag {
+        if let Ok(value) = http::HeaderValue::from_str(etag_val) {
+            response.headers_mut().insert(http::header::ETAG, value);
+        }
+    }
+
+    // Immutable cache for hashed filenames (e.g., app.a1b2c3d4.js)
+    if config.immutable_cache {
+        if let Some(filename) = canonical.file_name().and_then(|n| n.to_str()) {
+            if is_hashed_filename(filename) {
+                if let Ok(value) = http::HeaderValue::from_str(
+                    "public, max-age=31536000, immutable",
+                ) {
+                    response
+                        .headers_mut()
+                        .insert(http::header::CACHE_CONTROL, value);
                 }
             }
         }
     }
+
     Ok(response)
+}
+
+/// Check if a filename contains a content hash (e.g., `app.a1b2c3d4.js`).
+/// Matches the pattern: `name.HEXHASH.ext` where HEXHASH is 6+ hex chars.
+fn is_hashed_filename(filename: &str) -> bool {
+    let parts: Vec<&str> = filename.rsplitn(3, '.').collect();
+    if parts.len() < 3 {
+        return false;
+    }
+    // parts[0] = ext, parts[1] = potential hash, parts[2] = name
+    let hash_part = parts[1];
+    hash_part.len() >= 6 && hash_part.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn guess_mime(path: &str) -> &'static str {
     match path.rsplit('.').next().unwrap_or("") {
         "html" | "htm" => "text/html; charset=utf-8",
         "css" => "text/css; charset=utf-8",
-        "js" | "mjs" => "application/javascript; charset=utf-8",
+        "js" | "mjs" | "ts" | "tsx" => "application/javascript; charset=utf-8",
         "json" => "application/json; charset=utf-8",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "svg" => "image/svg+xml",
         "ico" => "image/x-icon",
+        "avif" => "image/avif",
+        "webp" => "image/webp",
+        "webm" => "video/webm",
+        "mp4" => "video/mp4",
         "woff" => "font/woff",
         "woff2" => "font/woff2",
         "ttf" => "font/ttf",
         "txt" => "text/plain; charset=utf-8",
         "xml" => "application/xml; charset=utf-8",
+        "yaml" | "yml" => "application/yaml",
         "wasm" => "application/wasm",
         "pdf" => "application/pdf",
+        "map" => "application/json",
         _ => "application/octet-stream",
     }
 }
@@ -2110,10 +2205,18 @@ async fn maybe_handle_static_request(
         .find(|mount| strip_mount_prefix(path, &mount.route_prefix).is_some())
     {
         let accept_encoding = req.headers().get(http::header::ACCEPT_ENCODING).cloned();
+        let if_none_match = req.headers().get(http::header::IF_NONE_MATCH).cloned();
         let Some(stripped_path) = strip_mount_prefix(path, &mount.route_prefix) else {
             return Ok(req);
         };
-        let response = match serve_static_file(&mount.directory, &stripped_path).await {
+        let response = match serve_static_file(
+            &mount.directory,
+            &stripped_path,
+            static_assets,
+            if_none_match.as_ref(),
+        )
+        .await
+        {
             Ok(response) => response,
             Err(_) => {
                 return Err(Response::builder()
