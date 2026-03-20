@@ -48,7 +48,7 @@ pub mod prelude {
     pub use crate::schematic::{Edge, EdgeType, Node, NodeKind, SchemaMigrationMapper, Schematic};
     pub use crate::tenant::{IsolationPolicy, TenantExtractor, TenantId, TenantResolver};
     pub use crate::timeline::{Timeline, TimelineEvent};
-    pub use crate::error::RanvierError;
+    pub use crate::error::{RanvierError, TransitionErrorContext};
     pub use crate::never::Never;
     pub use crate::transition::{ResourceRequirement, Transition};
 }

@@ -86,6 +86,41 @@ impl From<&str> for RanvierError {
     }
 }
 
+/// Context automatically attached to the Bus when a Transition faults.
+///
+/// When a pipeline step returns `Outcome::Fault`, the Axon runtime stores
+/// this struct in the Bus so downstream code can identify which step failed.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let outcome = pipeline.run((), &(), &mut bus).await;
+/// if let Outcome::Fault(_) = &outcome {
+///     if let Some(ctx) = bus.read::<TransitionErrorContext>() {
+///         eprintln!("Failed at step {} ({})", ctx.step_index, ctx.transition_name);
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransitionErrorContext {
+    /// Name of the Axon pipeline.
+    pub pipeline_name: String,
+    /// Label of the Transition that produced the fault.
+    pub transition_name: String,
+    /// Zero-based step index within the pipeline.
+    pub step_index: usize,
+}
+
+impl fmt::Display for TransitionErrorContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "pipeline '{}' step {} ({})",
+            self.pipeline_name, self.step_index, self.transition_name,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
