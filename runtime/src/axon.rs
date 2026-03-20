@@ -676,6 +676,40 @@ where
         }
     }
 
+    /// Chain a closure as a lightweight Transition step.
+    ///
+    /// The closure receives `(input, &mut Bus)` and returns `Outcome<Next, E>`.
+    /// This is ideal for simple data transformations or validation checks that
+    /// don't need a full `#[transition]` struct.
+    ///
+    /// The closure does not receive typed resources. For resource-dependent
+    /// logic, use a full `Transition` struct with `then()`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use ranvier_runtime::Axon;
+    /// use ranvier_core::prelude::*;
+    ///
+    /// let axon = Axon::simple::<String>("pipeline")
+    ///     .then_fn("score_check", |_input: (), bus: &mut Bus| {
+    ///         let score = bus.read::<u32>().copied().unwrap_or(0);
+    ///         if score > 75 {
+    ///             Outcome::next("REJECTED".to_string())
+    ///         } else {
+    ///             Outcome::next("APPROVED".to_string())
+    ///         }
+    ///     });
+    /// ```
+    #[track_caller]
+    pub fn then_fn<Next, F>(self, label: &str, f: F) -> Axon<In, Next, E, Res>
+    where
+        Next: Send + Sync + Serialize + DeserializeOwned + 'static,
+        F: Fn(Out, &mut Bus) -> Outcome<Next, E> + Clone + Send + Sync + 'static,
+    {
+        self.then(crate::closure_transition::ClosureTransition::new(label, f))
+    }
+
     /// Chain a transition with a retry policy.
     ///
     /// If the transition returns `Outcome::Fault`, it will be retried up to
@@ -5079,5 +5113,71 @@ mod tests {
             (Outcome::Next(a), Outcome::Next(b)) => assert_eq!(a, b),
             _ => panic!("Both should produce Outcome::Next"),
         }
+    }
+
+    #[tokio::test]
+    async fn then_fn_closure_transition() {
+        let axon = Axon::simple::<String>("ClosureTest")
+            .then_fn("to_greeting", |_input: (), _bus: &mut Bus| {
+                Outcome::next("hello from closure".to_string())
+            });
+
+        let mut bus = Bus::new();
+        let result = axon.execute((), &(), &mut bus).await;
+
+        match result {
+            Outcome::Next(msg) => assert_eq!(msg, "hello from closure"),
+            other => panic!("Expected Outcome::Next, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn then_fn_reads_bus() {
+        let axon = Axon::simple::<String>("BusReadClosure")
+            .then_fn("check_score", |_input: (), bus: &mut Bus| {
+                let score = bus.read::<u32>().copied().unwrap_or(0);
+                if score > 75 {
+                    Outcome::next("REJECTED".to_string())
+                } else {
+                    Outcome::next("APPROVED".to_string())
+                }
+            });
+
+        let mut bus = Bus::new();
+        bus.insert(80u32);
+        let result = axon.execute((), &(), &mut bus).await;
+        match result {
+            Outcome::Next(msg) => assert_eq!(msg, "REJECTED"),
+            other => panic!("Expected REJECTED, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn then_fn_mixed_with_transition() {
+        // Closure and macro Transition in the same chain
+        let axon = Axon::simple::<String>("MixedPipeline")
+            .then(Greet)
+            .then_fn("uppercase", |input: String, _bus: &mut Bus| {
+                Outcome::next(input.to_uppercase())
+            });
+
+        let mut bus = Bus::new();
+        let result = axon.execute((), &(), &mut bus).await;
+        match result {
+            Outcome::Next(msg) => assert_eq!(msg, "HELLO FROM SIMPLE!"),
+            other => panic!("Expected uppercase greeting, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn then_fn_schematic_label() {
+        let axon = Axon::simple::<String>("SchematicTest")
+            .then_fn("my_custom_label", |_: (), _: &mut Bus| {
+                Outcome::next("ok".to_string())
+            });
+
+        // Node 0 is the identity start node, node 1 is our closure
+        assert_eq!(axon.schematic.nodes.len(), 2);
+        assert_eq!(axon.schematic.nodes[1].label, "my_custom_label");
     }
 }

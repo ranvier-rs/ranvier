@@ -1,6 +1,7 @@
 #![allow(deprecated)]
 
 pub mod axon;
+pub mod closure_transition;
 pub mod cluster;
 pub mod distributed;
 pub mod llm;
@@ -47,6 +48,7 @@ pub type TypedAxon<In, Out, Res = ()> = Axon<In, Out, ranvier_core::error::Ranvi
 pub type InfallibleAxon<In, Out, Res = ()> = Axon<In, Out, ranvier_core::Never, Res>;
 
 pub use axon::{Axon, ParallelStrategy, SchematicExportRequest};
+pub use closure_transition::ClosureTransition;
 pub use cluster::{ClusterManager, LeaderElection, LockBasedElection};
 pub use distributed::{DistributedError, DistributedLock, DistributedStore, Guard, LockOptions};
 pub use llm::{LlmError, LlmProvider, LlmTemplateVars, LlmTransition, MockLlmConfig};
