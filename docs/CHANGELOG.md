@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.35.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.35.0 — Pipeline-First Middleware Sprint.**
+New `ranvier-guard` crate (12th workspace crate) with 15 Guard Transition nodes that fully replace Tower middleware. `HttpIngress::guard()` API with automatic Bus↔HTTP wiring, per-route `guards![]` macro composition, and `GuardIntegration` trait for custom Guard registration.
+
+### Added
+- **`ranvier-guard` crate (new, M292):** Dedicated crate for Guard Transition nodes extracted from `ranvier-std`. Guards are `Transition<T, T>` nodes that intercept requests via Bus read/write, either passing through or faulting with typed rejections.
+- **`GuardIntegration` trait + `HttpIngress::guard()` (ranvier-http, M292):** Infrastructure for registering Guards with automatic HTTP→Bus injection (BusInjector), Bus→HTTP response extraction (ResponseExtractor), and response body transformation (ResponseBodyTransformFn). OPTIONS preflight auto-handling when CorsGuard is registered.
+- **5 existing Guards migrated (M292):** `CorsGuard`, `AccessLogGuard`, `SecurityHeadersGuard`, `IpFilterGuard`, `RateLimitGuard` — moved from `ranvier-std` to `ranvier-guard` with full GuardIntegration impls.
+- **4 core new Guards (M293) — Tower complete replacement gate:**
+  - `CompressionGuard`: Accept-Encoding negotiation (gzip/brotli/identity), writes `CompressionConfig` to Bus, ingress applies gzip compression via `ResponseBodyTransformFn`
+  - `RequestSizeLimitGuard`: Content-Length validation (413 Payload Too Large), convenience constructors `max_2mb()` / `max_10mb()`
+  - `RequestIdGuard`: X-Request-Id generation (UUID v4) or propagation, writes `RequestId` to Bus
+  - `AuthGuard`: Bearer token / API key / custom validator authentication with `subtle::ConstantTimeEq` timing-safe comparison, `IamPolicy` enforcement (RequireRole/RequirePermission/Custom)
+- **3 additional Guards (M294):**
+  - `ContentTypeGuard`: Content-Type media type validation (415 Unsupported Media Type), `json()` / `form()` / `accept()` constructors
+  - `TimeoutGuard`: Pipeline execution deadline, writes `TimeoutDeadline` to Bus, ingress enforces via `tokio::time::timeout()` (408 Request Timeout)
+  - `IdempotencyGuard`: Duplicate request prevention with `IdempotencyCache` (Arc-shared TTL HashMap), cache hit skips circuit and returns cached response body
+- **Per-route Guard API (ranvier-http, M294):** `get_with_guards()`, `post_with_guards()`, `put_with_guards()`, `delete_with_guards()`, `patch_with_guards()` methods with save/restore pattern for combining global + per-route Guards.
+- **`guards![]` macro (ranvier-http, M294):** Convenience macro calling `GuardIntegration::register()` on each guard expression.
+- **3 Tier 3 Guards (M295, feature-gated: `advanced`):**
+  - `DecompressionGuard`: Gzip request body decompression via flate2
+  - `ConditionalRequestGuard`: If-None-Match / If-Modified-Since → 304 Not Modified (RFC 7232)
+  - `RedirectGuard`: 301/302 redirect rule matching with Location header
+- **Example: `guard-integration-demo` (M292-M294):** Demonstrates all 12 default Guards (7 global + 3 per-route) with `guards![]` macro usage.
+
+### Changed
+- **Crate count:** 11 → 12 workspace crates (`ranvier-guard` added).
+- **`ranvier-std`:** Guard nodes remain for backwards compatibility but `ranvier-guard` is the canonical location.
+- **`ranvier` facade crate:** Re-exports `ranvier-guard` prelude.
+- **Publish order:** T3 tier now includes `ranvier-guard` between `ranvier-std` and `ranvier-http`.
+
+---
+
 ## [0.34.0] — 2026-03
 
 ### Summary
