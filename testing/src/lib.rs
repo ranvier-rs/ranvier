@@ -167,6 +167,74 @@ macro_rules! assert_outcome_err {
     };
 }
 
+/// Assert that a collected stream has the expected number of items.
+///
+/// Optionally accepts a closure to inspect the first item.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// let items = TestAxon::run_stream(streaming_axon, input, &(), TestBus::new()).await.unwrap();
+/// assert_stream_items!(items, 3);
+/// assert_stream_items!(items, 3, |first| assert_eq!(first.text, "Hello"));
+/// ```
+#[macro_export]
+macro_rules! assert_stream_items {
+    ($items:expr, $count:expr) => {
+        assert_eq!(
+            $items.len(),
+            $count,
+            "expected {} stream items, got {}",
+            $count,
+            $items.len()
+        );
+    };
+    ($items:expr, $count:expr, $check_first:expr) => {
+        assert_eq!(
+            $items.len(),
+            $count,
+            "expected {} stream items, got {}",
+            $count,
+            $items.len()
+        );
+        if !$items.is_empty() {
+            let check: fn(&_) = $check_first;
+            check(&$items[0]);
+        }
+    };
+}
+
+#[cfg(feature = "streaming")]
+impl TestAxon {
+    /// Execute a `StreamingAxon` and collect all items into a `Vec`.
+    ///
+    /// Returns the collected items or a `StreamingAxonError`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let items = TestAxon::run_stream(streaming_axon, input, &(), TestBus::new()).await.unwrap();
+    /// assert_stream_items!(items, 5);
+    /// ```
+    pub async fn run_stream<In, Item, E, Res>(
+        axon: ranvier_runtime::StreamingAxon<In, Item, E, Res>,
+        input: In,
+        resources: &Res,
+        test_bus: TestBus,
+    ) -> Result<Vec<Item>, ranvier_runtime::StreamingAxonError<E>>
+    where
+        In: Send + Sync + 'static,
+        Item: Send + 'static,
+        E: Send + Sync + std::fmt::Debug + 'static,
+        Res: ranvier_core::transition::ResourceRequirement,
+    {
+        use futures_util::StreamExt;
+        let mut bus = test_bus.build();
+        let stream = axon.execute(input, resources, &mut bus).await?;
+        Ok(stream.collect().await)
+    }
+}
+
 /// Internal helper — returns a variant name for panic messages.
 #[doc(hidden)]
 pub fn __outcome_variant_name<T, E: std::fmt::Debug>(outcome: &Outcome<T, E>) -> &'static str {

@@ -7,12 +7,17 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/ranvier-rs/ranvier"
 keywords = ["ranvier", "testing", "pipeline"]
 
+[features]
+default = []
+streaming = ["ranvier-runtime/streaming"]
+
 [dependencies]
 ranvier-core = { path = "../core", version = "0.36.0" }
 ranvier-runtime = { path = "../runtime", version = "0.36.0" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["rt", "macros"] }
+futures-util = { version = "0.3", optional = false }
 
 [lints]
 workspace = true

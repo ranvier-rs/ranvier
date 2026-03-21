@@ -173,6 +173,14 @@
       "has_prebuilt_schematic": false
     },
     {
+      "name": "streaming-demo",
+      "tier": "B",
+      "description": "StreamingTransition + SSE streaming with StreamingAxon",
+      "tags": ["streaming", "sse", "llm"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
       "name": "testing-patterns",
       "tier": "B",
       "description": "Unit and integration testing for Transitions and Axon chains",

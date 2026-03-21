@@ -73,6 +73,7 @@ These are maintained and useful, but not the first onboarding path.
 41. `service-call-demo`
 42. `closure-transition-demo` — v0.34: `then_fn()`, `Axon::typed()`, `post_typed()`
 43. `guard-integration-demo` — v0.35: `GuardIntegration`, per-route `guards![]` macro
+44. `streaming-demo` — v0.37: `StreamingTransition`, `StreamingAxon`, `post_sse_typed()`
 
 ### Tier C: Ecosystem Integration
 

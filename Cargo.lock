@@ -4361,6 +4361,7 @@ dependencies = [
 name = "ranvier-test"
 version = "0.36.0"
 dependencies = [
+ "futures-util",
  "ranvier-core",
  "ranvier-runtime",
  "serde",
@@ -5830,6 +5831,26 @@ dependencies = [
  "ranvier-http",
  "ranvier-runtime",
  "ranvier-std",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "streaming-demo"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "futures-core",
+ "futures-util",
+ "ranvier-core",
+ "ranvier-guard",
+ "ranvier-http",
+ "ranvier-runtime",
+ "schemars",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

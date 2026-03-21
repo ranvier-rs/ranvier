@@ -1,0 +1,228 @@
+//! # Streaming Demo — LLM Chat Streaming with SSE
+//!
+//! Demonstrates Ranvier's `StreamingTransition` and `post_sse_typed()` API.
+//!
+//! ## Pipeline
+//!
+//! ```text
+//! ChatRequest → ClassifyIntent → SynthesizeStream (streaming) → SSE
+//! ```
+//!
+//! ## Endpoints
+//!
+//! - `POST /api/chat/stream` — SSE streaming response (typed body)
+//! - `POST /api/chat`        — Non-streaming JSON response (for comparison)
+//!
+//! ## Test
+//!
+//! ```bash
+//! cargo run -p streaming-demo
+//!
+//! # SSE streaming
+//! curl -N -X POST http://localhost:3000/api/chat/stream \
+//!   -H "Content-Type: application/json" \
+//!   -d '{"message": "Hello, how are you?"}'
+//!
+//! # Non-streaming
+//! curl -X POST http://localhost:3000/api/chat \
+//!   -H "Content-Type: application/json" \
+//!   -d '{"message": "Hello, how are you?"}'
+//! ```
+
+use async_trait::async_trait;
+use futures_core::Stream;
+use ranvier_core::bus::Bus;
+use ranvier_core::outcome::Outcome;
+use ranvier_core::streaming::StreamingTransition;
+use ranvier_core::transition::Transition;
+use ranvier_guard::prelude::*;
+use ranvier_http::prelude::*;
+use ranvier_runtime::Axon;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use std::pin::Pin;
+use std::time::Duration;
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChatRequest {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClassifiedChat {
+    pub message: String,
+    pub intent: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatChunk {
+    pub text: String,
+    pub index: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Transitions
+// ---------------------------------------------------------------------------
+
+/// Step 1: Classify the user's intent.
+#[derive(Clone)]
+struct ClassifyIntent;
+
+#[async_trait]
+impl Transition<ChatRequest, ClassifiedChat> for ClassifyIntent {
+    type Error = String;
+    type Resources = ();
+
+    async fn run(
+        &self,
+        input: ChatRequest,
+        _resources: &(),
+        _bus: &mut Bus,
+    ) -> Outcome<ClassifiedChat, String> {
+        let intent = if input.message.to_lowercase().contains("code") {
+            "code_generation"
+        } else {
+            "general_chat"
+        };
+
+        tracing::info!(intent = %intent, "Classified intent");
+
+        Outcome::Next(ClassifiedChat {
+            message: input.message,
+            intent: intent.to_string(),
+        })
+    }
+
+    fn label(&self) -> String {
+        "ClassifyIntent".to_string()
+    }
+}
+
+/// Step 2 (streaming): Simulate LLM token streaming.
+#[derive(Clone)]
+struct SynthesizeStream;
+
+#[async_trait]
+impl StreamingTransition<ClassifiedChat> for SynthesizeStream {
+    type Item = ChatChunk;
+    type Error = String;
+    type Resources = ();
+
+    async fn run_stream(
+        &self,
+        input: ClassifiedChat,
+        _resources: &(),
+        _bus: &mut Bus,
+    ) -> Result<Pin<Box<dyn Stream<Item = ChatChunk> + Send>>, String> {
+        // Simulate LLM response tokens
+        let tokens = match input.intent.as_str() {
+            "code_generation" => vec![
+                "Here's", " a", " simple", " example:\n",
+                "```rust\n", "fn ", "hello", "() ", "{\n",
+                "    ", "println!", "(\"Hello!\");\n",
+                "}\n", "```",
+            ],
+            _ => vec![
+                "Hello", "!", " I'm", " doing", " great,",
+                " thank", " you", " for", " asking.", " How",
+                " can", " I", " help", " you", " today?",
+            ],
+        };
+
+        let stream = async_stream::stream! {
+            for (i, token) in tokens.into_iter().enumerate() {
+                // Simulate LLM latency
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                yield ChatChunk {
+                    text: token.to_string(),
+                    index: i as u32,
+                };
+            }
+        };
+
+        Ok(Box::pin(stream))
+    }
+
+    fn label(&self) -> String {
+        "SynthesizeStream".to_string()
+    }
+
+    fn description(&self) -> Option<String> {
+        Some("Simulates LLM token-by-token streaming".to_string())
+    }
+}
+
+/// Step 2 (non-streaming): Generate complete response as JSON Value.
+#[derive(Clone)]
+struct SynthesizeBatch;
+
+#[async_trait]
+impl Transition<ClassifiedChat, serde_json::Value> for SynthesizeBatch {
+    type Error = String;
+    type Resources = ();
+
+    async fn run(
+        &self,
+        input: ClassifiedChat,
+        _resources: &(),
+        _bus: &mut Bus,
+    ) -> Outcome<serde_json::Value, String> {
+        // Simulate LLM latency
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let reply = match input.intent.as_str() {
+            "code_generation" => "Here's a simple example:\n```rust\nfn hello() {\n    println!(\"Hello!\");\n}\n```",
+            _ => "Hello! I'm doing great, thank you for asking. How can I help you today?",
+        };
+
+        Outcome::Next(serde_json::json!({ "reply": reply }))
+    }
+
+    fn label(&self) -> String {
+        "SynthesizeBatch".to_string()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tracing_subscriber::fmt()
+        .with_env_filter("streaming_demo=info,ranvier_http=info")
+        .init();
+
+    // Streaming pipeline: ChatRequest → ClassifyIntent → SynthesizeStream (SSE)
+    let streaming_pipeline = Axon::typed::<ChatRequest, String>("chat-stream")
+        .then(ClassifyIntent)
+        .then_stream(SynthesizeStream);
+
+    // Non-streaming pipeline: ChatRequest → ClassifyIntent → SynthesizeBatch → JSON
+    let batch_pipeline = Axon::typed::<ChatRequest, String>("chat-batch")
+        .then(ClassifyIntent)
+        .then(SynthesizeBatch);
+
+    tracing::info!("Starting streaming-demo on http://localhost:3000");
+
+    Ranvier::http()
+        .bind("127.0.0.1:3000")
+        .guard(CorsGuard::<()>::new(CorsConfig {
+            allowed_origins: vec!["*".into()],
+            allowed_methods: vec!["GET".into(), "POST".into()],
+            allowed_headers: vec!["Content-Type".into()],
+            max_age_seconds: 3600,
+            allow_credentials: false,
+        }))
+        .guard(AccessLogGuard::<()>::new())
+        .post_sse_typed::<ChatRequest, _, _>("/api/chat/stream", streaming_pipeline)
+        .post_typed::<ChatRequest, _, _>("/api/chat", batch_pipeline)
+        .run(())
+        .await?;
+
+    Ok(())
+}
