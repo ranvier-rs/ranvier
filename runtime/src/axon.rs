@@ -211,6 +211,8 @@ where
             compensation_node_id: None,
             input_schema: None,
             output_schema: None,
+            item_type: None,
+            terminal: None,
         };
 
         let mut schematic = Schematic::new(label);
@@ -545,6 +547,8 @@ where
             compensation_node_id: None,
             input_schema: transition.input_schema(),
             output_schema: None,
+            item_type: None,
+            terminal: None,
         };
 
         let last_node_id = schematic
@@ -798,6 +802,8 @@ where
             compensation_node_id: None,
             input_schema: transition.input_schema(),
             output_schema: None,
+            item_type: None,
+            terminal: None,
         };
 
         let last_node_id = schematic
@@ -969,6 +975,8 @@ where
             compensation_node_id: None,
             input_schema: transition.input_schema(),
             output_schema: None,
+            item_type: None,
+            terminal: None,
         };
 
         let last_node_id = schematic
@@ -1114,6 +1122,8 @@ where
             compensation_node_id: Some(comp_node_id.clone()),
             input_schema: None,
             output_schema: None,
+            item_type: None,
+            terminal: None,
         };
 
         // 2. Add Compensation Node
@@ -1134,6 +1144,8 @@ where
             compensation_node_id: None,
             input_schema: None,
             output_schema: None,
+            item_type: None,
+            terminal: None,
         };
 
         let last_node_id = schematic
@@ -1350,6 +1362,8 @@ where
             compensation_node_id: None,
             input_schema: None,
             output_schema: None,
+            item_type: None,
+            terminal: None,
         };
 
         if let Some(last_node) = self.schematic.nodes.last_mut() {
@@ -1387,6 +1401,8 @@ where
             compensation_node_id: None,
             input_schema: None,
             output_schema: None,
+            item_type: None,
+            terminal: None,
         };
 
         self.schematic.nodes.push(branch_node);
@@ -1490,6 +1506,8 @@ where
             compensation_node_id: None,
             input_schema: None,
             output_schema: None,
+            item_type: None,
+            terminal: None,
         };
 
         schematic.nodes.push(fanout_node);
@@ -1519,6 +1537,8 @@ where
                 compensation_node_id: None,
                 input_schema: trans.input_schema(),
                 output_schema: None,
+                item_type: None,
+                terminal: None,
             };
             schematic.nodes.push(branch_node);
             schematic.edges.push(Edge {
@@ -1546,6 +1566,8 @@ where
             compensation_node_id: None,
             input_schema: None,
             output_schema: None,
+            item_type: None,
+            terminal: None,
         };
 
         schematic.nodes.push(fanin_node);

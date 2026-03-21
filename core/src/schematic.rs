@@ -165,6 +165,14 @@ pub struct Node {
     /// Populated via `.with_output_schema::<T>()` or `#[transition(schema)]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<serde_json::Value>,
+    /// The type of each item yielded by a streaming transition.
+    /// Only present when `kind` is `StreamingTransition`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_type: Option<String>,
+    /// Whether this node is terminal (no outgoing edges).
+    /// Streaming transitions are always terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -184,6 +192,7 @@ pub enum NodeKind {
     Subgraph(Box<Schematic>), // Nested graph
     FanOut,                   // Parallel split point
     FanIn,                    // Parallel join point
+    StreamingTransition,      // Streaming data producer (terminal node)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -465,6 +474,8 @@ mod tests {
             compensation_node_id: None,
             input_schema: Some(serde_json::json!({"type": "object"})),
             output_schema: Some(serde_json::json!({"type": "string"})),
+            item_type: None,
+            terminal: None,
         };
         let json = serde_json::to_value(&node).unwrap();
         assert_eq!(json["input_schema"], serde_json::json!({"type": "object"}));
@@ -488,6 +499,8 @@ mod tests {
             compensation_node_id: None,
             input_schema: None,
             output_schema: None,
+            item_type: None,
+            terminal: None,
         };
         let json = serde_json::to_value(&node).unwrap();
         let obj = json.as_object().unwrap();
@@ -513,6 +526,8 @@ mod tests {
             compensation_node_id: None,
             input_schema: Some(serde_json::json!({"type": "object", "required": ["name"]})),
             output_schema: None,
+            item_type: None,
+            terminal: None,
         });
 
         let json = serde_json::to_string(&schematic).unwrap();
@@ -556,6 +571,80 @@ mod tests {
         assert_eq!(schematic.nodes.len(), 1);
         assert!(schematic.nodes[0].input_schema.is_none());
         assert!(schematic.nodes[0].output_schema.is_none());
+    }
+
+    #[test]
+    fn test_streaming_transition_node_serialization() {
+        let node = Node {
+            id: "stream-1".to_string(),
+            kind: NodeKind::StreamingTransition,
+            label: "SynthesizeStream".to_string(),
+            description: Some("LLM token streaming".to_string()),
+            input_type: "ToolResults".to_string(),
+            output_type: "()".to_string(),
+            resource_type: "AppResources".to_string(),
+            metadata: StepMetadata::default(),
+            bus_capability: None,
+            source_location: None,
+            position: None,
+            compensation_node_id: None,
+            input_schema: None,
+            output_schema: None,
+            item_type: Some("ChatChunk".to_string()),
+            terminal: Some(true),
+        };
+        let json = serde_json::to_value(&node).unwrap();
+        assert_eq!(json["kind"], "StreamingTransition");
+        assert_eq!(json["item_type"], "ChatChunk");
+        assert_eq!(json["terminal"], true);
+    }
+
+    #[test]
+    fn test_streaming_transition_node_roundtrip() {
+        let json = r#"{
+            "id": "stream-rt",
+            "kind": "StreamingTransition",
+            "label": "TokenStream",
+            "input_type": "Query",
+            "output_type": "()",
+            "resource_type": "()",
+            "metadata": {
+                "id": "00000000-0000-0000-0000-000000000000",
+                "label": "TokenStream",
+                "description": null,
+                "inputs": [],
+                "outputs": []
+            },
+            "item_type": "Token",
+            "terminal": true
+        }"#;
+        let node: Node = serde_json::from_str(json).unwrap();
+        assert!(matches!(node.kind, NodeKind::StreamingTransition));
+        assert_eq!(node.item_type, Some("Token".to_string()));
+        assert_eq!(node.terminal, Some(true));
+    }
+
+    #[test]
+    fn test_node_without_streaming_fields_deserializes() {
+        // Backward compat: old JSON without item_type/terminal
+        let json = r#"{
+            "id": "old-1",
+            "kind": "Atom",
+            "label": "OldAtom",
+            "input_type": "i32",
+            "output_type": "i32",
+            "resource_type": "()",
+            "metadata": {
+                "id": "00000000-0000-0000-0000-000000000000",
+                "label": "OldAtom",
+                "description": null,
+                "inputs": [],
+                "outputs": []
+            }
+        }"#;
+        let node: Node = serde_json::from_str(json).unwrap();
+        assert!(node.item_type.is_none());
+        assert!(node.terminal.is_none());
     }
 
     #[test]

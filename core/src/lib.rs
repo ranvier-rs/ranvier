@@ -21,6 +21,9 @@ pub mod tenant;
 pub mod timeline;
 pub mod transition;
 
+#[cfg(feature = "streaming")]
+pub mod streaming;
+
 // NOTE: service module moved to ranvier-http (Discussion 190: Protocol-agnostic Core)
 // For Ingress adapters, use: ranvier_http
 

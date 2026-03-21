@@ -27,7 +27,9 @@ toml = "0.8"
 # NOTE: hyper, tower, http removed per Discussion 190 - Core MUST be Protocol-agnostic
 # HTTP-related functionality now lives in ranvier-http
 
-
+[features]
+default = []
+streaming = []   # Enables StreamingTransition trait, StreamEvent, StreamTimeoutConfig
 
 [lints]
 workspace = true

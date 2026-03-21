@@ -743,6 +743,7 @@ fn node_kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Subgraph(_) => "Subgraph",
         NodeKind::FanOut => "FanOut",
         NodeKind::FanIn => "FanIn",
+        NodeKind::StreamingTransition => "StreamingTransition",
     }
 }
 
