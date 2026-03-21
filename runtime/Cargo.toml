@@ -12,6 +12,7 @@ description = "Async Execution Engine for Ranvier"
 [features]
 default = []
 schema = ["dep:schemars"]
+streaming = ["ranvier-core/streaming"]
 persistence-postgres = ["dep:sqlx"]
 persistence-redis = ["dep:redis"]
 

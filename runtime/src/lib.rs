@@ -3,6 +3,8 @@
 pub mod axon;
 pub mod closure_transition;
 pub mod cluster;
+#[cfg(feature = "streaming")]
+pub mod streaming_axon;
 pub mod distributed;
 pub mod llm;
 pub mod persistence;
@@ -32,6 +34,8 @@ pub mod prelude {
     pub use crate::replay::ReplayEngine;
     pub use crate::retry::{BackoffStrategy, RetryPolicy};
     pub use crate::testkit::AxonTestKit;
+    #[cfg(feature = "streaming")]
+    pub use crate::streaming_axon::{StreamingAxon, StreamingAxonError, StreamTimeoutKind};
 }
 
 /// Axon with `String` error — the most common pattern for examples and prototyping.
@@ -66,3 +70,5 @@ pub use persistence::{RedisCompensationIdempotencyStore, RedisPersistenceStore};
 pub use replay::ReplayEngine;
 pub use retry::{BackoffStrategy, RetryPolicy};
 pub use testkit::AxonTestKit;
+#[cfg(feature = "streaming")]
+pub use streaming_axon::{StreamingAxon, StreamingAxonError, StreamTimeoutKind};

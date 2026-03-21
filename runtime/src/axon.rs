@@ -29,6 +29,8 @@ use ranvier_core::schematic::{
 };
 use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_core::transition::Transition;
+#[cfg(feature = "streaming")]
+use ranvier_core::streaming::{StreamTimeoutConfig, StreamingTransition};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::any::type_name;
@@ -122,7 +124,7 @@ pub struct Axon<In, Out, E, Res = ()> {
     /// The static structure (for visualization/analysis)
     pub schematic: Schematic,
     /// The runtime executor
-    executor: Executor<In, Out, E, Res>,
+    pub(crate) executor: Executor<In, Out, E, Res>,
     /// How this Axon is executed across the cluster
     pub execution_mode: ExecutionMode,
     /// Optional persistence store for state inspection
@@ -1418,6 +1420,172 @@ where
 
     /// Run multiple transitions in parallel (fan-out / fan-in).
     ///
+    /// Append a streaming transition as the **terminal** step.
+    ///
+    /// The returned `StreamingAxon` produces a `Stream<Item>` when executed,
+    /// instead of a single `Outcome`. No further `.then()` calls are allowed.
+    ///
+    /// ## Example
+    ///
+    /// ```rust,ignore
+    /// let streaming = Axon::simple::<String>("chat")
+    ///     .then(ClassifyIntent)
+    ///     .then_stream(SynthesizeStream);
+    ///
+    /// let stream = streaming.execute((), &res, &mut bus).await?;
+    /// ```
+    #[cfg(feature = "streaming")]
+    #[track_caller]
+    pub fn then_stream<Item, SErr, S>(
+        self,
+        streaming: S,
+    ) -> crate::streaming_axon::StreamingAxon<In, Item, E, Res>
+    where
+        Item: Send + 'static,
+        SErr: Send + Sync + std::fmt::Debug + 'static,
+        S: StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.then_stream_internal(streaming, None)
+    }
+
+    /// Like `then_stream`, but with a `StreamTimeoutConfig` for init/idle/total timeouts.
+    #[cfg(feature = "streaming")]
+    #[track_caller]
+    pub fn then_stream_with_timeout<Item, SErr, S>(
+        self,
+        streaming: S,
+        timeout_config: StreamTimeoutConfig,
+    ) -> crate::streaming_axon::StreamingAxon<In, Item, E, Res>
+    where
+        Item: Send + 'static,
+        SErr: Send + Sync + std::fmt::Debug + 'static,
+        S: StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.then_stream_internal(streaming, Some(timeout_config))
+    }
+
+    #[cfg(feature = "streaming")]
+    fn then_stream_internal<Item, SErr, S>(
+        self,
+        streaming: S,
+        timeout_config: Option<StreamTimeoutConfig>,
+    ) -> crate::streaming_axon::StreamingAxon<In, Item, E, Res>
+    where
+        Item: Send + 'static,
+        SErr: Send + Sync + std::fmt::Debug + 'static,
+        S: StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+    {
+        use crate::streaming_axon::{StreamingAxon, StreamingAxonError};
+        use ranvier_core::schematic::{Edge, EdgeType, Node, NodeKind, SourceLocation};
+
+        let caller = std::panic::Location::caller();
+
+        let Axon {
+            mut schematic,
+            executor: prev_executor,
+            ..
+        } = self;
+
+        // Add streaming node to schematic
+        let stream_node_id = uuid::Uuid::new_v4().to_string();
+        let stream_node = Node {
+            id: stream_node_id.clone(),
+            kind: NodeKind::StreamingTransition,
+            label: streaming.label(),
+            description: streaming.description(),
+            input_type: type_name_of::<Out>(),
+            output_type: format!("Stream<{}>", type_name_of::<Item>()),
+            resource_type: type_name_of::<Res>(),
+            metadata: Default::default(),
+            bus_capability: None,
+            source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            position: None,
+            compensation_node_id: None,
+            input_schema: None,
+            output_schema: None,
+            item_type: Some(type_name_of::<Item>()),
+            terminal: Some(true),
+        };
+
+        let last_node_id = schematic
+            .nodes
+            .last()
+            .map(|n| n.id.clone())
+            .unwrap_or_default();
+
+        schematic.nodes.push(stream_node);
+        schematic.edges.push(Edge {
+            from: last_node_id,
+            to: stream_node_id,
+            kind: EdgeType::Linear,
+            label: Some("Stream".to_string()),
+        });
+
+        // Build stream executor
+        let stream_executor: crate::streaming_axon::StreamExecutorType<In, Item, E, Res> =
+            Arc::new(
+                move |input: In,
+                      res: &Res,
+                      bus: &mut Bus|
+                      -> BoxFuture<
+                    '_,
+                    Result<
+                        std::pin::Pin<Box<dyn futures_core::Stream<Item = Item> + Send>>,
+                        StreamingAxonError<E>,
+                    >,
+                > {
+                    let prev = prev_executor.clone();
+                    let streaming = streaming.clone();
+
+                    Box::pin(async move {
+                        // Execute prefix Axon
+                        let outcome = prev(input, res, bus).await;
+
+                        // Only Next outcome is valid for streaming
+                        let intermediate = match outcome {
+                            Outcome::Next(val) => val,
+                            Outcome::Fault(e) => {
+                                return Err(StreamingAxonError::PipelineFault(e));
+                            }
+                            other => {
+                                return Err(StreamingAxonError::UnexpectedOutcome(format!(
+                                    "{:?}",
+                                    std::mem::discriminant(&other)
+                                )));
+                            }
+                        };
+
+                        // Initialize stream
+                        streaming
+                            .run_stream(intermediate, res, bus)
+                            .await
+                            .map_err(|e| {
+                                StreamingAxonError::StreamInitError(format!("{:?}", e))
+                            })
+                    })
+                },
+            );
+
+        StreamingAxon {
+            schematic,
+            stream_executor,
+            timeout_config,
+            buffer_size: 64,
+        }
+    }
+
     /// Each transition receives a clone of the current step's output and runs
     /// concurrently via [`futures_util::future::join_all`]. The strategy controls
     /// how faults are handled:

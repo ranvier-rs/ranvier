@@ -1763,6 +1763,239 @@ where
         self.route_method_with_error(Method::PATCH, path, circuit, error_handler)
     }
 
+    // ── SSE Streaming API ───────────────────────────────────────────────
+
+    /// Register a POST route that executes a `StreamingAxon` and responds
+    /// with Server-Sent Events (SSE).
+    ///
+    /// The Axon prefix runs first (`() → Out`), then the `StreamingTransition`
+    /// produces a stream of items. Each item is serialized as JSON and sent
+    /// as an SSE `data:` frame. When the stream completes, a `data: [DONE]`
+    /// sentinel is sent.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let streaming = Axon::simple::<String>("chat")
+    ///     .then(ClassifyIntent)
+    ///     .then_stream(SynthesizeStream);
+    ///
+    /// Ranvier::http()
+    ///     .post_sse("/api/chat/stream", streaming)
+    ///     .run().await;
+    /// ```
+    #[cfg(feature = "streaming")]
+    pub fn post_sse<Item, E>(
+        self,
+        path: impl Into<String>,
+        circuit: ranvier_runtime::StreamingAxon<(), Item, E, R>,
+    ) -> Self
+    where
+        Item: serde::Serialize + Send + Sync + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_sse_internal::<(), Item, E>(Method::POST, path, circuit, false)
+    }
+
+    /// Like `post_sse`, but with type-safe JSON body deserialization.
+    ///
+    /// The request body is deserialized as `T` and passed as the
+    /// `StreamingAxon` input. Returns `400 Bad Request` on parse failure.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let streaming = Axon::typed::<ChatRequest, String>("chat")
+    ///     .then(ClassifyIntent)
+    ///     .then_stream(SynthesizeStream);
+    ///
+    /// Ranvier::http()
+    ///     .post_sse_typed::<ChatRequest, _, _>("/api/chat/stream", streaming)
+    ///     .run().await;
+    /// ```
+    #[cfg(feature = "streaming")]
+    pub fn post_sse_typed<T, Item, E>(
+        self,
+        path: impl Into<String>,
+        circuit: ranvier_runtime::StreamingAxon<T, Item, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + schemars::JsonSchema + 'static,
+        Item: serde::Serialize + Send + Sync + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_sse_internal::<T, Item, E>(Method::POST, path, circuit, true)
+    }
+
+    /// Internal: Register an SSE streaming route.
+    #[cfg(feature = "streaming")]
+    fn route_sse_internal<T, Item, E>(
+        mut self,
+        method: Method,
+        path: impl Into<String>,
+        circuit: ranvier_runtime::StreamingAxon<T, Item, E, R>,
+        needs_body: bool,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
+        Item: serde::Serialize + Send + Sync + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let path_str: String = path.into();
+        let circuit = Arc::new(circuit);
+        let route_bus_injectors = Arc::new(self.bus_injectors.clone());
+        let route_guard_execs = Arc::new(self.guard_execs.clone());
+        let route_response_extractors = Arc::new(self.guard_response_extractors.clone());
+        let path_for_pattern = path_str.clone();
+        let path_for_handler = path_str;
+        let method_for_pattern = method.clone();
+        let method_for_handler = method;
+
+        let handler: RouteHandler<R> = Arc::new(move |parts: http::request::Parts, res: &R| {
+            let circuit = circuit.clone();
+            let route_bus_injectors = route_bus_injectors.clone();
+            let route_guard_execs = route_guard_execs.clone();
+            let route_response_extractors = route_response_extractors.clone();
+            let res = res.clone();
+            let path = path_for_handler.clone();
+            let method = method_for_handler.clone();
+
+            Box::pin(async move {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let span = tracing::info_span!(
+                    "SSERequest",
+                    ranvier.http.method = %method,
+                    ranvier.http.path = %path,
+                    ranvier.http.request_id = %request_id
+                );
+
+                async move {
+                    // Parse typed body if needed
+                    let input: T = if needs_body {
+                        let body_bytes = parts
+                            .extensions
+                            .get::<BodyBytes>()
+                            .map(|b| b.0.clone())
+                            .unwrap_or_default();
+
+                        match serde_json::from_slice(&body_bytes) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                return json_error_response(
+                                    StatusCode::BAD_REQUEST,
+                                    &format!("Invalid request body: {}", e),
+                                );
+                            }
+                        }
+                    } else {
+                        // For non-typed routes, T must be ()
+                        // This is safe because post_sse uses T=()
+                        match serde_json::from_str("null") {
+                            Ok(v) => v,
+                            Err(_) => {
+                                return json_error_response(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "Internal: failed to construct default input",
+                                );
+                            }
+                        }
+                    };
+
+                    let mut bus = Bus::new();
+                    for injector in route_bus_injectors.iter() {
+                        injector(&parts, &mut bus);
+                    }
+                    for guard_exec in route_guard_execs.iter() {
+                        if let Err(rejection) = guard_exec.exec_guard(&mut bus).await {
+                            let mut response = json_error_response(rejection.status, &rejection.message);
+                            for extractor in route_response_extractors.iter() {
+                                extractor(&bus, response.headers_mut());
+                            }
+                            return response;
+                        }
+                    }
+
+                    // Execute the streaming pipeline
+                    let stream = match circuit.execute(input, &res, &mut bus).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::error!("Streaming pipeline error: {}", e);
+                            if cfg!(debug_assertions) {
+                                return json_error_response(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    &format!("Streaming error: {}", e),
+                                );
+                            } else {
+                                return json_error_response(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "Internal server error",
+                                );
+                            }
+                        }
+                    };
+
+                    // Bridge stream → mpsc channel → SSE frames.
+                    // This decouples the !Sync stream from the Sync body requirement.
+                    let buffer_size = circuit.buffer_size;
+                    let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(buffer_size);
+
+                    // Spawn a task to consume the stream and send SSE frames
+                    tokio::spawn(async move {
+                        let mut pinned = Box::pin(stream);
+                        while let Some(item) = futures_util::StreamExt::next(&mut pinned).await {
+                            let text = match serde_json::to_string(&item) {
+                                Ok(json) => format!("data: {}\n\n", json),
+                                Err(e) => {
+                                    tracing::error!("SSE item serialization error: {}", e);
+                                    let err_text = "event: error\ndata: {\"message\":\"serialization error\",\"code\":\"serialize_error\"}\n\n".to_string();
+                                    let _ = tx.send(Bytes::from(err_text)).await;
+                                    break;
+                                }
+                            };
+                            if tx.send(Bytes::from(text)).await.is_err() {
+                                tracing::info!("SSE client disconnected");
+                                break;
+                            }
+                        }
+                        // Send [DONE] sentinel
+                        let _ = tx.send(Bytes::from("data: [DONE]\n\n")).await;
+                    });
+
+                    // Receive channel → frame stream (this is Sync-safe)
+                    let frame_stream = async_stream::stream! {
+                        while let Some(bytes) = rx.recv().await {
+                            yield Ok::<http_body::Frame<Bytes>, std::convert::Infallible>(
+                                http_body::Frame::data(bytes)
+                            );
+                        }
+                    };
+
+                    let body = http_body_util::StreamBody::new(frame_stream);
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(http::header::CONTENT_TYPE, "text/event-stream")
+                        .header(http::header::CACHE_CONTROL, "no-cache")
+                        .header(http::header::CONNECTION, "keep-alive")
+                        .body(http_body_util::BodyExt::boxed(body))
+                        .expect("Valid SSE response")
+                }
+                .instrument(span)
+                .await
+            }) as Pin<Box<dyn Future<Output = HttpResponse> + Send>>
+        });
+
+        self.routes.push(RouteEntry {
+            method: method_for_pattern,
+            pattern: RoutePattern::parse(&path_for_pattern),
+            handler,
+            layers: Arc::new(Vec::new()),
+            apply_global_layers: true,
+            needs_body,
+            body_schema: None,
+        });
+        self
+    }
+
     // ── Per-Route Guard API ─────────────────────────────────────────────
 
     /// Internal: apply extra `RegisteredGuard`s, register a route, then restore
