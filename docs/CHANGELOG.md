@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.37.0] — 2026-03
+
+### Summary
+
+**Ranvier 0.37.0 — StreamingTransition Sprint.**
+Introduces the StreamingTransition trait for producing item streams instead of single Outcome values. StreamingAxon runtime type, SSE HTTP endpoints (post_sse/post_sse_typed), stream timeouts (init/idle/total), ranvier-test streaming support, and CLI modernization.
+
+### Added
+- **StreamingTransition trait (ranvier-core, M306, feature: `streaming`):** New trait `StreamingTransition<From>` with `run_stream()` returning `Pin<Box<dyn Stream<Item>>>`. `StreamEvent<T>` protocol enum (Data/Error/Done), `StreamTimeoutConfig` (init/idle/total), `StreamError` struct. `NodeKind::StreamingTransition` variant in Schematic with `item_type` and `terminal` fields.
+- **StreamingAxon runtime (ranvier-runtime, M307, feature: `streaming`):** `StreamingAxon<In, Item, E, Res>` type wrapping an Axon prefix + StreamingTransition terminal step. `Axon::then_stream()` and `then_stream_with_timeout()` terminal builder methods. `StreamingAxonError<E>` enum (PipelineFault, UnexpectedOutcome, StreamInitError, Timeout). `TimeoutStream` wrapper enforcing init/idle/total timeouts. `collect_into_vec()` collapses stream to `Axon<In, Vec<Item>, String, Res>`.
+- **SSE HTTP endpoints (ranvier-http, M307, feature: `streaming`):** `post_sse(path, streaming_axon)` and `post_sse_typed::<T>(path, streaming_axon)` methods on HttpIngress. SSE frame format: `data: {json}\n\n` per item + `data: [DONE]\n\n` sentinel. Backpressure via bounded mpsc channel (default 64 items). Client disconnect detection.
+- **streaming-demo example (M308):** LLM chat streaming demo with `ChatRequest -> ClassifyIntent -> SynthesizeStream` SSE pipeline + batch JSON comparison endpoint.
+- **ranvier-test streaming (M308, feature: `streaming`):** `TestAxon::run_stream()` method, `assert_stream_items!` macro for count and content assertions.
+- **Cookbook streaming patterns guide (docs, M308):** EN/KO guide covering StreamingTransition, StreamingAxon, SSE endpoints, timeouts, testing, feature flags.
+
+### Changed
+- **CLI modernization (M308):** Fullstack template updated to `Axon::typed` + `post_typed` + `bus_injector` pattern. Added `NodeKind::StreamingTransition` and `TimelineEvent::NodeTimeout` match arms.
+- **CLI version:** 0.5.0 -> 0.6.0, ranvier-core dependency 0.30 -> 0.37.
+- **Examples catalog:** 63 -> 64 entries (streaming-demo added).
+- **Web documentation:** 104 pages indexed (was 102), 9889 words (was 9687).
+
+---
+
 ## [0.36.0] — 2026-03
 
 ### Summary
