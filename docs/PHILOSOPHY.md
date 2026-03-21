@@ -171,13 +171,10 @@ std::fs::write("schematic.json", json)?;
 ```
 
 **Visualization** (in VSCode):
-```
-┌─────────────┐    ┌──────────┐    ┌────────────────┐
-│ authenticate│───▶│ authorize│───▶│ handle_request │
-│             │    │          │    │                │
-│ Output:     │    │ Input:   │    │ Input:         │
-│ AuthContext │    │ &AuthCtx │    │ &AuthCtx, &Req │
-└─────────────┘    └──────────┘    └────────────────┘
+```mermaid
+graph LR
+    A["authenticate\nOutput: AuthContext"] --> B["authorize\nInput: &AuthCtx"]
+    B --> C["handle_request\nInput: &AuthCtx, &Req"]
 ```
 
 ---
