@@ -461,20 +461,14 @@ async fn test_auth_middleware() {
 
 Use this decision tree to choose the right approach:
 
-```
-Are you starting a new project?
-│
-├─ Yes → Do you need specific Tower middleware (CORS, RateLimit)?
-│   │
-│   ├─ No → Use Transition-based ✅
-│   │
-│   └─ Yes → Hybrid: Tower for HTTP, Ranvier for auth ⚠️
-│
-└─ No (existing Tower app) → Is your team willing to learn Ranvier?
-    │
-    ├─ Yes → Gradual migration to Transition-based ⚠️
-    │
-    └─ No → Keep Tower Integration ✅
+```mermaid
+graph TD
+    START{Are you starting a new project?} -->|Yes| Q1{Need specific Tower middleware?<br/>CORS, RateLimit}
+    Q1 -->|No| T1["Use Transition-based ✅"]
+    Q1 -->|Yes| T2["Hybrid: Tower for HTTP,<br/>Ranvier for auth ⚠️"]
+    START -->|No| Q2{"Existing Tower app —<br/>Team willing to learn Ranvier?"}
+    Q2 -->|Yes| T3["Gradual migration to<br/>Transition-based ⚠️"]
+    Q2 -->|No| T4["Keep Tower Integration ✅"]
 ```
 
 ---

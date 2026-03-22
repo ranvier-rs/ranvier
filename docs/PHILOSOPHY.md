@@ -755,18 +755,17 @@ let ws_layer = WebSocketUpgrade::new(|socket| async {
 
 ### 5.3. Decision Flowchart
 
-```
-START
-  │
-  ├─ Core business logic? ───Yes──> Ranvier way (Transition)
-  │
-  ├─ Need visualization? ────Yes──> Ranvier way
-  │
-  ├─ Pure infrastructure? ───Yes──> Ecosystem way (Tower/library)
-  │
-  ├─ Migrating existing? ────Yes──> Hybrid (Tower + Ranvier)
-  │
-  └─ Default ────────────────────> Ranvier way (when in doubt)
+```mermaid
+graph TD
+    START([START]) --> Q1{Core business logic?}
+    Q1 -->|Yes| R1["Ranvier way (Transition)"]
+    Q1 -->|No| Q2{Need visualization?}
+    Q2 -->|Yes| R2[Ranvier way]
+    Q2 -->|No| Q3{Pure infrastructure?}
+    Q3 -->|Yes| E1["Ecosystem way (Tower/library)"]
+    Q3 -->|No| Q4{Migrating existing?}
+    Q4 -->|Yes| H1["Hybrid (Tower + Ranvier)"]
+    Q4 -->|No| D1["Ranvier way (when in doubt)"]
 ```
 
 ### 5.4. Summary Table
@@ -793,46 +792,19 @@ This decision tree helps you choose the right approach for your specific situati
 
 ### 6.1. Quick Decision Flowchart
 
-```
-                    START: "Should I use Ranvier, Tower, or both?"
-                                      │
-                                      ▼
-        ┌─────────────────────────────────────────────────────┐
-        │  Q1: Are you starting a NEW project from scratch?   │
-        └─────────────────────────────────────────────────────┘
-                 │                                │
-                YES                              NO
-                 │                                │
-                 ▼                                ▼
-        ┌───────────────────┐         ┌─────────────────────────┐
-        │ Ranvier Way       │         │ Q2: Existing codebase?  │
-        │ (Transition)      │         └─────────────────────────┘
-        │                   │                     │
-        │ ✅ Recommended:   │         ┌───────────┴──────────────┐
-        │ - Full visibility │        YES                        NO
-        │ - Clean slate     │         │                          │
-        │ - Best practices  │         ▼                          ▼
-        └───────────────────┘  ┌──────────────┐      ┌──────────────────┐
-                               │ Tower app?   │      │ Other framework? │
-                               └──────────────┘      └──────────────────┘
-                                      │                       │
-                              ┌───────┴────────┐             │
-                             YES               NO             │
-                              │                 │             │
-                              ▼                 ▼             ▼
-                     ┌────────────────┐  ┌─────────────┐  ┌────────────┐
-                     │ Hybrid         │  │ actix/Axum? │  │ Standalone │
-                     │ (Tower +       │  └─────────────┘  │ service?   │
-                     │  Ranvier)      │         │         └────────────┘
-                     │                │    ┌────┴─────┐        │
-                     │ ✅ Start:      │   YES        NO         │
-                     │ - Keep Tower   │    │          │         ▼
-                     │   layers       │    ▼          ▼    ┌──────────┐
-                     │ - Add Ranvier  │ ┌─────┐  ┌──────┐ │ Ranvier  │
-                     │   for new      │ │Embed│  │Custom│ │ with     │
-                     │   features     │ │in   │  │      │ │ ecosystem│
-                     └────────────────┘ │actix│  │wrap  │ │ tools    │
-                                        └─────┘  └──────┘ └──────────┘
+```mermaid
+graph TD
+    START["Should I use Ranvier, Tower, or both?"] --> Q1{"Q1: Are you starting a<br/>NEW project from scratch?"}
+    Q1 -->|YES| RW["Ranvier Way (Transition)<br/>✅ Recommended:<br/>- Full visibility<br/>- Clean slate<br/>- Best practices"]
+    Q1 -->|NO| Q2{"Q2: Existing codebase?"}
+    Q2 -->|YES| Q3{Tower app?}
+    Q2 -->|NO| Q4{Other framework?}
+    Q3 -->|YES| HY["Hybrid (Tower + Ranvier)<br/>✅ Start:<br/>- Keep Tower layers<br/>- Add Ranvier for new features"]
+    Q3 -->|NO| Q5{actix/Axum?}
+    Q5 -->|YES| EM[Embed in actix]
+    Q5 -->|NO| CW[Custom wrap]
+    Q4 --> ST[Standalone service?]
+    ST --> RE["Ranvier with<br/>ecosystem tools"]
 ```
 
 ### 6.2. Detailed Decision Paths
@@ -1065,24 +1037,18 @@ impl<S> Service<Request> for MyService<S> {
 
 **Answer**: **Ranvier for orchestration service, any framework for leaf services**
 
+```mermaid
+graph TD
+    GW["API Gateway (Tower/Axum)<br/>← Simple routing"] --> ORC["Orchestrator (Ranvier)<br/>← Complex workflows, visualized<br/>- Multi-service calls<br/>- Saga pattern<br/>- Compensation logic"]
+    ORC --> U[User]
+    ORC --> P[Pay]
+    ORC --> S[Ship]
+    style U fill:#e8f5e9
+    style P fill:#e8f5e9
+    style S fill:#e8f5e9
 ```
-┌─────────────────────────────┐
-│ API Gateway (Tower/Axum)    │  ← Simple routing
-└──────────┬──────────────────┘
-           │
-           ▼
-┌─────────────────────────────┐
-│ Orchestrator (Ranvier)      │  ← Complex workflows, visualized
-│  - Multi-service calls      │
-│  - Saga pattern             │
-│  - Compensation logic       │
-└──────┬─────┬────────┬───────┘
-       │     │        │
-       ▼     ▼        ▼
-   ┌────┐ ┌────┐  ┌────┐
-   │User│ │Pay │  │Ship│       ← Simple CRUD (any framework)
-   └────┘ └────┘  └────┘
-```
+
+*← Simple CRUD (any framework)*
 
 ---
 

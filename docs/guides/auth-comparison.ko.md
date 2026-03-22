@@ -461,20 +461,14 @@ async fn test_auth_middleware() {
 
 적절한 접근법을 선택하기 위해 이 의사결정 트리를 사용하세요:
 
-```
-새 프로젝트를 시작하나요?
-│
-├─ 예 → 특정 Tower 미들웨어(CORS, RateLimit)가 필요한가요?
-│   │
-│   ├─ 아니오 → Transition 기반 사용 ✅
-│   │
-│   └─ 예 → 하이브리드: HTTP는 Tower, 인증은 Ranvier ⚠️
-│
-└─ 아니오 (기존 Tower 앱) → 팀이 Ranvier를 배울 의향이 있나요?
-    │
-    ├─ 예 → Transition 기반으로 점진적 마이그레이션 ⚠️
-    │
-    └─ 아니오 → Tower 통합 유지 ✅
+```mermaid
+graph TD
+    START{새 프로젝트를 시작하나요?} -->|예| Q1{특정 Tower 미들웨어가 필요한가요?<br/>CORS, RateLimit}
+    Q1 -->|아니오| T1["Transition 기반 사용 ✅"]
+    Q1 -->|예| T2["하이브리드: HTTP는 Tower,<br/>인증은 Ranvier ⚠️"]
+    START -->|아니오| Q2{"기존 Tower 앱 —<br/>팀이 Ranvier를 배울 의향이 있나요?"}
+    Q2 -->|예| T3["Transition 기반으로<br/>점진적 마이그레이션 ⚠️"]
+    Q2 -->|아니오| T4["Tower 통합 유지 ✅"]
 ```
 
 ---
