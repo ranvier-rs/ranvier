@@ -42,8 +42,8 @@ Ranvier v0.20 had **23 crates**, each representing a thin abstraction over an ec
 
 **Problems**:
 1. **Maintenance burden**: 23 crates to version, publish, document, and maintain
-2. **Identity dilution**: Users confused about which crates are "core Ranvier" vs convenience wrappers
-3. **False abstraction**: Most wrapper crates were 1-2 files thin, not providing real value
+2. **Identity dilution**: Users were confused about which crates are "core Ranvier" vs. convenience wrappers
+3. **False abstraction**: Most wrapper crates were 1-2 files thin and provided no real value
 4. **Ecosystem duplication**: We were reimplementing what sqlx/tonic/redis already provide well
 
 **Question**: Which crates are **essential to Ranvier's paradigm** (Transition/Outcome/Bus/Schematic), and which are just thin wrappers?
@@ -81,7 +81,7 @@ We applied the **Paradigm Test**:
 
 **Negative**:
 - ⚠️ **Migration burden**: v0.20 users must update imports (but we provide clear migration guide)
-- ⚠️ **Perceived feature loss**: Some users may think we "removed" features (actually just removed thin wrappers)
+- ⚠️ **Perceived feature loss**: Some users may think we removed features (we actually only removed thin wrappers)
 
 **Mitigation**:
 - Comprehensive CHANGELOG with migration instructions
@@ -124,9 +124,9 @@ Ranvier v0.20 used **Tower** (`tower`, `tower-http`) for HTTP handling:
 
 **Problems**:
 1. **Tower is middleware, not Ranvier's paradigm**: Tower's `Service<Request>` trait is fundamentally different from Ranvier's `Transition` trait. Mixing both confused users.
-2. **Hidden complexity**: Tower's `Layer` ordering and `Service::poll_ready` semantics are complex. Ranvier's value proposition is **explicit execution**, but Tower hides control flow.
-3. **Hyper 1.0 compatibility**: Hyper 1.0 dropped `tower::Service` support — Tower is now optional, not required.
-4. **Dependency bloat**: Pulling in Tower for basic HTTP was overkill when Hyper 1.0 provides native async fn support.
+2. **Hidden complexity**: Tower's `Layer` ordering and `Service::poll_ready` semantics are complex. Ranvier's value proposition is **explicit execution**, yet Tower hides control flow.
+3. **Hyper 1.0 compatibility**: Hyper 1.0 dropped `tower::Service` support, making Tower optional rather than required.
+4. **Dependency bloat**: Pulling in Tower for basic HTTP was excessive when Hyper 1.0 provides native async fn support.
 
 **Question**: Should Ranvier continue to require Tower, or embrace Hyper 1.0 natively?
 
@@ -216,10 +216,10 @@ Early Ranvier versions (v0.1–v0.17) experimented with various levels of flexib
 - Optional Schematic export (users could opt out of JSON generation)
 
 **Problems**:
-1. **Inconsistent codebases**: Some projects used Transition, some used free functions → fragmented ecosystem
-2. **Tooling impossible**: VSCode extension couldn't assume Schematic exists → Circuit view broken
-3. **Lost identity**: "What makes Ranvier different from Axum/Actix?" → unclear answer
-4. **Documentation burden**: Every guide had to explain "you can do X OR Y OR Z"
+1. **Inconsistent codebases**: Some projects used Transition, others used free functions, fragmenting the ecosystem
+2. **Tooling impossible**: The VSCode extension could not assume a Schematic existed, breaking Circuit view
+3. **Lost identity**: "What makes Ranvier different from Axum/Actix?" had no clear answer
+4. **Documentation burden**: Every guide had to explain "you can do X or Y or Z"
 
 **Question**: Should Ranvier be flexible (support multiple patterns) or opinionated (enforce one paradigm)?
 
@@ -258,8 +258,8 @@ See [PHILOSOPHY.md](PHILOSOPHY.md) for full "Opinionated Core, Flexible Edges" e
 
 **Negative**:
 - ⚠️ **Less flexible**: Users who want `Result` or free functions must wrap in Transition
-- ⚠️ **Higher barrier**: "Just use Axum" is simpler for trivial apps than "learn Transition"
-- ⚠️ **Migration from Actix/Axum**: Requires adopting Transition paradigm, not drop-in replacement
+- ⚠️ **Higher barrier**: "Just use Axum" is simpler for trivial apps than learning the Transition paradigm
+- ⚠️ **Migration from Actix/Axum**: Requires adopting the Transition paradigm; not a drop-in replacement
 
 **Mitigation**:
 - **Hybrid approach**: Users can embed Ranvier in existing apps (see [PHILOSOPHY.md Section 6.2 Path 3](PHILOSOPHY.md#path-3-actix-web-or-axum-integration-))

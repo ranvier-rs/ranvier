@@ -1,6 +1,6 @@
 # 인증 접근법: Transition vs Tower
 
-이 가이드는 Ranvier의 **두 가지 인증 접근법**에 대한 포괄적인 비교를 제공합니다:
+이 가이드에서는 Ranvier의 **두 가지 인증 접근법**을 비교합니다:
 
 1. **Transition 기반 인증** (`examples/auth-transition/`) — 순수 Ranvier 접근법 (권장)
 2. **Tower 통합** (`examples/auth-tower-integration/`) — 생태계 호환성 접근법
@@ -14,7 +14,7 @@
 | **Transition 기반** | 새 프로젝트, 전체 Ranvier 채택 | Schematic 시각화, Bus 전파, 쉬운 테스트 | 기존 Tower 미들웨어 재사용 불가 |
 | **Tower 통합** | 기존 Tower 앱, 점진적 마이그레이션 | Tower 생태계 재사용, 팀 지식 전이 | Schematic에서 보이지 않음, 더 많은 보일러플레이트 |
 
-**핵심 요약**: 새로 시작한다면 **Transition 기반 인증**을 사용하세요. 기존 Tower 앱이 있거나 특정 Tower 미들웨어가 필요하다면 **Tower 통합**을 사용하세요.
+**핵심 요약**: 새로 시작한다면 **Transition 기반 인증**을, 기존 Tower 앱이 있거나 특정 Tower 미들웨어가 필요하다면 **Tower 통합**을 선택하세요.
 
 ---
 
@@ -350,7 +350,7 @@ let auth_pipeline = Axon::simple()
 
 ## 성능 비교
 
-**핵심 요약**: 두 접근법 모두 프로덕션에서 **동일한 성능**을 가집니다. Tower 레이어와 Ranvier transition의 오버헤드는 무시할 만합니다 (레이어/transition당 < 1 µs).
+**핵심 요약**: 두 접근법 모두 프로덕션에서 **동일한 성능**을 보입니다. Tower 레이어와 Ranvier transition의 오버헤드는 무시할 수 있는 수준입니다 (레이어/transition당 < 1 µs).
 
 ### 벤치마크 결과 (Intel i7, Release 빌드)
 
@@ -365,7 +365,7 @@ let auth_pipeline = Axon::simple()
 - Tower 레이어와 Ranvier transition은 제로 비용 추상화
 - Bus와 request extensions는 동일한 메모리 레이아웃 (둘 다 `TypeMap` 사용)
 
-**주의 사항**: 많은 Tower 레이어(10개 이상)를 사용하면 미들웨어 체인 순회로 인한 약간의 오버헤드가 있을 수 있습니다. 실제로는 이것이 무시할 만합니다 (< 0.1 ms).
+**주의 사항**: Tower 레이어를 많이(10개 이상) 사용하면 미들웨어 체인 순회에 따른 약간의 오버헤드가 생길 수 있으나, 실제로는 무시할 수 있는 수준입니다 (< 0.1 ms).
 
 ---
 
@@ -459,7 +459,7 @@ async fn test_auth_middleware() {
 
 ## 의사결정 프레임워크
 
-적절한 접근법을 선택하기 위해 이 의사결정 트리를 사용하세요:
+아래 의사결정 트리를 따라 적절한 접근법을 선택하세요:
 
 ```mermaid
 graph TD

@@ -1,6 +1,6 @@
 # Authentication Approaches: Transition vs Tower
 
-This guide provides a comprehensive comparison of **two authentication approaches** in Ranvier:
+This guide compares **two authentication approaches** in Ranvier:
 
 1. **Transition-based auth** (`examples/auth-transition/`) — Pure Ranvier approach (recommended)
 2. **Tower integration** (`examples/auth-tower-integration/`) — Ecosystem compatibility approach
@@ -12,7 +12,7 @@ This guide provides a comprehensive comparison of **two authentication approache
 | Approach | Best For | Key Benefit | Trade-off |
 |----------|----------|-------------|-----------|
 | **Transition-based** | New projects, full Ranvier adoption | Schematic visualization, Bus propagation, easier testing | Cannot reuse existing Tower middleware |
-| **Tower integration** | Existing Tower apps, gradual migration | Reuse Tower ecosystem, team knowledge transfer | Not visible in Schematic, more boilerplate |
+| **Tower integration** | Existing Tower apps, gradual migration | Reuses Tower ecosystem, leverages team knowledge | Not visible in Schematic, more boilerplate |
 
 **TL;DR**: If you're starting fresh, use **Transition-based auth**. If you have an existing Tower app or need specific Tower middleware, use **Tower integration**.
 
@@ -46,7 +46,7 @@ Legend:
 
 ### Transition-based Auth (Ranvier Way)
 
-**Philosophy**: Authentication is a business concern, so it should be represented as Transitions in the Schematic.
+**Philosophy**: Authentication is a business concern and should be represented as Transitions in the Schematic.
 
 #### Code Pattern
 
@@ -82,10 +82,10 @@ let pipeline = Axon::simple::<AppError>("auth-pipeline")
    - Non-technical stakeholders can understand the flow
 
 2. **Bus-based Context Propagation**
-   - `AuthContext` is automatically stored in Bus after `authenticate` returns
+   - `AuthContext` is stored in the Bus automatically after `authenticate` returns
    - All downstream transitions can read it with `bus.read::<AuthContext>()`
-   - Type-safe: Compiler ensures `AuthContext` exists before `authorize` runs
-   - Explicit: No hidden global state or magic request extensions
+   - Type-safe: the compiler ensures `AuthContext` exists before `authorize` runs
+   - Explicit: no hidden global state or magic request extensions
 
 3. **Easier Unit Testing**
    ```rust
@@ -350,7 +350,7 @@ let auth_pipeline = Axon::simple()
 
 ## Performance Comparison
 
-**TL;DR**: Both approaches have **identical performance** in production. The overhead of Tower layers and Ranvier transitions is negligible (< 1 µs per layer/transition).
+**TL;DR**: Both approaches have **identical performance** in production. The overhead of Tower layers and Ranvier transitions is negligible (less than 1 µs per layer/transition).
 
 ### Benchmark Results (Intel i7, Release Build)
 
@@ -365,7 +365,7 @@ let auth_pipeline = Axon::simple()
 - Tower layers and Ranvier transitions are zero-cost abstractions
 - Bus and request extensions have identical memory layout (both use `TypeMap`)
 
-**Caveat**: If you use many Tower layers (10+), there may be slight overhead due to middleware chain traversal. In practice, this is negligible (< 0.1 ms).
+**Caveat**: If you use many Tower layers (10+), there may be slight overhead from middleware chain traversal. In practice, this is negligible (less than 0.1 ms).
 
 ---
 
@@ -453,7 +453,7 @@ async fn test_auth_middleware() {
 - `tower_auth.rs`: 140 lines (AuthLayer + AuthService impl)
 - `main.rs`: 30 lines
 
-**Verdict**: Transition-based has **50% less code** than Tower (high-level) and **70% less** than Tower (low-level).
+**Verdict**: The transition-based approach has **50% less code** than Tower (high-level) and **70% less** than Tower (low-level).
 
 ---
 

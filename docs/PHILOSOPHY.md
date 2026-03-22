@@ -11,7 +11,7 @@
 
 Ranvier is a Rust framework for building event-driven systems with a clear design philosophy: **Opinionated Core, Flexible Edges**. This document explains what that means, why it matters, and how to apply this philosophy when building with Ranvier.
 
-**TL;DR**: Ranvier enforces a specific paradigm (Transition/Outcome/Bus/Schematic) for its internal architecture, but gives you complete freedom to integrate with other Rust ecosystem tools (Tower, actix, Axum, etc.) at the boundaries.
+**TL;DR**: Ranvier enforces a specific paradigm (Transition/Outcome/Bus/Schematic) for its internal architecture but gives you complete freedom to integrate with other Rust ecosystem tools (Tower, actix, Axum, etc.) at the boundaries.
 
 ---
 
@@ -23,7 +23,7 @@ Ranvier's identity is built on four foundational concepts:
 
 ### 1.1. Transition
 
-**Definition**: A `Transition` is a pure, composable function that transforms one state into another, potentially failing with a typed error. It's the fundamental unit of computation in Ranvier.
+**Definition**: A `Transition` is a pure, composable function that transforms one state into another, optionally failing with a typed error. It is the fundamental unit of computation in Ranvier.
 
 **Key characteristics**:
 - **Pure**: Given the same input, always produces the same output (modulo async I/O)
@@ -64,7 +64,7 @@ let pipeline = Axon::simple::<AppError>()
 
 ### 1.2. Outcome
 
-**Definition**: An `Outcome` is Ranvier's result type that represents success (`ok`) or failure (`err`), with explicit error types. It's similar to `Result<T, E>` but integrates with the Transition system.
+**Definition**: An `Outcome` is Ranvier's result type that represents success (`ok`) or failure (`err`) with explicit error types. It is similar to `Result<T, E>` but integrates with the Transition system.
 
 **Key characteristics**:
 - **Explicit errors**: Each transition declares its error type
@@ -99,7 +99,7 @@ async fn enrich_user(user: User) -> Outcome<EnrichedUser, EnrichmentError> {
 
 ### 1.3. Bus
 
-**Definition**: The `Bus` is a type-safe, in-memory store for sharing state between transitions within a single execution context. Think of it as "dependency injection for data".
+**Definition**: The `Bus` is a type-safe, in-memory store for sharing state between transitions within a single execution context. Think of it as dependency injection for data.
 
 **Key characteristics**:
 - **Type-indexed**: Store and retrieve values by their type (like `TypeMap`)
@@ -141,7 +141,7 @@ async fn handle_request(auth: &AuthContext, req: &Request) -> Outcome<Response, 
 
 ### 1.4. Schematic
 
-**Definition**: A `Schematic` is a directed acyclic graph (DAG) representation of your transition pipeline. It's both a runtime execution model and a visual artifact (JSON) that tools like VSCode can render.
+**Definition**: A `Schematic` is a directed acyclic graph (DAG) representation of your transition pipeline. It serves as both a runtime execution model and a visual artifact (JSON) that tools like VSCode can render.
 
 **Key characteristics**:
 - **Nodes**: Each transition is a node
@@ -183,7 +183,7 @@ graph LR
 
 > *"Constraints enable clarity."*
 
-Ranvier's core is deliberately opinionated for three strategic reasons. While "opinionated" might sound limiting, it's actually what makes Ranvier productive and distinct.
+Ranvier's core is deliberately opinionated for three strategic reasons. While "opinionated" might sound limiting, it is what makes Ranvier productive and distinct.
 
 ### 2.1. Identity: What Makes Ranvier, Ranvier?
 
@@ -191,7 +191,7 @@ Ranvier's core is deliberately opinionated for three strategic reasons. While "o
 
 **Answer**: Ranvier is not "another web framework" — it's a **schematic-first, event-driven framework**. The Transition/Outcome/Bus/Schematic paradigm is our unique value proposition.
 
-If we made Transition optional or Bus configurable, we'd lose our identity and become "yet another HTTP wrapper around Hyper."
+If we made Transition optional or Bus configurable, we would lose our identity and become yet another HTTP wrapper around Hyper.
 
 **Concrete benefits**:
 - **Unique niche**: Ranvier excels at complex, stateful workflows (multi-step auth, saga patterns, event sourcing)
@@ -207,7 +207,7 @@ Each has a clear identity. Ranvier's opinionated core IS that identity.
 
 ### 2.2. Learning Curve: One Right Way, Not Ten Ways
 
-**Problem**: Flexible frameworks offer choice, but choice creates cognitive load. "Should I use middleware X or Y? Pattern A or B?"
+**Problem**: Flexible frameworks offer choice, but choice creates cognitive load. Should I use middleware X or Y? Pattern A or B?
 
 **Ranvier's approach**:
 - **One blessed path**: Use Transition for business logic. Always.
@@ -232,11 +232,11 @@ async fn my_logic(input: Input) -> Outcome<Output, Error> {
 - **Week 2**: Learn Schematic visualization → debugging superpowers
 - **Week 3**: Learn ecosystem integration (if needed) → best of both worlds
 
-Compare to frameworks where Week 1-3 is just "which crate should I use for X?"
+Compare this to frameworks where weeks 1-3 are spent asking "which crate should I use for X?"
 
 ### 2.3. Consistency: Codebases That Look Alike
 
-**Problem**: In flexible frameworks, every team/project invents their own patterns. Onboarding new developers is slow because every codebase is a snowflake.
+**Problem**: In flexible frameworks, every team and project invents its own patterns. Onboarding new developers is slow because every codebase is unique.
 
 **Ranvier's approach**: All Ranvier codebases follow the same structure:
 ```
@@ -267,11 +267,11 @@ src/
 
 While the core is opinionated, Ranvier embraces the Rust ecosystem at its boundaries. "Flexible Edges" means you can use any Rust library, framework, or pattern at the integration points.
 
-### 3.1. Ecosystem Integration: Standing on Giants' Shoulders
+### 3.1. Ecosystem Integration: Standing on the Shoulders of Giants
 
-**Problem**: If Ranvier enforced its paradigm everywhere, you'd need "Ranvier-specific" versions of every tool:
+**Problem**: If Ranvier enforced its paradigm everywhere, you would need Ranvier-specific versions of every tool:
 - Ranvier-HTTP, Ranvier-DB, Ranvier-Cache, Ranvier-Metrics, Ranvier-Tracing...
-- This is unsustainable and isolates Ranvier from the broader Rust community.
+- This approach is unsustainable and isolates Ranvier from the broader Rust community.
 
 **Solution**: Ranvier's core (Transition/Bus/Schematic) is protocol-agnostic. At the edges, use whatever you want:
 - **HTTP**: Hyper 1.0, Tower, actix-web, Axum, warp
@@ -307,7 +307,7 @@ async fn business_logic(req: Request) -> Outcome<Response, AppError> {
 
 ### 3.2. Gradual Migration: From X to Ranvier, Step by Step
 
-**Problem**: "All or nothing" frameworks are risky. Rewriting a production app from scratch is expensive and dangerous.
+**Problem**: "All or nothing" frameworks are risky. Rewriting a production application from scratch is expensive and dangerous.
 
 **Solution**: Ranvier allows incremental adoption:
 
@@ -347,7 +347,7 @@ let app = ServiceBuilder::new()
 
 ### 3.3. User Autonomy: You Know Your Constraints Best
 
-**Problem**: Framework authors can't predict every use case. Rigid frameworks force workarounds when your needs diverge from the "happy path."
+**Problem**: Framework authors cannot predict every use case. Rigid frameworks force workarounds when your needs diverge from the expected path.
 
 **Ranvier's philosophy**: We're opinionated about **what** (use Transitions for business logic), not **how** (you choose HTTP server, DB, deployment).
 
@@ -395,7 +395,7 @@ Ranvier tells you:
 
 > *"Know where to be rigid, know where to be flexible."*
 
-Understanding the boundary between "core" (opinionated) and "edges" (flexible) is crucial for effective Ranvier usage. Here's a clear map:
+Understanding the boundary between "core" (opinionated) and "edges" (flexible) is crucial for effective Ranvier usage. Here is a clear map:
 
 ### 4.1. Core Territory (Opinionated — Must Use Ranvier Paradigm)
 
@@ -1017,7 +1017,7 @@ let app = ServiceBuilder::new()
 
 **Answer**: **Start with Ranvier** (learn one paradigm, not two)
 
-Tower has a steeper learning curve (Service trait, Layer trait, middleware ordering).
+Tower has a steeper learning curve (the Service trait, the Layer trait, middleware ordering).
 Ranvier's Transition macro is simpler:
 ```rust
 // Ranvier: Simple
