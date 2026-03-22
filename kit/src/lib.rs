@@ -20,6 +20,8 @@ pub use ranvier_std as std;
 
 // Derive macros re-export (proc-macros require direct re-export)
 pub use ranvier_macros::ResourceRequirement;
+#[cfg(feature = "streaming")]
+pub use ranvier_macros::streaming_transition;
 
 // AuthContext and AuthScheme live in ranvier-core::iam (always available, no feature gate).
 pub use ranvier_core::iam::{AuthContext, AuthScheme};

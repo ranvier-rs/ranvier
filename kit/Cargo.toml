@@ -18,6 +18,7 @@ http = ["dep:ranvier-http"]
 std = ["dep:ranvier-std"]
 guard = ["dep:ranvier-guard"]
 openapi = ["dep:ranvier-openapi"]
+streaming = ["ranvier-core/streaming", "ranvier-runtime/streaming", "ranvier-macros/streaming"]
 
 [dependencies]
 ranvier-core = { workspace = true }

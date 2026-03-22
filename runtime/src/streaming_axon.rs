@@ -150,6 +150,96 @@ where
     pub fn export_schematic(&self) -> &Schematic {
         &self.schematic
     }
+
+    /// Apply a per-item transformation to the stream.
+    ///
+    /// The closure runs on each item yielded by the stream, producing a
+    /// transformed item of the **same type**. This is useful for PII filtering,
+    /// token counting, format normalization, etc.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let pipeline = Axon::typed::<ChatRequest, String>("chat")
+    ///     .then(ClassifyIntent)
+    ///     .then_stream(SynthesizeStream)
+    ///     .map_items(|chunk: ChatChunk| {
+    ///         ChatChunk { text: filter_pii(&chunk.text), ..chunk }
+    ///     });
+    /// ```
+    pub fn map_items<F>(self, f: F) -> StreamingAxon<In, Item, E, Res>
+    where
+        F: Fn(Item) -> Item + Send + Sync + 'static,
+    {
+        let prev_executor = self.stream_executor;
+        let f = Arc::new(f);
+
+        let new_executor: StreamExecutor<In, Item, E, Res> = Arc::new(
+            move |input: In,
+                  res: &Res,
+                  bus: &mut Bus|
+                  -> BoxFuture<
+                '_,
+                Result<Pin<Box<dyn Stream<Item = Item> + Send>>, StreamingAxonError<E>>,
+            > {
+                let prev = prev_executor.clone();
+                let f = f.clone();
+                Box::pin(async move {
+                    let stream = prev(input, res, bus).await?;
+                    Ok(
+                        Box::pin(stream.map(move |item| f(item)))
+                            as Pin<Box<dyn Stream<Item = Item> + Send>>,
+                    )
+                })
+            },
+        );
+
+        // Add map_items node to schematic
+        let mut schematic = self.schematic;
+        let map_node_id = uuid::Uuid::new_v4().to_string();
+        let last_node_id = schematic
+            .nodes
+            .last()
+            .map(|n| n.id.clone())
+            .unwrap_or_default();
+
+        schematic.nodes.push(ranvier_core::schematic::Node {
+            id: map_node_id.clone(),
+            kind: ranvier_core::schematic::NodeKind::Atom,
+            label: "map_items".to_string(),
+            description: Some("Per-item stream transformation".to_string()),
+            input_type: std::any::type_name::<Item>().to_string(),
+            output_type: std::any::type_name::<Item>().to_string(),
+            resource_type: "()".to_string(),
+            metadata: Default::default(),
+            bus_capability: None,
+            source_location: None,
+            position: None,
+            compensation_node_id: None,
+            input_schema: None,
+            output_schema: None,
+            item_type: Some(std::any::type_name::<Item>().to_string()),
+            terminal: Some(true),
+        });
+
+        if !last_node_id.is_empty() {
+            schematic
+                .edges
+                .push(ranvier_core::schematic::Edge {
+                    from: last_node_id,
+                    to: map_node_id,
+                    kind: ranvier_core::schematic::EdgeType::Linear,
+                    label: Some("map".to_string()),
+                });
+        }
+
+        StreamingAxon {
+            schematic,
+            stream_executor: new_executor,
+            timeout_config: self.timeout_config,
+            buffer_size: self.buffer_size,
+        }
+    }
 }
 
 impl<In, Item, E, Res> StreamingAxon<In, Item, E, Res>
@@ -393,6 +483,61 @@ mod tests {
         let mut bus = Bus::new();
         let result = sa.execute((), &(), &mut bus).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_streaming_axon_map_items() {
+        let stream_executor: StreamExecutor<String, String, String, ()> =
+            Arc::new(|input: String, _res: &(), _bus: &mut Bus| {
+                Box::pin(async move {
+                    let items = vec![
+                        format!("hello {}", input),
+                        format!("world {}", input),
+                    ];
+                    Ok(Box::pin(stream::iter(items)) as Pin<Box<dyn Stream<Item = String> + Send>>)
+                })
+            });
+
+        let sa = StreamingAxon {
+            schematic: Schematic::new("test-map"),
+            stream_executor,
+            timeout_config: None,
+            buffer_size: 64,
+        };
+
+        // Apply map_items to uppercase each chunk
+        let sa = sa.map_items(|s| s.to_uppercase());
+
+        let mut bus = Bus::new();
+        let stream = sa.execute("test".to_string(), &(), &mut bus).await.unwrap();
+        let items: Vec<String> = stream.collect().await;
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0], "HELLO TEST");
+        assert_eq!(items[1], "WORLD TEST");
+    }
+
+    #[tokio::test]
+    async fn test_streaming_axon_map_items_schematic() {
+        let stream_executor: StreamExecutor<(), String, String, ()> =
+            Arc::new(|_input: (), _res: &(), _bus: &mut Bus| {
+                Box::pin(async move {
+                    Ok(Box::pin(stream::iter(vec!["a".to_string()]))
+                        as Pin<Box<dyn Stream<Item = String> + Send>>)
+                })
+            });
+
+        let sa = StreamingAxon {
+            schematic: Schematic::new("test-map-schematic"),
+            stream_executor,
+            timeout_config: None,
+            buffer_size: 64,
+        };
+
+        let sa = sa.map_items(|s| s);
+        let schematic = sa.export_schematic();
+        assert_eq!(schematic.nodes.len(), 1);
+        assert_eq!(schematic.nodes[0].label, "map_items");
+        assert!(schematic.nodes[0].item_type.is_some());
     }
 
     #[tokio::test]

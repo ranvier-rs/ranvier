@@ -8,8 +8,10 @@ diff, and validate.
 
 ---
 
-**Latest: v0.36.0** — 12 crates on [crates.io](https://crates.io/crates/ranvier)
+**Latest: v0.38.0** — 12 crates on [crates.io](https://crates.io/crates/ranvier)
 
+- **v0.38**: `#[streaming_transition]` macro, `StreamingAxon::map_items()` per-item transforms, CLI domain templates (saga/llm-agent/compliance)
+- **v0.37**: `StreamingTransition` trait, `StreamingAxon`, `post_sse()`/`post_sse_typed()` SSE endpoints, stream timeouts, `assert_stream_items!` testing
 - **v0.36**: OpenAPI auto-schema from `post_typed()`, path param docs, htmx Bus integration, pre-compressed serving, Range requests, 6 Cookbook guides
 - **v0.35**: Pipeline-First Middleware — `ranvier-guard` crate (15 Guards), `HttpIngress::guard()`, per-route `guards![]`, Tower complete replacement
 - **v0.34**: Closure Transitions (`then_fn()`), type-safe HTTP body (`post_typed()`), Askama template rendering, `TransitionErrorContext`, `ranvier-test`
@@ -133,7 +135,7 @@ impl Transition<(), String> for Greet {
 
 ---
 
-**Examples** — 66 runnable demos across 4 tiers
+**Examples** — 67 runnable demos across 4 tiers
 
 ```bash
 # Tier A: Start here
@@ -171,14 +173,14 @@ See `examples/README.md` for the full tier-classified list.
 3. `http/` — Ingress/Egress adapter boundary (Hyper 1.0 native)
 4. `std/` — standard transitions: utilities
 5. `guard/` — 15 Guard Transition nodes: pipeline-first middleware (replaces Tower)
-6. `macros/` — `#[transition]`, `#[derive(ResourceRequirement)]`
+6. `macros/` — `#[transition]`, `#[streaming_transition]`, `#[derive(ResourceRequirement)]`
 7. `testing/` — `TestBus`, `TestAxon`, assertion macros
 8. `kit/` — facade crate (re-exports all of the above as `ranvier`)
 9. `extensions/inspector/` — runtime observability server
 10. `extensions/audit/` — audit trail logging
 11. `extensions/compliance/` — PII detection, data classification
 12. `extensions/openapi/` — OpenAPI spec generation
-13. `examples/` — 66 runnable reference apps
+13. `examples/` — 67 runnable reference apps
 
 ---
 
@@ -195,6 +197,7 @@ See `examples/README.md` for the full tier-classified list.
 | JWT Auth | `Axon::with_iam(policy, verifier)` — `IamPolicy::RequireRole` | Ready |
 | Parallel Execution | `Axon::parallel()` — FanOut/FanIn with Bus isolation | Ready |
 | Saga Compensation | `Axon::compensate(rollback_fn)` — LIFO rollback on failure | Ready |
+| Streaming Pipeline | `#[streaming_transition]` + `then_stream()` + `map_items()` + `post_sse_typed()` | Ready |
 | LLM Integration | `LlmTransition` — LLM-as-Transition pattern | Ready |
 | Compression | gzip via flate2 | Ready |
 | HTTP/2 | Hyper 1.0 native | Ready |
