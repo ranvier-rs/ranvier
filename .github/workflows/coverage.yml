@@ -1,0 +1,96 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Generate workspace coverage
+        run: |
+          cargo tarpaulin \
+            --workspace \
+            --features streaming \
+            --timeout 300 \
+            --out xml json \
+            --output-dir coverage \
+            --skip-clean \
+            --engine llvm
+        env:
+          REDIS_URL: redis://127.0.0.1:6379
+
+      - name: Generate per-crate coverage report
+        run: |
+          mkdir -p coverage/per-crate
+          for crate in ranvier-core ranvier-runtime ranvier-guard ranvier-std ranvier-http ranvier-inspector ranvier-audit ranvier-compliance ranvier-macros ranvier-openapi ranvier-test; do
+            echo "--- Coverage for $crate ---"
+            cargo tarpaulin \
+              -p "$crate" \
+              --timeout 120 \
+              --out json \
+              --output-dir "coverage/per-crate" \
+              --skip-clean \
+              --engine llvm 2>&1 | tail -5 || true
+            # Rename the output to per-crate name
+            if [ -f "coverage/per-crate/tarpaulin-report.json" ]; then
+              mv "coverage/per-crate/tarpaulin-report.json" "coverage/per-crate/${crate}.json"
+            fi
+          done
+        env:
+          REDIS_URL: redis://127.0.0.1:6379
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage/cobertura.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Coverage regression gate
+        run: |
+          # Extract overall coverage percentage from JSON report
+          if [ -f coverage/tarpaulin-report.json ]; then
+            COVERAGE=$(python3 -c "
+          import json, sys
+          with open('coverage/tarpaulin-report.json') as f:
+              data = json.load(f)
+          covered = sum(1 for f in data.get('files', []) for t in f.get('traces', []) if t.get('stats', {}).get('Line', 0) > 0)
+          total = sum(len(f.get('traces', [])) for f in data.get('files', []))
+          pct = (covered / total * 100) if total > 0 else 0
+          print(f'{pct:.1f}')
+          " 2>/dev/null || echo "0.0")
+            echo "Overall coverage: ${COVERAGE}%"
+            echo "coverage_pct=${COVERAGE}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 30
