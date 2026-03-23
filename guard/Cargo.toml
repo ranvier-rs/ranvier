@@ -13,6 +13,7 @@ keywords = ["ranvier", "guard", "middleware", "security"]
 [features]
 default = []
 advanced = ["dep:flate2"]
+distributed = ["dep:redis"]
 
 [dependencies]
 ranvier-core = { workspace = true }
@@ -23,6 +24,7 @@ serde = { workspace = true }
 uuid = { workspace = true }
 subtle = { workspace = true }
 flate2 = { workspace = true, optional = true }
+redis = { version = "0.29", features = ["tokio-comp", "aio"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

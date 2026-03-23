@@ -1644,6 +1644,12 @@ mod advanced_guards;
 #[cfg(feature = "advanced")]
 pub use advanced_guards::*;
 
+#[cfg(feature = "distributed")]
+mod distributed;
+
+#[cfg(feature = "distributed")]
+pub use distributed::DistributedRateLimitGuard;
+
 // ---------------------------------------------------------------------------
 // Prelude
 // ---------------------------------------------------------------------------
@@ -1664,6 +1670,9 @@ pub mod prelude {
         ConditionalRequestGuard, DecompressionGuard, ETag, IfModifiedSince, IfNoneMatch,
         LastModified, RedirectGuard, RedirectRule, RequestBody,
     };
+
+    #[cfg(feature = "distributed")]
+    pub use crate::distributed::DistributedRateLimitGuard;
 }
 
 // ---------------------------------------------------------------------------
