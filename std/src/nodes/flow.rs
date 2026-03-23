@@ -77,3 +77,26 @@ where
         Outcome::next(input)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn delay_node_passes_after_sleep() {
+        let node = DelayNode::<String>::new(10); // 10ms
+        let mut bus = Bus::new();
+        let start = std::time::Instant::now();
+        let result = node.run("data".into(), &(), &mut bus).await;
+        assert!(start.elapsed().as_millis() >= 9);
+        assert!(matches!(result, Outcome::Next(ref v) if v == "data"));
+    }
+
+    #[tokio::test]
+    async fn identity_node_passes_through() {
+        let node = IdentityNode::<i32>::new();
+        let mut bus = Bus::new();
+        let result = node.run(42, &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(42)));
+    }
+}

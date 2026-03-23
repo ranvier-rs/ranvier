@@ -42,3 +42,40 @@ impl Transition<String, String> for StringNode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn string_append() {
+        let node = StringNode::new(StringOperation::Append(" world".into()));
+        let mut bus = Bus::new();
+        let result = node.run("hello".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(ref v) if v == "hello world"));
+    }
+
+    #[tokio::test]
+    async fn string_prepend() {
+        let node = StringNode::new(StringOperation::Prepend("prefix_".into()));
+        let mut bus = Bus::new();
+        let result = node.run("data".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(ref v) if v == "prefix_data"));
+    }
+
+    #[tokio::test]
+    async fn string_to_upper() {
+        let node = StringNode::new(StringOperation::ToUpper);
+        let mut bus = Bus::new();
+        let result = node.run("hello".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(ref v) if v == "HELLO"));
+    }
+
+    #[tokio::test]
+    async fn string_to_lower() {
+        let node = StringNode::new(StringOperation::ToLower);
+        let mut bus = Bus::new();
+        let result = node.run("HELLO".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(ref v) if v == "hello"));
+    }
+}

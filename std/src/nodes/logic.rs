@@ -162,3 +162,41 @@ where
         Outcome::branch(branch_id, payload)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn filter_node_passes_matching() {
+        let node = FilterNode::new(|x: &i32| *x > 0);
+        let mut bus = Bus::new();
+        let result = node.run(5, &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(5)));
+    }
+
+    #[tokio::test]
+    async fn filter_node_rejects_non_matching() {
+        let node = FilterNode::new(|x: &i32| *x > 0);
+        let mut bus = Bus::new();
+        let result = node.run(-1, &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Branch { .. }));
+    }
+
+    #[tokio::test]
+    async fn switch_node_routes_to_branch() {
+        let node = SwitchNode::new(|x: &String| {
+            if x.starts_with("admin") {
+                "admin".into()
+            } else {
+                "user".into()
+            }
+        });
+        let mut bus = Bus::new();
+        let result = node.run("admin_request".into(), &(), &mut bus).await;
+        match result {
+            Outcome::Branch(id, _) => assert_eq!(id, "admin"),
+            _ => panic!("expected Branch"),
+        }
+    }
+}

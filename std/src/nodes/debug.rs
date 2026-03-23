@@ -80,3 +80,24 @@ where
         Outcome::fault(self.error_message.clone())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn log_node_passes_input_through() {
+        let node = LogNode::<String>::new("test log", "info");
+        let mut bus = Bus::new();
+        let result = node.run("hello".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(ref v) if v == "hello"));
+    }
+
+    #[tokio::test]
+    async fn error_node_always_faults() {
+        let node = ErrorNode::<String>::new("something went wrong");
+        let mut bus = Bus::new();
+        let result = node.run("input".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Fault(ref e) if e == "something went wrong"));
+    }
+}

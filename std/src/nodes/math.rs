@@ -55,3 +55,40 @@ where
         Outcome::next(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn math_add() {
+        let node = MathNode::new(MathOperation::Add, 10i64);
+        let mut bus = Bus::new();
+        let result = node.run(5i64, &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(15)));
+    }
+
+    #[tokio::test]
+    async fn math_sub() {
+        let node = MathNode::new(MathOperation::Sub, 3i64);
+        let mut bus = Bus::new();
+        let result = node.run(10i64, &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(7)));
+    }
+
+    #[tokio::test]
+    async fn math_mul() {
+        let node = MathNode::new(MathOperation::Mul, 4i64);
+        let mut bus = Bus::new();
+        let result = node.run(5i64, &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(20)));
+    }
+
+    #[tokio::test]
+    async fn math_div() {
+        let node = MathNode::new(MathOperation::Div, 2i64);
+        let mut bus = Bus::new();
+        let result = node.run(10i64, &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(5)));
+    }
+}

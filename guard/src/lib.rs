@@ -2202,6 +2202,76 @@ mod tests {
         assert!(bus.read::<IdempotencyCachedResponse>().is_none());
     }
 
+    // --- CorsGuard additional tests ---
+
+    #[tokio::test]
+    async fn cors_guard_specific_origin_reflected() {
+        let config = CorsConfig {
+            allowed_origins: vec!["https://app.example.com".into()],
+            ..Default::default()
+        };
+        let guard = CorsGuard::<String>::new(config);
+        let mut bus = Bus::new();
+        bus.insert(RequestOrigin("https://app.example.com".into()));
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+        let headers = bus.read::<CorsHeaders>().unwrap();
+        assert_eq!(headers.access_control_allow_origin, "https://app.example.com");
+    }
+
+    #[tokio::test]
+    async fn cors_guard_no_origin_passes() {
+        let config = CorsConfig {
+            allowed_origins: vec!["https://trusted.com".into()],
+            ..Default::default()
+        };
+        let guard = CorsGuard::<String>::new(config);
+        let mut bus = Bus::new();
+        // No RequestOrigin in bus — empty origin should pass
+        let result = guard.run("ok".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Next(_)));
+    }
+
+    // --- SecurityHeadersGuard additional tests ---
+
+    #[tokio::test]
+    async fn security_headers_custom_csp() {
+        let policy = SecurityPolicy::default()
+            .with_csp("default-src 'self'; script-src 'none'");
+        let guard = SecurityHeadersGuard::<String>::new(policy);
+        let mut bus = Bus::new();
+        let _ = guard.run("ok".into(), &(), &mut bus).await;
+        let headers = bus.read::<SecurityHeaders>().unwrap();
+        assert_eq!(
+            headers.0.content_security_policy.as_deref(),
+            Some("default-src 'self'; script-src 'none'")
+        );
+    }
+
+    #[tokio::test]
+    async fn security_headers_default_no_csp() {
+        let guard = SecurityHeadersGuard::<String>::new(SecurityPolicy::default());
+        let mut bus = Bus::new();
+        let _ = guard.run("ok".into(), &(), &mut bus).await;
+        let headers = bus.read::<SecurityHeaders>().unwrap();
+        assert!(headers.0.content_security_policy.is_none());
+        assert_eq!(headers.0.referrer_policy, "strict-origin-when-cross-origin");
+    }
+
+    // --- TimeoutGuard additional test ---
+
+    #[tokio::test]
+    async fn timeout_custom_duration() {
+        let guard = TimeoutGuard::<String>::new(std::time::Duration::from_millis(100));
+        let mut bus = Bus::new();
+        let _ = guard.run("ok".into(), &(), &mut bus).await;
+        let deadline = bus.read::<TimeoutDeadline>().unwrap();
+        assert!(!deadline.is_expired());
+        // After sleeping past the deadline, it should be expired
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert!(deadline.is_expired());
+    }
+
     // --- RateLimitGuard bucket TTL tests ---
 
     #[tokio::test]
