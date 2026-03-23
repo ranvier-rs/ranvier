@@ -26,7 +26,7 @@ use ranvier_core::prelude::DebugControl;
 use ranvier_core::schematic::{NodeKind, Schematic};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -76,16 +76,28 @@ pub enum TraceStatus {
 
 pub struct ActiveTraceRegistry {
     active: HashMap<String, TraceRecord>,
-    recent: Vec<TraceRecord>,
+    recent: VecDeque<TraceRecord>,
     max_recent: usize,
+    /// TTL in milliseconds. Traces older than this are pruned on insertion.
+    trace_ttl_ms: u64,
 }
 
 impl ActiveTraceRegistry {
     fn new() -> Self {
         Self {
             active: HashMap::new(),
-            recent: Vec::new(),
-            max_recent: 100,
+            recent: VecDeque::new(),
+            max_recent: 10_000,
+            trace_ttl_ms: 3_600_000, // 1 hour default
+        }
+    }
+
+    fn with_config(max_recent: usize, trace_ttl_ms: u64) -> Self {
+        Self {
+            active: HashMap::new(),
+            recent: VecDeque::new(),
+            max_recent,
+            trace_ttl_ms,
         }
     }
 
@@ -133,10 +145,29 @@ impl ActiveTraceRegistry {
                 } else {
                     TraceStatus::Completed
                 };
-                self.recent.push(record);
-                if self.recent.len() > self.max_recent {
-                    self.recent.remove(0);
+
+                // Prune expired traces before inserting
+                self.prune_expired();
+
+                self.recent.push_back(record);
+                while self.recent.len() > self.max_recent {
+                    self.recent.pop_front();
                 }
+            }
+        }
+    }
+
+    /// Remove traces that have exceeded the TTL.
+    fn prune_expired(&mut self) {
+        if self.trace_ttl_ms == 0 {
+            return;
+        }
+        let cutoff = epoch_ms().saturating_sub(self.trace_ttl_ms);
+        while let Some(front) = self.recent.front() {
+            if front.started_at < cutoff {
+                self.recent.pop_front();
+            } else {
+                break;
             }
         }
     }
@@ -152,12 +183,28 @@ impl ActiveTraceRegistry {
     pub fn active_count(&self) -> usize {
         self.active.len()
     }
+
+    /// Number of recently completed traces in the ring buffer.
+    pub fn recent_count(&self) -> usize {
+        self.recent.len()
+    }
 }
 
 pub fn get_trace_registry() -> Arc<Mutex<ActiveTraceRegistry>> {
     TRACE_REGISTRY
         .get_or_init(|| Arc::new(Mutex::new(ActiveTraceRegistry::new())))
         .clone()
+}
+
+/// Initialize the trace registry with custom configuration.
+/// Must be called before `get_trace_registry()` for config to take effect.
+fn init_trace_registry(config: &TraceRegistryConfig) {
+    let _ = TRACE_REGISTRY.get_or_init(|| {
+        Arc::new(Mutex::new(ActiveTraceRegistry::with_config(
+            config.max_traces,
+            config.trace_ttl.as_millis() as u64,
+        )))
+    });
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -335,6 +382,27 @@ fn get_sender() -> &'static broadcast::Sender<String> {
     })
 }
 
+/// Configuration for the in-memory trace registry ring buffer.
+#[derive(Clone, Debug)]
+pub struct TraceRegistryConfig {
+    /// Maximum number of recent traces to keep in the ring buffer.
+    /// Default: 10,000.
+    pub max_traces: usize,
+    /// Time-to-live for traces in the ring buffer.
+    /// Traces older than this are pruned on insertion.
+    /// Default: 1 hour.
+    pub trace_ttl: std::time::Duration,
+}
+
+impl Default for TraceRegistryConfig {
+    fn default() -> Self {
+        Self {
+            max_traces: 10_000,
+            trace_ttl: std::time::Duration::from_secs(3600),
+        }
+    }
+}
+
 /// Start the Inspector Server.
 pub struct Inspector {
     port: u16,
@@ -351,6 +419,8 @@ pub struct Inspector {
     payload_policy: payload::PayloadCapturePolicy,
     relay_state: Option<relay::RelayState>,
     bearer_auth: auth::BearerAuth,
+    allow_unauthenticated: bool,
+    trace_registry_config: TraceRegistryConfig,
     trace_store: Option<Arc<dyn trace_store::TraceStore>>,
     alert_dispatcher: Option<Arc<alert::AlertDispatcher>>,
 }
@@ -377,6 +447,8 @@ impl Inspector {
             payload_policy: payload::PayloadCapturePolicy::from_env(),
             relay_state: None,
             bearer_auth: auth::BearerAuth::default(),
+            allow_unauthenticated: false,
+            trace_registry_config: TraceRegistryConfig::default(),
             trace_store: None,
             alert_dispatcher: None,
         }
@@ -527,9 +599,39 @@ impl Inspector {
         self
     }
 
+    /// Explicitly allow running the Inspector without Bearer token authentication.
+    ///
+    /// In release builds, the Inspector will emit a warning at startup if no bearer
+    /// token is configured. Call this method to suppress that warning and acknowledge
+    /// that the Inspector is intentionally running without authentication.
+    ///
+    /// **Not recommended for production deployments.** Use `with_bearer_token()` or
+    /// `with_bearer_token_from_env()` instead.
+    pub fn allow_unauthenticated(mut self) -> Self {
+        self.allow_unauthenticated = true;
+        self
+    }
+
     /// Configure a persistent trace store for trace history.
     pub fn with_trace_store(mut self, store: Arc<dyn trace_store::TraceStore>) -> Self {
         self.trace_store = Some(store);
+        self
+    }
+
+    /// Configure the in-memory trace registry ring buffer.
+    ///
+    /// Controls the maximum number of recent traces kept and their TTL.
+    /// Default: max_traces=10,000, trace_ttl=1h.
+    ///
+    /// ```rust,ignore
+    /// let inspector = Inspector::new(schematic, 9090)
+    ///     .with_trace_registry_config(TraceRegistryConfig {
+    ///         max_traces: 5_000,
+    ///         trace_ttl: std::time::Duration::from_secs(1800), // 30 minutes
+    ///     });
+    /// ```
+    pub fn with_trace_registry_config(mut self, config: TraceRegistryConfig) -> Self {
+        self.trace_registry_config = config;
         self
     }
 
@@ -549,6 +651,25 @@ impl Inspector {
         self,
         listener: tokio::net::TcpListener,
     ) -> Result<(), std::io::Error> {
+        // Auth policy enforcement: warn in release builds if no bearer token configured
+        if !self.bearer_auth.is_enabled() && !self.allow_unauthenticated {
+            #[cfg(not(debug_assertions))]
+            tracing::warn!(
+                "Inspector started WITHOUT Bearer token authentication. \
+                 This is a security risk in production. Configure authentication via \
+                 Inspector::with_bearer_token() or Inspector::with_bearer_token_from_env(). \
+                 To suppress this warning, call Inspector::allow_unauthenticated()."
+            );
+            #[cfg(debug_assertions)]
+            tracing::info!(
+                "Inspector running without authentication (debug build). \
+                 For production, configure Bearer token via with_bearer_token()."
+            );
+        }
+
+        // Initialize trace registry with configured limits
+        init_trace_registry(&self.trace_registry_config);
+
         let state = InspectorState {
             schematic: self.schematic.clone(),
             public_projection: self.public_projection.clone(),
@@ -2392,6 +2513,136 @@ mod tests {
             .await
             .expect("operator internal with tenant request");
         assert_eq!(operator_with_tenant.status(), reqwest::StatusCode::OK);
+
+        handle.abort();
+    }
+
+    #[test]
+    fn active_trace_registry_ring_buffer_evicts_oldest() {
+        let mut registry = ActiveTraceRegistry::with_config(3, 0);
+
+        for i in 0..5 {
+            let record = TraceRecord {
+                trace_id: format!("t-{i}"),
+                circuit: "Test".to_string(),
+                status: TraceStatus::Completed,
+                started_at: 1000 + i * 100,
+                finished_at: Some(1100 + i * 100),
+                duration_ms: Some(100),
+                outcome_type: Some("Next".to_string()),
+            };
+            registry.recent.push_back(record);
+            while registry.recent.len() > registry.max_recent {
+                registry.recent.pop_front();
+            }
+        }
+
+        assert_eq!(registry.recent_count(), 3);
+        assert_eq!(registry.recent.front().unwrap().trace_id, "t-2");
+        assert_eq!(registry.recent.back().unwrap().trace_id, "t-4");
+    }
+
+    #[test]
+    fn active_trace_registry_ttl_prunes_expired() {
+        let now = epoch_ms();
+        let mut registry = ActiveTraceRegistry::with_config(100, 1000); // 1 second TTL
+
+        // Insert a trace from 2 seconds ago
+        registry.recent.push_back(TraceRecord {
+            trace_id: "old".to_string(),
+            circuit: "Test".to_string(),
+            status: TraceStatus::Completed,
+            started_at: now.saturating_sub(2000),
+            finished_at: Some(now.saturating_sub(1900)),
+            duration_ms: Some(100),
+            outcome_type: Some("Next".to_string()),
+        });
+
+        // Insert a fresh trace
+        registry.recent.push_back(TraceRecord {
+            trace_id: "fresh".to_string(),
+            circuit: "Test".to_string(),
+            status: TraceStatus::Completed,
+            started_at: now,
+            finished_at: Some(now + 100),
+            duration_ms: Some(100),
+            outcome_type: Some("Next".to_string()),
+        });
+
+        // Prune should remove the old trace
+        registry.prune_expired();
+        assert_eq!(registry.recent_count(), 1);
+        assert_eq!(registry.recent.front().unwrap().trace_id, "fresh");
+    }
+
+    #[test]
+    fn trace_registry_config_defaults() {
+        let config = TraceRegistryConfig::default();
+        assert_eq!(config.max_traces, 10_000);
+        assert_eq!(config.trace_ttl, std::time::Duration::from_secs(3600));
+    }
+
+    #[tokio::test]
+    async fn allow_unauthenticated_suppresses_auth_warning() {
+        let (port, listener) = reserve_listener();
+        // This should start without auth issues and without warnings in debug mode
+        let inspector = Inspector::new(Schematic::new("unauth-test"), port)
+            .with_mode("dev")
+            .allow_unauthenticated();
+        let handle = tokio::spawn(async move {
+            let _ = inspector.serve_with_listener(listener).await;
+        });
+        wait_ready(port).await;
+
+        let client = reqwest::Client::new();
+        let schematic = client
+            .get(format!("http://127.0.0.1:{port}/schematic"))
+            .send()
+            .await
+            .expect("schematic request");
+        assert_eq!(schematic.status(), reqwest::StatusCode::OK);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn bearer_auth_protects_metrics_endpoint() {
+        let (port, listener) = reserve_listener();
+        let inspector = Inspector::new(Schematic::new("bearer-test"), port)
+            .with_mode("dev")
+            .with_bearer_token("secret-token-123");
+        let handle = tokio::spawn(async move {
+            let _ = inspector.serve_with_listener(listener).await;
+        });
+        wait_ready(port).await;
+
+        let client = reqwest::Client::new();
+
+        // Without token → 401
+        let no_auth = client
+            .get(format!("http://127.0.0.1:{port}/metrics"))
+            .send()
+            .await
+            .expect("metrics without auth");
+        assert_eq!(no_auth.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        // With wrong token → 401
+        let wrong_auth = client
+            .get(format!("http://127.0.0.1:{port}/metrics"))
+            .header("Authorization", "Bearer wrong-token")
+            .send()
+            .await
+            .expect("metrics with wrong token");
+        assert_eq!(wrong_auth.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        // With correct token → 200
+        let correct_auth = client
+            .get(format!("http://127.0.0.1:{port}/metrics"))
+            .header("Authorization", "Bearer secret-token-123")
+            .send()
+            .await
+            .expect("metrics with correct token");
+        assert_eq!(correct_auth.status(), reqwest::StatusCode::OK);
 
         handle.abort();
     }

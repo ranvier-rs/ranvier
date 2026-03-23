@@ -37,7 +37,7 @@ use std::any::type_name;
 use std::ffi::OsString;
 use std::fs;
 use std::future::Future;
-use std::panic::Location;
+use std::panic::{AssertUnwindSafe, Location};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -2340,9 +2340,38 @@ where
             ranvier.outcome_kind = tracing::field::Empty,
             ranvier.outcome_target = tracing::field::Empty
         );
-        let outcome = (self.executor)(input, resources, bus)
-            .instrument(circuit_span.clone())
-            .await;
+        let outcome = {
+            use futures_util::FutureExt as _;
+            let fut = (self.executor)(input, resources, bus)
+                .instrument(circuit_span.clone());
+            match AssertUnwindSafe(fut).catch_unwind().await {
+                Ok(outcome) => outcome,
+                Err(panic_payload) => {
+                    let msg = extract_panic_message(&panic_payload);
+                    tracing::error!(
+                        ranvier.circuit = %label,
+                        panic_message = %msg,
+                        "Transition panicked during Axon execution"
+                    );
+                    // Try to construct Fault(E) via serde deserialization
+                    match serde_json::from_value::<E>(serde_json::Value::String(format!(
+                        "Transition panicked: {msg}"
+                    ))) {
+                        Ok(e) => Outcome::Fault(e),
+                        Err(_) => {
+                            // E cannot deserialize from a string; emit a panic signal instead
+                            Outcome::emit(
+                                "ranvier.transition.panic",
+                                Some(serde_json::json!({
+                                    "message": msg,
+                                    "circuit": label,
+                                })),
+                            )
+                        }
+                    }
+                }
+            }
+        };
         circuit_span.record("ranvier.outcome_kind", outcome_kind_name(&outcome));
         if let Some(target) = outcome_target(&outcome) {
             circuit_span.record("ranvier.outcome_target", tracing::field::display(&target));
@@ -2469,6 +2498,7 @@ where
                 .with_projection_files_from_env()
                 .with_mode_from_env()
                 .with_auth_policy_from_env()
+                .with_bearer_token_from_env()
                 .with_state_inspector(axon_inspector)
                 .serve()
                 .await
@@ -2651,6 +2681,16 @@ fn maybe_export_timeline<Out, E>(bus: &mut Bus, outcome: &Outcome<Out, E>) {
         record_sampling_stats(false, sampled, forced, &mode, &policy);
     } else {
         record_sampling_stats(true, sampled, forced, &mode, &policy);
+    }
+}
+
+fn extract_panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
     }
 }
 

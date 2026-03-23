@@ -2,18 +2,18 @@
 name = "reference-ecommerce-order"
 version = "0.1.0"
 edition = "2024"
-description = "M226: Reference Application — E-commerce Order Pipeline with Saga Compensation, Audit Trail, and Multi-tenancy"
+description = "M226: Reference Application ??E-commerce Order Pipeline with Saga Compensation, Audit Trail, and Multi-tenancy"
 
 [[bin]]
 name = "reference-ecommerce-order"
 path = "src/main.rs"
 
 [dependencies]
-ranvier-core    = { path = "../../core", version = "0.38.0" }
-ranvier-macros  = { path = "../../macros", version = "0.38.0" }
-ranvier-runtime = { path = "../../runtime", version = "0.38.0" }
-ranvier-http    = { path = "../../http", version = "0.38.0" }
-ranvier-audit   = { path = "../../extensions/audit", version = "0.38.0" }
+ranvier-core    = { path = "../../core", version = "0.39.0" }
+ranvier-macros  = { path = "../../macros", version = "0.39.0" }
+ranvier-runtime = { path = "../../runtime", version = "0.39.0" }
+ranvier-http    = { path = "../../http", version = "0.39.0" }
+ranvier-audit   = { path = "../../extensions/audit", version = "0.39.0" }
 async-trait     = "0.1"
 anyhow          = "1.0"
 http            = "1"

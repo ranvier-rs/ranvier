@@ -2,14 +2,14 @@
 name = "persistence-production-demo"
 version = "0.1.0"
 edition = "2021"
-description = "M156: Persistence Production Gate — crash recovery and compensation demo"
+description = "M156: Persistence Production Gate ??crash recovery and compensation demo"
 
 [[bin]]
 name = "persistence-production-demo"
 path = "src/main.rs"
 
 [dependencies]
-ranvier-runtime = { path = "../../runtime", version = "0.38.0" }
+ranvier-runtime = { path = "../../runtime", version = "0.39.0" }
 async-trait      = "0.1"
 anyhow           = "1.0"
 tokio            = { version = "1", features = ["full"] }

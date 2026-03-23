@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::Arc;
 use tokio::sync::Notify;
 
 /// Current execution state of the debugger.
@@ -10,6 +11,22 @@ pub enum DebugState {
     Running,
     /// Execution is currently paused at a node.
     Paused,
+}
+
+impl DebugState {
+    fn as_u8(self) -> u8 {
+        match self {
+            DebugState::Running => 0,
+            DebugState::Paused => 1,
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => DebugState::Paused,
+            _ => DebugState::Running,
+        }
+    }
 }
 
 /// A controller used to manage breakpoints and execution flow for a running Axon.
@@ -22,10 +39,10 @@ pub struct DebugControl {
 }
 
 struct DebugControlInner {
-    breakpoints: Mutex<HashSet<String>>,
-    pause_next: Mutex<bool>,
+    breakpoints: parking_lot::Mutex<HashSet<String>>,
+    pause_next: AtomicBool,
     notify: Notify,
-    state: Mutex<DebugState>,
+    state: AtomicU8,
 }
 
 impl DebugControl {
@@ -33,40 +50,44 @@ impl DebugControl {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(DebugControlInner {
-                breakpoints: Mutex::new(HashSet::new()),
-                pause_next: Mutex::new(false),
+                breakpoints: parking_lot::Mutex::new(HashSet::new()),
+                pause_next: AtomicBool::new(false),
                 notify: Notify::new(),
-                state: Mutex::new(DebugState::Running),
+                state: AtomicU8::new(DebugState::Running.as_u8()),
             }),
         }
     }
 
     /// Add a breakpoint for a specific node ID.
     pub fn set_breakpoint(&self, node_id: String) {
-        self.inner.breakpoints.lock().expect("debug mutex poisoned").insert(node_id);
+        self.inner.breakpoints.lock().insert(node_id);
     }
 
     /// Remove a breakpoint for a specific node ID.
     pub fn remove_breakpoint(&self, node_id: &str) {
-        self.inner.breakpoints.lock().expect("debug mutex poisoned").remove(node_id);
+        self.inner.breakpoints.lock().remove(node_id);
     }
 
     /// Request execution to pause at the next available node.
     pub fn pause(&self) {
-        *self.inner.pause_next.lock().expect("debug mutex poisoned") = true;
+        self.inner.pause_next.store(true, Ordering::Release);
     }
 
     /// Resume execution from a paused state.
     pub fn resume(&self) {
-        *self.inner.pause_next.lock().expect("debug mutex poisoned") = false;
-        *self.inner.state.lock().expect("debug mutex poisoned") = DebugState::Running;
+        self.inner.pause_next.store(false, Ordering::Release);
+        self.inner
+            .state
+            .store(DebugState::Running.as_u8(), Ordering::Release);
         self.inner.notify.notify_waiters();
     }
 
     /// Resume execution but pause again at the very next node.
     pub fn step(&self) {
-        *self.inner.pause_next.lock().expect("debug mutex poisoned") = true;
-        *self.inner.state.lock().expect("debug mutex poisoned") = DebugState::Running;
+        self.inner.pause_next.store(true, Ordering::Release);
+        self.inner
+            .state
+            .store(DebugState::Running.as_u8(), Ordering::Release);
         self.inner.notify.notify_waiters();
     }
 
@@ -74,13 +95,12 @@ impl DebugControl {
     ///
     /// This consumes the internal "pause_next" flag if it was set.
     pub fn should_pause(&self, node_id: &str) -> bool {
-        let breakpoints = self.inner.breakpoints.lock().expect("debug mutex poisoned");
-        let mut pause_next = self.inner.pause_next.lock().expect("debug mutex poisoned");
+        let breakpoints = self.inner.breakpoints.lock();
         let hit_breakpoint = breakpoints.contains(node_id);
-        let pause_requested = *pause_next;
+        let pause_requested = self.inner.pause_next.load(Ordering::Acquire);
 
         if hit_breakpoint || pause_requested {
-            *pause_next = false; // Consume the "step" or "pause" request
+            self.inner.pause_next.store(false, Ordering::Release);
             true
         } else {
             false
@@ -89,7 +109,9 @@ impl DebugControl {
 
     /// Explicitly transition to Paused state and wait for a resume signal.
     pub async fn wait(&self) {
-        *self.inner.state.lock().expect("debug mutex poisoned") = DebugState::Paused;
+        self.inner
+            .state
+            .store(DebugState::Paused.as_u8(), Ordering::Release);
         // Wait for resume() or step() to notify
         self.inner.notify.notified().await;
     }
@@ -105,18 +127,12 @@ impl DebugControl {
 
     /// Get the current debugger state.
     pub fn state(&self) -> DebugState {
-        *self.inner.state.lock().expect("debug mutex poisoned")
+        DebugState::from_u8(self.inner.state.load(Ordering::Acquire))
     }
 
     /// List all currently set breakpoint node IDs.
     pub fn list_breakpoints(&self) -> Vec<String> {
-        self.inner
-            .breakpoints
-            .lock()
-            .unwrap()
-            .iter()
-            .cloned()
-            .collect()
+        self.inner.breakpoints.lock().iter().cloned().collect()
     }
 }
 

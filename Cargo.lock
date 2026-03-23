@@ -3879,7 +3879,7 @@ dependencies = [
 
 [[package]]
 name = "production-config-demo"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "async-trait",
  "ranvier-core",
@@ -3893,7 +3893,7 @@ dependencies = [
 
 [[package]]
 name = "production-operations-demo"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "async-trait",
  "ranvier-core",
@@ -4130,7 +4130,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "async-trait",
  "http 1.4.0",
@@ -4151,7 +4151,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-audit"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4164,11 +4164,12 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
 name = "ranvier-bench"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "actix-rt",
  "actix-web",
@@ -4192,7 +4193,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-compliance"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "chrono",
  "serde",
@@ -4202,7 +4203,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-core"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4210,6 +4211,7 @@ dependencies = [
  "chrono",
  "futures-core",
  "futures-util",
+ "parking_lot",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -4222,7 +4224,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-guard"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "async-trait",
  "flate2",
@@ -4236,7 +4238,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-http"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "askama",
  "async-stream",
@@ -4278,7 +4280,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-inspector"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "async-trait",
  "axum 0.7.9",
@@ -4299,7 +4301,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-macros"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4308,7 +4310,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-openapi"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "http 1.4.0",
  "ranvier-core",
@@ -4320,7 +4322,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-runtime"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4342,7 +4344,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-std"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4359,7 +4361,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-test"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "futures-util",
  "ranvier-core",
@@ -4492,7 +4494,7 @@ dependencies = [
 
 [[package]]
 name = "reference-chat-server"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6004,7 +6006,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "telemetry-otel-demo"
-version = "0.38.0"
+version = "0.39.0"
 dependencies = [
  "async-trait",
  "ranvier-core",

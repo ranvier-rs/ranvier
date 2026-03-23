@@ -170,7 +170,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let inspector = Inspector::new(schematic, 9100)
         .with_mode("dev")
         .with_auth_enforcement(false)
-        .with_payload_capture(PayloadCapturePolicy::Hash);
+        .with_payload_capture(PayloadCapturePolicy::Hash)
+        .allow_unauthenticated();
 
     println!("Inspector demo starting...");
     println!("  Inspector UI:  http://localhost:9100/quick-view");

@@ -193,10 +193,15 @@ struct RateBucket {
 /// Rate limit guard — enforces per-client request rate limits.
 ///
 /// Reads `ClientIdentity` from the Bus. Uses a token-bucket algorithm.
+///
+/// Stale buckets are automatically pruned when `bucket_ttl` is set.
+/// The TTL check runs lazily on each request (no background task required).
 pub struct RateLimitGuard<T> {
     max_requests: u64,
     window_ms: u64,
     buckets: Arc<Mutex<std::collections::HashMap<String, RateBucket>>>,
+    /// If > 0, buckets idle longer than this (in ms) are removed on next access.
+    bucket_ttl_ms: u64,
     _marker: PhantomData<T>,
 }
 
@@ -206,8 +211,18 @@ impl<T> RateLimitGuard<T> {
             max_requests,
             window_ms,
             buckets: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            bucket_ttl_ms: 0,
             _marker: PhantomData,
         }
+    }
+
+    /// Set a TTL for idle buckets. Buckets not accessed within this duration
+    /// are lazily pruned on subsequent requests.
+    ///
+    /// Default: no TTL (buckets persist forever).
+    pub fn with_bucket_ttl(mut self, ttl: std::time::Duration) -> Self {
+        self.bucket_ttl_ms = ttl.as_millis() as u64;
+        self
     }
 
     /// Returns the maximum requests per window.
@@ -219,6 +234,11 @@ impl<T> RateLimitGuard<T> {
     pub fn window_ms(&self) -> u64 {
         self.window_ms
     }
+
+    /// Returns the configured bucket TTL in milliseconds (0 = disabled).
+    pub fn bucket_ttl_ms(&self) -> u64 {
+        self.bucket_ttl_ms
+    }
 }
 
 impl<T> Clone for RateLimitGuard<T> {
@@ -227,6 +247,7 @@ impl<T> Clone for RateLimitGuard<T> {
             max_requests: self.max_requests,
             window_ms: self.window_ms,
             buckets: self.buckets.clone(),
+            bucket_ttl_ms: self.bucket_ttl_ms,
             _marker: PhantomData,
         }
     }
@@ -237,6 +258,7 @@ impl<T> std::fmt::Debug for RateLimitGuard<T> {
         f.debug_struct("RateLimitGuard")
             .field("max_requests", &self.max_requests)
             .field("window_ms", &self.window_ms)
+            .field("bucket_ttl_ms", &self.bucket_ttl_ms)
             .finish()
     }
 }
@@ -262,6 +284,13 @@ where
 
         let mut buckets = self.buckets.lock().await;
         let now = Instant::now();
+
+        // Lazy prune: remove stale buckets that haven't been accessed within the TTL
+        if self.bucket_ttl_ms > 0 {
+            let ttl = std::time::Duration::from_millis(self.bucket_ttl_ms);
+            buckets.retain(|_, b| now.duration_since(b.last_refill) < ttl);
+        }
+
         let rate = self.max_requests as f64 / self.window_ms as f64 * 1000.0;
 
         let bucket = buckets.entry(client_id).or_insert(RateBucket {
@@ -377,6 +406,69 @@ where
 /// Bus-injectable type representing the client IP address.
 #[derive(Debug, Clone)]
 pub struct ClientIp(pub String);
+
+/// A set of trusted proxy IPs for safe X-Forwarded-For extraction.
+///
+/// When the direct connection comes from a trusted proxy, the rightmost
+/// non-trusted IP in the X-Forwarded-For chain is used as the client IP.
+/// If the direct connection is NOT from a trusted proxy, X-Forwarded-For
+/// is ignored and the direct connection IP is used instead.
+///
+/// ## Example
+///
+/// ```rust,ignore
+/// use ranvier_guard::TrustedProxies;
+///
+/// let proxies = TrustedProxies::new(["10.0.0.1", "10.0.0.2"]);
+///
+/// // Direct IP from trusted proxy, XFF has client chain
+/// let ip = proxies.extract("203.0.113.50, 10.0.0.1", "10.0.0.2");
+/// assert_eq!(ip, "203.0.113.50");
+///
+/// // Direct IP is NOT a trusted proxy → ignore XFF
+/// let ip = proxies.extract("spoofed-ip", "198.51.100.7");
+/// assert_eq!(ip, "198.51.100.7");
+/// ```
+#[derive(Debug, Clone)]
+pub struct TrustedProxies {
+    proxies: HashSet<String>,
+}
+
+impl TrustedProxies {
+    /// Create a new TrustedProxies set.
+    pub fn new(ips: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            proxies: ips.into_iter().map(|s| s.into()).collect(),
+        }
+    }
+
+    /// Extract the real client IP from X-Forwarded-For header and direct connection IP.
+    ///
+    /// If the `direct_ip` is NOT in the trusted set, XFF is ignored (anti-spoofing).
+    /// Otherwise, walks the XFF chain right-to-left and returns the first non-trusted IP.
+    pub fn extract(&self, xff_header: &str, direct_ip: &str) -> String {
+        // If direct connection is not from a trusted proxy, don't trust XFF
+        if !self.proxies.contains(direct_ip) {
+            return direct_ip.to_string();
+        }
+
+        // Walk the XFF chain right-to-left, skip trusted proxies
+        let parts: Vec<&str> = xff_header.split(',').map(|s| s.trim()).collect();
+        for ip in parts.iter().rev() {
+            if !ip.is_empty() && !self.proxies.contains(*ip) {
+                return ip.to_string();
+            }
+        }
+
+        // Fallback: all IPs in XFF are trusted proxies, use direct IP
+        direct_ip.to_string()
+    }
+
+    /// Check if the given IP is a trusted proxy.
+    pub fn is_trusted(&self, ip: &str) -> bool {
+        self.proxies.contains(ip)
+    }
+}
 
 /// IP filter mode.
 #[derive(Debug, Clone)]
@@ -2108,5 +2200,129 @@ mod tests {
         let result = guard.run("ok".into(), &(), &mut bus).await;
         assert!(matches!(result, Outcome::Next(_)));
         assert!(bus.read::<IdempotencyCachedResponse>().is_none());
+    }
+
+    // --- RateLimitGuard bucket TTL tests ---
+
+    #[tokio::test]
+    async fn rate_limit_bucket_ttl_prunes_stale_buckets() {
+        // TTL of 50ms — buckets inactive for 50ms are pruned
+        let guard = RateLimitGuard::<String>::new(100, 60000)
+            .with_bucket_ttl(std::time::Duration::from_millis(50));
+
+        // Create a bucket for "stale-user"
+        let mut bus = Bus::new();
+        bus.insert(ClientIdentity("stale-user".into()));
+        let _ = guard.run("ok".into(), &(), &mut bus).await;
+
+        // Wait for the bucket to become stale
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        // Create a request from a different user — triggers lazy prune
+        let mut bus2 = Bus::new();
+        bus2.insert(ClientIdentity("fresh-user".into()));
+        let _ = guard.run("ok".into(), &(), &mut bus2).await;
+
+        // Now "stale-user" bucket should have been pruned.
+        // Verify by exhausting "stale-user" budget — if pruned, they get fresh tokens.
+        let guard2 = RateLimitGuard::<String>::new(2, 60000)
+            .with_bucket_ttl(std::time::Duration::from_millis(50));
+
+        let mut bus3 = Bus::new();
+        bus3.insert(ClientIdentity("user-a".into()));
+        let _ = guard2.run("1".into(), &(), &mut bus3).await;
+        let _ = guard2.run("2".into(), &(), &mut bus3).await;
+        // Budget exhausted
+        let result = guard2.run("3".into(), &(), &mut bus3).await;
+        assert!(matches!(result, Outcome::Fault(_)));
+
+        // Wait for TTL to expire
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        // Trigger prune with a different user
+        let mut bus4 = Bus::new();
+        bus4.insert(ClientIdentity("user-b".into()));
+        let _ = guard2.run("ok".into(), &(), &mut bus4).await;
+
+        // user-a's bucket was pruned, they get a fresh budget
+        let mut bus5 = Bus::new();
+        bus5.insert(ClientIdentity("user-a".into()));
+        let result = guard2.run("retry".into(), &(), &mut bus5).await;
+        assert!(matches!(result, Outcome::Next(_)));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_bucket_ttl_zero_disables_pruning() {
+        // Default TTL is 0 (disabled)
+        let guard = RateLimitGuard::<String>::new(2, 60000);
+        assert_eq!(guard.bucket_ttl_ms(), 0);
+
+        let mut bus = Bus::new();
+        bus.insert(ClientIdentity("user".into()));
+        let _ = guard.run("1".into(), &(), &mut bus).await;
+        let _ = guard.run("2".into(), &(), &mut bus).await;
+
+        // Budget exhausted — even after sleeping, no TTL prune occurs
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+        let result = guard.run("3".into(), &(), &mut bus).await;
+        assert!(matches!(result, Outcome::Fault(_)));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_with_bucket_ttl_builder() {
+        let guard = RateLimitGuard::<String>::new(10, 1000)
+            .with_bucket_ttl(std::time::Duration::from_secs(300));
+        assert_eq!(guard.bucket_ttl_ms(), 300_000);
+    }
+
+    // --- TrustedProxies tests ---
+
+    #[test]
+    fn trusted_proxies_ignores_xff_from_untrusted_direct() {
+        let proxies = TrustedProxies::new(["10.0.0.1", "10.0.0.2"]);
+        // Direct IP is NOT trusted — XFF should be ignored
+        let result = proxies.extract("1.2.3.4, 10.0.0.1", "192.168.1.100");
+        assert_eq!(result, "192.168.1.100");
+    }
+
+    #[test]
+    fn trusted_proxies_extracts_rightmost_non_trusted() {
+        let proxies = TrustedProxies::new(["10.0.0.1", "10.0.0.2"]);
+        // Direct IP is trusted, so walk XFF right-to-left
+        // XFF: "203.0.113.5, 10.0.0.2" — rightmost non-trusted is 203.0.113.5
+        let result = proxies.extract("203.0.113.5, 10.0.0.2", "10.0.0.1");
+        assert_eq!(result, "203.0.113.5");
+    }
+
+    #[test]
+    fn trusted_proxies_multi_hop_chain() {
+        let proxies = TrustedProxies::new(["10.0.0.1", "10.0.0.2", "10.0.0.3"]);
+        // XFF: "real-client, 10.0.0.3, 10.0.0.2" — all hops after real-client are trusted
+        let result = proxies.extract("8.8.8.8, 10.0.0.3, 10.0.0.2", "10.0.0.1");
+        assert_eq!(result, "8.8.8.8");
+    }
+
+    #[test]
+    fn trusted_proxies_all_xff_trusted_falls_back_to_direct() {
+        let proxies = TrustedProxies::new(["10.0.0.1", "10.0.0.2"]);
+        // All IPs in XFF are trusted — fall back to direct IP
+        let result = proxies.extract("10.0.0.2, 10.0.0.1", "10.0.0.1");
+        assert_eq!(result, "10.0.0.1");
+    }
+
+    #[test]
+    fn trusted_proxies_empty_xff() {
+        let proxies = TrustedProxies::new(["10.0.0.1"]);
+        let result = proxies.extract("", "10.0.0.1");
+        assert_eq!(result, "10.0.0.1");
+    }
+
+    #[test]
+    fn trusted_proxies_is_trusted() {
+        let proxies = TrustedProxies::new(["10.0.0.1", "10.0.0.2"]);
+        assert!(proxies.is_trusted("10.0.0.1"));
+        assert!(proxies.is_trusted("10.0.0.2"));
+        assert!(!proxies.is_trusted("192.168.1.1"));
     }
 }

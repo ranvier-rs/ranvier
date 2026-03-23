@@ -95,7 +95,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 4. Start Inspector (Prometheus /metrics + JSON /api/v1/metrics)
     let inspector = Inspector::new(schematic, config.inspector.port)
         .with_mode("dev")
-        .with_auth_enforcement(false);
+        .with_auth_enforcement(false)
+        .allow_unauthenticated();
 
     tokio::spawn(async move {
         if let Err(e) = inspector.serve().await {
