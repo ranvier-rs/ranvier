@@ -9,7 +9,7 @@ name = "persistence-production-demo"
 path = "src/main.rs"
 
 [dependencies]
-ranvier-runtime = { path = "../../runtime", version = "0.40.0" }
+ranvier-runtime = { path = "../../runtime", version = "0.41.0" }
 async-trait      = "0.1"
 anyhow           = "1.0"
 tokio            = { version = "1", features = ["full"] }

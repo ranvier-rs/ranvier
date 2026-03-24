@@ -1,4 +1,6 @@
 pub mod file_sink;
+#[cfg(feature = "merkle")]
+pub mod merkle;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 

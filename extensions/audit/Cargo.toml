@@ -13,6 +13,7 @@ description = "Tamper-proof audit logging framework for Ranvier"
 
 [features]
 default = []
+merkle = []
 postgres = ["sqlx"]
 
 [dependencies]

@@ -1,6 +1,7 @@
 pub mod alert;
 pub mod auth;
 pub mod breakpoint;
+pub mod lineage;
 pub mod metrics;
 pub mod payload;
 pub mod prometheus;
@@ -14,7 +15,7 @@ use async_trait::async_trait;
 use axum::{
     Json, Router,
     extract::{
-        Path as AxPath, State,
+        Path as AxPath, Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, StatusCode, header},
@@ -744,7 +745,9 @@ impl Inspector {
                     "/api/v1/relay",
                     axum::routing::post(api_post_relay),
                 )
-                .route("/api/v1/traces/stored", get(api_get_stored_traces));
+                .route("/api/v1/traces/stored", get(api_get_stored_traces))
+                .route("/api/v1/lineage/:trace_id", get(api_get_lineage))
+                .route("/api/v1/traces/diff", get(api_get_trace_diff));
         }
 
         if self.surface_policy.expose_events {
@@ -2231,6 +2234,118 @@ async fn api_get_stored_traces(
             Json(serde_json::json!({ "error": "trace_store_error", "message": e })),
         )),
     }
+}
+
+async fn api_get_lineage(
+    headers: HeaderMap,
+    AxPath(trace_id): AxPath<String>,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    state.bearer_auth.validate(&headers)?;
+
+    let Some(store) = &state.trace_store else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "no_trace_store" })),
+        ));
+    };
+
+    let trace = store.get(&trace_id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "trace_store_error", "message": e })),
+        )
+    })?;
+
+    let Some(trace) = trace else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "trace_not_found", "trace_id": trace_id })),
+        ));
+    };
+
+    match lineage::extract_lineage(&trace) {
+        Some(lin) => Ok(inspector_envelope(
+            "inspector.lineage.v1",
+            serde_json::to_value(&lin).unwrap_or_default(),
+        )),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "no_lineage_data",
+                "trace_id": trace_id,
+                "note": "Trace has no timeline_json"
+            })),
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+struct TraceDiffQuery {
+    a: String,
+    b: String,
+}
+
+async fn api_get_trace_diff(
+    headers: HeaderMap,
+    Query(params): Query<TraceDiffQuery>,
+    State(state): State<InspectorState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    state.bearer_auth.validate(&headers)?;
+
+    let Some(store) = &state.trace_store else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "no_trace_store" })),
+        ));
+    };
+
+    let trace_a = store.get(&params.a).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "trace_store_error", "message": e })),
+        )
+    })?;
+    let trace_b = store.get(&params.b).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "trace_store_error", "message": e })),
+        )
+    })?;
+
+    let Some(trace_a) = trace_a else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "trace_not_found", "trace_id": params.a })),
+        ));
+    };
+    let Some(trace_b) = trace_b else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "trace_not_found", "trace_id": params.b })),
+        ));
+    };
+
+    let lin_a = lineage::extract_lineage(&trace_a).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "no_lineage_data", "trace_id": params.a })),
+        )
+    })?;
+    let lin_b = lineage::extract_lineage(&trace_b).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "no_lineage_data", "trace_id": params.b })),
+        )
+    })?;
+
+    let diff = lineage::diff_traces(&lin_a, &lin_b);
+    Ok(inspector_envelope(
+        "inspector.trace_diff.v1",
+        serde_json::to_value(&diff).unwrap_or_default(),
+    ))
 }
 
 #[cfg(test)]
