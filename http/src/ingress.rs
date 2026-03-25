@@ -45,7 +45,7 @@ use crate::guard_integration::{
     GuardExec, GuardIntegration, PreflightConfig, RegisteredGuard, ResponseBodyTransformFn,
     ResponseExtractorFn,
 };
-use crate::response::{HttpResponse, IntoResponse, json_error_response, outcome_to_response_with_error};
+use crate::response::{HttpResponse, IntoResponse, json_error_response, outcome_to_json_response, outcome_to_response_with_error};
 
 /// The Ranvier Framework entry point.
 ///
@@ -2006,6 +2006,378 @@ where
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
         self.route_method(Method::PATCH, path, circuit)
+    }
+
+    // ── JSON-out routes: Out: Serialize (no IntoResponse required) ──
+    //
+    // These methods auto-serialize the Outcome<Out, E> as JSON at the route boundary.
+    // Transitions return domain types; the HTTP layer handles serialization.
+    // See PHILOSOPHY.md §5 "Infrastructure as Boundary".
+
+    /// Internal: register a bodiless route with JSON auto-serialization.
+    ///
+    /// Unlike `route_method_with_error_and_layers`, the `Out` type does NOT need
+    /// `IntoResponse` — only `Serialize`. The framework serializes `Out` as JSON.
+    fn route_method_json_out<Out, E>(
+        mut self,
+        method: Method,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+    ) -> Self
+    where
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let path_str: String = path.into();
+        let circuit = Arc::new(circuit);
+        let route_bus_injectors = Arc::new(self.bus_injectors.clone());
+        let route_guard_execs = Arc::new(self.guard_execs.clone());
+        let route_response_extractors = Arc::new(self.guard_response_extractors.clone());
+        let route_body_transforms = Arc::new(self.guard_body_transforms.clone());
+        let path_for_pattern = path_str.clone();
+        let path_for_handler = path_str;
+        let method_for_pattern = method.clone();
+        let method_for_handler = method;
+
+        let handler: RouteHandler<R> = Arc::new(move |parts: http::request::Parts, res: &R| {
+            let circuit = circuit.clone();
+            let route_bus_injectors = route_bus_injectors.clone();
+            let route_guard_execs = route_guard_execs.clone();
+            let route_response_extractors = route_response_extractors.clone();
+            let route_body_transforms = route_body_transforms.clone();
+            let res = res.clone();
+            let path = path_for_handler.clone();
+            let method = method_for_handler.clone();
+
+            Box::pin(async move {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let span = tracing::info_span!(
+                    "HTTPRequest",
+                    ranvier.http.method = %method,
+                    ranvier.http.path = %path,
+                    ranvier.http.request_id = %request_id
+                );
+
+                async move {
+                    let mut bus = Bus::new();
+                    inject_query_params(&parts, &mut bus);
+                    for injector in route_bus_injectors.iter() {
+                        injector(&parts, &mut bus);
+                    }
+                    for guard_exec in route_guard_execs.iter() {
+                        if let Err(rejection) = guard_exec.exec_guard(&mut bus).await {
+                            let mut response = json_error_response(rejection.status, &rejection.message);
+                            for extractor in route_response_extractors.iter() {
+                                extractor(&bus, response.headers_mut());
+                            }
+                            return response;
+                        }
+                    }
+                    if let Some(cached) = bus.read::<ranvier_guard::IdempotencyCachedResponse>() {
+                        let body = Bytes::from(cached.body.clone());
+                        let mut response = Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "application/json")
+                            .body(Full::new(body).map_err(|n: Infallible| match n {}).boxed())
+                            .unwrap();
+                        for extractor in route_response_extractors.iter() {
+                            extractor(&bus, response.headers_mut());
+                        }
+                        return response;
+                    }
+                    let result = if let Some(td) = bus.read::<ranvier_guard::TimeoutDeadline>() {
+                        let remaining = td.remaining();
+                        if remaining.is_zero() {
+                            let mut response = json_error_response(
+                                StatusCode::REQUEST_TIMEOUT,
+                                "Request timeout: pipeline deadline exceeded",
+                            );
+                            for extractor in route_response_extractors.iter() {
+                                extractor(&bus, response.headers_mut());
+                            }
+                            return response;
+                        }
+                        match tokio::time::timeout(remaining, circuit.execute((), &res, &mut bus)).await {
+                            Ok(result) => result,
+                            Err(_) => {
+                                let mut response = json_error_response(
+                                    StatusCode::REQUEST_TIMEOUT,
+                                    "Request timeout: pipeline deadline exceeded",
+                                );
+                                for extractor in route_response_extractors.iter() {
+                                    extractor(&bus, response.headers_mut());
+                                }
+                                return response;
+                            }
+                        }
+                    } else {
+                        circuit.execute((), &res, &mut bus).await
+                    };
+                    let mut response = outcome_to_json_response(result);
+                    for extractor in route_response_extractors.iter() {
+                        extractor(&bus, response.headers_mut());
+                    }
+                    if !route_body_transforms.is_empty() {
+                        response = apply_body_transforms(response, &bus, &route_body_transforms).await;
+                    }
+                    response
+                }
+                .instrument(span)
+                .await
+            }) as Pin<Box<dyn Future<Output = HttpResponse> + Send>>
+        });
+
+        self.routes.push(RouteEntry {
+            method: method_for_pattern,
+            pattern: RoutePattern::parse(&path_for_pattern),
+            handler,
+            layers: Arc::new(Vec::new()),
+            apply_global_layers: true,
+            needs_body: false,
+            body_schema: None,
+        });
+        self
+    }
+
+    /// Internal: register a typed-body route with JSON auto-serialization.
+    ///
+    /// Combines typed body deserialization (like `route_method_typed`) with
+    /// JSON output serialization (like `route_method_json_out`).
+    fn route_method_typed_json_out<T, Out, E>(
+        mut self,
+        method: Method,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + Serialize + schemars::JsonSchema + 'static,
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let body_schema = serde_json::to_value(schemars::schema_for!(T)).ok();
+        let path_str: String = path.into();
+        let circuit = Arc::new(circuit);
+        let route_bus_injectors = Arc::new(self.bus_injectors.clone());
+        let route_guard_execs = Arc::new(self.guard_execs.clone());
+        let route_response_extractors = Arc::new(self.guard_response_extractors.clone());
+        let route_body_transforms = Arc::new(self.guard_body_transforms.clone());
+        let path_for_pattern = path_str.clone();
+        let path_for_handler = path_str;
+        let method_for_pattern = method.clone();
+        let method_for_handler = method;
+
+        let handler: RouteHandler<R> = Arc::new(move |parts: http::request::Parts, res: &R| {
+            let circuit = circuit.clone();
+            let route_bus_injectors = route_bus_injectors.clone();
+            let route_guard_execs = route_guard_execs.clone();
+            let route_response_extractors = route_response_extractors.clone();
+            let route_body_transforms = route_body_transforms.clone();
+            let res = res.clone();
+            let path = path_for_handler.clone();
+            let method = method_for_handler.clone();
+
+            Box::pin(async move {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let span = tracing::info_span!(
+                    "HTTPRequest",
+                    ranvier.http.method = %method,
+                    ranvier.http.path = %path,
+                    ranvier.http.request_id = %request_id
+                );
+
+                async move {
+                    let body_bytes = parts
+                        .extensions
+                        .get::<BodyBytes>()
+                        .map(|b| b.0.clone())
+                        .unwrap_or_default();
+
+                    let input: T = match serde_json::from_slice(&body_bytes) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return json_error_response(
+                                StatusCode::BAD_REQUEST,
+                                &format!("Invalid request body: {}", e),
+                            );
+                        }
+                    };
+
+                    let mut bus = Bus::new();
+                    inject_query_params(&parts, &mut bus);
+                    for injector in route_bus_injectors.iter() {
+                        injector(&parts, &mut bus);
+                    }
+                    for guard_exec in route_guard_execs.iter() {
+                        if let Err(rejection) = guard_exec.exec_guard(&mut bus).await {
+                            let mut response = json_error_response(rejection.status, &rejection.message);
+                            for extractor in route_response_extractors.iter() {
+                                extractor(&bus, response.headers_mut());
+                            }
+                            return response;
+                        }
+                    }
+                    if let Some(cached) = bus.read::<ranvier_guard::IdempotencyCachedResponse>() {
+                        let body = Bytes::from(cached.body.clone());
+                        let mut response = Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "application/json")
+                            .body(Full::new(body).map_err(|n: Infallible| match n {}).boxed())
+                            .unwrap();
+                        for extractor in route_response_extractors.iter() {
+                            extractor(&bus, response.headers_mut());
+                        }
+                        return response;
+                    }
+                    let result = if let Some(td) = bus.read::<ranvier_guard::TimeoutDeadline>() {
+                        let remaining = td.remaining();
+                        if remaining.is_zero() {
+                            let mut response = json_error_response(
+                                StatusCode::REQUEST_TIMEOUT,
+                                "Request timeout: pipeline deadline exceeded",
+                            );
+                            for extractor in route_response_extractors.iter() {
+                                extractor(&bus, response.headers_mut());
+                            }
+                            return response;
+                        }
+                        match tokio::time::timeout(remaining, circuit.execute(input, &res, &mut bus)).await {
+                            Ok(result) => result,
+                            Err(_) => {
+                                let mut response = json_error_response(
+                                    StatusCode::REQUEST_TIMEOUT,
+                                    "Request timeout: pipeline deadline exceeded",
+                                );
+                                for extractor in route_response_extractors.iter() {
+                                    extractor(&bus, response.headers_mut());
+                                }
+                                return response;
+                            }
+                        }
+                    } else {
+                        circuit.execute(input, &res, &mut bus).await
+                    };
+                    let mut response = outcome_to_json_response(result);
+                    for extractor in route_response_extractors.iter() {
+                        extractor(&bus, response.headers_mut());
+                    }
+                    if !route_body_transforms.is_empty() {
+                        response = apply_body_transforms(response, &bus, &route_body_transforms).await;
+                    }
+                    response
+                }
+                .instrument(span)
+                .await
+            }) as Pin<Box<dyn Future<Output = HttpResponse> + Send>>
+        });
+
+        self.routes.push(RouteEntry {
+            method: method_for_pattern,
+            pattern: RoutePattern::parse(&path_for_pattern),
+            handler,
+            layers: Arc::new(Vec::new()),
+            apply_global_layers: true,
+            needs_body: true,
+            body_schema,
+        });
+        self
+    }
+
+    /// GET route with JSON auto-serialization.
+    ///
+    /// The Transition returns a domain type (`Out: Serialize`); the HTTP boundary
+    /// serializes it to JSON. Unlike [`get`](Self::get), `Out` does NOT need
+    /// `IntoResponse`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// #[derive(Serialize)]
+    /// struct ApiResponse { items: Vec<Item> }
+    ///
+    /// // Transition returns Outcome<ApiResponse, AppError>
+    /// .get_json_out("/api/items", list_items_axon)
+    /// // Response: 200 OK, Content-Type: application/json, body: {"items":[...]}
+    /// ```
+    pub fn get_json_out<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_json_out(Method::GET, path, circuit)
+    }
+
+    /// DELETE route with JSON auto-serialization.
+    ///
+    /// See [`get_json_out`](Self::get_json_out) for details.
+    pub fn delete_json_out<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_json_out(Method::DELETE, path, circuit)
+    }
+
+    /// POST with typed JSON body and JSON auto-serialization.
+    ///
+    /// Combines `post_typed` (typed body with `JsonSchema`) with automatic
+    /// JSON output serialization. The Transition returns `Outcome<Out, E>`
+    /// where `Out: Serialize`; the framework handles JSON conversion.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// #[derive(Deserialize, Serialize, JsonSchema)]
+    /// struct CreateOrder { product_id: String }
+    ///
+    /// #[derive(Serialize)]
+    /// struct OrderResponse { id: Uuid, status: String }
+    ///
+    /// // Transition: Outcome<OrderResponse, AppError>
+    /// .post_typed_json_out::<CreateOrder, _, _>("/api/orders", create_order_axon)
+    /// ```
+    pub fn post_typed_json_out<T, Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + Serialize + schemars::JsonSchema + 'static,
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_typed_json_out::<T, Out, E>(Method::POST, path, circuit)
+    }
+
+    /// PUT with typed JSON body and JSON auto-serialization.
+    ///
+    /// See [`post_typed_json_out`](Self::post_typed_json_out) for details.
+    pub fn put_typed_json_out<T, Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + Serialize + schemars::JsonSchema + 'static,
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_typed_json_out::<T, Out, E>(Method::PUT, path, circuit)
+    }
+
+    /// PATCH with typed JSON body and JSON auto-serialization.
+    ///
+    /// See [`post_typed_json_out`](Self::post_typed_json_out) for details.
+    pub fn patch_typed_json_out<T, Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + Serialize + schemars::JsonSchema + 'static,
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_typed_json_out::<T, Out, E>(Method::PATCH, path, circuit)
     }
 
     pub fn post_with_error<Out, E, H>(

@@ -4,7 +4,10 @@ use http::{Response, StatusCode};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use ranvier_core::Outcome;
+use serde::Serialize;
 use std::convert::Infallible;
+
+use crate::extract::Json;
 
 pub type HttpResponse = Response<BoxBody<Bytes, Infallible>>;
 
@@ -174,6 +177,48 @@ impl IntoResponse for (StatusCode, Bytes) {
     }
 }
 
+// ── Json<T> response ──
+
+impl<T: Serialize> IntoResponse for Json<T> {
+    fn into_response(self) -> HttpResponse {
+        match serde_json::to_vec(&self.0) {
+            Ok(bytes) => Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
+                .body(
+                    Full::new(Bytes::from(bytes))
+                        .map_err(|never| match never {})
+                        .boxed(),
+                )
+                .expect("response builder should be infallible"),
+            Err(e) => json_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("JSON serialization failed: {e}"),
+            ),
+        }
+    }
+}
+
+impl<T: Serialize> IntoResponse for (StatusCode, Json<T>) {
+    fn into_response(self) -> HttpResponse {
+        match serde_json::to_vec(&(self.1).0) {
+            Ok(bytes) => Response::builder()
+                .status(self.0)
+                .header(CONTENT_TYPE, "application/json")
+                .body(
+                    Full::new(Bytes::from(bytes))
+                        .map_err(|never| match never {})
+                        .boxed(),
+                )
+                .expect("response builder should be infallible"),
+            Err(e) => json_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("JSON serialization failed: {e}"),
+            ),
+        }
+    }
+}
+
 // ── RFC 7807 Problem Details ──
 
 /// RFC 7807 Problem Details for HTTP APIs.
@@ -328,6 +373,55 @@ where
     }
 }
 
+/// Convert an `Outcome<Out, E>` to an HTTP response, serializing `Out` as JSON.
+///
+/// Unlike [`outcome_to_response`] (which requires `Out: IntoResponse`), this function
+/// only requires `Out: Serialize` and always produces `application/json` output.
+///
+/// This is the core function powering `get_json_out`, `post_typed_json_out`, etc.
+/// The serialization format is decided at the route level, not in the Transition —
+/// aligning with PHILOSOPHY.md §5 "Infrastructure as Boundary".
+pub fn outcome_to_json_response<Out, E>(outcome: Outcome<Out, E>) -> HttpResponse
+where
+    Out: Serialize,
+    E: std::fmt::Debug,
+{
+    match outcome {
+        Outcome::Next(output) => Json(output).into_response(),
+        Outcome::Fault(error) => {
+            if cfg!(debug_assertions) {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Error: {:?}", error),
+                )
+                    .into_response()
+            } else {
+                json_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error",
+                )
+            }
+        }
+        _ => "OK".into_response(),
+    }
+}
+
+/// Convert an `Outcome<Out, E>` to a JSON response, using RFC 7807 for faults.
+///
+/// Like [`outcome_to_json_response`], `Out` is auto-serialized to JSON.
+/// On fault, the error is converted via [`IntoProblemDetail`].
+pub fn outcome_to_json_problem_response<Out, E>(outcome: Outcome<Out, E>) -> HttpResponse
+where
+    Out: Serialize,
+    E: IntoProblemDetail,
+{
+    match outcome {
+        Outcome::Next(output) => Json(output).into_response(),
+        Outcome::Fault(error) => error.into_problem_detail().into_response(),
+        _ => "OK".into_response(),
+    }
+}
+
 /// A wrapper for Askama templates that implements `IntoResponse`.
 ///
 /// Renders the template to HTML and returns a `200 OK` response with
@@ -467,6 +561,74 @@ mod tests {
         }
         let outcome: Outcome<String, MyError> = Outcome::Fault(MyError);
         let response = outcome_to_problem_response(outcome);
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // ── Json<T> IntoResponse tests ──
+
+    #[test]
+    fn json_into_response_sets_json_content_type() {
+        #[derive(serde::Serialize)]
+        struct Payload { id: u32, name: String }
+
+        let response = Json(Payload { id: 1, name: "test".into() }).into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+            Some("application/json")
+        );
+    }
+
+    #[test]
+    fn status_code_json_into_response() {
+        #[derive(serde::Serialize)]
+        struct Created { id: u32 }
+
+        let response = (StatusCode::CREATED, Json(Created { id: 42 })).into_response();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+            Some("application/json")
+        );
+    }
+
+    // ── outcome_to_json_response tests ──
+
+    #[test]
+    fn outcome_to_json_response_serializes_struct() {
+        #[derive(serde::Serialize)]
+        struct ApiResult { count: u32 }
+
+        let outcome: Outcome<ApiResult, String> = Outcome::Next(ApiResult { count: 5 });
+        let response = outcome_to_json_response(outcome);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+            Some("application/json")
+        );
+    }
+
+    #[test]
+    fn outcome_to_json_response_fault_returns_500() {
+        let outcome: Outcome<String, String> = Outcome::Fault("boom".to_string());
+        let response = outcome_to_json_response(outcome);
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn outcome_to_json_problem_response_maps_fault() {
+        #[derive(serde::Serialize)]
+        struct Data { ok: bool }
+
+        struct AppError;
+        impl IntoProblemDetail for AppError {
+            fn into_problem_detail(&self) -> ProblemDetail {
+                ProblemDetail::new(422, "Validation Failed")
+            }
+        }
+
+        let outcome: Outcome<Data, AppError> = Outcome::Fault(AppError);
+        let response = outcome_to_json_problem_response(outcome);
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

@@ -47,6 +47,7 @@ pub use ingress::{
 };
 pub use response::{
     Html, HttpResponse, IntoProblemDetail, IntoResponse, ProblemDetail, json_error_response,
+    outcome_to_json_problem_response, outcome_to_json_response,
     outcome_to_problem_response, outcome_to_response, outcome_to_response_with_error,
 };
 pub use guard_integration::{
@@ -93,6 +94,7 @@ pub mod prelude {
     };
     pub use crate::response::{
         Html, HttpResponse, IntoProblemDetail, IntoResponse, ProblemDetail, json_error_response,
+        outcome_to_json_problem_response, outcome_to_json_response,
         outcome_to_problem_response, outcome_to_response, outcome_to_response_with_error,
     };
     pub use crate::guard_integration::{
