@@ -1,10 +1,10 @@
 use ranvier_core::prelude::*;
-use ranvier_http::PathParams;
+use ranvier_http::BusHttpExt;
 use ranvier_macros::transition;
 use crate::auth;
 use crate::store::AppStore;
 
-/// Get order by ID — reads `:id` path param from `PathParams` in Bus.
+/// Get order by ID — reads `:id` path param via `BusHttpExt::path_param()`.
 #[transition]
 pub async fn get_order(
     _input: (),
@@ -27,17 +27,14 @@ pub async fn get_order(
         None => return Outcome::Fault("Unauthorized".to_string()),
     };
 
-    let order_id: u64 = match bus.read::<PathParams>().and_then(|p| p.get("id")) {
-        Some(id_str) => match id_str.parse() {
-            Ok(id) => id,
-            Err(_) => return Outcome::Fault("Invalid order ID".to_string()),
-        },
-        None => return Outcome::Fault("Missing order ID".to_string()),
+    let order_id: u64 = match bus.path_param("id") {
+        Ok(id) => id,
+        Err(e) => return Outcome::Fault(e),
     };
 
-    let store = match bus.read::<AppStore>() {
-        Some(s) => s.clone(),
-        None => return Outcome::Fault("Store unavailable".to_string()),
+    let store = match bus.get_cloned::<AppStore>() {
+        Ok(s) => s,
+        Err(_) => return Outcome::Fault("Store unavailable".to_string()),
     };
 
     match store.get_order(order_id) {

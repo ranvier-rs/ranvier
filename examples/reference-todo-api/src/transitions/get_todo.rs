@@ -1,23 +1,19 @@
 use ranvier_core::prelude::*;
-use ranvier_http::PathParams;
+use ranvier_http::BusHttpExt;
 use ranvier_macros::transition;
 use crate::models::Todo;
 use std::sync::{Arc, Mutex};
 
-/// Get todo by ID — reads `:id` path param from `PathParams` in Bus.
+/// Get todo by ID — reads `:id` path param via `BusHttpExt::path_param()`.
 #[transition]
 pub async fn get_todo(
     _input: (),
     _res: &(),
     bus: &mut Bus,
 ) -> Outcome<serde_json::Value, String> {
-    // Read path param :id from PathParams (injected into Bus by bus_injector)
-    let id: u64 = match bus.read::<PathParams>().and_then(|p| p.get("id")) {
-        Some(id_str) => match id_str.parse() {
-            Ok(id) => id,
-            Err(_) => return Outcome::Fault("Invalid todo ID".to_string()),
-        },
-        None => return Outcome::Fault("Missing todo ID".to_string()),
+    let id: u64 = match bus.path_param("id") {
+        Ok(id) => id,
+        Err(e) => return Outcome::Fault(e),
     };
 
     if let Some(store) = bus.read::<Arc<Mutex<Vec<Todo>>>>() {

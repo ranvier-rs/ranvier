@@ -10,8 +10,8 @@ pub async fn handle_ws(
     _resources: Arc<()>,
     bus: ranvier_core::Bus,
 ) {
-    let room_manager = bus.read::<RoomManager>().cloned().unwrap();
-    let token_store = bus.read::<TokenStore>().cloned().unwrap();
+    let room_manager = bus.get_cloned::<RoomManager>().unwrap();
+    let token_store = bus.get_cloned::<TokenStore>().unwrap();
 
     // Extract token from query string: ?token=tok_xxx
     let token = ws

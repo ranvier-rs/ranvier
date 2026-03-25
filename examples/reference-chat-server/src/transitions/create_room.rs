@@ -11,8 +11,8 @@ pub async fn create_room(
     bus: &mut ranvier_core::Bus,
 ) -> Outcome<serde_json::Value, String> {
     // Verify auth
-    let token_store = bus.read::<TokenStore>().cloned().expect("TokenStore");
-    let auth_header = bus.read::<String>().cloned().unwrap_or_default();
+    let token_store = bus.get_cloned::<TokenStore>().expect("TokenStore");
+    let auth_header = bus.get_cloned::<String>().unwrap_or_default();
     let token = auth::extract_bearer(&auth_header).unwrap_or("");
     let claims = match auth::verify_token(&token_store, token) {
         Some(c) => c,
@@ -30,7 +30,7 @@ pub async fn create_room(
     }
     let is_public = body.get("is_public").and_then(|v| v.as_bool()).unwrap_or(true);
 
-    let room_manager = bus.read::<RoomManager>().cloned().expect("RoomManager");
+    let room_manager = bus.get_cloned::<RoomManager>().expect("RoomManager");
     let room = room_manager.create_room(name, &claims.user_id, is_public);
 
     Outcome::Next(serde_json::json!({

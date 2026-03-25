@@ -79,6 +79,8 @@ members = [
     "examples/resilience-patterns-demo",
     "examples/service-call-demo",
     "examples/streaming-demo",
+    "examples/typed-json-api",
+    "examples/outcome-patterns",
 ]
 
 [workspace.package]

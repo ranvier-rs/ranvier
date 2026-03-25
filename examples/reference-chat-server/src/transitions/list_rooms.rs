@@ -8,7 +8,7 @@ pub async fn list_rooms(
     _res: &(),
     bus: &mut ranvier_core::Bus,
 ) -> Outcome<serde_json::Value, String> {
-    let room_manager = bus.read::<RoomManager>().cloned().expect("RoomManager");
+    let room_manager = bus.get_cloned::<RoomManager>().expect("RoomManager");
     let rooms = room_manager.list_rooms();
     Outcome::Next(serde_json::json!({ "rooms": rooms }))
 }

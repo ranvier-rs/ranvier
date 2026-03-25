@@ -70,7 +70,7 @@ impl Transition<UserAction, ActionResult> for AuditedAction {
         bus: &mut Bus,
     ) -> Outcome<ActionResult, String> {
         // Retrieve the AuditLogger from Bus (injected via Arc wrapper)
-        let logger = bus.read::<SharedAuditLogger>().cloned();
+        let logger = bus.get_cloned::<SharedAuditLogger>().ok();
 
         // Create a 5W audit event
         // WHO:   input.user_id

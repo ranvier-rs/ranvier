@@ -132,9 +132,9 @@ impl Transition<SessionContext, ResponsePayload> for CacheResponseTransition {
         resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<ResponsePayload, Self::Error> {
-        let session = match bus.read::<UserSession>().cloned() {
-            Some(value) => value,
-            None => return Outcome::Fault("session missing in Bus".to_string()),
+        let session = match bus.get_cloned::<UserSession>() {
+            Ok(value) => value,
+            Err(_) => return Outcome::Fault("session missing in Bus".to_string()),
         };
 
         let mut redis = resources.redis.clone();

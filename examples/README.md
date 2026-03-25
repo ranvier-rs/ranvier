@@ -1,7 +1,7 @@
 # Ranvier Examples
 
-**Updated:** 2026-03-22
-**Workspace:** v0.37.0 — 12 crates, Hyper 1.0 native (no tower/tower-http)
+**Updated:** 2026-03-25
+**Workspace:** v0.43.0 — 12 crates, Hyper 1.0 native (no tower/tower-http)
 **Purpose:** Keep examples aligned with the Typed Decision Engine direction:
 1. Axon execution is explicit.
 2. Schematic is analysis data, not an executable graph.
@@ -74,6 +74,8 @@ These are maintained and useful, but not the first onboarding path.
 42. `closure-transition-demo` — v0.34: `then_fn()`, `Axon::typed()`, `post_typed()`
 43. `guard-integration-demo` — v0.35: `GuardIntegration`, per-route `guards![]` macro
 44. `streaming-demo` — v0.37: `StreamingTransition`, `StreamingAxon`, `post_sse_typed()`
+45. `typed-json-api` — v0.43: `get_json_out`, `post_typed_json_out`, `BusHttpExt`, `CorsGuard::permissive()`
+46. `outcome-patterns` — v0.42-v0.43: `try_outcome!`, Outcome combinators, `Bus::get_cloned()`, `json_outcome()`
 
 ### Tier C: Ecosystem Integration
 
