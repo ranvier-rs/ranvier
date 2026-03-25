@@ -471,6 +471,67 @@ impl EventSink<Vec<u8>> for WebSocketConnection {
     }
 }
 
+/// Parsed query string parameters extracted from the request URI.
+///
+/// Automatically injected into the Bus by `HttpIngress` for every request.
+/// Use `bus.read::<QueryParams>()` inside transitions to access query parameters.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let page = bus.read::<QueryParams>()
+///     .and_then(|q| q.get_parsed::<i64>("page"))
+///     .unwrap_or(1);
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QueryParams {
+    values: HashMap<String, String>,
+}
+
+impl QueryParams {
+    /// Create QueryParams from a raw query string (e.g. `"page=1&limit=20"`).
+    pub fn from_query(query: &str) -> Self {
+        let values = query
+            .split('&')
+            .filter(|s| !s.is_empty())
+            .filter_map(|pair| {
+                let mut parts = pair.splitn(2, '=');
+                let key = parts.next()?.to_string();
+                let value = parts.next().unwrap_or("").to_string();
+                Some((key, value))
+            })
+            .collect();
+        Self { values }
+    }
+
+    /// Get a raw string value by key.
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.values.get(key).map(String::as_str)
+    }
+
+    /// Parse a query parameter value as type `T`.
+    ///
+    /// Returns `None` if the key is absent or parsing fails.
+    pub fn get_parsed<T: std::str::FromStr>(&self, key: &str) -> Option<T> {
+        self.values.get(key).and_then(|v| v.parse().ok())
+    }
+
+    /// Get a parsed value, or return `default` if absent or unparseable.
+    pub fn get_or<T: std::str::FromStr>(&self, key: &str, default: T) -> T {
+        self.get_parsed(key).unwrap_or(default)
+    }
+
+    /// Check if a key exists in the query parameters.
+    pub fn contains(&self, key: &str) -> bool {
+        self.values.contains_key(key)
+    }
+
+    /// Get reference to the underlying map.
+    pub fn as_map(&self) -> &HashMap<String, String> {
+        &self.values
+    }
+}
+
 impl PathParams {
     pub fn new(values: HashMap<String, String>) -> Self {
         Self { values }
@@ -480,12 +541,36 @@ impl PathParams {
         self.values.get(key).map(String::as_str)
     }
 
+    /// Parse a path parameter value as type `T`.
+    ///
+    /// Returns `None` if the key is absent or parsing fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let id: Option<Uuid> = params.get_parsed::<Uuid>("id");
+    /// ```
+    pub fn get_parsed<T: std::str::FromStr>(&self, key: &str) -> Option<T> {
+        self.values.get(key).and_then(|v| v.parse().ok())
+    }
+
     pub fn as_map(&self) -> &HashMap<String, String> {
         &self.values
     }
 
     pub fn into_inner(self) -> HashMap<String, String> {
         self.values
+    }
+}
+
+/// Inject `QueryParams` into the Bus from request parts.
+///
+/// Called automatically by `HttpIngress` before user-provided `bus_injector`.
+fn inject_query_params(parts: &http::request::Parts, bus: &mut ranvier_core::bus::Bus) {
+    if let Some(query) = parts.uri.query() {
+        bus.insert(QueryParams::from_query(query));
+    } else {
+        bus.insert(QueryParams::default());
     }
 }
 
@@ -1131,6 +1216,7 @@ where
 
                     async move {
                         let mut bus = Bus::new();
+                        inject_query_params(&parts, &mut bus);
                         for injector in bus_injectors.iter() {
                             injector(&parts, &mut bus);
                         }
@@ -1353,6 +1439,7 @@ where
 
                 async move {
                     let mut bus = Bus::new();
+                    inject_query_params(&parts, &mut bus);
                     for injector in route_bus_injectors.iter() {
                         injector(&parts, &mut bus);
                     }
@@ -1500,6 +1587,7 @@ where
                     };
 
                     let mut bus = Bus::new();
+                    inject_query_params(&parts, &mut bus);
                     for injector in route_bus_injectors.iter() {
                         injector(&parts, &mut bus);
                     }
@@ -1681,6 +1769,219 @@ where
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
         self.route_method_typed::<T, Out, E>(Method::PATCH, path, circuit)
+    }
+
+    /// Internal: register a JSON-body route **without** `JsonSchema` requirement.
+    ///
+    /// Identical to [`route_method_typed`] but omits the `schemars::JsonSchema` bound
+    /// and does not generate an OpenAPI request body schema.
+    /// Use `post_json`/`put_json`/`patch_json` for public access.
+    fn route_method_json<T, Out, E>(
+        mut self,
+        method: Method,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let path_str: String = path.into();
+        let circuit = Arc::new(circuit);
+        let route_bus_injectors = Arc::new(self.bus_injectors.clone());
+        let route_guard_execs = Arc::new(self.guard_execs.clone());
+        let route_response_extractors = Arc::new(self.guard_response_extractors.clone());
+        let route_body_transforms = Arc::new(self.guard_body_transforms.clone());
+        let path_for_pattern = path_str.clone();
+        let path_for_handler = path_str;
+        let method_for_pattern = method.clone();
+        let method_for_handler = method;
+
+        let handler: RouteHandler<R> = Arc::new(move |parts: http::request::Parts, res: &R| {
+            let circuit = circuit.clone();
+            let route_bus_injectors = route_bus_injectors.clone();
+            let route_guard_execs = route_guard_execs.clone();
+            let route_response_extractors = route_response_extractors.clone();
+            let route_body_transforms = route_body_transforms.clone();
+            let res = res.clone();
+            let path = path_for_handler.clone();
+            let method = method_for_handler.clone();
+
+            Box::pin(async move {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let span = tracing::info_span!(
+                    "HTTPRequest",
+                    ranvier.http.method = %method,
+                    ranvier.http.path = %path,
+                    ranvier.http.request_id = %request_id
+                );
+
+                async move {
+                    let body_bytes = parts
+                        .extensions
+                        .get::<BodyBytes>()
+                        .map(|b| b.0.clone())
+                        .unwrap_or_default();
+
+                    let input: T = match serde_json::from_slice(&body_bytes) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return json_error_response(
+                                StatusCode::BAD_REQUEST,
+                                &format!("Invalid request body: {}", e),
+                            );
+                        }
+                    };
+
+                    let mut bus = Bus::new();
+                    inject_query_params(&parts, &mut bus);
+                    for injector in route_bus_injectors.iter() {
+                        injector(&parts, &mut bus);
+                    }
+                    for guard_exec in route_guard_execs.iter() {
+                        if let Err(rejection) = guard_exec.exec_guard(&mut bus).await {
+                            let mut response = json_error_response(rejection.status, &rejection.message);
+                            for extractor in route_response_extractors.iter() {
+                                extractor(&bus, response.headers_mut());
+                            }
+                            return response;
+                        }
+                    }
+                    if let Some(cached) = bus.read::<ranvier_guard::IdempotencyCachedResponse>() {
+                        let body = Bytes::from(cached.body.clone());
+                        let mut response = Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "application/json")
+                            .body(Full::new(body).map_err(|n: Infallible| match n {}).boxed())
+                            .unwrap();
+                        for extractor in route_response_extractors.iter() {
+                            extractor(&bus, response.headers_mut());
+                        }
+                        return response;
+                    }
+                    let result = if let Some(td) = bus.read::<ranvier_guard::TimeoutDeadline>() {
+                        let remaining = td.remaining();
+                        if remaining.is_zero() {
+                            let mut response = json_error_response(
+                                StatusCode::REQUEST_TIMEOUT,
+                                "Request timeout: pipeline deadline exceeded",
+                            );
+                            for extractor in route_response_extractors.iter() {
+                                extractor(&bus, response.headers_mut());
+                            }
+                            return response;
+                        }
+                        match tokio::time::timeout(remaining, circuit.execute(input, &res, &mut bus)).await {
+                            Ok(result) => result,
+                            Err(_) => {
+                                let mut response = json_error_response(
+                                    StatusCode::REQUEST_TIMEOUT,
+                                    "Request timeout: pipeline deadline exceeded",
+                                );
+                                for extractor in route_response_extractors.iter() {
+                                    extractor(&bus, response.headers_mut());
+                                }
+                                return response;
+                            }
+                        }
+                    } else {
+                        circuit.execute(input, &res, &mut bus).await
+                    };
+                    let mut response = outcome_to_response_with_error(result, |error| {
+                        if cfg!(debug_assertions) {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("Error: {:?}", error),
+                            )
+                                .into_response()
+                        } else {
+                            json_error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "Internal server error",
+                            )
+                        }
+                    });
+                    for extractor in route_response_extractors.iter() {
+                        extractor(&bus, response.headers_mut());
+                    }
+                    if !route_body_transforms.is_empty() {
+                        response = apply_body_transforms(response, &bus, &route_body_transforms).await;
+                    }
+                    response
+                }
+                .instrument(span)
+                .await
+            }) as Pin<Box<dyn Future<Output = HttpResponse> + Send>>
+        });
+
+        self.routes.push(RouteEntry {
+            method: method_for_pattern,
+            pattern: RoutePattern::parse(&path_for_pattern),
+            handler,
+            layers: Arc::new(Vec::new()),
+            apply_global_layers: true,
+            needs_body: true,
+            body_schema: None,
+        });
+        self
+    }
+
+    /// Register a POST route with JSON body deserialization — **no `JsonSchema` required**.
+    ///
+    /// Unlike [`post_typed`](Self::post_typed), this method does not generate an OpenAPI
+    /// request body schema. Use this for internal APIs or rapid prototyping where
+    /// `schemars::JsonSchema` derive is unnecessary.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // T only needs Deserialize + Serialize — no JsonSchema derive needed
+    /// .post_json::<MyRequest, _, _>("/api/internal", pipeline)
+    /// ```
+    pub fn post_json<T, Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_json::<T, Out, E>(Method::POST, path, circuit)
+    }
+
+    /// Register a PUT route with JSON body deserialization — **no `JsonSchema` required**.
+    ///
+    /// See [`post_json`](Self::post_json) for details.
+    pub fn put_json<T, Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_json::<T, Out, E>(Method::PUT, path, circuit)
+    }
+
+    /// Register a PATCH route with JSON body deserialization — **no `JsonSchema` required**.
+    ///
+    /// See [`post_json`](Self::post_json) for details.
+    pub fn patch_json<T, Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_json::<T, Out, E>(Method::PATCH, path, circuit)
     }
 
     pub fn put<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
@@ -1902,6 +2203,7 @@ where
                     };
 
                     let mut bus = Bus::new();
+                    inject_query_params(&parts, &mut bus);
                     for injector in route_bus_injectors.iter() {
                         injector(&parts, &mut bus);
                     }
@@ -2187,6 +2489,7 @@ where
 
                 async move {
                     let mut bus = Bus::new();
+                    inject_query_params(&parts, &mut bus);
                     for injector in fallback_bus_injectors.iter() {
                         injector(&parts, &mut bus);
                     }

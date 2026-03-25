@@ -69,6 +69,45 @@ pub use schematic::Schematic;
 pub use timeline::{Timeline, TimelineEvent};
 pub use transition::Transition;
 
+/// Convert a fallible expression into an `Outcome` early-return inside a `#[transition]`.
+///
+/// `try_outcome!(expr)` evaluates `expr` (which must return `Result<T, E>` where `E: Display`).
+/// On `Ok(v)` the macro yields `v`; on `Err(e)` it returns `Outcome::Fault(e.to_string())`.
+///
+/// An optional context string can be provided for error messages:
+///
+/// ```rust,ignore
+/// let rows = try_outcome!(db_query.await, "DB error");
+/// // On error produces Outcome::Fault("DB error: <original error>")
+/// ```
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// use ranvier_core::prelude::*;
+///
+/// #[transition]
+/// async fn my_transition(input: String, _res: &(), bus: &mut Bus) -> Outcome<i32, String> {
+///     let parsed = try_outcome!(input.parse::<i32>(), "parse failed");
+///     Outcome::Next(parsed * 2)
+/// }
+/// ```
+#[macro_export]
+macro_rules! try_outcome {
+    ($expr:expr) => {
+        match $expr {
+            Ok(val) => val,
+            Err(e) => return $crate::outcome::Outcome::Fault(e.to_string()),
+        }
+    };
+    ($expr:expr, $ctx:expr) => {
+        match $expr {
+            Ok(val) => val,
+            Err(e) => return $crate::outcome::Outcome::Fault(format!("{}: {}", $ctx, e)),
+        }
+    };
+}
+
 /// Build a `Bus` with optional resource inserts in one expression.
 ///
 /// This macro is a helper for repetitive example/test wiring and does not

@@ -105,6 +105,37 @@ impl<T> CorsGuard<T> {
         }
     }
 
+    /// Create a fully permissive CORS guard for development and testing.
+    ///
+    /// Allows all origins (`*`), all standard HTTP methods, and common headers.
+    /// A `tracing::warn` is emitted to remind that this should not be used in production.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// Ranvier::http()
+    ///     .guard(CorsGuard::<()>::permissive())
+    /// ```
+    pub fn permissive() -> Self {
+        tracing::warn!("CorsGuard::permissive() — all origins allowed; do not use in production");
+        Self {
+            config: CorsConfig {
+                allowed_origins: vec!["*".to_string()],
+                allowed_methods: vec![
+                    "GET".into(), "POST".into(), "PUT".into(), "DELETE".into(),
+                    "PATCH".into(), "OPTIONS".into(), "HEAD".into(),
+                ],
+                allowed_headers: vec![
+                    "Content-Type".into(), "Authorization".into(), "Accept".into(),
+                    "Origin".into(), "X-Requested-With".into(),
+                ],
+                max_age_seconds: 86400,
+                allow_credentials: false,
+            },
+            _marker: PhantomData,
+        }
+    }
+
     /// Returns a reference to the CORS configuration.
     pub fn cors_config(&self) -> &CorsConfig {
         &self.config

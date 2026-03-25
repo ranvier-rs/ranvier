@@ -545,3 +545,26 @@ where
         outcome
     }
 }
+
+/// Convenience methods for Axons with `Res = ()` (no external resources).
+impl<In, Out, E> Axon<In, Out, E, ()>
+where
+    In: Send + Sync + Serialize + DeserializeOwned + 'static,
+    Out: Send + Sync + Serialize + DeserializeOwned + 'static,
+    E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
+{
+    /// Execute the Axon without requiring an explicit `&()` resources argument.
+    ///
+    /// This is a convenience wrapper around [`execute`](Self::execute) for Axons
+    /// that do not use external resources (`Res = ()`).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let outcome = pipeline.execute_simple(input, &mut bus).await;
+    /// // equivalent to: pipeline.execute(input, &(), &mut bus).await
+    /// ```
+    pub async fn execute_simple(&self, input: In, bus: &mut Bus) -> Outcome<Out, E> {
+        self.execute(input, &(), bus).await
+    }
+}

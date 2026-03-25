@@ -40,8 +40,8 @@ pub mod test_harness;
 
 pub use extract::{CookieJar, DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Header, Json, Path, Query};
 pub use ingress::{
-    HttpIngress, HttpRouteDescriptor, PathParams, Ranvier, WebSocketConnection, WebSocketError,
-    WebSocketEvent, WebSocketSessionContext,
+    HttpIngress, HttpRouteDescriptor, PathParams, QueryParams, Ranvier, WebSocketConnection,
+    WebSocketError, WebSocketEvent, WebSocketSessionContext,
 };
 pub use response::{
     Html, HttpResponse, IntoProblemDetail, IntoResponse, ProblemDetail, json_error_response,
@@ -85,8 +85,8 @@ macro_rules! guards {
 pub mod prelude {
     pub use crate::extract::{CookieJar, DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Header, Json, Path, Query};
     pub use crate::ingress::{
-        HttpIngress, HttpRouteDescriptor, PathParams, Ranvier, WebSocketConnection, WebSocketError,
-        WebSocketEvent, WebSocketSessionContext,
+        HttpIngress, HttpRouteDescriptor, PathParams, QueryParams, Ranvier, WebSocketConnection,
+        WebSocketError, WebSocketEvent, WebSocketSessionContext,
     };
     pub use crate::response::{
         Html, HttpResponse, IntoProblemDetail, IntoResponse, ProblemDetail, json_error_response,
