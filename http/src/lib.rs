@@ -25,6 +25,7 @@
 //!     .await?;
 //! ```
 
+pub mod bus_ext;
 pub mod extract;
 pub mod guard_integration;
 pub mod ingress;
@@ -38,6 +39,7 @@ pub mod htmx;
 pub mod http3;
 pub mod test_harness;
 
+pub use bus_ext::{BusHttpExt, json_outcome};
 pub use extract::{CookieJar, DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Header, Json, Path, Query};
 pub use ingress::{
     HttpIngress, HttpRouteDescriptor, PathParams, QueryParams, Ranvier, WebSocketConnection,
@@ -83,6 +85,7 @@ macro_rules! guards {
 
 /// Prelude module for convenient imports
 pub mod prelude {
+    pub use crate::bus_ext::{BusHttpExt, json_outcome};
     pub use crate::extract::{CookieJar, DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Header, Json, Path, Query};
     pub use crate::ingress::{
         HttpIngress, HttpRouteDescriptor, PathParams, QueryParams, Ranvier, WebSocketConnection,

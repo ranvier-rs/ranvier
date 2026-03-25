@@ -362,6 +362,28 @@ impl Bus {
         self.read::<T>()
     }
 
+    /// Read a resource and clone it in one step.
+    ///
+    /// Equivalent to `bus.get::<T>().map(Clone::clone)` but more concise.
+    /// Useful when a transition needs an owned copy (e.g., `PgPool`, `Arc<T>`).
+    ///
+    /// Returns `Err(BusAccessError::NotFound)` if the resource is missing, or
+    /// `Err(BusAccessError::Unauthorized)` if an access policy denies it.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use ranvier_core::Bus;
+    /// let mut bus = Bus::new();
+    /// bus.provide(42i32);
+    /// let value: i32 = bus.get_cloned::<i32>().unwrap();
+    /// assert_eq!(value, 42);
+    /// ```
+    #[inline]
+    pub fn get_cloned<T: Any + Send + Sync + Clone + 'static>(&self) -> Result<T, BusAccessError> {
+        self.get::<T>().map(Clone::clone)
+    }
+
     /// Set transition-scoped policy. `None` keeps access unrestricted.
     pub fn set_access_policy(
         &mut self,
@@ -674,6 +696,38 @@ mod tests {
         // Allowed type should still work
         assert_eq!(*bus.read::<i32>().unwrap(), 42);
         assert!(bus.has::<i32>());
+    }
+
+    #[test]
+    fn get_cloned_returns_owned_copy() {
+        let mut bus = Bus::new();
+        bus.provide("hello".to_string());
+        let cloned: String = bus.get_cloned::<String>().unwrap();
+        assert_eq!(cloned, "hello");
+        // Original still in bus
+        assert_eq!(bus.read::<String>().unwrap(), "hello");
+    }
+
+    #[test]
+    fn get_cloned_missing_returns_not_found() {
+        let bus = Bus::new();
+        let err = bus.get_cloned::<String>().unwrap_err();
+        assert!(matches!(err, BusAccessError::NotFound { .. }));
+    }
+
+    #[test]
+    fn get_cloned_policy_violation_returns_unauthorized() {
+        let mut bus = Bus::new();
+        bus.insert(42i32);
+        bus.insert("hello".to_string());
+        bus.set_access_policy(
+            "OnlyInt",
+            Some(BusAccessPolicy::allow_only(vec![BusTypeRef::of::<i32>()])),
+        );
+        let err = bus.get_cloned::<String>().unwrap_err();
+        assert!(matches!(err, BusAccessError::Unauthorized { .. }));
+        // Allowed type works
+        assert_eq!(bus.get_cloned::<i32>().unwrap(), 42);
     }
 
     #[test]
