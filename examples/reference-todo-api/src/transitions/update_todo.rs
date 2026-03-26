@@ -19,7 +19,7 @@ pub async fn update_todo(
         Err(e) => return Outcome::Fault(e),
     };
 
-    if let Some(store) = bus.read::<Arc<Mutex<Vec<Todo>>>>() {
+    if let Ok(store) = bus.get_cloned::<Arc<Mutex<Vec<Todo>>>>() {
         let mut todos = store.lock().unwrap();
         if let Some(todo) = todos.iter_mut().find(|t| t.id == id) {
             if let Some(title) = request.title {

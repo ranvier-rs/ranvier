@@ -20,7 +20,7 @@ pub async fn create_todo(
     let todo = Todo::new(request.title);
 
     // Store in shared state via Bus (injected by bus_injector)
-    if let Some(store) = bus.read::<Arc<Mutex<Vec<Todo>>>>() {
+    if let Ok(store) = bus.get_cloned::<Arc<Mutex<Vec<Todo>>>>() {
         let mut todos = store.lock().unwrap();
         todos.push(todo.clone());
     }

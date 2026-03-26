@@ -68,14 +68,14 @@ enum AppError {
 async fn authenticate(_input: (), _res: &(), bus: &mut Bus) -> Outcome<AuthContext, AppError> {
     // In a real HTTP scenario, token would be extracted from request and put in Bus.
     // For this demo, we'll expect it to already be in Bus as a String.
-    let token = match bus.read::<String>() {
-        Some(t) => t,
-        None => return Outcome::Fault(AppError::Auth(AuthError::MissingHeader.to_string())),
+    let token = match bus.get_cloned::<String>() {
+        Ok(t) => t,
+        Err(_) => return Outcome::Fault(AppError::Auth(AuthError::MissingHeader.to_string())),
     };
 
     // Validate JWT
     let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| "default-secret-key".to_string());
-    let auth_ctx = match validate_jwt(token, &jwt_secret) {
+    let auth_ctx = match validate_jwt(&token, &jwt_secret) {
         Ok(ctx) => ctx,
         Err(e) => return Outcome::Fault(AppError::Auth(e.to_string())),
     };
@@ -98,7 +98,7 @@ async fn authenticate(_input: (), _res: &(), bus: &mut Bus) -> Outcome<AuthConte
 #[transition]
 async fn authorize(_input: AuthContext, _res: &(), bus: &mut Bus) -> Outcome<(), AppError> {
     let auth = bus
-        .read::<AuthContext>()
+        .get_cloned::<AuthContext>()
         .expect("AuthContext should be in Bus after authenticate");
 
     let required_role = "admin";
@@ -128,7 +128,7 @@ async fn authorize(_input: AuthContext, _res: &(), bus: &mut Bus) -> Outcome<(),
 #[transition]
 async fn protected_handler(_input: (), _res: &(), bus: &mut Bus) -> Outcome<Response, AppError> {
     let auth = bus
-        .read::<AuthContext>()
+        .get_cloned::<AuthContext>()
         .expect("AuthContext should be in Bus");
 
     tracing::info!(

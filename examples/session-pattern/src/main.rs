@@ -149,7 +149,7 @@ impl Transition<String, String> for UserProfile {
     ) -> Outcome<String, Self::Error> {
         // Safe unwrap because we are after RequireAuth
         // But idiomatic way is to use if let to be safe or map
-        if let Some(session) = bus.read::<UserSession>() {
+        if let Ok(session) = bus.get_cloned::<UserSession>() {
             let profile = format!("Profile: {} (Roles: {:?})", session.username, session.roles);
             Outcome::Next(profile)
         } else {

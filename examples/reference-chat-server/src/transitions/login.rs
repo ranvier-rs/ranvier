@@ -9,9 +9,9 @@ pub async fn login(
     _res: &(),
     bus: &mut ranvier_core::Bus,
 ) -> Outcome<serde_json::Value, String> {
-    let body = match bus.read::<Json<serde_json::Value>>() {
-        Some(json) => json.0.clone(),
-        None => return Outcome::Fault("Missing JSON body".to_string()),
+    let body = match bus.get_cloned::<Json<serde_json::Value>>() {
+        Ok(json) => json.0,
+        Err(_) => return Outcome::Fault("Missing JSON body".to_string()),
     };
 
     let username = body
@@ -24,8 +24,7 @@ pub async fn login(
     }
 
     let token_store = bus
-        .read::<TokenStore>()
-        .cloned()
+        .get_cloned::<TokenStore>()
         .expect("TokenStore must be injected");
 
     let user_id = uuid::Uuid::new_v4().to_string();

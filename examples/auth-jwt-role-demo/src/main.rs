@@ -74,7 +74,7 @@ impl Transition<(), DashboardData> for AdminDashboard {
         _resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<DashboardData, Self::Error> {
-        let identity = bus.read::<IamIdentity>().expect("IamIdentity should be in Bus after with_iam verification");
+        let identity = bus.get_cloned::<IamIdentity>().expect("IamIdentity should be in Bus after with_iam verification");
 
         Outcome::next(DashboardData {
             user: identity.subject.clone(),
@@ -123,7 +123,7 @@ impl Transition<(), serde_json::Value> for UserProfile {
         _resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<serde_json::Value, Self::Error> {
-        let identity = bus.read::<IamIdentity>().expect("IamIdentity should be in Bus");
+        let identity = bus.get_cloned::<IamIdentity>().expect("IamIdentity should be in Bus");
 
         Outcome::next(serde_json::json!({
             "subject": identity.subject,

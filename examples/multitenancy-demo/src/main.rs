@@ -118,13 +118,12 @@ impl Transition<CreateItemRequest, CreateItemRequest> for ValidateTenantContext 
         _resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<CreateItemRequest, Self::Error> {
-        let tenant = bus.read::<TenantId>();
-        match tenant {
-            Some(id) => {
+        match bus.get_cloned::<TenantId>() {
+            Ok(id) => {
                 println!("  [Validate] Tenant context: {}", id.as_str());
                 Outcome::Next(input)
             }
-            None => {
+            Err(_) => {
                 println!("  [Validate] No tenant context — rejecting");
                 Outcome::Fault("missing_tenant_id".to_string())
             }
@@ -146,9 +145,9 @@ impl Transition<CreateItemRequest, ItemCreated> for StoreItem {
         resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<ItemCreated, Self::Error> {
-        let tenant_id = match bus.read::<TenantId>() {
-            Some(id) => id.as_str().to_string(),
-            None => return Outcome::Fault("missing_tenant_id".to_string()),
+        let tenant_id = match bus.get_cloned::<TenantId>() {
+            Ok(id) => id.as_str().to_string(),
+            Err(_) => return Outcome::Fault("missing_tenant_id".to_string()),
         };
 
         resources

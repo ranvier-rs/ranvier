@@ -12,9 +12,9 @@ pub async fn reserve_inventory(
     let order_id = input["id"].as_u64().unwrap_or(0);
     let items = input["items"].as_array().cloned().unwrap_or_default();
 
-    let store = match bus.read::<AppStore>() {
-        Some(s) => s.clone(),
-        None => return Outcome::Fault("Store unavailable".to_string()),
+    let store = match bus.get_cloned::<AppStore>() {
+        Ok(s) => s,
+        Err(_) => return Outcome::Fault("Store unavailable".to_string()),
     };
 
     // Try to reserve each item

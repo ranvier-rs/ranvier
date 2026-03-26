@@ -15,7 +15,7 @@ pub async fn schedule_shipping(
     // Simulate shipping: "blocked" customer triggers failure for demo
     if customer_id == "blocked-customer" {
         tracing::warn!(order_id, customer_id, "Shipping unavailable for customer");
-        if let Some(store) = bus.read::<AppStore>() {
+        if let Ok(store) = bus.get_cloned::<AppStore>() {
             store.update_order_status(order_id, OrderStatus::FailedShipping);
         }
         return Outcome::Fault(format!(
@@ -26,7 +26,7 @@ pub async fn schedule_shipping(
     let shipping_id = format!("SHIP-{}", uuid::Uuid::new_v4());
 
     // Update order status
-    if let Some(store) = bus.read::<AppStore>() {
+    if let Ok(store) = bus.get_cloned::<AppStore>() {
         if let Some(mut order) = store.get_order(order_id) {
             order.status = OrderStatus::Shipped;
             order.shipping_id = Some(shipping_id.clone());

@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ranvier::http::<()>()
         .bind("127.0.0.1:3130")
         .ws("/ws/chat", |mut socket, _resources, bus| async move {
-            if let Some(session) = bus.read::<WebSocketSessionContext>() {
+            if let Ok(session) = bus.get_cloned::<WebSocketSessionContext>() {
                 let welcome = WelcomePayload {
                     kind: "welcome",
                     connection_id: session.connection_id().to_string(),

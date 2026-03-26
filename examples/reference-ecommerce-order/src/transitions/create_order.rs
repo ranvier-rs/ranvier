@@ -18,7 +18,8 @@ pub async fn create_order(
 ) -> Outcome<serde_json::Value, String> {
     // Extract JWT from Authorization header (injected into Bus by bus_injector)
     let auth_header = bus
-        .read::<Vec<(String, String)>>()
+        .get_cloned::<Vec<(String, String)>>()
+        .ok()
         .and_then(|headers| {
             headers
                 .iter()
@@ -43,7 +44,7 @@ pub async fn create_order(
     let order = Order::new(claims.tenant_id, request.customer_id, request.items);
 
     // Store order
-    if let Some(store) = bus.read::<AppStore>() {
+    if let Ok(store) = bus.get_cloned::<AppStore>() {
         store.save_order(&order);
     }
 

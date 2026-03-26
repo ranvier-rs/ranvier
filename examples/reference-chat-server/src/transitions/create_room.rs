@@ -19,9 +19,9 @@ pub async fn create_room(
         None => return Outcome::Fault("Unauthorized".to_string()),
     };
 
-    let body = match bus.read::<Json<serde_json::Value>>() {
-        Some(json) => json.0.clone(),
-        None => return Outcome::Fault("Missing JSON body".to_string()),
+    let body = match bus.get_cloned::<Json<serde_json::Value>>() {
+        Ok(json) => json.0,
+        Err(_) => return Outcome::Fault("Missing JSON body".to_string()),
     };
 
     let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("");

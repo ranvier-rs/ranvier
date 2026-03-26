@@ -16,7 +16,7 @@ pub async fn delete_todo(
         Err(e) => return Outcome::Fault(e),
     };
 
-    if let Some(store) = bus.read::<Arc<Mutex<Vec<Todo>>>>() {
+    if let Ok(store) = bus.get_cloned::<Arc<Mutex<Vec<Todo>>>>() {
         let mut todos = store.lock().unwrap();
         let len_before = todos.len();
         todos.retain(|t| t.id != id);

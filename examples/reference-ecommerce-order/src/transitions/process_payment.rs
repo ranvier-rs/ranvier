@@ -16,7 +16,7 @@ pub async fn process_payment(
     // Orders > $9999 "fail" for demo purposes
     if total > 9999.0 {
         tracing::warn!(order_id, total, "Payment declined — amount too high");
-        if let Some(store) = bus.read::<AppStore>() {
+        if let Ok(store) = bus.get_cloned::<AppStore>() {
             store.update_order_status(order_id, OrderStatus::FailedPayment);
         }
         return Outcome::Fault(format!(
@@ -27,7 +27,7 @@ pub async fn process_payment(
     let payment_id = format!("PAY-{}", uuid::Uuid::new_v4());
 
     // Update order with payment info
-    if let Some(store) = bus.read::<AppStore>() {
+    if let Ok(store) = bus.get_cloned::<AppStore>() {
         if let Some(mut order) = store.get_order(order_id) {
             order.status = OrderStatus::Paid;
             order.payment_id = Some(payment_id.clone());

@@ -240,7 +240,7 @@ impl Transition<Ticket, Ticket> for CheckCompleteness {
 
         if !ticket.complete {
             // Track attempt count via Bus to prevent infinite loops
-            let attempt = bus.read::<u32>().copied().unwrap_or(0);
+            let attempt = bus.get_cloned::<u32>().unwrap_or(0);
 
             if attempt >= 3 {
                 return Outcome::Fault(

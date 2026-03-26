@@ -201,13 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ranvier::http()
         .bind("127.0.0.1:3000")
-        .guard(CorsGuard::<()>::new(CorsConfig {
-            allowed_origins: vec!["*".into()],
-            allowed_methods: vec!["GET".into(), "POST".into()],
-            allowed_headers: vec!["Content-Type".into()],
-            max_age_seconds: 3600,
-            allow_credentials: false,
-        }))
+        .guard(CorsGuard::<()>::permissive())
         .guard(AccessLogGuard::<()>::new())
         .post_sse_typed::<ChatRequest, _, _>("/api/chat/stream", streaming_pipeline)
         .post_typed::<ChatRequest, _, _>("/api/chat", batch_pipeline)

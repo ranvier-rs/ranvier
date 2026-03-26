@@ -15,7 +15,7 @@ pub async fn release_inventory(
 
     tracing::warn!(order_id, "COMPENSATION: Releasing reserved inventory");
 
-    if let Some(store) = bus.read::<AppStore>() {
+    if let Ok(store) = bus.get_cloned::<AppStore>() {
         for item in &items {
             let product_id = item["product_id"].as_str().unwrap_or("");
             let quantity = item["quantity"].as_u64().unwrap_or(0) as u32;

@@ -16,7 +16,7 @@ pub async fn get_todo(
         Err(e) => return Outcome::Fault(e),
     };
 
-    if let Some(store) = bus.read::<Arc<Mutex<Vec<Todo>>>>() {
+    if let Ok(store) = bus.get_cloned::<Arc<Mutex<Vec<Todo>>>>() {
         let todos = store.lock().unwrap();
         if let Some(todo) = todos.iter().find(|t| t.id == id) {
             return Outcome::Next(serde_json::to_value(todo).unwrap());

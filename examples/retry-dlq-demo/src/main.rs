@@ -328,7 +328,7 @@ impl Transition<PaymentRequest, PaymentRequest> for FastValidation {
 // ============================================================================
 
 fn print_timeline(bus: &Bus) {
-    if let Some(timeline) = bus.read::<Timeline>() {
+    if let Ok(timeline) = bus.get_cloned::<Timeline>() {
         let retries: Vec<_> = timeline
             .events
             .iter()

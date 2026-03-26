@@ -16,7 +16,7 @@ pub async fn refund_payment(
 
     tracing::warn!(order_id, payment_id, "COMPENSATION: Refunding payment");
 
-    if let Some(store) = bus.read::<AppStore>() {
+    if let Ok(store) = bus.get_cloned::<AppStore>() {
         store.record_refund(payment_id);
         store.update_order_status(order_id, OrderStatus::Compensated);
     }

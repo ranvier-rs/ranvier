@@ -115,30 +115,30 @@ impl Transition<(), String> for HelloHandler {
     ) -> Outcome<String, Self::Error> {
         // Read CORS headers injected by CorsGuard
         let cors_origin = bus
-            .read::<CorsHeaders>()
-            .map(|h| h.access_control_allow_origin.clone())
-            .unwrap_or_else(|| "none".into());
+            .get_cloned::<CorsHeaders>()
+            .map(|h| h.access_control_allow_origin)
+            .unwrap_or_else(|_| "none".into());
 
         // Check if security headers were injected
-        let has_security = bus.read::<SecurityHeaders>().is_some();
+        let has_security = bus.get_cloned::<SecurityHeaders>().is_ok();
 
         // Read request ID from RequestIdGuard
         let request_id = bus
-            .read::<RequestId>()
-            .map(|r| r.0.clone())
-            .unwrap_or_else(|| "none".into());
+            .get_cloned::<RequestId>()
+            .map(|r| r.0)
+            .unwrap_or_else(|_| "none".into());
 
         // Check compression config from CompressionGuard
         let compression = bus
-            .read::<CompressionConfig>()
-            .map(|c| c.encoding.as_str())
-            .unwrap_or("none");
+            .get_cloned::<CompressionConfig>()
+            .map(|c| c.encoding.as_str().to_string())
+            .unwrap_or_else(|_| "none".into());
 
         // Check authenticated identity from AuthGuard
         let identity = bus
-            .read::<ranvier_core::iam::IamIdentity>()
-            .map(|id| id.subject.clone())
-            .unwrap_or_else(|| "anonymous".into());
+            .get_cloned::<ranvier_core::iam::IamIdentity>()
+            .map(|id| id.subject)
+            .unwrap_or_else(|_| "anonymous".into());
 
         Outcome::next(format!(
             "Hello from guarded API! [cors: {}, security: {}, request_id: {}, compression: {}, auth: {}]",
@@ -164,15 +164,15 @@ impl Transition<(), String> for CreateOrderHandler {
     ) -> Outcome<String, Self::Error> {
         // Check if we have a timeout deadline
         let timeout_remaining = bus
-            .read::<TimeoutDeadline>()
+            .get_cloned::<TimeoutDeadline>()
             .map(|td| format!("{}s", td.remaining().as_secs()))
-            .unwrap_or_else(|| "none".into());
+            .unwrap_or_else(|_| "none".into());
 
         // Check idempotency key
         let idem_key = bus
-            .read::<IdempotencyKey>()
-            .map(|k| k.0.clone())
-            .unwrap_or_else(|| "none".into());
+            .get_cloned::<IdempotencyKey>()
+            .map(|k| k.0)
+            .unwrap_or_else(|_| "none".into());
 
         Outcome::next(format!(
             "{{\"order_id\": \"ord-001\", \"status\": \"created\", \"timeout_remaining\": \"{}\", \"idempotency_key\": \"{}\"}}",
