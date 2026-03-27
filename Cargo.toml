@@ -81,6 +81,12 @@ members = [
     "examples/streaming-demo",
     "examples/typed-json-api",
     "examples/outcome-patterns",
+    "examples/saga-compensation",
+    "examples/cascade-screening",
+    "examples/llm-agent-pipeline",
+    "examples/sensor-decision-loop",
+    "examples/triage-branching",
+    "examples/eligibility-rule-chain",
 ]
 
 [workspace.package]

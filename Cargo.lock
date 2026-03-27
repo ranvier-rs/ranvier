@@ -1001,6 +1001,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cascade-screening"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "ranvier-core",
+ "ranvier-macros",
+ "ranvier-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1841,6 +1855,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "eligibility-rule-chain"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "ranvier-core",
+ "ranvier-macros",
+ "ranvier-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -2998,6 +3026,20 @@ name = "litemap"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6373607a59f0be73a39b6fe456b8192fcc3585f602af20751600e974dd455e77"
+
+[[package]]
+name = "llm-agent-pipeline"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "ranvier-core",
+ "ranvier-macros",
+ "ranvier-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "llm-content-moderation"
@@ -4966,6 +5008,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "saga-compensation"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "ranvier-core",
+ "ranvier-macros",
+ "ranvier-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5234,6 +5290,20 @@ name = "semver"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
+
+[[package]]
+name = "sensor-decision-loop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "ranvier-core",
+ "ranvier-macros",
+ "ranvier-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "serde"
@@ -6593,6 +6663,20 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-serde",
+]
+
+[[package]]
+name = "triage-branching"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "ranvier-core",
+ "ranvier-macros",
+ "ranvier-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
