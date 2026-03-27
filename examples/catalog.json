@@ -501,6 +501,54 @@
       "has_prebuilt_schematic": false
     },
     {
+      "name": "saga-compensation",
+      "tier": "B",
+      "description": "Saga compensation pattern: multi-step rollback on failure",
+      "tags": ["pattern", "saga", "compensation"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "cascade-screening",
+      "tier": "B",
+      "description": "Cascade screening pattern: sequential filter pipeline with fail-fast",
+      "tags": ["pattern", "screening", "filter"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "llm-agent-pipeline",
+      "tier": "B",
+      "description": "Multi-stage pipeline pattern: classify, select, execute, format",
+      "tags": ["pattern", "pipeline", "ai"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "sensor-decision-loop",
+      "tier": "B",
+      "description": "Sensor decision loop pattern: threshold evaluation to actuator command",
+      "tags": ["pattern", "iot", "decision"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "triage-branching",
+      "tier": "B",
+      "description": "Triage branching pattern: multi-stage classification with Outcome::Branch",
+      "tags": ["pattern", "branching", "triage"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
+      "name": "eligibility-rule-chain",
+      "tier": "B",
+      "description": "Rule chain pattern: sequential independent rules with fail-fast",
+      "tags": ["pattern", "rule-chain", "eligibility"],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false
+    },
+    {
       "name": "experimental/fullstack-demo",
       "tier": "D",
       "description": "Full-stack application (experimental)",
