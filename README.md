@@ -1,55 +1,69 @@
-# Ranvier — Typed Decision Engine for Rust
+# Ranvier — Rust Web Backend for Complex Business Logic
 
-**Execution you can read. Structure you can trust.**
+**Every decision visible. Every branch auditable.**
 
-Ranvier is not a web framework. It is a **Typed Decision Engine** that keeps execution explicit,
-structure inspectable, and boundaries clear. Your Rust logic becomes a circuit you can reason about,
-diff, and validate.
-
----
-
-**Latest: v0.38.0** — 12 crates on [crates.io](https://crates.io/crates/ranvier)
-
-- **v0.38**: `#[streaming_transition]` macro, `StreamingAxon::map_items()` per-item transforms, CLI domain templates (saga/llm-agent/compliance)
-- **v0.37**: `StreamingTransition` trait, `StreamingAxon`, `post_sse()`/`post_sse_typed()` SSE endpoints, stream timeouts, `assert_stream_items!` testing
-- **v0.36**: OpenAPI auto-schema from `post_typed()`, path param docs, htmx Bus integration, pre-compressed serving, Range requests, 6 Cookbook guides
-- **v0.35**: Pipeline-First Middleware — `ranvier-guard` crate (15 Guards), `HttpIngress::guard()`, per-route `guards![]`, Tower complete replacement
-- **v0.34**: Closure Transitions (`then_fn()`), type-safe HTTP body (`post_typed()`), Askama template rendering, `TransitionErrorContext`, `ranvier-test`
-- **v0.33**: `then_with_timeout()`, outcome-variants-demo, resilience-patterns-demo, production readiness checklist
-- **v0.32**: Security hardening — SQL injection prevention, timing-safe auth, `Sensitive<T>`, SECURITY.md
-- **v0.21**: Crate consolidation 23 → 10 via Paradigm Test, Hyper 1.0 native (no Tower/Axum)
+Ranvier is a Rust web backend framework for services where business logic is too complex
+for simple request-response handlers. Build multi-step workflows with typed Axon chains,
+extract Schematics for CI diff, and keep every Outcome explicit — no hidden middleware.
 
 ---
 
-**What Ranvier is**
+**Latest: v0.43.0** — 12 crates on [crates.io](https://crates.io/crates/ranvier)
 
-1. **Axon**: explicit execution chain built from typed transitions.
-2. **Schematic**: static structural artifact extracted from Axon. It never executes runtime logic.
-3. **Outcome**: control-flow as data (`Next`, `Branch`, `Jump`, `Emit`, `Fault`).
-4. **Ingress/Egress**: protocol adapters at the boundary (HTTP lives here, not in core).
-5. **Bus**: typed resource container that stays explicit (no hidden injection).
-
----
-
-**Philosophy**
-
-Ranvier follows the **Opinionated Core, Flexible Edges** principle:
-
-- **Opinionated Core**: Ranvier enforces Transition/Outcome/Bus/Schematic for internal architecture. This is what makes Ranvier, Ranvier — a schematic-first, visualizable framework with clear identity, one learning path, and consistent codebases.
-
-- **Flexible Edges**: At boundaries, use any Rust tool you want — Tower, actix, Axum, sqlx, diesel, redis. Integrate with the ecosystem, migrate gradually, choose your infrastructure.
-
-**When to use what:**
-- Business logic → Ranvier way (Transition-based, visualized)
-- Infrastructure (CORS, auth, DB) → Your choice (Tower, ecosystem libraries)
-- Complex workflows → Ranvier shines (multi-step, state machines)
-- Simple CRUD → Ecosystem tools OK
-
-Read the full philosophy document: [PHILOSOPHY.md](docs/PHILOSOPHY.md)
+- **v0.43**: `Bus::get_cloned()`, `BusHttpExt`, `json_outcome()`, `get_json_out`/`post_typed_json_out`, `Json<T>` IntoResponse
+- **v0.42**: `try_outcome!` macro, `Outcome::from_result`/`and_then`/`map_fault`, `CorsGuard::permissive()`, `post_json`
+- **v0.41**: Inspector Lineage + Merkle Audit
+- **v0.40**: CI/coverage workflows
+- **v0.39**: Panic safety, Inspector auth, `RateLimitGuard` TTL
+- **v0.38**: `#[streaming_transition]` macro, `StreamingAxon`, CLI pattern templates
 
 ---
 
-**Quickstart**
+## When Ranvier Is the Right Choice
+
+| Scenario | Ranvier? | Why |
+|----------|----------|-----|
+| Multi-step payment saga with rollback | **Yes** | `then_compensated()` — LIFO compensation on failure |
+| KYC/AML cascade screening | **Yes** | Sequential fail-fast filter pipeline with audit trail |
+| AI agent pipeline (classify → tool → execute) | **Yes** | Typed state progression across stages |
+| CI diff of execution paths before deploy | **Yes** | Schematic extraction — diff without running code |
+| Simple CRUD REST API | **No** | Axum or actix-web is simpler for basic CRUD |
+| High-throughput proxy/gateway | **No** | Axum + Tower has less per-request overhead |
+| Existing Axum app + complex workflow | **Both** | [Use Ranvier inside Axum handlers](https://ranvier.studio/docs/integration-axum) |
+
+---
+
+## Core Concepts
+
+1. **Axon**: Explicit execution chain built from typed transitions.
+2. **Schematic**: Static structural artifact extracted from Axon. It never executes runtime logic.
+3. **Outcome**: Control-flow as data (`Next`, `Branch`, `Jump`, `Emit`, `Fault`).
+4. **Ingress/Egress**: Protocol adapters at the boundary (HTTP lives here, not in core).
+5. **Bus**: Typed resource container that stays explicit (no hidden injection).
+
+---
+
+## Pattern Examples
+
+```bash
+# Saga: reserve → charge → ship, with reverse compensation on failure
+cargo run -p saga-compensation
+
+# Screening: sanctions → PEP → risk → documents, fail-fast
+cargo run -p cascade-screening
+
+# Pipeline: classify → select tool → execute → format, typed progression
+cargo run -p llm-agent-pipeline
+
+# IoT: sensor reading → normalize → detect anomaly → decide action
+cargo run -p sensor-decision-loop
+```
+
+See all 68 examples: [Examples Explorer](https://ranvier.studio/docs/examples-interactive)
+
+---
+
+## Quickstart
 
 ```bash
 cargo add ranvier
@@ -81,149 +95,86 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-`Ranvier::http()` is an **Ingress Builder**, not a web server.
-
----
-
-**Under the Hood**
-
-The `#[transition]` macro expands to a full `Transition` trait implementation.
-When you need custom resources or fine-grained control, implement the trait directly:
-
-```rust
-use async_trait::async_trait;
-use ranvier::prelude::*;
-
-#[derive(Clone)]
-struct Greet;
-
-#[async_trait]
-impl Transition<(), String> for Greet {
-    type Error = String;
-    type Resources = ();
-
-    async fn run(
-        &self,
-        _input: (),
-        _resources: &Self::Resources,
-        _bus: &mut Bus,
-    ) -> Outcome<String, Self::Error> {
-        Outcome::Next("Hello, Ranvier!".to_string())
-    }
-}
-```
-
----
-
-**Error Type Guide**
-
-| Scenario | Recommended Type | Reason |
-|---|---|---|
-| Prototyping / demos | `String` | Simple, no extra dependencies |
-| Production services | Custom `enum` with `#[derive(Debug)]` | Domain-specific error handling |
-| Infallible transitions | `Never` | Compile-time guarantee of no errors |
-
----
-
-**Bus Access Guide**
-
-| Method | Returns | When to use |
-|---|---|---|
-| `bus.try_require::<T>()` | `Result<&T, BusError>` | Default choice — clear error message if missing |
-| `bus.read::<T>()` | `Option<&T>` | Resource is optional (may not exist) |
-| `bus.require::<T>()` | `&T` (panics if missing) | Invariant guaranteed by prior step (e.g., after `with_iam()`) |
-
----
-
-**Examples** — 67 runnable demos across 4 tiers
+Or scaffold with a pattern template:
 
 ```bash
-# Tier A: Start here
-cargo run -p hello-world              # HTTP ingress baseline
-cargo run -p typed-state-tree         # Typed state progression
-cargo run -p basic-schematic          # Schematic export + runtime
-cargo run -p otel-concept             # OpenTelemetry concept baseline
-
-# Tier B: Advanced patterns
-cargo run -p macros-demo              # #[transition] macro before/after
-cargo run -p guard-integration-demo   # 15 Guards pipeline-first middleware
-cargo run -p auth-jwt-role-demo       # JWT + role-based access control
-cargo run -p inspector-demo           # Runtime observability server
-
-# Tier C: Ecosystem integration
-cargo run -p graphql-async-graphql-demo  # async-graphql direct usage
-cargo run -p grpc-tonic-demo             # tonic gRPC direct usage
-cargo run -p db-sqlx-demo                # SQLx direct usage
+cargo install ranvier-cli
+ranvier new my-orders --template saga        # Saga compensation
+ranvier new my-kyc    --template screening   # Cascade screening
+ranvier new my-chat   --template pipeline    # Multi-step pipeline
 ```
 
-See `examples/README.md` for the full tier-classified list.
+---
+
+## Using with Axum
+
+Axum serves HTTP, Ranvier processes complex logic:
+
+```rust
+use axum::{Router, Json, routing::post};
+use ranvier_runtime::Axon;
+use ranvier_core::prelude::*;
+
+async fn handle_order(Json(req): Json<OrderRequest>) -> Json<serde_json::Value> {
+    let pipeline = Axon::typed::<OrderRequest, String>("order-saga")
+        .with_saga_policy(SagaPolicy::Enabled)
+        .then(validate_order)
+        .then_compensated(reserve_inventory, release_inventory)
+        .then_compensated(charge_payment, refund_payment)
+        .then(complete_order);
+
+    let mut bus = Bus::new();
+    match pipeline.execute(req, &(), &mut bus).await {
+        Outcome::Next(result) => Json(result),
+        Outcome::Fault(err) => Json(serde_json::json!({"error": err})),
+        _ => Json(serde_json::json!({"error": "unexpected"})),
+    }
+}
+
+let app = Router::new().route("/api/orders", post(handle_order));
+```
+
+Read the full guide: [Axum Integration](https://ranvier.studio/docs/integration-axum) | [Ranvier vs Axum](https://ranvier.studio/docs/ranvier-vs-axum)
 
 ---
 
-**MSRV**
+## Philosophy
 
-- Rust `1.93.0` or newer (Edition 2024).
+**Opinionated Core, Flexible Edges**
+
+- **Opinionated Core**: Ranvier enforces Transition/Outcome/Bus/Schematic for internal architecture. This is what makes Ranvier, Ranvier.
+- **Flexible Edges**: At boundaries, use any Rust tool — Tower, Axum, sqlx, diesel, redis. Integrate with the ecosystem you already know.
+
+Read the full philosophy: [PHILOSOPHY.md](docs/PHILOSOPHY.md)
 
 ---
 
-**Workspace Structure** (12 crates)
+## Workspace Structure (12 crates)
 
-1. `core/` — protocol-agnostic contracts (`Transition`, `Outcome`, `Bus`, `Schematic`)
+1. `core/` — protocol-agnostic contracts (Transition, Outcome, Bus, Schematic)
 2. `runtime/` — Axon execution engine, saga compensation, persistence
 3. `http/` — Ingress/Egress adapter boundary (Hyper 1.0 native)
 4. `std/` — standard transitions: utilities
-5. `guard/` — 15 Guard Transition nodes: pipeline-first middleware (replaces Tower)
+5. `guard/` — 15 Guard nodes: pipeline-first middleware (replaces Tower)
 6. `macros/` — `#[transition]`, `#[streaming_transition]`, `#[derive(ResourceRequirement)]`
-7. `testing/` — `TestBus`, `TestAxon`, assertion macros
-8. `kit/` — facade crate (re-exports all of the above as `ranvier`)
+7. `testing/` — TestBus, TestAxon, assertion macros
+8. `kit/` — facade crate (re-exports all as `ranvier`)
 9. `extensions/inspector/` — runtime observability server
 10. `extensions/audit/` — audit trail logging
 11. `extensions/compliance/` — PII detection, data classification
 12. `extensions/openapi/` — OpenAPI spec generation
-13. `examples/` — 67 runnable reference apps
+13. `examples/` — 68 runnable reference apps
 
 ---
 
-**Built-in Production Features**
-
-| Feature | API | Status |
-|---|---|---|
-| Graceful Shutdown | `graceful_shutdown(timeout)` + `on_shutdown()` | Ready |
-| Health Check | `health_endpoint()`, `readiness_liveness_default()` | Ready |
-| Request ID | `RequestIdGuard` — UUID v4, bidirectional header propagation | Ready |
-| Config Loading | `config(&RanvierConfig)` — 4-layer: defaults → TOML → profile → env | Ready |
-| Guard Pipeline | 15 Guards via `HttpIngress::guard()` — Cors, Auth, Compression, Timeout, Idempotency, etc. | Ready |
-| Per-Route Guards | `post_with_guards(path, circuit, guards![...])` — route-specific Guard composition | Ready |
-| JWT Auth | `Axon::with_iam(policy, verifier)` — `IamPolicy::RequireRole` | Ready |
-| Parallel Execution | `Axon::parallel()` — FanOut/FanIn with Bus isolation | Ready |
-| Saga Compensation | `Axon::compensate(rollback_fn)` — LIFO rollback on failure | Ready |
-| Streaming Pipeline | `#[streaming_transition]` + `then_stream()` + `map_items()` + `post_sse_typed()` | Ready |
-| LLM Integration | `LlmTransition` — LLM-as-Transition pattern | Ready |
-| Compression | gzip via flate2 | Ready |
-| HTTP/2 | Hyper 1.0 native | Ready |
-| Static Files | `serve_dir()` + `spa_fallback()` + `serve_precompressed()` + `enable_range_requests()` | Ready |
-| htmx Integration | `htmx_support()` — auto Bus injection of HX-Request/Target/Trigger headers | Ready |
-| Prometheus Metrics | Inspector `/metrics` endpoint — Prometheus exposition format | Ready |
-| OTLP Export | `TelemetryConfig` — automatic TracerProvider initialization | Ready |
-| Audit (Postgres) | `PostgresAuditSink` — hash-chain audit log with sqlx | Ready |
-| OpenAPI Auto-Schema | `post_typed()` auto-captures JSON Schema via schemars, path param docs | Ready |
-| OpenAPI Auth | `SecurityScheme` + `ProblemDetail` auto-registration | Ready |
-| Inspector | REST/WS metrics, BearerAuth, TraceStore, AlertHook | Ready |
-
----
-
-**Boundary Rules (Non-Negotiable)**
-
-1. Core stays protocol-agnostic.
-2. Schematic is structural and non-executable.
-3. Flat API convenience must not hide control flow.
-4. No hidden middleware-style magic.
+**MSRV**: Rust `1.93.0` or newer (Edition 2024)
 
 ---
 
 **Links**
 
 - Website: https://ranvier.studio
-- Docs: https://github.com/ranvier-rs/docs
+- Docs: https://ranvier.studio/docs
 - Crates.io: https://crates.io/crates/ranvier
+- Examples: https://ranvier.studio/docs/examples-interactive
 - GitHub Release: https://github.com/ranvier-rs/ranvier/releases
