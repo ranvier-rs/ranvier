@@ -29,6 +29,7 @@ pub mod bus_ext;
 pub mod extract;
 pub mod guard_integration;
 pub mod ingress;
+pub mod pagination;
 pub mod response;
 pub mod service;
 pub mod sse;
@@ -55,6 +56,7 @@ pub use guard_integration::{
     ResponseBodyTransformFn, ResponseExtractorFn,
 };
 pub use service::RanvierService;
+pub use pagination::{PageParams, Paginated};
 pub use sse::{Sse, SseEvent};
 pub use test_harness::{TestApp, TestHarnessError, TestRequest, TestResponse};
 
@@ -101,6 +103,7 @@ pub mod prelude {
         BusInjectorFn, GuardExec, GuardIntegration, GuardRejection, PreflightConfig,
         RegisteredGuard, ResponseBodyTransformFn, ResponseExtractorFn,
     };
+    pub use crate::pagination::{PageParams, Paginated};
     pub use crate::service::RanvierService;
     pub use crate::sse::{Sse, SseEvent};
     pub use crate::test_harness::{TestApp, TestHarnessError, TestRequest, TestResponse};
