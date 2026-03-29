@@ -1,8 +1,11 @@
 pub mod file_sink;
+pub mod transition;
 #[cfg(feature = "merkle")]
 pub mod merkle;
 #[cfg(feature = "postgres")]
 pub mod postgres;
+
+pub use transition::{AuditAction, AuditActor, AuditLog};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
