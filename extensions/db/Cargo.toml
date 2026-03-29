@@ -1,0 +1,24 @@
+[package]
+name = "ranvier-db"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Safe dynamic SQL query builder for Ranvier"
+
+[features]
+default = []
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
