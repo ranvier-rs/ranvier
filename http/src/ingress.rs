@@ -2333,6 +2333,54 @@ where
         self.route_method_json_out(Method::POST, path, circuit)
     }
 
+    /// Create a route group with a shared path prefix and guards.
+    ///
+    /// Routes registered inside the group closure inherit the prefix and all
+    /// guards added via [`RouteGroup::guard`]. Group guards are scoped: they
+    /// apply only to routes inside the group and do not affect routes
+    /// registered after the group.
+    ///
+    /// # Nesting
+    ///
+    /// Groups can be nested up to 2 levels deep (group inside a group).
+    /// Attempting to nest further will panic.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// Ranvier::http()
+    ///     .group("/api", |g| g
+    ///         .guard(RbacGuard::authenticated(&jwt_secret))
+    ///         .get_json_out("/departments", dept_list)
+    ///         .get_json_out("/departments/:id", dept_detail)
+    ///         .group("/admin", |a| a
+    ///             .guard(RbacGuard::require_role(&jwt_secret, "admin"))
+    ///             .post_typed_json_out("/users", user_create)
+    ///         )
+    ///     )
+    /// ```
+    pub fn group(self, prefix: &str, f: impl FnOnce(RouteGroup<R>) -> RouteGroup<R>) -> Self {
+        let saved_injectors_len = self.bus_injectors.len();
+        let saved_execs_len = self.guard_execs.len();
+        let saved_extractors_len = self.guard_response_extractors.len();
+        let saved_transforms_len = self.guard_body_transforms.len();
+
+        let group = RouteGroup {
+            ingress: self,
+            prefix: prefix.to_string(),
+            depth: 0,
+        };
+        let group = f(group);
+        let mut ingress = group.ingress;
+
+        ingress.bus_injectors.truncate(saved_injectors_len);
+        ingress.guard_execs.truncate(saved_execs_len);
+        ingress.guard_response_extractors.truncate(saved_extractors_len);
+        ingress.guard_body_transforms.truncate(saved_transforms_len);
+
+        ingress
+    }
+
     /// POST with typed JSON body and JSON auto-serialization.
     ///
     /// Combines `post_typed` (typed body with `JsonSchema`) with automatic
@@ -4175,6 +4223,278 @@ where
             );
             service.call(req).await
         })
+    }
+}
+
+// ── Route Group ──────────────────────────────────────────────────────
+
+/// Route group builder for organizing routes with shared prefix and guards.
+///
+/// Created via [`HttpIngress::group`]. Supports all routing methods from
+/// `HttpIngress` with automatic path prefixing and guard inheritance.
+///
+/// # Nesting
+///
+/// Groups can be nested up to 2 levels deep. Attempting 3+ levels panics.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// Ranvier::http()
+///     .group("/api", |g| g
+///         .guard(RbacGuard::authenticated(&jwt_secret))
+///         .get_json_out("/departments", Axon::simple::<String>("dept-list").then(ListDepts))
+///         .group("/admin", |a| a
+///             .guard(RbacGuard::require_role(&jwt_secret, "admin"))
+///             .post_typed_json_out("/users", Axon::typed::<CreateUser, String>("user-create").then(CreateUser))
+///         )
+///     )
+/// ```
+pub struct RouteGroup<R = ()> {
+    ingress: HttpIngress<R>,
+    prefix: String,
+    depth: usize,
+}
+
+impl<R> RouteGroup<R>
+where
+    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+{
+    fn prefixed(&self, path: impl Into<String>) -> String {
+        let p = path.into();
+        format!("{}{}", self.prefix, p)
+    }
+
+    /// Add a guard to all routes in this group.
+    pub fn guard(mut self, guard: impl GuardIntegration) -> Self {
+        let registration = guard.register();
+        for injector in registration.bus_injectors {
+            self.ingress.bus_injectors.push(injector);
+        }
+        self.ingress.guard_execs.push(registration.exec);
+        if let Some(extractor) = registration.response_extractor {
+            self.ingress.guard_response_extractors.push(extractor);
+        }
+        if let Some(transform) = registration.response_body_transform {
+            self.ingress.guard_body_transforms.push(transform);
+        }
+        if registration.handles_preflight {
+            if let Some(config) = registration.preflight_config {
+                self.ingress.preflight_config = Some(config);
+            }
+        }
+        self
+    }
+
+    /// Create a nested sub-group with an additional prefix.
+    ///
+    /// Nested group guards are scoped: they apply only to routes inside the
+    /// sub-group and are removed when the sub-group closure returns.
+    ///
+    /// # Panics
+    /// Panics if nesting exceeds 2 levels.
+    pub fn group(self, prefix: &str, f: impl FnOnce(RouteGroup<R>) -> RouteGroup<R>) -> Self {
+        assert!(
+            self.depth < 2,
+            "Route groups cannot be nested more than 2 levels deep (attempted depth: {})",
+            self.depth + 2
+        );
+
+        let my_prefix = self.prefix;
+        let my_depth = self.depth;
+        let ingress = self.ingress;
+
+        let saved_injectors_len = ingress.bus_injectors.len();
+        let saved_execs_len = ingress.guard_execs.len();
+        let saved_extractors_len = ingress.guard_response_extractors.len();
+        let saved_transforms_len = ingress.guard_body_transforms.len();
+
+        let nested = RouteGroup {
+            ingress,
+            prefix: format!("{}{}", my_prefix, prefix),
+            depth: my_depth + 1,
+        };
+        let nested = f(nested);
+        let mut ingress = nested.ingress;
+
+        ingress.bus_injectors.truncate(saved_injectors_len);
+        ingress.guard_execs.truncate(saved_execs_len);
+        ingress.guard_response_extractors.truncate(saved_extractors_len);
+        ingress.guard_body_transforms.truncate(saved_transforms_len);
+
+        RouteGroup {
+            ingress,
+            prefix: my_prefix,
+            depth: my_depth,
+        }
+    }
+
+    // ── Bodyless routes with JSON auto-serialization ──
+
+    /// GET route with JSON response. Path is prefixed with the group prefix.
+    pub fn get_json_out<Out, E>(mut self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.get_json_out(full, circuit);
+        self
+    }
+
+    /// POST route (bodyless) with JSON response.
+    pub fn post_json_out<Out, E>(mut self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.post_json_out(full, circuit);
+        self
+    }
+
+    /// DELETE route with JSON response.
+    pub fn delete_json_out<Out, E>(mut self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.delete_json_out(full, circuit);
+        self
+    }
+
+    // ── Typed body + JSON auto-serialization ──
+
+    /// POST with typed JSON body and JSON response.
+    pub fn post_typed_json_out<T, Out, E>(mut self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + Serialize + schemars::JsonSchema + 'static,
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.post_typed_json_out(full, circuit);
+        self
+    }
+
+    /// PUT with typed JSON body and JSON response.
+    pub fn put_typed_json_out<T, Out, E>(mut self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + Serialize + schemars::JsonSchema + 'static,
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.put_typed_json_out(full, circuit);
+        self
+    }
+
+    /// PATCH with typed JSON body and JSON response.
+    pub fn patch_typed_json_out<T, Out, E>(mut self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + Serialize + schemars::JsonSchema + 'static,
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.patch_typed_json_out(full, circuit);
+        self
+    }
+
+    // ── Basic routes (IntoResponse) ──
+
+    /// GET route with IntoResponse output.
+    pub fn get<Out, E>(mut self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.get(full, circuit);
+        self
+    }
+
+    /// POST route (bodyless) with IntoResponse output.
+    pub fn post<Out, E>(mut self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.post(full, circuit);
+        self
+    }
+
+    /// PUT route (bodyless) with IntoResponse output.
+    pub fn put<Out, E>(mut self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.put(full, circuit);
+        self
+    }
+
+    /// PATCH route (bodyless) with IntoResponse output.
+    pub fn patch<Out, E>(mut self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.patch(full, circuit);
+        self
+    }
+
+    /// DELETE route with IntoResponse output.
+    pub fn delete<Out, E>(mut self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.delete(full, circuit);
+        self
+    }
+
+    // ── Typed body routes (IntoResponse) ──
+
+    /// POST with typed JSON body and IntoResponse output.
+    pub fn post_typed<T, Out, E>(mut self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + schemars::JsonSchema + 'static,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.post_typed(full, circuit);
+        self
+    }
+
+    /// PUT with typed JSON body and IntoResponse output.
+    pub fn put_typed<T, Out, E>(mut self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + schemars::JsonSchema + 'static,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.put_typed(full, circuit);
+        self
+    }
+
+    /// PATCH with typed JSON body and IntoResponse output.
+    pub fn patch_typed<T, Out, E>(mut self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + schemars::JsonSchema + 'static,
+        Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.patch_typed(full, circuit);
+        self
     }
 }
 

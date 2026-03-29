@@ -43,8 +43,8 @@ pub mod test_harness;
 pub use bus_ext::{BusHttpExt, json_outcome};
 pub use extract::{CookieJar, DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Header, Json, Path, Query};
 pub use ingress::{
-    HttpIngress, HttpRouteDescriptor, PathParams, QueryParams, Ranvier, WebSocketConnection,
-    WebSocketError, WebSocketEvent, WebSocketSessionContext,
+    HttpIngress, HttpRouteDescriptor, PathParams, QueryParams, Ranvier, RouteGroup,
+    WebSocketConnection, WebSocketError, WebSocketEvent, WebSocketSessionContext,
 };
 pub use response::{
     Html, HttpResponse, IntoProblemDetail, IntoResponse, ProblemDetail, json_error_response,
@@ -91,8 +91,8 @@ pub mod prelude {
     pub use crate::bus_ext::{BusHttpExt, json_outcome};
     pub use crate::extract::{CookieJar, DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Header, Json, Path, Query};
     pub use crate::ingress::{
-        HttpIngress, HttpRouteDescriptor, PathParams, QueryParams, Ranvier, WebSocketConnection,
-        WebSocketError, WebSocketEvent, WebSocketSessionContext,
+        HttpIngress, HttpRouteDescriptor, PathParams, QueryParams, Ranvier, RouteGroup,
+        WebSocketConnection, WebSocketError, WebSocketEvent, WebSocketSessionContext,
     };
     pub use crate::response::{
         Html, HttpResponse, IntoProblemDetail, IntoResponse, ProblemDetail, json_error_response,
