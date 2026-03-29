@@ -2317,6 +2317,22 @@ where
         self.route_method_json_out(Method::DELETE, path, circuit)
     }
 
+    /// POST route (bodyless) with JSON auto-serialization.
+    ///
+    /// Registers a POST endpoint that takes no request body and returns a
+    /// JSON-serialized response. Useful for action endpoints like
+    /// `/api/interfaces/:id/copy` or `/api/cache/clear` where the POST
+    /// semantics indicate a state change but no input body is needed.
+    ///
+    /// See [`get_json_out`](Self::get_json_out) for details.
+    pub fn post_json_out<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    where
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_json_out(Method::POST, path, circuit)
+    }
+
     /// POST with typed JSON body and JSON auto-serialization.
     ///
     /// Combines `post_typed` (typed body with `JsonSchema`) with automatic

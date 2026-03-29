@@ -54,6 +54,9 @@ pub mod prelude {
     pub use crate::error::{RanvierError, TransitionErrorContext};
     pub use crate::never::Never;
     pub use crate::transition::{ResourceRequirement, Transition};
+
+    // Macros re-exported for convenient access via `use ranvier_core::prelude::*`
+    pub use crate::try_outcome;
 }
 
 // Legacy modules removed/deprecated
