@@ -21,7 +21,6 @@ $targets = @(
     @{ name = "ranvier-openapi"; path = "extensions/openapi/src" },
     @{ name = "ranvier-observe"; path = "extensions/observe/src" },
     @{ name = "ranvier-inspector"; path = "extensions/inspector/src" },
-    @{ name = "ranvier-db"; path = "extensions/db/src" },
     @{ name = "ranvier-status"; path = "extensions/status/src" },
     @{ name = "ranvier-synapse"; path = "extensions/synapse/src" }
 )

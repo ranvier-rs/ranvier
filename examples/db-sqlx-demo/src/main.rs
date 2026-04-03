@@ -12,13 +12,17 @@
 //! ## Key Concepts
 //! - SQLx Pool as a Bus-injectable resource
 //! - Query execution inside Transitions
-//! - No wrapper crate needed — `sqlx` + Bus injection is sufficient
+//! - Optional local `safe_query_builder.rs` helper for dynamic SQL safety
+//! - No public DB wrapper crate needed — `sqlx` + Bus injection is sufficient
+
+mod safe_query_builder;
 
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
+use safe_query_builder::{QueryBuilder, SortDirection};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Row, SqlitePool};
 
@@ -136,7 +140,24 @@ impl Transition<(), UserList> for ListUsers {
         resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<UserList, Self::Error> {
-        let rows = match sqlx::query("SELECT id, name, email FROM users")
+        let query = QueryBuilder::new("SELECT id, name, email FROM users")
+            .order_by("id", SortDirection::Asc)
+            .build();
+
+        let mut statement = sqlx::query(&query.sql);
+        for value in query.bindings {
+            statement = match value {
+                safe_query_builder::SqlValue::Int(v) => statement.bind(v),
+                safe_query_builder::SqlValue::Float(v) => statement.bind(v),
+                safe_query_builder::SqlValue::Text(v) => statement.bind(v),
+                safe_query_builder::SqlValue::Bool(v) => statement.bind(v),
+                safe_query_builder::SqlValue::Null => unreachable!(
+                    "QueryBuilder::filter renders NULL as IS NULL without bindings"
+                ),
+            };
+        }
+
+        let rows = match statement
             .fetch_all(&resources.0)
             .await
         {

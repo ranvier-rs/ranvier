@@ -42,7 +42,6 @@ members = [
     "extensions/inspector",
     "extensions/audit",
     "extensions/compliance",
-    "extensions/db",
     "examples/flat-api-demo",
     "examples/studio-demo",
     "examples/sse-streaming-demo",
@@ -114,7 +113,6 @@ ranvier-guard = { path = "guard", version = "0.43.0" }
 ranvier-macros = { path = "macros", version = "0.43.0" }
 ranvier-kit = { path = "kit", version = "0.43.0" }
 ranvier-compliance = { path = "extensions/compliance", version = "0.43.0" }
-ranvier-db = { path = "extensions/db", version = "0.43.0" }
 
 
 # Sync Third-party Dependencies

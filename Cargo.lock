@@ -4283,14 +4283,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ranvier-db"
-version = "0.43.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "ranvier-guard"
 version = "0.43.0"
 dependencies = [
