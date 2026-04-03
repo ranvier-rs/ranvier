@@ -1,7 +1,7 @@
 # Ranvier Design Principles
 
-**Version:** 0.33.0
-**Updated:** 2026-03-15
+**Version:** 0.43.0
+**Updated:** 2026-04-03
 **Applies to:** ranvier-core, ranvier-runtime, ranvier-http
 **Category:** Architecture
 
@@ -22,6 +22,7 @@ Each decision is recorded in Architecture Decision Record (ADR) format with cont
 | DP-1 | [Paradigm Test: Crate Consolidation](#dp-1-paradigm-test-crate-consolidation) | Accepted | 2025-10 |
 | DP-2 | [Tower Separation: Hyper 1.0 Native](#dp-2-tower-separation-hyper-10-native) | Accepted | 2025-09 |
 | DP-3 | [Opinionated Core: Non-Negotiable Paradigm](#dp-3-opinionated-core-non-negotiable-paradigm) | Accepted | 2025-08 |
+| DP-4 | [Static Assets: Edge Convenience, Not Core Identity](#dp-4-static-assets-edge-convenience-not-core-identity) | Accepted | 2026-04 |
 
 ---
 
@@ -291,6 +292,82 @@ See [PHILOSOPHY.md](PHILOSOPHY.md) for full "Opinionated Core, Flexible Edges" e
 
 ---
 
+## DP-4: Static Assets: Edge Convenience, Not Core Identity
+
+**Status:** Accepted
+**Date:** 2026-04
+**Version:** v0.43.0
+
+### Context
+
+`ranvier-http` now supports practical static asset features:
+- `.serve_dir()` for directory mounts
+- `.directory_index()` for index file resolution
+- `.spa_fallback()` for client-side routing
+- cache-control helpers, pre-compressed asset serving, and range requests
+
+This created an architectural question: if most backend web frameworks serve
+static files, should Ranvier evolve into a general-purpose static hosting
+platform?
+
+The risk is positioning drift. Static asset delivery is operationally important,
+but it does not use Transition/Outcome/Bus/Schematic and does not benefit from
+Schematic visibility. If over-emphasized, `Ranvier::http()` starts to look like
+"another web server framework" instead of an ingress builder for Axon circuits.
+
+### Decision
+
+Keep static asset serving in `ranvier-http`, but define it as an **edge
+convenience**, not a core identity.
+
+Specifically:
+1. Keep built-in support for co-serving API routes and a built frontend from one process.
+2. Support pragmatic ingress features such as SPA fallback, cache control, pre-compressed assets, and range requests.
+3. Do not position Ranvier as the primary solution for pure static hosting, CDN replacement, or general-purpose asset delivery.
+4. Recommend dedicated servers or platforms such as nginx, Caddy, object storage, and CDNs for static-only or asset-heavy workloads.
+5. Evaluate future work in this area by whether it improves application-boundary ergonomics, not by whether it makes Ranvier more "web-server-like."
+
+### Consequences
+
+**Positive**:
+- ✅ **Clearer positioning**: Ranvier can support full-stack deployment patterns without claiming "static hosting framework" scope
+- ✅ **Practical DX**: same-origin API + SPA deployment remains easy for demos, admin UIs, and reference apps
+- ✅ **Architecture integrity**: Transition/Outcome/Bus/Schematic remain the center of the framework's identity
+- ✅ **Better prioritization**: static asset work focuses on correctness and operability rather than platform sprawl
+
+**Negative**:
+- ⚠️ **Some users may expect more**: once `serve_dir()` exists, users may assume Ranvier should also own every hosting concern
+- ⚠️ **Boundary explanation required**: docs must clearly distinguish "supported" from "recommended as primary workload"
+
+**Mitigation**:
+- Explain the boundary in PHILOSOPHY.md, cookbook docs, and use-case guides
+- Keep hybrid deployment examples visible
+- Recommend standard servers/CDNs explicitly for static-only workloads
+
+### Alternatives Considered
+
+**Alternative A: Remove static asset serving entirely**
+- ❌ Rejected: same-process API + frontend delivery is a legitimate and common deployment need
+
+**Alternative B: Make static hosting a first-class Ranvier platform goal**
+- ❌ Rejected: pushes the framework toward general web-server scope and weakens its architectural identity
+
+**Alternative C: Move static serving into a separate optional crate**
+- ⚠️ Considered: preserves boundary clarity
+- ❌ Rejected for now: current scope fits naturally inside `ranvier-http` as ingress functionality; extra crate split is unnecessary overhead
+
+### References
+
+- `docs/discussion/223_fullstack_sample_repo_strategy.md`
+- `docs/discussion/249_when_to_use_ranvier_vs_axum.md`
+- `docs/discussion/250_static_asset_serving_boundary.md`
+- `docs/03_guides/cookbook_http_ingress.md`
+- `docs/03_guides/use_cases.md`
+- `examples/static-spa-demo`
+- `examples/experimental/fullstack-demo`
+
+---
+
 ## Contributing to This Document
 
 When adding new design decisions:
@@ -337,4 +414,4 @@ When adding new design decisions:
 
 ---
 
-*This document is part of Ranvier v0.33.0. Last updated: 2026-03-15.*
+*This document is part of Ranvier v0.43.0. Last updated: 2026-04-03.*

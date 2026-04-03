@@ -1,8 +1,8 @@
 # Ranvier Philosophy: Opinionated Core, Flexible Edges
 
-**Version:** 0.33.0
-**Updated:** 2026-03-15
-**Applies to:** ranvier-core, ranvier-runtime
+**Version:** 0.43.0
+**Updated:** 2026-04-03
+**Applies to:** ranvier-core, ranvier-runtime, ranvier-http
 **Category:** Architecture
 
 ---
@@ -279,6 +279,7 @@ While the core is opinionated, Ranvier embraces the Rust ecosystem at its bounda
 - **Caching**: redis, memcached, in-memory
 - **Metrics**: Prometheus, OpenTelemetry, statsd
 - **Tracing**: tracing, log, slog
+- **Static assets**: nginx, Caddy, object storage/CDN, or `Ranvier::http().serve_dir()` when one process should serve both API and a built frontend
 
 **Example**: Using Tower middleware with Ranvier
 ```rust
@@ -304,6 +305,10 @@ async fn business_logic(req: Request) -> Outcome<Response, AppError> {
 - **Reuse existing knowledge**: If your team knows Tower, use Tower layers
 - **Leverage battle-tested code**: Tower's CORS/Trace/Timeout are production-hardened
 - **Stay current**: When tower-http releases v0.7, you can upgrade immediately (no "waiting for Ranvier support")
+
+Static asset delivery follows the same rule. Ranvier can co-serve a built SPA or
+admin UI at the ingress boundary, but pure static hosting and CDN-style asset
+delivery remain edge concerns better handled by dedicated servers or platforms.
 
 ### 3.2. Gradual Migration: From X to Ranvier, Step by Step
 
@@ -458,6 +463,11 @@ These can use any Rust library or pattern:
 | **Metrics** | Any | prometheus, opentelemetry, statsd |
 | **Tracing** | Any | tracing, log, slog, env_logger |
 | **Async runtime** | Any | tokio, async-std, smol (Ranvier is runtime-agnostic) |
+| **Static asset delivery** | Any | nginx, Caddy, object storage/CDN, `serve_dir()`, `spa_fallback()` |
+
+Static asset serving is an edge convenience. Use Ranvier when the assets are
+attached to your application boundary; use dedicated servers or CDNs when asset
+delivery itself is the primary workload.
 
 **Examples of Edge integrations**:
 

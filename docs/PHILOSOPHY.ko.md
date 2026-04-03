@@ -1,7 +1,7 @@
 # Ranvier 철학: 의견이 분명한 핵심, 유연한 경계
 
-**버전:** 0.31.0
-**최종 업데이트:** 2026-03-11
+**버전:** 0.43.0
+**최종 업데이트:** 2026-04-03
 
 ---
 
@@ -277,6 +277,7 @@ src/
 - **캐싱**: redis, memcached, in-memory
 - **메트릭**: Prometheus, OpenTelemetry, statsd
 - **추적**: tracing, log, slog
+- **정적 자산**: nginx, Caddy, object storage/CDN, 또는 API와 빌드된 프론트엔드를 함께 서빙해야 할 때의 `Ranvier::http().serve_dir()`
 
 **예제**: Ranvier와 함께 Tower 미들웨어 사용
 ```rust
@@ -302,6 +303,10 @@ async fn business_logic(req: Request) -> Outcome<Response, AppError> {
 - **기존 지식 재사용**: 팀이 Tower를 알고 있다면 Tower 레이어를 사용하세요
 - **검증된 코드 활용**: Tower의 CORS/Trace/Timeout은 프로덕션에서 검증되었습니다
 - **최신 상태 유지**: tower-http가 v0.7을 출시하면 즉시 업그레이드할 수 있습니다 ("Ranvier 지원 대기" 없음)
+
+정적 자산 전달도 같은 원칙을 따릅니다. Ranvier는 ingress 경계에서 빌드된
+SPA나 admin UI를 함께 서빙할 수 있지만, 순수 정적 호스팅이나 CDN 중심의
+자산 전달은 전용 서버나 플랫폼에 맡기는 편이 더 적합합니다.
 
 ### 3.2. 점진적 마이그레이션: X에서 Ranvier로, 단계별로
 
@@ -456,6 +461,11 @@ static AUTH: Mutex<Option<AuthContext>> = Mutex::new(None);
 | **메트릭** | 모든 것 | prometheus, opentelemetry, statsd |
 | **추적** | 모든 것 | tracing, log, slog, env_logger |
 | **비동기 런타임** | 모든 것 | tokio, async-std, smol (Ranvier는 런타임에 구애받지 않음) |
+| **정적 자산 전달** | 모든 것 | nginx, Caddy, object storage/CDN, `serve_dir()`, `spa_fallback()` |
+
+정적 자산 서빙은 에지 계층의 편의 기능입니다. 자산이 애플리케이션 경계에
+붙어 있을 때는 Ranvier를 써도 되지만, 자산 전달 자체가 주된 워크로드라면
+전용 서버나 CDN을 우선하세요.
 
 **에지 통합 예제**:
 
