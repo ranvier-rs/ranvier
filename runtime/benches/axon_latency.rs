@@ -1,12 +1,13 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use ranvier_core::{Bus, Outcome, Transition};
 use ranvier_runtime::Axon;
+use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct SimpleOutput;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct SimpleError;
 
 impl std::fmt::Display for SimpleError {

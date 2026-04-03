@@ -59,7 +59,7 @@ cargo run -p llm-agent-pipeline
 cargo run -p sensor-decision-loop
 ```
 
-See all 68 examples: [Examples Explorer](https://ranvier.studio/docs/examples-interactive)
+See all 68 published examples: [Examples Explorer](https://ranvier.studio/docs/examples-interactive)
 
 ---
 
@@ -163,7 +163,7 @@ Read the full philosophy: [PHILOSOPHY.md](docs/PHILOSOPHY.md)
 10. `extensions/audit/` — audit trail logging
 11. `extensions/compliance/` — PII detection, data classification
 12. `extensions/openapi/` — OpenAPI spec generation
-13. `examples/` — 68 runnable reference apps
+13. `examples/` — 68 published + 4 experimental reference apps
 
 ---
 

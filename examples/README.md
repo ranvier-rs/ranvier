@@ -1,6 +1,6 @@
 # Ranvier Examples
 
-**Updated:** 2026-03-25
+**Updated:** 2026-04-03
 **Workspace:** v0.43.0 — 12 crates, Hyper 1.0 native (no tower/tower-http)
 **Purpose:** Keep examples aligned with the Typed Decision Engine direction:
 1. Axon execution is explicit.
@@ -11,6 +11,8 @@
 > Before deploying to production, review the [Security Guide](../SECURITY.md)
 > and ensure all secrets are loaded from environment variables, not hardcoded.
 > Authentication examples require: `JWT_SECRET=your-secret-here cargo run`
+
+**Inventory:** 68 published examples + 4 experimental examples = 72 workspace example packages.
 
 ---
 
@@ -76,6 +78,12 @@ These are maintained and useful, but not the first onboarding path.
 44. `streaming-demo` — v0.37: `StreamingTransition`, `StreamingAxon`, `post_sse_typed()`
 45. `typed-json-api` — v0.43: `get_json_out`, `post_typed_json_out`, `BusHttpExt`, `CorsGuard::permissive()`
 46. `outcome-patterns` — v0.42-v0.43: `try_outcome!`, Outcome combinators, `Bus::get_cloned()`, `json_outcome()`
+47. `saga-compensation` — v0.43: payment saga reference pattern
+48. `cascade-screening` — v0.43: AML/KYC fail-fast screening pattern
+49. `llm-agent-pipeline` — v0.43: multi-step AI agent pipeline pattern
+50. `sensor-decision-loop` — v0.43: IoT normalize/detect/decide pattern
+51. `triage-branching` — v0.43: `Outcome::Branch` routing pattern
+52. `eligibility-rule-chain` — v0.43: rule-chain short-circuit pattern
 
 ### Tier C: Ecosystem Integration
 
