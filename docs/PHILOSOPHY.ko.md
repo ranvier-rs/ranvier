@@ -1343,9 +1343,8 @@ authenticate → parse_order → ┬─ check_inventory ─┐
 ## 관련 문서
 
 - [DESIGN_PRINCIPLES.md](DESIGN_PRINCIPLES.md) — 아키텍처 결정 기록 (ADR)
-- [examples/auth-transition/](examples/auth-transition/) — Ranvier 방식 인증
-- [examples/auth-tower-integration/](examples/auth-tower-integration/) — Tower 통합
-- [docs/guides/auth-comparison.md](docs/guides/auth-comparison.md) — Transition vs Tower 비교
+- [예제 탐색기](https://ranvier.studio/ko/docs/examples-interactive) — 인증 흐름을 포함한 실행 가능한 예제를 둘러볼 수 있습니다
+- [인증 비교](https://ranvier.studio/ko/docs/auth-comparison) — Transition vs Tower 비교
 - [Web Integration Guides](https://ranvier.rs/guides/integration) — Tower/actix/Axum 가이드
 
 ---

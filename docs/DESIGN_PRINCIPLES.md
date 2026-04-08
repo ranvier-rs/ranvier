@@ -9,7 +9,7 @@
 
 ## Introduction
 
-This document records architectural decisions that shaped Ranvier's design. While [PHILOSOPHY.md](PHILOSOPHY.md) explains **why** Ranvier exists and what principles guide its use, this document explains **how we decided** on specific technical choices.
+This document records architectural decisions that shaped Ranvier's design. While [PHILOSOPHY](https://ranvier.studio/docs/philosophy) explains **why** Ranvier exists and what principles guide its use, this document explains **how we decided** on specific technical choices.
 
 Each decision is recorded in Architecture Decision Record (ADR) format with context, alternatives, and consequences.
 
@@ -199,7 +199,7 @@ let app = ServiceBuilder::new()
 - Tower removal PR: [ranvier#210](https://github.com/ranvier-rs/ranvier/pull/210)
 - Hyper 1.0 migration: [ranvier#195](https://github.com/ranvier-rs/ranvier/pull/195)
 - Integration examples: `examples/auth-tower-integration`, `examples/http-hyper-native`
-- Philosophy: [PHILOSOPHY.md Section 3](PHILOSOPHY.md#3-why-flexible-edges)
+- Philosophy: [PHILOSOPHY](https://ranvier.studio/docs/philosophy)
 
 ---
 
@@ -236,7 +236,7 @@ Early Ranvier versions (v0.1–v0.17) experimented with various levels of flexib
 
 **Why opinionated**:
 - **Identity**: Ranvier = "Schematic-first, visualizable framework" (unique value prop)
-- **Learning curve**: One blessed path → faster onboarding (see [PHILOSOPHY.md Section 2.2](PHILOSOPHY.md#22-learning-curve-one-right-way-not-ten-ways))
+- **Learning curve**: One blessed path → faster onboarding (see [PHILOSOPHY](https://ranvier.studio/docs/philosophy))
 - **Consistency**: All Ranvier codebases look alike → easier code review, onboarding
 - **Tooling**: VSCode extension can assume Schematic exists → reliable Circuit view
 
@@ -246,7 +246,7 @@ Early Ranvier versions (v0.1–v0.17) experimented with various levels of flexib
 - Async runtime (tokio, async-std) — Ranvier is runtime-agnostic
 - Deployment (Docker, K8s, Lambda) — Ranvier is just Rust code
 
-See [PHILOSOPHY.md](PHILOSOPHY.md) for full "Opinionated Core, Flexible Edges" explanation.
+See [PHILOSOPHY](https://ranvier.studio/docs/philosophy) for full "Opinionated Core, Flexible Edges" explanation.
 
 ### Consequences
 
@@ -263,7 +263,7 @@ See [PHILOSOPHY.md](PHILOSOPHY.md) for full "Opinionated Core, Flexible Edges" e
 - ⚠️ **Migration from Actix/Axum**: Requires adopting the Transition paradigm; not a drop-in replacement
 
 **Mitigation**:
-- **Hybrid approach**: Users can embed Ranvier in existing apps (see [PHILOSOPHY.md Section 6.2 Path 3](PHILOSOPHY.md#path-3-actix-web-or-axum-integration-))
+- **Hybrid approach**: Users can embed Ranvier in existing apps (see [PHILOSOPHY](https://ranvier.studio/docs/philosophy))
 - **Clear docs**: PHILOSOPHY.md Decision Tree guides users on "when to use Ranvier"
 - **Examples**: Show both "Pure Ranvier" and "Hybrid" patterns
 
@@ -286,8 +286,8 @@ See [PHILOSOPHY.md](PHILOSOPHY.md) for full "Opinionated Core, Flexible Edges" e
 ### References
 
 - Paradigm enforcement: `ranvier-core` v0.18.0+
-- Philosophy document: [PHILOSOPHY.md](PHILOSOPHY.md)
-- Decision framework: [PHILOSOPHY.md Section 5](PHILOSOPHY.md#5-decision-framework)
+- Philosophy document: [PHILOSOPHY](https://ranvier.studio/docs/philosophy)
+- Decision framework: [Philosophy Decision Framework](https://ranvier.studio/docs/philosophy-decision-framework)
 - Examples: All 61 examples use Transition pattern
 
 ---
@@ -407,7 +407,7 @@ When adding new design decisions:
 
 ## Related Documents
 
-- [PHILOSOPHY.md](PHILOSOPHY.md) — Design philosophy (why Ranvier exists, when to use it)
+- [PHILOSOPHY](https://ranvier.studio/docs/philosophy) — Design philosophy (why Ranvier exists, when to use it)
 - [README.md](README.md) — Project overview and quickstart
 - [CHANGELOG.md](CHANGELOG.md) — Version history and migration guides
 - [examples/README.md](examples/README.md) — 66 reference implementations

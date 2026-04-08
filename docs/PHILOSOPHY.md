@@ -1345,9 +1345,8 @@ authenticate → parse_order → ┬─ check_inventory ─┐
 ## Related Documents
 
 - [DESIGN_PRINCIPLES.md](DESIGN_PRINCIPLES.md) — Architecture decision records (ADR)
-- [examples/auth-transition/](examples/auth-transition/) — Ranvier way authentication
-- [examples/auth-tower-integration/](examples/auth-tower-integration/) — Tower integration
-- [guides/auth-comparison.md](guides/auth-comparison.md) — Transition vs Tower comparison
+- [Examples Explorer](https://ranvier.studio/docs/examples-interactive) — browse runnable example packages including auth flows
+- [Auth Comparison](https://ranvier.studio/docs/auth-comparison) — Transition vs Tower comparison
 - [Web Integration Guides](https://ranvier.rs/guides/integration) — Tower/actix/Axum guides
 
 ---
