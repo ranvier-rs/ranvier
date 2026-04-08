@@ -1,0 +1,30 @@
+[package]
+name = "admin-crud-demo"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "admin-crud-demo"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+http = { workspace = true }
+jsonwebtoken = "9"
+ranvier-core = { workspace = true }
+ranvier-http = { workspace = true }
+ranvier-openapi = { workspace = true }
+ranvier-runtime = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

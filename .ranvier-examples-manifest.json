@@ -32,7 +32,7 @@
       "id": "http-services",
       "title": "HTTP Services",
       "difficulty": "intermediate",
-      "steps": ["routing-params", "flat-api", "session-pattern", "multipart-upload", "websocket", "sse-streaming", "openapi", "typed-json-api", "reference-todo-api"]
+      "steps": ["routing-params", "flat-api", "session-pattern", "multipart-upload", "websocket", "sse-streaming", "openapi", "typed-json-api", "reference-todo-api", "admin-crud"]
     },
     {
       "id": "advanced-patterns",
@@ -114,6 +114,9 @@
     { "id": "state-persistence", "package": "state-persistence-demo", "tier": "core", "difficulty": "intermediate", "category": "resilience", "prerequisites": ["retry-dlq"], "estimatedMinutes": 25, "runtimeRequirements": [] },
     { "id": "resilience-patterns", "package": "resilience-patterns-demo", "tier": "core", "difficulty": "intermediate", "category": "resilience", "prerequisites": ["retry-dlq"], "estimatedMinutes": 20, "runtimeRequirements": [] },
     { "id": "reference-todo-api", "package": "reference-todo-api", "tier": "core", "difficulty": "intermediate", "category": "reference", "prerequisites": ["flat-api", "routing-params"], "estimatedMinutes": 30, "runtimeRequirements": [] },
+    { "id": "admin-crud", "package": "admin-crud-demo", "tier": "core", "difficulty": "intermediate", "category": "http", "prerequisites": ["reference-todo-api", "openapi"], "estimatedMinutes": 35, "runtimeRequirements": [] },
+    { "id": "reference-fullstack-admin", "package": "reference-fullstack-admin", "tier": "core", "difficulty": "advanced", "category": "reference", "prerequisites": ["admin-crud", "openapi"], "estimatedMinutes": 40, "runtimeRequirements": ["nodejs"] },
+    { "id": "request-governance-demo", "package": "request-governance-demo", "tier": "core", "difficulty": "advanced", "category": "enterprise", "prerequisites": ["admin-crud"], "estimatedMinutes": 30, "runtimeRequirements": [] },
     { "id": "reference-ecommerce-order", "package": "reference-ecommerce-order", "tier": "core", "difficulty": "advanced", "category": "reference", "prerequisites": ["order-processing", "audit", "multitenancy"], "estimatedMinutes": 40, "runtimeRequirements": [] },
     { "id": "reference-chat-server", "package": "reference-chat-server", "tier": "core", "difficulty": "advanced", "category": "reference", "prerequisites": ["websocket", "session-pattern"], "estimatedMinutes": 35, "runtimeRequirements": [] }
   ]

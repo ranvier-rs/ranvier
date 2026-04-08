@@ -12,7 +12,7 @@
 > and ensure all secrets are loaded from environment variables, not hardcoded.
 > Authentication examples require: `JWT_SECRET=your-secret-here cargo run`
 
-**Inventory:** 68 published examples + 4 experimental examples = 72 workspace example packages.
+**Inventory:** 71 published examples + 4 experimental examples = 75 workspace example packages.
 
 ---
 
@@ -84,6 +84,9 @@ These are maintained and useful, but not the first onboarding path.
 50. `sensor-decision-loop` — v0.43: IoT normalize/detect/decide pattern
 51. `triage-branching` — v0.43: `Outcome::Branch` routing pattern
 52. `eligibility-rule-chain` — v0.43: rule-chain short-circuit pattern
+53. `admin-crud-demo` — v0.46: bridge example with JWT, SQLite CRUD, pagination/search, OpenAPI
+54. `reference-fullstack-admin` — v0.46: public-only fullstack reference app with Ranvier backend + SvelteKit frontend
+55. `request-governance-demo` — v0.46: auth, policy, audit, DB, and structured error wiring in one service
 
 ### Tier C: Ecosystem Integration
 
