@@ -19,7 +19,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$BenchRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$BenchRoot = Split-Path -Parent $PSScriptRoot
 $WorkspaceRoot = Split-Path -Parent $BenchRoot
 
 Write-Host ""

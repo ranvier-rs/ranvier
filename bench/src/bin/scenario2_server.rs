@@ -70,6 +70,9 @@ async fn main() -> anyhow::Result<()> {
 
     Ranvier::http()
         .bind(addr)
+        .bus_injector(|parts, bus| {
+            bus.insert(parts.headers.clone());
+        })
         .route("/protected", auth_axon)
         .run(())
         .await

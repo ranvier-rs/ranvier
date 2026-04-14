@@ -117,6 +117,13 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 const WS_UPGRADE_TOKEN: &str = "websocket";
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
+fn should_suppress_incomplete_message_error() -> bool {
+    matches!(
+        std::env::var("RANVIER_SUPPRESS_INCOMPLETE_MESSAGE_ERROR"),
+        Ok(value) if matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
 #[derive(Clone)]
 struct NamedHealthCheck<R> {
     name: String,
@@ -3123,7 +3130,13 @@ where
                                         .with_upgrades()
                                         .await
                                     {
-                                        tracing::error!("Error serving TLS connection: {:?}", err);
+                                        if err.is_incomplete_message() && should_suppress_incomplete_message_error() {
+                                            tracing::debug!("TLS connection closed before full request body was received: {:?}", err);
+                                        } else if err.is_incomplete_message() {
+                                            tracing::warn!("TLS connection closed before full request body was received: {:?}", err);
+                                        } else {
+                                            tracing::error!("Error serving TLS connection: {:?}", err);
+                                        }
                                     }
                                 }
                                 Err(err) => {
@@ -3139,7 +3152,13 @@ where
                             .with_upgrades()
                             .await
                         {
-                            tracing::error!("Error serving connection: {:?}", err);
+                            if err.is_incomplete_message() && should_suppress_incomplete_message_error() {
+                                tracing::debug!("Connection closed before full request body was received: {:?}", err);
+                            } else if err.is_incomplete_message() {
+                                tracing::warn!("Connection closed before full request body was received: {:?}", err);
+                            } else {
+                                tracing::error!("Error serving connection: {:?}", err);
+                            }
                         }
                     });
                 }
