@@ -118,6 +118,10 @@ impl TestRequest {
         Self::new(Method::GET, path)
     }
 
+    pub fn head(path: impl Into<String>) -> Self {
+        Self::new(Method::HEAD, path)
+    }
+
     pub fn post(path: impl Into<String>) -> Self {
         Self::new(Method::POST, path)
     }

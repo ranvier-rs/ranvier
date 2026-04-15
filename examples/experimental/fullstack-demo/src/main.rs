@@ -60,7 +60,10 @@ async fn main() -> anyhow::Result<()> {
         )
         .serve_spa_shell(
             StaticShell::file(index_file.to_string_lossy().to_string())
-                .cache_control("no-store"),
+                .cache_control("no-store")
+                .exclude_prefix("/api")
+                .exclude_prefix("/events")
+                .exclude_prefix("/ws"),
         )
         .post("/api/order", order_route)
         .run(())

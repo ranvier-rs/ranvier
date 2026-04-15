@@ -56,7 +56,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .serve_spa_shell(
             StaticShell::file(index_file.to_string_lossy().to_string())
                 .cache_control("no-store")
-                .compression(),
+                .compression()
+                .exclude_prefix("/api")
+                .exclude_prefix("/events")
+                .exclude_prefix("/ws"),
         )
         .get(
             "/api/ping",

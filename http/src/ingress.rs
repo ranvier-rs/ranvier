@@ -193,6 +193,11 @@ impl StaticAssetPolicy {
         Self::locked_down().cache_control("public, max-age=3600")
     }
 
+    /// Default policy for SPA shell files such as `index.html`.
+    pub fn spa_shell() -> Self {
+        Self::locked_down().cache_control("no-store")
+    }
+
     /// Override Cache-Control for responses served under this policy.
     pub fn cache_control(mut self, cache_control: impl Into<String>) -> Self {
         self.cache_control = Some(cache_control.into());
@@ -234,6 +239,7 @@ impl StaticAssetPolicy {
 pub struct StaticShell {
     file_path: String,
     policy: StaticAssetPolicy,
+    excluded_prefixes: Vec<String>,
 }
 
 impl StaticShell {
@@ -241,7 +247,12 @@ impl StaticShell {
     pub fn file(path: impl Into<String>) -> Self {
         Self {
             file_path: path.into(),
-            policy: StaticAssetPolicy::locked_down(),
+            policy: StaticAssetPolicy::spa_shell(),
+            excluded_prefixes: vec![
+                "/api".to_string(),
+                "/events".to_string(),
+                "/ws".to_string(),
+            ],
         }
     }
 
@@ -257,18 +268,41 @@ impl StaticShell {
         self
     }
 
+    /// Prevent SPA fallback from claiming paths under the given prefix.
+    pub fn exclude_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.excluded_prefixes.push(normalize_route_path(prefix.into()));
+        self
+    }
+
+    fn excludes_path(&self, path: &str) -> bool {
+        self.excluded_prefixes
+            .iter()
+            .any(|prefix| path_matches_prefix(path, prefix))
+    }
+
     fn with_policy(mut self, policy: StaticAssetPolicy) -> Self {
         self.policy = policy;
         self
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct StaticAssetsConfig {
     mounts: Vec<StaticMount>,
     spa_shell: Option<StaticShell>,
     legacy_mount_policy: StaticAssetPolicy,
     legacy_shell_policy: StaticAssetPolicy,
+}
+
+impl Default for StaticAssetsConfig {
+    fn default() -> Self {
+        Self {
+            mounts: Vec::new(),
+            spa_shell: None,
+            legacy_mount_policy: StaticAssetPolicy::default(),
+            legacy_shell_policy: StaticAssetPolicy::spa_shell(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1251,17 +1285,8 @@ where
         directory: impl Into<String>,
     ) -> Self {
         if self.static_assets.legacy_mount_policy.cache_control.is_none() {
-            let default_cache = "public, max-age=3600".to_string();
-            self.static_assets.legacy_mount_policy.cache_control = Some(default_cache.clone());
-            if self.static_assets.legacy_shell_policy.cache_control.is_none() {
-                self.static_assets.legacy_shell_policy.cache_control = Some(default_cache);
-            }
-            if let Some(shell) = &mut self.static_assets.spa_shell {
-                if shell.policy.cache_control.is_none() {
-                    shell.policy.cache_control =
-                        self.static_assets.legacy_shell_policy.cache_control.clone();
-                }
-            }
+            self.static_assets.legacy_mount_policy.cache_control =
+                Some("public, max-age=3600".to_string());
         }
         let policy = self.static_assets.legacy_mount_policy.clone();
         self.serve_assets(
@@ -3763,6 +3788,13 @@ async fn serve_static_file(
         resolved_subpath = subpath.to_string();
     }
 
+    if contains_parent_dir(&resolved_subpath) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "path traversal detected",
+        ));
+    }
+
     let directory = source.as_directory();
     let full_path = std::path::Path::new(directory).join(&resolved_subpath);
     // Path traversal protection
@@ -4036,6 +4068,58 @@ fn apply_cache_control(
     response
 }
 
+fn apply_static_security_headers(mut response: Response<Full<Bytes>>) -> Response<Full<Bytes>> {
+    response.headers_mut().insert(
+        http::header::HeaderName::from_static("x-content-type-options"),
+        http::HeaderValue::from_static("nosniff"),
+    );
+    response
+}
+
+fn strip_body_for_head(response: Response<Full<Bytes>>) -> Response<Full<Bytes>> {
+    let (parts, _body) = response.into_parts();
+    Response::from_parts(parts, Full::new(Bytes::new()))
+}
+
+fn contains_parent_dir(path: &str) -> bool {
+    std::path::Path::new(path)
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+}
+
+fn path_matches_prefix(path: &str, prefix: &str) -> bool {
+    let normalized_prefix = if prefix == "/" {
+        "/"
+    } else {
+        prefix.trim_end_matches('/')
+    };
+
+    if normalized_prefix == "/" {
+        return path.starts_with('/');
+    }
+
+    path == normalized_prefix || path.starts_with(&format!("{normalized_prefix}/"))
+}
+
+fn map_static_io_error(error: &std::io::Error) -> Response<Full<Bytes>> {
+    let status = match error.kind() {
+        std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
+        std::io::ErrorKind::PermissionDenied => StatusCode::FORBIDDEN,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+
+    let body = match status {
+        StatusCode::NOT_FOUND => "Static asset not found",
+        StatusCode::FORBIDDEN => "Static asset access denied",
+        _ => "Failed to serve static asset",
+    };
+
+    Response::builder()
+        .status(status)
+        .body(Full::new(Bytes::from(body)))
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+}
+
 async fn maybe_handle_static_request(
     req: Request<Incoming>,
     method: &Method,
@@ -4068,21 +4152,16 @@ async fn maybe_handle_static_request(
         .await
         {
             Ok(response) => response,
-            Err(_) => {
-                return Err(Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(
-                        Full::new(Bytes::from("Failed to serve static asset"))
-                            .map_err(|never| match never {})
-                            .boxed(),
-                    )
-                    .unwrap_or_else(|_| {
-                        Response::new(
-                            Full::new(Bytes::new())
-                                .map_err(|never| match never {})
-                                .boxed(),
-                        )
-                    }));
+            Err(error) => {
+                let mut response = apply_static_security_headers(map_static_io_error(&error));
+                if method == Method::HEAD {
+                    response = strip_body_for_head(response);
+                }
+                let (parts, body) = response.into_parts();
+                return Err(Response::from_parts(
+                    parts,
+                    body.map_err(|never| match never {}).boxed(),
+                ));
             }
         };
         let mut response = apply_cache_control(response, mount.policy.cache_control.as_deref());
@@ -4091,6 +4170,10 @@ async fn maybe_handle_static_request(
             accept_encoding,
             mount.policy.enable_compression,
         );
+        response = apply_static_security_headers(response);
+        if method == Method::HEAD {
+            response = strip_body_for_head(response);
+        }
         let (parts, body) = response.into_parts();
         return Err(Response::from_parts(
             parts,
@@ -4099,25 +4182,31 @@ async fn maybe_handle_static_request(
     }
 
     if let Some(shell) = static_assets.spa_shell.as_ref() {
-        if looks_like_spa_request(path) {
+        if looks_like_spa_request(path)
+            && !shell.excludes_path(path)
+            && !static_assets
+                .mounts
+                .iter()
+                .any(|mount| path_matches_prefix(path, &mount.route_prefix))
+        {
             let accept_encoding = req.headers().get(http::header::ACCEPT_ENCODING).cloned();
             let response = match serve_single_file(&shell.file_path).await {
                 Ok(response) => response,
                 Err(_) => {
-                    return Err(Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(
-                            Full::new(Bytes::from("Failed to serve SPA fallback"))
-                                .map_err(|never| match never {})
-                                .boxed(),
-                        )
-                        .unwrap_or_else(|_| {
-                            Response::new(
-                                Full::new(Bytes::new())
-                                    .map_err(|never| match never {})
-                                    .boxed(),
-                            )
-                        }));
+                    let mut response = apply_static_security_headers(
+                        Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Full::new(Bytes::from("Failed to serve SPA fallback")))
+                            .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))),
+                    );
+                    if method == Method::HEAD {
+                        response = strip_body_for_head(response);
+                    }
+                    let (parts, body) = response.into_parts();
+                    return Err(Response::from_parts(
+                        parts,
+                        body.map_err(|never| match never {}).boxed(),
+                    ));
                 }
             };
             let mut response =
@@ -4127,6 +4216,10 @@ async fn maybe_handle_static_request(
                 accept_encoding,
                 shell.policy.enable_compression,
             );
+            response = apply_static_security_headers(response);
+            if method == Method::HEAD {
+                response = strip_body_for_head(response);
+            }
             let (parts, body) = response.into_parts();
             return Err(Response::from_parts(
                 parts,
@@ -4872,16 +4965,7 @@ mod tests {
         });
 
         let ws_uri = format!("ws://{addr}/ws/echo?room=alpha");
-        let mut ws_request = ws_uri
-            .as_str()
-            .into_client_request()
-            .expect("ws client request");
-        ws_request
-            .headers_mut()
-            .insert("x-tenant-id", http::HeaderValue::from_static("acme"));
-        let (mut client, _response) = tokio_tungstenite::connect_async(ws_request)
-            .await
-            .expect("websocket connect");
+        let (mut client, _response) = ws_connect_with_retry(&ws_uri, "acme").await;
 
         let welcome = client
             .next()
@@ -5112,6 +5196,12 @@ mod tests {
         assert!(response.header("cache-control").is_some());
         assert_eq!(
             response
+                .header("x-content-type-options")
+                .and_then(|value| value.to_str().ok()),
+            Some("nosniff")
+        );
+        assert_eq!(
+            response
                 .header("content-encoding")
                 .and_then(|value| value.to_str().ok()),
             Some("gzip")
@@ -5133,6 +5223,90 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.text().expect("utf8").contains("spa"));
+    }
+
+    #[tokio::test]
+    async fn missing_static_asset_returns_404_instead_of_500() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("public");
+        fs::create_dir_all(&root).expect("create dir");
+
+        let ingress = Ranvier::http::<()>().serve_assets(
+            "/static",
+            StaticAssetSource::directory(root.to_string_lossy().to_string()),
+            StaticAssetPolicy::public_assets(),
+        );
+        let app = crate::test_harness::TestApp::new(ingress, ());
+        let response = app
+            .send(crate::test_harness::TestRequest::get("/static/missing.txt"))
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response
+                .header("x-content-type-options")
+                .and_then(|value| value.to_str().ok()),
+            Some("nosniff")
+        );
+        assert_ne!(response.body(), b"");
+    }
+
+    #[tokio::test]
+    async fn traversal_attempt_returns_403() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("public");
+        fs::create_dir_all(&root).expect("create dir");
+        fs::write(temp.path().join("secret.txt"), "secret").expect("write secret");
+
+        let ingress = Ranvier::http::<()>().serve_assets(
+            "/static",
+            StaticAssetSource::directory(root.to_string_lossy().to_string()),
+            StaticAssetPolicy::public_assets(),
+        );
+        let app = crate::test_harness::TestApp::new(ingress, ());
+        let response = app
+            .send(crate::test_harness::TestRequest::get("/static/../secret.txt"))
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn symlink_escape_attempt_returns_403_when_symlinks_are_supported() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("public");
+        fs::create_dir_all(&root).expect("create dir");
+        let outside = temp.path().join("secret.txt");
+        fs::write(&outside, "secret").expect("write secret");
+        let link = root.join("escape.txt");
+
+        #[cfg(unix)]
+        {
+            if std::os::unix::fs::symlink(&outside, &link).is_err() {
+                return;
+            }
+        }
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_file(&outside, &link).is_err() {
+                return;
+            }
+        }
+
+        let ingress = Ranvier::http::<()>().serve_assets(
+            "/static",
+            StaticAssetSource::directory(root.to_string_lossy().to_string()),
+            StaticAssetPolicy::public_assets(),
+        );
+        let app = crate::test_harness::TestApp::new(ingress, ());
+        let response = app
+            .send(crate::test_harness::TestRequest::get("/static/escape.txt"))
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
@@ -5158,6 +5332,12 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response
+                .header("x-content-type-options")
+                .and_then(|value| value.to_str().ok()),
+            Some("nosniff")
+        );
+        assert_eq!(
+            response
                 .header("cache-control")
                 .and_then(|value| value.to_str().ok()),
             Some("no-store")
@@ -5171,7 +5351,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_serve_dir_and_spa_fallback_share_default_delivery_policy() {
+    async fn legacy_serve_dir_and_spa_fallback_split_default_delivery_policy() {
         let temp = tempdir().expect("tempdir");
         let root = temp.path().join("public");
         fs::create_dir_all(&root).expect("create dir");
@@ -5197,13 +5377,337 @@ mod tests {
             response
                 .header("cache-control")
                 .and_then(|value| value.to_str().ok()),
-            Some("public, max-age=3600")
+            Some("no-store")
         );
         assert_eq!(
             response
                 .header("content-encoding")
                 .and_then(|value| value.to_str().ok()),
             Some("gzip")
+        );
+    }
+
+    #[tokio::test]
+    async fn spa_shell_excludes_api_events_and_ws_paths() {
+        let temp = tempdir().expect("tempdir");
+        let index = temp.path().join("index.html");
+        fs::write(&index, "<html><body>shell</body></html>").expect("write index");
+
+        let ingress =
+            Ranvier::http::<()>().serve_spa_shell(StaticShell::file(index.to_string_lossy().to_string()));
+        let app = crate::test_harness::TestApp::new(ingress, ());
+
+        for path in ["/api/users", "/events/live", "/ws/socket"] {
+            let response = app
+                .send(crate::test_harness::TestRequest::get(path))
+                .await
+                .expect("request should succeed");
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+
+    async fn ws_connect_with_retry(
+        ws_uri: &str,
+        tenant_id: &str,
+    ) -> (
+        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        http::Response<Option<Vec<u8>>>,
+    ) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+
+        loop {
+            let mut request = ws_uri
+                .into_client_request()
+                .expect("ws client request");
+            request
+                .headers_mut()
+                .insert("x-tenant-id", http::HeaderValue::from_str(tenant_id).expect("tenant header"));
+            match tokio_tungstenite::connect_async(request).await {
+                Ok(pair) => return pair,
+                Err(error) => {
+                    if tokio::time::Instant::now() >= deadline {
+                        panic!("websocket connect: {error}");
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn head_static_response_returns_headers_without_body() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("public");
+        fs::create_dir_all(&root).expect("create dir");
+        fs::write(root.join("hello.txt"), "hello head").expect("write file");
+        let index = root.join("index.html");
+        fs::write(&index, "<html><body>head-shell</body></html>").expect("write index");
+
+        let ingress = Ranvier::http::<()>()
+            .serve_assets(
+                "/static",
+                StaticAssetSource::directory(root.to_string_lossy().to_string()),
+                StaticAssetPolicy::public_assets(),
+            )
+            .serve_spa_shell(StaticShell::file(index.to_string_lossy().to_string()));
+        let app = crate::test_harness::TestApp::new(ingress, ());
+
+        let asset = app
+            .send(crate::test_harness::TestRequest::head("/static/hello.txt"))
+            .await
+            .expect("request should succeed");
+        assert_eq!(asset.status(), StatusCode::OK);
+        assert_eq!(asset.body(), b"");
+        assert!(asset.header("content-type").is_some());
+        assert!(asset.header("etag").is_some());
+
+        let shell = app
+            .send(crate::test_harness::TestRequest::head("/dashboard/settings"))
+            .await
+            .expect("request should succeed");
+        assert_eq!(shell.status(), StatusCode::OK);
+        assert_eq!(shell.body(), b"");
+        assert!(shell.header("content-type").is_some());
+        assert!(shell.header("etag").is_some());
+    }
+
+    #[tokio::test]
+    async fn head_static_error_response_omits_body() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("public");
+        fs::create_dir_all(&root).expect("create dir");
+
+        let ingress = Ranvier::http::<()>().serve_assets(
+            "/static",
+            StaticAssetSource::directory(root.to_string_lossy().to_string()),
+            StaticAssetPolicy::public_assets(),
+        );
+        let app = crate::test_harness::TestApp::new(ingress, ());
+
+        let response = app
+            .send(crate::test_harness::TestRequest::head("/static/missing.txt"))
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.body(), b"");
+        assert_eq!(
+            response
+                .header("x-content-type-options")
+                .and_then(|value| value.to_str().ok()),
+            Some("nosniff")
+        );
+    }
+
+    #[tokio::test]
+    async fn hashed_assets_and_spa_shell_use_different_cache_policies() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("public");
+        fs::create_dir_all(&root).expect("create dir");
+        let hashed = root.join("app.a1b2c3d4.js");
+        fs::write(&hashed, "console.log('hash');").expect("write hashed asset");
+        let index = root.join("index.html");
+        fs::write(&index, "<html><body>shell</body></html>").expect("write index");
+
+        let ingress = Ranvier::http::<()>()
+            .serve_assets(
+                "/static",
+                StaticAssetSource::directory(root.to_string_lossy().to_string()),
+                StaticAssetPolicy::public_assets().immutable_cache(),
+            )
+            .serve_spa_shell(StaticShell::file(index.to_string_lossy().to_string()));
+        let app = crate::test_harness::TestApp::new(ingress, ());
+
+        let asset = app
+            .send(crate::test_harness::TestRequest::get("/static/app.a1b2c3d4.js"))
+            .await
+            .expect("request should succeed");
+        assert_eq!(
+            asset
+                .header("cache-control")
+                .and_then(|value| value.to_str().ok()),
+            Some("public, max-age=31536000, immutable")
+        );
+
+        let shell = app
+            .send(crate::test_harness::TestRequest::get("/dashboard/settings"))
+            .await
+            .expect("request should succeed");
+        assert_eq!(
+            shell
+                .header("cache-control")
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+    }
+
+    #[tokio::test]
+    async fn react_vite_static_build_artifact_smoke() {
+        let temp = tempdir().expect("tempdir");
+        let assets = temp.path().join("dist").join("assets");
+        fs::create_dir_all(&assets).expect("create assets");
+        fs::write(
+            temp.path().join("dist").join("index.html"),
+            "<!doctype html><div id=\"root\"></div>",
+        )
+        .expect("write shell");
+        fs::write(assets.join("app.a1b2c3d4.js"), "console.log('vite');").expect("write js");
+
+        let ingress = Ranvier::http::<()>()
+            .serve_assets(
+                "/assets",
+                StaticAssetSource::directory(assets.to_string_lossy().to_string()),
+                StaticAssetPolicy::public_assets().immutable_cache(),
+            )
+            .serve_spa_shell(
+                StaticShell::file(
+                    temp.path()
+                        .join("dist")
+                        .join("index.html")
+                        .to_string_lossy()
+                        .to_string(),
+                )
+                .cache_control("no-store"),
+            );
+        let app = crate::test_harness::TestApp::new(ingress, ());
+
+        let asset = app
+            .send(crate::test_harness::TestRequest::get("/assets/app.a1b2c3d4.js"))
+            .await
+            .expect("request should succeed");
+        assert_eq!(asset.status(), StatusCode::OK);
+        assert_eq!(
+            asset.header("cache-control").and_then(|v| v.to_str().ok()),
+            Some("public, max-age=31536000, immutable")
+        );
+
+        let shell = app
+            .send(crate::test_harness::TestRequest::get("/dashboard/settings"))
+            .await
+            .expect("request should succeed");
+        assert_eq!(shell.status(), StatusCode::OK);
+        assert_eq!(
+            shell.header("cache-control").and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
+    }
+
+    #[tokio::test]
+    async fn sveltekit_adapter_static_artifact_smoke() {
+        let temp = tempdir().expect("tempdir");
+        let app_dir = temp.path().join("build").join("_app").join("immutable").join("entry");
+        fs::create_dir_all(&app_dir).expect("create _app entry");
+        fs::write(
+            temp.path().join("build").join("index.html"),
+            "<!doctype html><div id=\"svelte\"></div>",
+        )
+        .expect("write shell");
+        fs::write(app_dir.join("start.a1b2c3d4.js"), "console.log('sveltekit');")
+            .expect("write js");
+
+        let ingress = Ranvier::http::<()>()
+            .serve_assets(
+                "/_app/immutable",
+                StaticAssetSource::directory(
+                    temp.path()
+                        .join("build")
+                        .join("_app")
+                        .join("immutable")
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+                StaticAssetPolicy::public_assets().immutable_cache(),
+            )
+            .serve_spa_shell(
+                StaticShell::file(
+                    temp.path()
+                        .join("build")
+                        .join("index.html")
+                        .to_string_lossy()
+                        .to_string(),
+                )
+                .cache_control("no-store")
+                .exclude_prefix("/api"),
+            );
+        let app = crate::test_harness::TestApp::new(ingress, ());
+
+        let asset = app
+            .send(crate::test_harness::TestRequest::get(
+                "/_app/immutable/entry/start.a1b2c3d4.js",
+            ))
+            .await
+            .expect("request should succeed");
+        assert_eq!(asset.status(), StatusCode::OK);
+        assert_eq!(
+            asset.header("cache-control").and_then(|v| v.to_str().ok()),
+            Some("public, max-age=31536000, immutable")
+        );
+
+        let shell = app
+            .send(crate::test_harness::TestRequest::get("/settings/profile"))
+            .await
+            .expect("request should succeed");
+        assert_eq!(shell.status(), StatusCode::OK);
+
+        let api = app
+            .send(crate::test_harness::TestRequest::get("/api/users"))
+            .await
+            .expect("request should succeed");
+        assert_eq!(api.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn leptos_csr_prerender_artifact_smoke() {
+        let temp = tempdir().expect("tempdir");
+        let pkg = temp.path().join("site").join("pkg");
+        fs::create_dir_all(&pkg).expect("create pkg");
+        fs::write(
+            temp.path().join("site").join("index.html"),
+            "<!doctype html><div id=\"leptos\"></div>",
+        )
+        .expect("write shell");
+        fs::write(pkg.join("app_bg.wasm"), [0x00, 0x61, 0x73, 0x6d]).expect("write wasm");
+
+        let ingress = Ranvier::http::<()>()
+            .serve_assets(
+                "/pkg",
+                StaticAssetSource::directory(pkg.to_string_lossy().to_string()),
+                StaticAssetPolicy::public_assets().enable_range_requests(),
+            )
+            .serve_spa_shell(
+                StaticShell::file(
+                    temp.path()
+                        .join("site")
+                        .join("index.html")
+                        .to_string_lossy()
+                        .to_string(),
+                )
+                .cache_control("no-store"),
+            );
+        let app = crate::test_harness::TestApp::new(ingress, ());
+
+        let wasm = app
+            .send(crate::test_harness::TestRequest::get("/pkg/app_bg.wasm"))
+            .await
+            .expect("request should succeed");
+        assert_eq!(wasm.status(), StatusCode::OK);
+        assert_eq!(
+            wasm.header("content-type").and_then(|v| v.to_str().ok()),
+            Some("application/wasm")
+        );
+        assert_eq!(
+            wasm.header("accept-ranges").and_then(|v| v.to_str().ok()),
+            Some("bytes")
+        );
+
+        let shell = app
+            .send(crate::test_harness::TestRequest::get("/app/settings"))
+            .await
+            .expect("request should succeed");
+        assert_eq!(shell.status(), StatusCode::OK);
+        assert_eq!(
+            shell.header("cache-control").and_then(|v| v.to_str().ok()),
+            Some("no-store")
         );
     }
 
