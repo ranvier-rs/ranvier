@@ -1,4 +1,4 @@
-use actix_web::{web, App, HttpServer, HttpResponse};
+use actix_web::{App, HttpResponse, HttpServer, web};
 use serde::Serialize;
 
 #[derive(Serialize, Clone)]
@@ -30,11 +30,11 @@ async fn workflow_handler() -> HttpResponse {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    println!("Starting Actix-web Benchmark Server (Scenario 3: Multi-step Workflow) on 0.0.0.0:5002");
-    HttpServer::new(|| {
-        App::new().route("/workflow", web::get().to(workflow_handler))
-    })
-    .bind("0.0.0.0:5002")?
-    .run()
-    .await
+    println!(
+        "Starting Actix-web Benchmark Server (Scenario 3: Multi-step Workflow) on 0.0.0.0:5002"
+    );
+    HttpServer::new(|| App::new().route("/workflow", web::get().to(workflow_handler)))
+        .bind("0.0.0.0:5002")?
+        .run()
+        .await
 }

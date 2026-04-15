@@ -29,8 +29,8 @@
 
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
-use ranvier_runtime::Axon;
 use ranvier_guard::prelude::*;
+use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -105,7 +105,10 @@ async fn main() -> anyhow::Result<()> {
     // ── Configure Guards ─────────────────────────────────────────────────
 
     let cors = CorsGuard::<HttpRequest>::new(CorsConfig {
-        allowed_origins: vec!["https://app.example.com".into(), "https://admin.example.com".into()],
+        allowed_origins: vec![
+            "https://app.example.com".into(),
+            "https://admin.example.com".into(),
+        ],
         allowed_methods: vec!["GET".into(), "POST".into()],
         allowed_headers: vec!["Content-Type".into(), "Authorization".into()],
         max_age_seconds: 86400,

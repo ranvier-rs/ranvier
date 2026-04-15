@@ -238,28 +238,47 @@ impl FieldNamePiiDetector {
                 ),
                 (
                     vec![
-                        "address", "street", "street_address", "home_address",
-                        "postal_code", "zip_code", "zip",
+                        "address",
+                        "street",
+                        "street_address",
+                        "home_address",
+                        "postal_code",
+                        "zip_code",
+                        "zip",
                     ],
                     "address",
                     ClassificationLevel::Confidential,
                 ),
                 (
                     vec![
-                        "first_name", "last_name", "full_name", "given_name",
-                        "family_name", "surname",
+                        "first_name",
+                        "last_name",
+                        "full_name",
+                        "given_name",
+                        "family_name",
+                        "surname",
                     ],
                     "name",
                     ClassificationLevel::Confidential,
                 ),
                 (
-                    vec!["ip", "ip_address", "ipv4", "ipv6", "client_ip", "remote_addr"],
+                    vec![
+                        "ip",
+                        "ip_address",
+                        "ipv4",
+                        "ipv6",
+                        "client_ip",
+                        "remote_addr",
+                    ],
                     "ip_address",
                     ClassificationLevel::Internal,
                 ),
                 (
                     vec![
-                        "credit_card", "card_number", "cc_number", "pan",
+                        "credit_card",
+                        "card_number",
+                        "cc_number",
+                        "pan",
                         "payment_card",
                     ],
                     "credit_card",
@@ -277,7 +296,12 @@ impl FieldNamePiiDetector {
                 ),
                 // Korean PII patterns
                 (
-                    vec!["jumin", "jumin_number", "resident_number", "resident_registration"],
+                    vec![
+                        "jumin",
+                        "jumin_number",
+                        "resident_number",
+                        "resident_registration",
+                    ],
                     "kr_resident_number",
                     ClassificationLevel::Restricted,
                 ),
@@ -292,7 +316,12 @@ impl FieldNamePiiDetector {
                     ClassificationLevel::Restricted,
                 ),
                 (
-                    vec!["drivers_license", "driver_license", "license_number", "myeonheo"],
+                    vec![
+                        "drivers_license",
+                        "driver_license",
+                        "license_number",
+                        "myeonheo",
+                    ],
                     "drivers_license",
                     ClassificationLevel::Restricted,
                 ),
@@ -318,12 +347,7 @@ impl FieldNamePiiDetector {
         results
     }
 
-    fn scan_recursive(
-        &self,
-        value: &serde_json::Value,
-        path: &str,
-        results: &mut Vec<PiiField>,
-    ) {
+    fn scan_recursive(&self, value: &serde_json::Value, path: &str, results: &mut Vec<PiiField>) {
         match value {
             serde_json::Value::Object(map) => {
                 for (key, val) in map {
@@ -599,19 +623,11 @@ mod tests {
         let sink = InMemoryErasureSink::new();
         sink.add_records(
             "user_42",
-            vec![
-                "record1".into(),
-                "record2".into(),
-                "record3".into(),
-            ],
+            vec!["record1".into(), "record2".into(), "record3".into()],
         );
 
-        let request = ErasureRequest::new(
-            "req_001".into(),
-            "user_42".into(),
-            vec!["all".into()],
-        )
-        .with_reason("GDPR Article 17 request");
+        let request = ErasureRequest::new("req_001".into(), "user_42".into(), vec!["all".into()])
+            .with_reason("GDPR Article 17 request");
 
         let result = sink.erase(&request);
         assert!(result.success);
@@ -622,11 +638,8 @@ mod tests {
     #[test]
     fn erasure_request_for_missing_subject() {
         let sink = InMemoryErasureSink::new();
-        let request = ErasureRequest::new(
-            "req_002".into(),
-            "unknown_user".into(),
-            vec!["all".into()],
-        );
+        let request =
+            ErasureRequest::new("req_002".into(), "unknown_user".into(), vec!["all".into()]);
 
         let result = sink.erase(&request);
         assert!(result.success);

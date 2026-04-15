@@ -176,7 +176,12 @@ impl BreakpointStore {
         self.breakpoints.remove(id).is_some()
     }
 
-    fn update(&mut self, id: &str, enabled: Option<bool>, condition: Option<Option<String>>) -> Option<ConditionalBreakpoint> {
+    fn update(
+        &mut self,
+        id: &str,
+        enabled: Option<bool>,
+        condition: Option<Option<String>>,
+    ) -> Option<ConditionalBreakpoint> {
         let bp = self.breakpoints.get_mut(id)?;
         if let Some(e) = enabled {
             bp.enabled = e;
@@ -217,10 +222,7 @@ fn get_store() -> Arc<Mutex<BreakpointStore>> {
 }
 
 /// Add a conditional breakpoint.
-pub fn add_breakpoint(
-    node_id: String,
-    condition: Option<String>,
-) -> ConditionalBreakpoint {
+pub fn add_breakpoint(node_id: String, condition: Option<String>) -> ConditionalBreakpoint {
     get_store().lock().unwrap().add(node_id, condition)
 }
 
@@ -244,10 +246,7 @@ pub fn list_breakpoints() -> Vec<ConditionalBreakpoint> {
 }
 
 /// Check if any conditional breakpoint should fire for the given node and optional payload.
-pub fn should_pause_conditional(
-    node_id: &str,
-    payload: Option<&serde_json::Value>,
-) -> bool {
+pub fn should_pause_conditional(node_id: &str, payload: Option<&serde_json::Value>) -> bool {
     get_store().lock().unwrap().should_pause(node_id, payload)
 }
 

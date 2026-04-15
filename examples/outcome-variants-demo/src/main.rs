@@ -192,16 +192,12 @@ impl Transition<Ticket, Ticket> for RouteByCategory {
                 let payload = serde_json::json!({ "priority": ticket.priority });
                 Outcome::Branch("billing_dept".to_string(), Some(payload))
             }
-            "technical" => {
-                Outcome::Branch("tech_support".to_string(), None)
-            }
+            "technical" => Outcome::Branch("tech_support".to_string(), None),
             "general" => {
                 // General tickets continue in the normal flow
                 Outcome::Next(ticket)
             }
-            other => {
-                Outcome::Fault(format!("Unknown category: {}", other))
-            }
+            other => Outcome::Fault(format!("Unknown category: {}", other)),
         }
     }
 }
@@ -443,9 +439,7 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(p) = payload {
                     println!("  Context: {}", p);
                 }
-                println!(
-                    "  (In production, Axon would re-route to the target node)"
-                );
+                println!("  (In production, Axon would re-route to the target node)");
             }
             other => println!("  Unexpected: {:?}", other),
         }

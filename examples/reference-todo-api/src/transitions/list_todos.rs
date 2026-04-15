@@ -1,6 +1,6 @@
+use crate::models::Todo;
 use ranvier_core::prelude::*;
 use ranvier_macros::transition;
-use crate::models::Todo;
 use std::sync::{Arc, Mutex};
 
 #[transition]

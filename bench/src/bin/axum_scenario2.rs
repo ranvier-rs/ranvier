@@ -1,12 +1,12 @@
 use axum::{
+    Json, Router,
     extract::State,
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     middleware::{self, Next},
     response::Response,
     routing::get,
-    Json, Router,
 };
-use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -44,12 +44,18 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/protected", get(protected_handler))
-        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
         .with_state(state);
 
     let addr = "0.0.0.0:4001";
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    println!("Starting Axum Benchmark Server (Scenario 2: Complex Auth) on {}", addr);
+    println!(
+        "Starting Axum Benchmark Server (Scenario 2: Complex Auth) on {}",
+        addr
+    );
     axum::serve(listener, app).await?;
 
     Ok(())
@@ -99,12 +105,10 @@ async fn protected_handler(
 }
 
 fn generate_bench_token(secret: &str) -> anyhow::Result<String> {
-    use jsonwebtoken::{encode, Header, EncodingKey};
+    use jsonwebtoken::{EncodingKey, Header, encode};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)?
-        .as_secs() as usize;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as usize;
 
     let claims = Claims {
         sub: "bench-user".to_string(),

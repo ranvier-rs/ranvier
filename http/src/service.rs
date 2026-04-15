@@ -38,7 +38,8 @@ impl<In, Out, E, F, Res> RanvierService<In, Out, E, F, Res> {
     }
 }
 
-impl<B, In, Out, E, F, Res> hyper::service::Service<Request<B>> for RanvierService<In, Out, E, F, Res>
+impl<B, In, Out, E, F, Res> hyper::service::Service<Request<B>>
+    for RanvierService<In, Out, E, F, Res>
 where
     B: Send + 'static,
     In: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,

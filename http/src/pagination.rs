@@ -122,8 +122,8 @@ impl<T: Serialize> Paginated<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ranvier_core::bus::Bus;
     use crate::ingress::QueryParams;
+    use ranvier_core::bus::Bus;
 
     #[test]
     fn page_params_defaults() {

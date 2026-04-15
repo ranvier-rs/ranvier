@@ -14,10 +14,7 @@ pub async fn login(
         Err(_) => return Outcome::Fault("Missing JSON body".to_string()),
     };
 
-    let username = body
-        .get("username")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let username = body.get("username").and_then(|v| v.as_str()).unwrap_or("");
 
     if username.is_empty() {
         return Outcome::Fault("username is required".to_string());

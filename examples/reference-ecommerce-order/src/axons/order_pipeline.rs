@@ -3,14 +3,11 @@ use ranvier_runtime::Axon;
 
 use crate::models::CreateOrderRequest;
 use crate::transitions::{
+    compensations::{refund_payment::refund_payment, release_inventory::release_inventory},
     create_order::create_order,
     process_payment::process_payment,
     reserve_inventory::reserve_inventory,
     schedule_shipping::schedule_shipping,
-    compensations::{
-        refund_payment::refund_payment,
-        release_inventory::release_inventory,
-    },
 };
 
 /// Build the 4-stage order pipeline with Saga compensation.

@@ -64,12 +64,8 @@ impl FileAuditSink {
     async fn maybe_rotate(&self) -> Result<(), AuditError> {
         match &self.rotation {
             RotationPolicy::None => Ok(()),
-            RotationPolicy::BySize(max_bytes) => {
-                self.rotate_if_size_exceeded(*max_bytes).await
-            }
-            RotationPolicy::ByDate => {
-                self.rotate_if_date_changed().await
-            }
+            RotationPolicy::BySize(max_bytes) => self.rotate_if_size_exceeded(*max_bytes).await,
+            RotationPolicy::ByDate => self.rotate_if_date_changed().await,
             RotationPolicy::ByBoth(max_bytes) => {
                 self.rotate_if_size_exceeded(*max_bytes).await?;
                 self.rotate_if_date_changed().await
@@ -137,9 +133,7 @@ impl FileAuditSink {
 
     /// Read all events from the file.
     async fn read_all_events(&self) -> Result<Vec<AuditEvent>, AuditError> {
-        let contents = fs::read_to_string(&self.path)
-            .await
-            .unwrap_or_default();
+        let contents = fs::read_to_string(&self.path).await.unwrap_or_default();
 
         if contents.is_empty() {
             return Ok(Vec::new());
@@ -277,12 +271,22 @@ mod tests {
 
         let sink = FileAuditSink::new(&path, b"key").await.unwrap();
 
-        sink.append(&AuditEvent::new("1".into(), "alice".into(), "CREATE".into(), "doc".into()))
-            .await
-            .unwrap();
-        sink.append(&AuditEvent::new("2".into(), "bob".into(), "READ".into(), "doc".into()))
-            .await
-            .unwrap();
+        sink.append(&AuditEvent::new(
+            "1".into(),
+            "alice".into(),
+            "CREATE".into(),
+            "doc".into(),
+        ))
+        .await
+        .unwrap();
+        sink.append(&AuditEvent::new(
+            "2".into(),
+            "bob".into(),
+            "READ".into(),
+            "doc".into(),
+        ))
+        .await
+        .unwrap();
 
         let results = sink.query(&AuditQuery::new().actor("alice")).await.unwrap();
         assert_eq!(results.len(), 1);

@@ -1,8 +1,8 @@
-use ranvier_core::prelude::*;
-use ranvier_macros::transition;
 use crate::auth;
 use crate::models::{CreateOrderRequest, Order};
 use crate::store::AppStore;
+use ranvier_core::prelude::*;
+use ranvier_macros::transition;
 
 /// Create order transition — receives `CreateOrderRequest` directly via `post_typed()`.
 ///
@@ -28,9 +28,7 @@ pub async fn create_order(
         })
         .unwrap_or_default();
 
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .unwrap_or(&auth_header);
+    let token = auth_header.strip_prefix("Bearer ").unwrap_or(&auth_header);
 
     let claims = match auth::verify_token(token) {
         Some(c) => c,

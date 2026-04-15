@@ -28,7 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use http::Method;
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use ranvier_core::prelude::*;
 use ranvier_core::transition::ResourceRequirement;
 use ranvier_guard::prelude::*;
@@ -37,10 +37,11 @@ use ranvier_openapi::prelude::*;
 use ranvier_runtime::Axon;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
+use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
 
-static JWT_SECRET: LazyLock<String> =
-    LazyLock::new(|| std::env::var("JWT_SECRET").unwrap_or_else(|_| "reference-fullstack-admin-secret".to_string()));
+static JWT_SECRET: LazyLock<String> = LazyLock::new(|| {
+    std::env::var("JWT_SECRET").unwrap_or_else(|_| "reference-fullstack-admin-secret".to_string())
+});
 static ADMIN_PASSWORD: LazyLock<String> =
     LazyLock::new(|| std::env::var("ADMIN_PASSWORD").unwrap_or_else(|_| "admin123".to_string()));
 
@@ -201,20 +202,38 @@ fn normalize_per_page(per_page: i64) -> i64 {
 
 fn row_to_department(row: &sqlx::sqlite::SqliteRow) -> Result<Department, String> {
     Ok(Department {
-        id: row.try_get("id").map_err(|e| format!("department.id decode failed: {e}"))?,
-        name: row.try_get("name").map_err(|e| format!("department.name decode failed: {e}"))?,
+        id: row
+            .try_get("id")
+            .map_err(|e| format!("department.id decode failed: {e}"))?,
+        name: row
+            .try_get("name")
+            .map_err(|e| format!("department.name decode failed: {e}"))?,
     })
 }
 
 fn row_to_user(row: &sqlx::sqlite::SqliteRow) -> Result<UserRecord, String> {
-    let active_int: i64 = row.try_get("active").map_err(|e| format!("user.active decode failed: {e}"))?;
+    let active_int: i64 = row
+        .try_get("active")
+        .map_err(|e| format!("user.active decode failed: {e}"))?;
     Ok(UserRecord {
-        id: row.try_get("id").map_err(|e| format!("user.id decode failed: {e}"))?,
-        username: row.try_get("username").map_err(|e| format!("user.username decode failed: {e}"))?,
-        full_name: row.try_get("full_name").map_err(|e| format!("user.full_name decode failed: {e}"))?,
-        email: row.try_get("email").map_err(|e| format!("user.email decode failed: {e}"))?,
-        department_id: row.try_get("department_id").map_err(|e| format!("user.department_id decode failed: {e}"))?,
-        department_name: row.try_get("department_name").map_err(|e| format!("user.department_name decode failed: {e}"))?,
+        id: row
+            .try_get("id")
+            .map_err(|e| format!("user.id decode failed: {e}"))?,
+        username: row
+            .try_get("username")
+            .map_err(|e| format!("user.username decode failed: {e}"))?,
+        full_name: row
+            .try_get("full_name")
+            .map_err(|e| format!("user.full_name decode failed: {e}"))?,
+        email: row
+            .try_get("email")
+            .map_err(|e| format!("user.email decode failed: {e}"))?,
+        department_id: row
+            .try_get("department_id")
+            .map_err(|e| format!("user.department_id decode failed: {e}"))?,
+        department_name: row
+            .try_get("department_name")
+            .map_err(|e| format!("user.department_name decode failed: {e}"))?,
         active: active_int != 0,
     })
 }
@@ -338,13 +357,21 @@ impl Transition<LoginRequest, LoginResponse> for Login {
     type Error = String;
     type Resources = AppState;
 
-    async fn run(&self, input: LoginRequest, _resources: &Self::Resources, _bus: &mut Bus) -> Outcome<LoginResponse, Self::Error> {
+    async fn run(
+        &self,
+        input: LoginRequest,
+        _resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<LoginResponse, Self::Error> {
         if input.username != "admin" || input.password != *ADMIN_PASSWORD {
             return Outcome::Fault("invalid credentials".to_string());
         }
 
         match issue_token(&input.username) {
-            Ok(token) => Outcome::Next(LoginResponse { token, username: input.username }),
+            Ok(token) => Outcome::Next(LoginResponse {
+                token,
+                username: input.username,
+            }),
             Err(error) => Outcome::Fault(error),
         }
     }
@@ -358,7 +385,12 @@ impl Transition<(), DashboardSummary> for Dashboard {
     type Error = String;
     type Resources = AppState;
 
-    async fn run(&self, _input: (), resources: &Self::Resources, bus: &mut Bus) -> Outcome<DashboardSummary, Self::Error> {
+    async fn run(
+        &self,
+        _input: (),
+        resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<DashboardSummary, Self::Error> {
         if let Err(error) = require_admin(bus) {
             return Outcome::Fault(error);
         }
@@ -369,21 +401,26 @@ impl Transition<(), DashboardSummary> for Dashboard {
         {
             Ok(row) => match row.try_get("count") {
                 Ok(value) => value,
-                Err(error) => return Outcome::Fault(format!("dashboard total decode failed: {error}")),
+                Err(error) => {
+                    return Outcome::Fault(format!("dashboard total decode failed: {error}"));
+                }
             },
             Err(error) => return Outcome::Fault(format!("dashboard total failed: {error}")),
         };
 
-        let active_users: i64 = match sqlx::query("SELECT COUNT(*) AS count FROM users WHERE active = 1")
-            .fetch_one(&resources.pool)
-            .await
-        {
-            Ok(row) => match row.try_get("count") {
-                Ok(value) => value,
-                Err(error) => return Outcome::Fault(format!("dashboard active decode failed: {error}")),
-            },
-            Err(error) => return Outcome::Fault(format!("dashboard active failed: {error}")),
-        };
+        let active_users: i64 =
+            match sqlx::query("SELECT COUNT(*) AS count FROM users WHERE active = 1")
+                .fetch_one(&resources.pool)
+                .await
+            {
+                Ok(row) => match row.try_get("count") {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return Outcome::Fault(format!("dashboard active decode failed: {error}"));
+                    }
+                },
+                Err(error) => return Outcome::Fault(format!("dashboard active failed: {error}")),
+            };
 
         let departments: i64 = match sqlx::query("SELECT COUNT(*) AS count FROM departments")
             .fetch_one(&resources.pool)
@@ -391,7 +428,9 @@ impl Transition<(), DashboardSummary> for Dashboard {
         {
             Ok(row) => match row.try_get("count") {
                 Ok(value) => value,
-                Err(error) => return Outcome::Fault(format!("dashboard departments decode failed: {error}")),
+                Err(error) => {
+                    return Outcome::Fault(format!("dashboard departments decode failed: {error}"));
+                }
             },
             Err(error) => return Outcome::Fault(format!("dashboard departments failed: {error}")),
         };
@@ -412,7 +451,12 @@ impl Transition<(), Vec<Department>> for ListDepartments {
     type Error = String;
     type Resources = AppState;
 
-    async fn run(&self, _input: (), resources: &Self::Resources, bus: &mut Bus) -> Outcome<Vec<Department>, Self::Error> {
+    async fn run(
+        &self,
+        _input: (),
+        resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<Vec<Department>, Self::Error> {
         if let Err(error) = require_admin(bus) {
             return Outcome::Fault(error);
         }
@@ -445,7 +489,12 @@ impl Transition<(), UserPage> for ListUsers {
     type Error = String;
     type Resources = AppState;
 
-    async fn run(&self, _input: (), resources: &Self::Resources, bus: &mut Bus) -> Outcome<UserPage, Self::Error> {
+    async fn run(
+        &self,
+        _input: (),
+        resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<UserPage, Self::Error> {
         if let Err(error) = require_admin(bus) {
             return Outcome::Fault(error);
         }
@@ -454,7 +503,10 @@ impl Transition<(), UserPage> for ListUsers {
         let per_page = normalize_per_page(bus.query_param_or("per_page", 10_i64));
         let q: Option<String> = bus.query_param("q");
         let offset = (page - 1) * per_page;
-        let q_trimmed = q.as_ref().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        let q_trimmed = q
+            .as_ref()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
         let q_like = q_trimmed.as_ref().map(|v| format!("%{v}%"));
 
         let total = match q_like.as_ref() {
@@ -566,7 +618,12 @@ impl Transition<CreateUserInput, UserRecord> for CreateUser {
     type Error = String;
     type Resources = AppState;
 
-    async fn run(&self, input: CreateUserInput, resources: &Self::Resources, bus: &mut Bus) -> Outcome<UserRecord, Self::Error> {
+    async fn run(
+        &self,
+        input: CreateUserInput,
+        resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<UserRecord, Self::Error> {
         if let Err(error) = require_admin(bus) {
             return Outcome::Fault(error);
         }
@@ -607,7 +664,12 @@ impl Transition<UpdateUserInput, UserRecord> for UpdateUser {
     type Error = String;
     type Resources = AppState;
 
-    async fn run(&self, input: UpdateUserInput, resources: &Self::Resources, bus: &mut Bus) -> Outcome<UserRecord, Self::Error> {
+    async fn run(
+        &self,
+        input: UpdateUserInput,
+        resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<UserRecord, Self::Error> {
         if let Err(error) = require_admin(bus) {
             return Outcome::Fault(error);
         }
@@ -663,7 +725,12 @@ impl Transition<(), DeleteUserResult> for DeleteUser {
     type Error = String;
     type Resources = AppState;
 
-    async fn run(&self, _input: (), resources: &Self::Resources, bus: &mut Bus) -> Outcome<DeleteUserResult, Self::Error> {
+    async fn run(
+        &self,
+        _input: (),
+        resources: &Self::Resources,
+        bus: &mut Bus,
+    ) -> Outcome<DeleteUserResult, Self::Error> {
         if let Err(error) = require_admin(bus) {
             return Outcome::Fault(error);
         }
@@ -696,7 +763,12 @@ impl Transition<(), serde_json::Value> for ServeOpenApi {
     type Error = String;
     type Resources = AppState;
 
-    async fn run(&self, _input: (), resources: &Self::Resources, _bus: &mut Bus) -> Outcome<serde_json::Value, Self::Error> {
+    async fn run(
+        &self,
+        _input: (),
+        resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<serde_json::Value, Self::Error> {
         Outcome::Next(resources.openapi_json.clone())
     }
 }
@@ -709,7 +781,12 @@ impl Transition<(), DocsPage> for ServeDocs {
     type Error = String;
     type Resources = AppState;
 
-    async fn run(&self, _input: (), resources: &Self::Resources, _bus: &mut Bus) -> Outcome<DocsPage, Self::Error> {
+    async fn run(
+        &self,
+        _input: (),
+        resources: &Self::Resources,
+        _bus: &mut Bus,
+    ) -> Outcome<DocsPage, Self::Error> {
         Outcome::Next(DocsPage {
             html: resources.swagger_html.clone(),
         })
@@ -735,10 +812,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let login = Axon::<LoginRequest, LoginRequest, String, AppState>::new("login").then(Login);
     let dashboard = Axon::<(), (), String, AppState>::new("dashboard").then(Dashboard);
-    let list_departments = Axon::<(), (), String, AppState>::new("list-departments").then(ListDepartments);
+    let list_departments =
+        Axon::<(), (), String, AppState>::new("list-departments").then(ListDepartments);
     let list_users = Axon::<(), (), String, AppState>::new("list-users").then(ListUsers);
-    let create_user = Axon::<CreateUserInput, CreateUserInput, String, AppState>::new("create-user").then(CreateUser);
-    let update_user = Axon::<UpdateUserInput, UpdateUserInput, String, AppState>::new("update-user").then(UpdateUser);
+    let create_user =
+        Axon::<CreateUserInput, CreateUserInput, String, AppState>::new("create-user")
+            .then(CreateUser);
+    let update_user =
+        Axon::<UpdateUserInput, UpdateUserInput, String, AppState>::new("update-user")
+            .then(UpdateUser);
     let delete_user = Axon::<(), (), String, AppState>::new("delete-user").then(DeleteUser);
     let openapi_route = Axon::<(), (), String, AppState>::new("serve-openapi").then(ServeOpenApi);
     let docs_route = Axon::<(), (), String, AppState>::new("serve-docs").then(ServeDocs);
@@ -780,7 +862,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .summary(Method::POST, "/login", "Issue JWT for the admin user")
         .summary(Method::GET, "/dashboard", "Return dashboard summary")
         .summary(Method::GET, "/departments", "List departments")
-        .summary(Method::GET, "/users", "List users with pagination and search")
+        .summary(
+            Method::GET,
+            "/users",
+            "List users with pagination and search",
+        )
         .summary(Method::POST, "/users", "Create user")
         .summary(Method::PUT, "/users/:id", "Update user")
         .summary(Method::DELETE, "/users/:id", "Delete user")

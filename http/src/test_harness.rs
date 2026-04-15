@@ -315,10 +315,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_app_executes_route_without_network_socket() {
-        let ingress = crate::Ranvier::http::<()>().get(
-            "/ping",
-            Axon::<(), (), String, ()>::new("Ping").then(Ping),
-        );
+        let ingress = crate::Ranvier::http::<()>()
+            .get("/ping", Axon::<(), (), String, ()>::new("Ping").then(Ping));
         let app = TestApp::new(ingress, ());
 
         let response = app

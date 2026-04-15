@@ -4,11 +4,11 @@ use ranvier_core::outcome::Outcome;
 use ranvier_core::policy::DynamicPolicy;
 use ranvier_core::saga::SagaPolicy;
 use ranvier_core::schematic::{Edge, EdgeType, Node, NodeKind, Schematic, SourceLocation};
-use ranvier_core::timeline::{Timeline, TimelineEvent};
-use ranvier_core::transition::Transition;
 #[cfg(feature = "streaming")]
 use ranvier_core::streaming::{StreamTimeoutConfig, StreamingTransition};
-use serde::{de::DeserializeOwned, Serialize};
+use ranvier_core::timeline::{Timeline, TimelineEvent};
+use ranvier_core::transition::Transition;
+use serde::{Serialize, de::DeserializeOwned};
 use std::fs;
 use std::panic::Location;
 use std::sync::Arc;
@@ -696,9 +696,7 @@ where
                         }
                     }
 
-                    last_result.unwrap_or_else(|| {
-                        Outcome::emit("execution.retry.exhausted", None)
-                    })
+                    last_result.unwrap_or_else(|| Outcome::emit("execution.retry.exhausted", None))
                 })
             },
         );
@@ -1105,12 +1103,14 @@ where
         );
         // 4. Register Saga Compensation if enabled
         {
-            let mut registry = saga_compensation_registry.write().expect("saga compensation registry lock poisoned");
+            let mut registry = saga_compensation_registry
+                .write()
+                .expect("saga compensation registry lock poisoned");
             let comp_fn = compensation.clone();
             let transition_bus_policy = bus_policy_for_registry.clone();
 
-            let handler: ranvier_core::saga::SagaCompensationFn<E, Res> =
-                Arc::new(move |input_data, res, bus| {
+            let handler: ranvier_core::saga::SagaCompensationFn<E, Res> = Arc::new(
+                move |input_data, res, bus| {
                     let comp = comp_fn.clone();
                     let bus_policy = transition_bus_policy.clone();
                     Box::pin(async move {
@@ -1120,7 +1120,8 @@ where
                         bus.clear_access_policy();
                         res
                     })
-                });
+                },
+            );
             registry.register(next_node_id.clone(), handler);
         }
 
@@ -1341,49 +1342,46 @@ where
         });
 
         // Build stream executor
-        let stream_executor: crate::streaming_axon::StreamExecutorType<In, Item, E, Res> =
-            Arc::new(
-                move |input: In,
-                      res: &Res,
-                      bus: &mut Bus|
-                      -> BoxFuture<
-                    '_,
-                    Result<
-                        std::pin::Pin<Box<dyn futures_core::Stream<Item = Item> + Send>>,
-                        StreamingAxonError<E>,
-                    >,
-                > {
-                    let prev = prev_executor.clone();
-                    let streaming = streaming.clone();
+        let stream_executor: crate::streaming_axon::StreamExecutorType<In, Item, E, Res> = Arc::new(
+            move |input: In,
+                  res: &Res,
+                  bus: &mut Bus|
+                  -> BoxFuture<
+                '_,
+                Result<
+                    std::pin::Pin<Box<dyn futures_core::Stream<Item = Item> + Send>>,
+                    StreamingAxonError<E>,
+                >,
+            > {
+                let prev = prev_executor.clone();
+                let streaming = streaming.clone();
 
-                    Box::pin(async move {
-                        // Execute prefix Axon
-                        let outcome = prev(input, res, bus).await;
+                Box::pin(async move {
+                    // Execute prefix Axon
+                    let outcome = prev(input, res, bus).await;
 
-                        // Only Next outcome is valid for streaming
-                        let intermediate = match outcome {
-                            Outcome::Next(val) => val,
-                            Outcome::Fault(e) => {
-                                return Err(StreamingAxonError::PipelineFault(e));
-                            }
-                            other => {
-                                return Err(StreamingAxonError::UnexpectedOutcome(format!(
-                                    "{:?}",
-                                    std::mem::discriminant(&other)
-                                )));
-                            }
-                        };
+                    // Only Next outcome is valid for streaming
+                    let intermediate = match outcome {
+                        Outcome::Next(val) => val,
+                        Outcome::Fault(e) => {
+                            return Err(StreamingAxonError::PipelineFault(e));
+                        }
+                        other => {
+                            return Err(StreamingAxonError::UnexpectedOutcome(format!(
+                                "{:?}",
+                                std::mem::discriminant(&other)
+                            )));
+                        }
+                    };
 
-                        // Initialize stream
-                        streaming
-                            .run_stream(intermediate, res, bus)
-                            .await
-                            .map_err(|e| {
-                                StreamingAxonError::StreamInitError(format!("{:?}", e))
-                            })
-                    })
-                },
-            );
+                    // Initialize stream
+                    streaming
+                        .run_stream(intermediate, res, bus)
+                        .await
+                        .map_err(|e| StreamingAxonError::StreamInitError(format!("{:?}", e)))
+                })
+            },
+        );
 
         StreamingAxon {
             schematic,

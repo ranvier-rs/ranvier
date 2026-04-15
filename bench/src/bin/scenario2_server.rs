@@ -1,7 +1,7 @@
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use ranvier::prelude::*;
 use ranvier_macros::transition;
 use serde::{Deserialize, Serialize};
-use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Claims {
@@ -43,7 +43,11 @@ async fn verify_token(_input: (), _res: &(), bus: &mut Bus) -> Outcome<Claims, S
 }
 
 #[transition]
-async fn final_response(claims: Claims, _res: &(), _bus: &mut Bus) -> Outcome<serde_json::Value, String> {
+async fn final_response(
+    claims: Claims,
+    _res: &(),
+    _bus: &mut Bus,
+) -> Outcome<serde_json::Value, String> {
     Outcome::Next(serde_json::json!({
         "subject": claims.sub,
         "message": "Access Granted via Typed Bus Capability"
@@ -62,7 +66,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let addr = "0.0.0.0:3001";
-    println!("Starting Ranvier Benchmark Server (Scenario 2: Auth Flow) on {}", addr);
+    println!(
+        "Starting Ranvier Benchmark Server (Scenario 2: Auth Flow) on {}",
+        addr
+    );
 
     let auth_axon = Axon::<(), (), String>::new("auth-flow")
         .then(verify_token)
@@ -82,12 +89,10 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn generate_bench_token(secret: &str) -> anyhow::Result<String> {
-    use jsonwebtoken::{encode, Header, EncodingKey};
+    use jsonwebtoken::{EncodingKey, Header, encode};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)?
-        .as_secs() as usize;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as usize;
 
     let claims = Claims {
         sub: "bench-user".to_string(),

@@ -19,7 +19,11 @@ pub struct OpenApiDocument {
 /// OpenAPI components object (schemas, securitySchemes, etc.).
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct OpenApiComponents {
-    #[serde(rename = "securitySchemes", skip_serializing_if = "BTreeMap::is_empty", default)]
+    #[serde(
+        rename = "securitySchemes",
+        skip_serializing_if = "BTreeMap::is_empty",
+        default
+    )]
     pub security_schemes: BTreeMap<String, SecurityScheme>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
     pub schemas: BTreeMap<String, Value>,
@@ -399,12 +403,13 @@ impl OpenApiGenerator {
                     ("404", "Not Found"),
                     ("500", "Internal Server Error"),
                 ] {
-                    operation.responses.entry(code.to_string()).or_insert(
-                        OpenApiResponse {
+                    operation
+                        .responses
+                        .entry(code.to_string())
+                        .or_insert(OpenApiResponse {
                             description: desc.to_string(),
                             content: Some(problem_content.clone()),
-                        },
-                    );
+                        });
                 }
             }
 
@@ -447,8 +452,8 @@ impl OpenApiGenerator {
             );
         }
 
-        let has_components = !components.security_schemes.is_empty()
-            || !components.schemas.is_empty();
+        let has_components =
+            !components.security_schemes.is_empty() || !components.schemas.is_empty();
 
         OpenApiDocument {
             openapi: "3.0.3".to_string(),
@@ -749,12 +754,10 @@ mod tests {
 
     #[test]
     fn bearer_auth_serializes_in_json() {
-        let doc = OpenApiGenerator::from_descriptors(vec![HttpRouteDescriptor::new(
-            Method::GET,
-            "/api",
-        )])
-        .with_bearer_auth()
-        .build_json();
+        let doc =
+            OpenApiGenerator::from_descriptors(vec![HttpRouteDescriptor::new(Method::GET, "/api")])
+                .with_bearer_auth()
+                .build_json();
 
         let schemes = &doc["components"]["securitySchemes"];
         assert_eq!(schemes["bearerAuth"]["type"], "http");

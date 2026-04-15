@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use ranvier_core::prelude::*;
 
 fn bench_bus_insert_read_1(c: &mut Criterion) {
@@ -62,5 +62,11 @@ fn bench_bus_remove(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_bus_insert_read_1, bench_bus_insert_read_10, bench_bus_insert_read_100, bench_bus_remove);
+criterion_group!(
+    benches,
+    bench_bus_insert_read_1,
+    bench_bus_insert_read_10,
+    bench_bus_insert_read_100,
+    bench_bus_remove
+);
 criterion_main!(benches);

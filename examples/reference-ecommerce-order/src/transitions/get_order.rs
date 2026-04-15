@@ -1,16 +1,12 @@
+use crate::auth;
+use crate::store::AppStore;
 use ranvier_core::prelude::*;
 use ranvier_http::BusHttpExt;
 use ranvier_macros::transition;
-use crate::auth;
-use crate::store::AppStore;
 
 /// Get order by ID — reads `:id` path param via `BusHttpExt::path_param()`.
 #[transition]
-pub async fn get_order(
-    _input: (),
-    _res: &(),
-    bus: &mut Bus,
-) -> Outcome<serde_json::Value, String> {
+pub async fn get_order(_input: (), _res: &(), bus: &mut Bus) -> Outcome<serde_json::Value, String> {
     let auth_header = bus
         .read::<Vec<(String, String)>>()
         .and_then(|headers| {

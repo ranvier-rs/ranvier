@@ -80,7 +80,11 @@ struct ProcessedOrder {
 /// Validates incoming orders.
 /// The macro generates a `validate` struct that implements `Transition<OrderRequest, ValidatedOrder>`.
 #[transition]
-async fn validate(input: OrderRequest, _res: &(), _bus: &mut Bus) -> Outcome<ValidatedOrder, String> {
+async fn validate(
+    input: OrderRequest,
+    _res: &(),
+    _bus: &mut Bus,
+) -> Outcome<ValidatedOrder, String> {
     if input.amount <= 0.0 {
         return Outcome::fault(format!("Invalid amount: {}", input.amount));
     }
@@ -95,7 +99,11 @@ async fn validate(input: OrderRequest, _res: &(), _bus: &mut Bus) -> Outcome<Val
 /// Processes validated orders — applies tax and finalizes.
 /// The macro infers Resources = () and Error = String from the signature.
 #[transition]
-async fn process(input: ValidatedOrder, _res: &(), _bus: &mut Bus) -> Outcome<ProcessedOrder, String> {
+async fn process(
+    input: ValidatedOrder,
+    _res: &(),
+    _bus: &mut Bus,
+) -> Outcome<ProcessedOrder, String> {
     let tax = input.amount * 0.1;
     Outcome::next(ProcessedOrder {
         order_id: input.order_id,
@@ -122,7 +130,11 @@ async fn apply_discount(
 
 /// Denied from accessing `String` (secrets) in Bus.
 #[transition(bus_deny = [String])]
-async fn finalize(input: ProcessedOrder, _res: &(), _bus: &mut Bus) -> Outcome<ProcessedOrder, String> {
+async fn finalize(
+    input: ProcessedOrder,
+    _res: &(),
+    _bus: &mut Bus,
+) -> Outcome<ProcessedOrder, String> {
     Outcome::next(ProcessedOrder {
         status: format!("{} (finalized)", input.status),
         ..input
@@ -172,7 +184,9 @@ async fn main() {
     let mut bus2 = Bus::new();
     bus2.insert(0.15_f64); // 15% discount
 
-    let result2 = discount_pipeline.execute(order2.clone(), &(), &mut bus2).await;
+    let result2 = discount_pipeline
+        .execute(order2.clone(), &(), &mut bus2)
+        .await;
     println!("  Input:    {:?}", order2);
     println!("  Discount: 15%");
     println!("  Output:   {:?}", result2);
@@ -195,7 +209,9 @@ async fn main() {
     let mut bus3 = Bus::new();
     bus3.insert("secret-api-key".to_string()); // Present but denied to `finalize`
 
-    let result3 = secure_pipeline.execute(order3.clone(), &(), &mut bus3).await;
+    let result3 = secure_pipeline
+        .execute(order3.clone(), &(), &mut bus3)
+        .await;
     println!("  Input:  {:?}", order3);
     println!("  Output: {:?}", result3);
     println!();

@@ -23,8 +23,7 @@ impl Transition<String, String> for PanickingStep {
 
 #[tokio::test]
 async fn panic_in_transition_returns_fault_when_e_is_string() {
-    let axon = Axon::<String, String, String>::new("PanicTest")
-        .then(PanickingStep);
+    let axon = Axon::<String, String, String>::new("PanicTest").then(PanickingStep);
 
     let mut bus = Bus::new();
     let result = axon.execute("hello".to_string(), &(), &mut bus).await;
@@ -62,8 +61,7 @@ impl Transition<String, String> for NormalStep {
 
 #[tokio::test]
 async fn normal_transition_unaffected_by_catch_unwind() {
-    let axon = Axon::<String, String, String>::new("NormalTest")
-        .then(NormalStep);
+    let axon = Axon::<String, String, String>::new("NormalTest").then(NormalStep);
 
     let mut bus = Bus::new();
     let result = axon.execute("hello".to_string(), &(), &mut bus).await;
@@ -104,8 +102,8 @@ impl Transition<String, String> for PanickingStructStep {
 
 #[tokio::test]
 async fn panic_with_non_string_error_emits_panic_signal() {
-    let axon = Axon::<String, String, StructuredError>::new("StructPanicTest")
-        .then(PanickingStructStep);
+    let axon =
+        Axon::<String, String, StructuredError>::new("StructPanicTest").then(PanickingStructStep);
 
     let mut bus = Bus::new();
     let result = axon.execute("hello".to_string(), &(), &mut bus).await;

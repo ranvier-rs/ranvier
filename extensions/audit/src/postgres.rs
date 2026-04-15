@@ -368,10 +368,7 @@ impl AuditSink for PostgresAuditSink {
         // For max_age, delete old events
         if let Some(ref max_age) = policy.max_age {
             let cutoff = Utc::now() - *max_age;
-            let delete_sql = format!(
-                "DELETE FROM {} WHERE timestamp < $1",
-                self.table_name
-            );
+            let delete_sql = format!("DELETE FROM {} WHERE timestamp < $1", self.table_name);
             sqlx::query(&delete_sql)
                 .bind(cutoff)
                 .execute(&self.pool)
@@ -459,15 +456,13 @@ mod tests {
 
     #[test]
     fn table_name_rejects_empty() {
-        let result = PostgresAuditConfig::new("postgres://localhost/test")
-            .table_name("");
+        let result = PostgresAuditConfig::new("postgres://localhost/test").table_name("");
         assert!(result.is_err());
     }
 
     #[test]
     fn table_name_rejects_leading_digit() {
-        let result = PostgresAuditConfig::new("postgres://localhost/test")
-            .table_name("1events");
+        let result = PostgresAuditConfig::new("postgres://localhost/test").table_name("1events");
         assert!(result.is_err());
     }
 

@@ -285,7 +285,11 @@ impl ProblemDetail {
     }
 
     /// Add an extension property.
-    pub fn with_extension(mut self, key: impl Into<String>, value: impl Into<serde_json::Value>) -> Self {
+    pub fn with_extension(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<serde_json::Value>,
+    ) -> Self {
         self.extensions.insert(key.into(), value.into());
         self
     }
@@ -351,10 +355,7 @@ where
             )
                 .into_response()
         } else {
-            json_error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error",
-            )
+            json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
         }
     })
 }
@@ -397,10 +398,7 @@ where
                 )
                     .into_response()
             } else {
-                json_error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal server error",
-                )
+                json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
             }
         }
         _ => "OK".into_response(),
@@ -570,12 +568,22 @@ mod tests {
     #[test]
     fn json_into_response_sets_json_content_type() {
         #[derive(serde::Serialize)]
-        struct Payload { id: u32, name: String }
+        struct Payload {
+            id: u32,
+            name: String,
+        }
 
-        let response = Json(Payload { id: 1, name: "test".into() }).into_response();
+        let response = Json(Payload {
+            id: 1,
+            name: "test".into(),
+        })
+        .into_response();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
-            response.headers().get(CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
             Some("application/json")
         );
     }
@@ -583,12 +591,17 @@ mod tests {
     #[test]
     fn status_code_json_into_response() {
         #[derive(serde::Serialize)]
-        struct Created { id: u32 }
+        struct Created {
+            id: u32,
+        }
 
         let response = (StatusCode::CREATED, Json(Created { id: 42 })).into_response();
         assert_eq!(response.status(), StatusCode::CREATED);
         assert_eq!(
-            response.headers().get(CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
             Some("application/json")
         );
     }
@@ -598,13 +611,18 @@ mod tests {
     #[test]
     fn outcome_to_json_response_serializes_struct() {
         #[derive(serde::Serialize)]
-        struct ApiResult { count: u32 }
+        struct ApiResult {
+            count: u32,
+        }
 
         let outcome: Outcome<ApiResult, String> = Outcome::Next(ApiResult { count: 5 });
         let response = outcome_to_json_response(outcome);
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
-            response.headers().get(CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
             Some("application/json")
         );
     }
@@ -619,7 +637,9 @@ mod tests {
     #[test]
     fn outcome_to_json_problem_response_maps_fault() {
         #[derive(serde::Serialize)]
-        struct Data { ok: bool }
+        struct Data {
+            ok: bool,
+        }
 
         struct AppError;
         impl IntoProblemDetail for AppError {

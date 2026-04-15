@@ -44,24 +44,23 @@ use ranvier_http::{PathParams, Ranvier};
 use ranvier_runtime::Axon;
 use store::AppStore;
 
-use transitions::{
-    get_order::get_order,
-    list_orders::list_orders,
-    login::login,
-};
+use transitions::{get_order::get_order, list_orders::list_orders, login::login};
 
 /// Inventory listing uses a closure transition for simple read-only queries.
 ///
 /// This demonstrates `then_fn()` — the lightweight alternative to `#[transition]`
 /// for steps that don't need async or separate files.
 fn inventory_circuit() -> Axon<(), serde_json::Value, String> {
-    Axon::simple::<String>("list-inventory").then_fn("list-inventory", |_input: (), bus: &mut Bus| {
-        let inventory = bus
-            .read::<AppStore>()
-            .map(|s| s.get_inventory())
-            .unwrap_or_default();
-        Outcome::Next(serde_json::json!({ "inventory": inventory }))
-    })
+    Axon::simple::<String>("list-inventory").then_fn(
+        "list-inventory",
+        |_input: (), bus: &mut Bus| {
+            let inventory = bus
+                .read::<AppStore>()
+                .map(|s| s.get_inventory())
+                .unwrap_or_default();
+            Outcome::Next(serde_json::json!({ "inventory": inventory }))
+        },
+    )
 }
 
 #[tokio::main]
@@ -104,10 +103,19 @@ async fn main() -> Result<()> {
                 bus.insert(headers);
             }
         })
-        .post_typed("/login", Axon::typed::<models::LoginReq, String>("login").then(login))
+        .post_typed(
+            "/login",
+            Axon::typed::<models::LoginReq, String>("login").then(login),
+        )
         .post_typed("/orders", axons::order_pipeline::order_pipeline_circuit())
-        .get("/orders", Axon::simple::<String>("list-orders").then(list_orders))
-        .get("/orders/:id", Axon::simple::<String>("get-order").then(get_order))
+        .get(
+            "/orders",
+            Axon::simple::<String>("list-orders").then(list_orders),
+        )
+        .get(
+            "/orders/:id",
+            Axon::simple::<String>("get-order").then(get_order),
+        )
         .get("/inventory", inventory_circuit())
         .run(())
         .await

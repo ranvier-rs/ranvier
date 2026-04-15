@@ -3,18 +3,19 @@
 pub mod axon;
 pub mod closure_transition;
 pub mod cluster;
-#[cfg(feature = "streaming")]
-pub mod streaming_axon;
 pub mod distributed;
 pub mod llm;
 pub mod persistence;
 pub mod replay;
 pub mod retry;
+#[cfg(feature = "streaming")]
+pub mod streaming_axon;
 pub mod testkit;
 
 pub mod prelude {
-    pub use crate::axon::{Axon, BoxFuture, ExecutionMode, ParallelStrategy, SchematicExportRequest};
-    pub use crate::{InfallibleAxon, SimpleAxon, TypedAxon};
+    pub use crate::axon::{
+        Axon, BoxFuture, ExecutionMode, ParallelStrategy, SchematicExportRequest,
+    };
     pub use crate::cluster::{ClusterManager, LeaderElection, LockBasedElection};
     pub use crate::distributed::{
         DistributedError, DistributedLock, DistributedStore, Guard, LockOptions,
@@ -33,9 +34,10 @@ pub mod prelude {
     pub use crate::persistence::{RedisCompensationIdempotencyStore, RedisPersistenceStore};
     pub use crate::replay::ReplayEngine;
     pub use crate::retry::{BackoffStrategy, RetryPolicy};
-    pub use crate::testkit::AxonTestKit;
     #[cfg(feature = "streaming")]
-    pub use crate::streaming_axon::{StreamingAxon, StreamingAxonError, StreamTimeoutKind};
+    pub use crate::streaming_axon::{StreamTimeoutKind, StreamingAxon, StreamingAxonError};
+    pub use crate::testkit::AxonTestKit;
+    pub use crate::{InfallibleAxon, SimpleAxon, TypedAxon};
 }
 
 /// Axon with `String` error — the most common pattern for examples and prototyping.
@@ -69,6 +71,6 @@ pub use persistence::{PostgresCompensationIdempotencyStore, PostgresPersistenceS
 pub use persistence::{RedisCompensationIdempotencyStore, RedisPersistenceStore};
 pub use replay::ReplayEngine;
 pub use retry::{BackoffStrategy, RetryPolicy};
-pub use testkit::AxonTestKit;
 #[cfg(feature = "streaming")]
-pub use streaming_axon::{StreamingAxon, StreamingAxonError, StreamTimeoutKind};
+pub use streaming_axon::{StreamTimeoutKind, StreamingAxon, StreamingAxonError};
+pub use testkit::AxonTestKit;

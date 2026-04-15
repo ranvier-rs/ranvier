@@ -72,14 +72,9 @@ impl fmt::Display for LlmProvider {
 pub enum LlmError {
     /// The selected provider is not available (feature not enabled or
     /// unsupported [`LlmProvider::Custom`] variant).
-    ProviderUnavailable {
-        provider: String,
-        reason: String,
-    },
+    ProviderUnavailable { provider: String, reason: String },
     /// The prompt template references a variable that was not found on the Bus.
-    TemplateMissing {
-        variable: String,
-    },
+    TemplateMissing { variable: String },
     /// The LLM call failed after exhausting all retries.
     RequestFailed {
         provider: String,
@@ -350,11 +345,11 @@ impl LlmTransition {
                     variable: result[after..].to_string(),
                 })?;
             let var_name = &result[after..end];
-            let value = vars
-                .and_then(|v| v.get(var_name))
-                .ok_or_else(|| LlmError::TemplateMissing {
-                    variable: var_name.to_string(),
-                })?;
+            let value =
+                vars.and_then(|v| v.get(var_name))
+                    .ok_or_else(|| LlmError::TemplateMissing {
+                        variable: var_name.to_string(),
+                    })?;
             let json_str = serde_json::to_string(value).unwrap_or_default();
             result.replace_range(start..end + 2, &json_str);
         }
@@ -370,11 +365,11 @@ impl LlmTransition {
                     variable: result[after..].to_string(),
                 })?;
             let var_name = &result[after..end];
-            let value = vars
-                .and_then(|v| v.get(var_name))
-                .ok_or_else(|| LlmError::TemplateMissing {
-                    variable: var_name.to_string(),
-                })?;
+            let value =
+                vars.and_then(|v| v.get(var_name))
+                    .ok_or_else(|| LlmError::TemplateMissing {
+                        variable: var_name.to_string(),
+                    })?;
             let plain_str = match value {
                 serde_json::Value::String(s) => s.clone(),
                 other => other.to_string(),
@@ -436,7 +431,11 @@ impl LlmTransition {
     }
 
     /// Mock provider implementation with Bus access.
-    fn call_mock_with_config(&self, _prompt: &str, config: &MockLlmConfig) -> Result<String, String> {
+    fn call_mock_with_config(
+        &self,
+        _prompt: &str,
+        config: &MockLlmConfig,
+    ) -> Result<String, String> {
         if config.should_fail {
             Err(config.failure_message.clone())
         } else {
@@ -538,7 +537,10 @@ impl Transition<String, String> for LlmTransition {
         } else if self.prompt_template.is_some() {
             // Input provided AND template exists: substitute the input into the
             // template as if it were a variable called "input".
-            let tpl = self.prompt_template.as_ref().expect("prompt_template guaranteed by is_some() guard");
+            let tpl = self
+                .prompt_template
+                .as_ref()
+                .expect("prompt_template guaranteed by is_some() guard");
             let with_input = tpl.replace("{{input}}", &input);
             match self.render_prompt(&with_input, bus) {
                 Ok(rendered) => rendered,
@@ -743,10 +745,7 @@ mod tests {
         assert_eq!(t.provider, LlmProvider::Claude);
         assert_eq!(t.model.as_deref(), Some("claude-sonnet-4-5-20250929"));
         assert_eq!(t.system_prompt.as_deref(), Some("You are a moderator."));
-        assert_eq!(
-            t.prompt_template.as_deref(),
-            Some("Classify: {{content}}")
-        );
+        assert_eq!(t.prompt_template.as_deref(), Some("Classify: {{content}}"));
         assert_eq!(t.max_tokens, Some(200));
         assert_eq!(t.temperature, Some(0.3));
         assert_eq!(t.retry_count, 2);
@@ -761,8 +760,7 @@ mod tests {
 
     #[test]
     fn template_rendering_simple() {
-        let t = LlmTransition::new(LlmProvider::Mock)
-            .prompt_template("Hello, {{name}}!");
+        let t = LlmTransition::new(LlmProvider::Mock).prompt_template("Hello, {{name}}!");
         let mut bus = Bus::new();
         let mut vars = LlmTemplateVars::new();
         vars.set("name", serde_json::json!("Alice"));
@@ -780,9 +778,7 @@ mod tests {
         vars.set("data", serde_json::json!({"key": "value"}));
         bus.provide(vars);
 
-        let rendered = t
-            .render_prompt("Payload: {{json:data}}", &bus)
-            .unwrap();
+        let rendered = t.render_prompt("Payload: {{json:data}}", &bus).unwrap();
         assert_eq!(rendered, r#"Payload: {"key":"value"}"#);
     }
 
@@ -791,16 +787,13 @@ mod tests {
         let t = LlmTransition::new(LlmProvider::Mock);
         let bus = Bus::new();
 
-        let err = t
-            .render_prompt("Hello, {{missing}}!", &bus)
-            .unwrap_err();
+        let err = t.render_prompt("Hello, {{missing}}!", &bus).unwrap_err();
         assert!(matches!(err, LlmError::TemplateMissing { variable } if variable == "missing"));
     }
 
     #[tokio::test]
     async fn mock_provider_returns_default_response() {
-        let t = LlmTransition::new(LlmProvider::Mock)
-            .prompt_template("test prompt");
+        let t = LlmTransition::new(LlmProvider::Mock).prompt_template("test prompt");
         let mut bus = Bus::new();
         let mut vars = LlmTemplateVars::new();
         vars.set("_placeholder", serde_json::json!(true));
@@ -859,13 +852,12 @@ mod tests {
 
     #[tokio::test]
     async fn schema_validation_rejects_wrong_type() {
-        let t = LlmTransition::new(LlmProvider::Mock)
-            .output_schema_raw(serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "label": {"type": "string"}
-                }
-            }));
+        let t = LlmTransition::new(LlmProvider::Mock).output_schema_raw(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "label": {"type": "string"}
+            }
+        }));
         let mut bus = Bus::new();
         // Mock returns a string, not an object.
         bus.provide(MockLlmConfig {
@@ -874,19 +866,21 @@ mod tests {
         });
 
         let outcome = t.run("test".to_string(), &(), &mut bus).await;
-        assert!(matches!(outcome, Outcome::Fault(LlmError::SchemaValidation { .. })));
+        assert!(matches!(
+            outcome,
+            Outcome::Fault(LlmError::SchemaValidation { .. })
+        ));
     }
 
     #[tokio::test]
     async fn schema_validation_accepts_valid_response() {
-        let t = LlmTransition::new(LlmProvider::Mock)
-            .output_schema_raw(serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "label": {"type": "string"},
-                    "confidence": {"type": "number"}
-                }
-            }));
+        let t = LlmTransition::new(LlmProvider::Mock).output_schema_raw(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "label": {"type": "string"},
+                "confidence": {"type": "number"}
+            }
+        }));
         let mut bus = Bus::new();
         bus.provide(MockLlmConfig {
             response: r#"{"label":"safe","confidence":0.95}"#.to_string(),

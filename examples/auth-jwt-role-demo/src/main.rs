@@ -74,7 +74,9 @@ impl Transition<(), DashboardData> for AdminDashboard {
         _resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<DashboardData, Self::Error> {
-        let identity = bus.get_cloned::<IamIdentity>().expect("IamIdentity should be in Bus after with_iam verification");
+        let identity = bus
+            .get_cloned::<IamIdentity>()
+            .expect("IamIdentity should be in Bus after with_iam verification");
 
         Outcome::next(DashboardData {
             user: identity.subject.clone(),
@@ -123,7 +125,9 @@ impl Transition<(), serde_json::Value> for UserProfile {
         _resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<serde_json::Value, Self::Error> {
-        let identity = bus.get_cloned::<IamIdentity>().expect("IamIdentity should be in Bus");
+        let identity = bus
+            .get_cloned::<IamIdentity>()
+            .expect("IamIdentity should be in Bus");
 
         Outcome::next(serde_json::json!({
             "subject": identity.subject,
@@ -148,8 +152,7 @@ async fn main() -> anyhow::Result<()> {
     // ── Build Circuits ───────────────────────────────────────────────────
 
     // Public circuit: no IAM policy
-    let public_circuit =
-        Axon::simple::<String>("public-endpoint").then(PublicEndpoint);
+    let public_circuit = Axon::simple::<String>("public-endpoint").then(PublicEndpoint);
 
     // User circuit: requires any valid identity
     let user_circuit = Axon::simple::<String>("user-profile")
@@ -158,22 +161,27 @@ async fn main() -> anyhow::Result<()> {
 
     // Admin circuit: requires "admin" role
     let admin_circuit = Axon::simple::<String>("admin-dashboard")
-        .with_iam(
-            IamPolicy::RequireRole("admin".into()),
-            verifier.clone(),
-        )
+        .with_iam(IamPolicy::RequireRole("admin".into()), verifier.clone())
         .then(AdminDashboard);
 
     // ── Issue Tokens ─────────────────────────────────────────────────────
 
     let admin_token = auth::issue_token("alice", vec!["admin".into(), "user".into()])
         .map_err(|e| anyhow::anyhow!(e))?;
-    let user_token = auth::issue_token("bob", vec!["user".into()])
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let user_token =
+        auth::issue_token("bob", vec!["user".into()]).map_err(|e| anyhow::anyhow!(e))?;
 
     println!("Tokens issued:");
-    println!("  Alice (admin): {}...{}", &admin_token[..20], &admin_token[admin_token.len()-10..]);
-    println!("  Bob   (user):  {}...{}\n", &user_token[..20], &user_token[user_token.len()-10..]);
+    println!(
+        "  Alice (admin): {}...{}",
+        &admin_token[..20],
+        &admin_token[admin_token.len() - 10..]
+    );
+    println!(
+        "  Bob   (user):  {}...{}\n",
+        &user_token[..20],
+        &user_token[user_token.len() - 10..]
+    );
 
     // ── Demo 1: Public endpoint (no token needed) ────────────────────────
 

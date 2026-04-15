@@ -452,7 +452,12 @@ mod tests {
         let outcome: Outcome<i32, anyhow::Error> = Outcome::branch("path", None);
         let result = outcome.into_result();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Early termination: Branch"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Early termination: Branch")
+        );
     }
 
     #[test]
@@ -461,7 +466,12 @@ mod tests {
         let outcome: Outcome<i32, anyhow::Error> = Outcome::jump(node_id, None);
         let result = outcome.into_result();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Early termination: Jump"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Early termination: Jump")
+        );
     }
 
     #[test]
@@ -469,7 +479,12 @@ mod tests {
         let outcome: Outcome<i32, anyhow::Error> = Outcome::emit("event", None);
         let result = outcome.into_result();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Early termination: Emit"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Early termination: Emit")
+        );
     }
 
     #[test]
@@ -695,9 +710,7 @@ mod tests {
     #[test]
     fn test_combinator_chain_map_and_map_fault() {
         let outcome: Outcome<i32, String> = Outcome::next(10);
-        let result = outcome
-            .map(|v| v + 5)
-            .map_fault(|e| format!("ERR: {e}"));
+        let result = outcome.map(|v| v + 5).map_fault(|e| format!("ERR: {e}"));
         assert!(matches!(result, Outcome::Next(15)));
     }
 

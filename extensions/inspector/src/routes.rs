@@ -33,10 +33,7 @@ pub fn register_routes(routes: Vec<RouteInfo>) {
 
 /// List all registered routes.
 pub fn list_routes() -> Vec<RouteInfo> {
-    get_registry()
-        .lock()
-        .map(|r| r.clone())
-        .unwrap_or_default()
+    get_registry().lock().map(|r| r.clone()).unwrap_or_default()
 }
 
 /// Find a route by method and path.

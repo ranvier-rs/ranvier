@@ -89,8 +89,8 @@
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_guard::prelude::*;
-use ranvier_http::prelude::*;
 use ranvier_http::guards;
+use ranvier_http::prelude::*;
 use ranvier_runtime::Axon;
 use std::time::Duration;
 

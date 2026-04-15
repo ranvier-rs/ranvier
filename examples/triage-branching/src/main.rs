@@ -46,9 +46,9 @@ struct Patient {
     id: String,
     name: String,
     age: u32,
-    heart_rate: u32,      // bpm
-    blood_pressure: u32,  // systolic mmHg
-    temperature: f64,     // Celsius
+    heart_rate: u32,     // bpm
+    blood_pressure: u32, // systolic mmHg
+    temperature: f64,    // Celsius
     chief_complaint: String,
     severity: Option<Severity>,
 }
@@ -79,13 +79,16 @@ impl Transition<Patient, Patient> for AssessVitals {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<Patient, Self::Error> {
-        println!("  [AssessVitals] Patient {}: HR={}, BP={}, Temp={:.1}°C",
-            patient.name, patient.heart_rate, patient.blood_pressure, patient.temperature);
+        println!(
+            "  [AssessVitals] Patient {}: HR={}, BP={}, Temp={:.1}°C",
+            patient.name, patient.heart_rate, patient.blood_pressure, patient.temperature
+        );
 
         // Validate vitals
         if patient.heart_rate == 0 {
             return Outcome::Fault(format!(
-                "Invalid vitals for patient {}: heart rate is 0", patient.id
+                "Invalid vitals for patient {}: heart rate is 0",
+                patient.id
             ));
         }
 
@@ -132,12 +135,17 @@ impl Transition<Patient, Patient> for ClassifySeverity {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<Patient, Self::Error> {
-        println!("  [ClassifySeverity] Evaluating complaint: \"{}\"", patient.chief_complaint);
+        println!(
+            "  [ClassifySeverity] Evaluating complaint: \"{}\"",
+            patient.chief_complaint
+        );
 
         // Simple keyword-based classification (in production: clinical rules engine)
         let complaint_lower = patient.chief_complaint.to_lowercase();
 
-        let severity = if complaint_lower.contains("chest pain") || complaint_lower.contains("breathing") {
+        let severity = if complaint_lower.contains("chest pain")
+            || complaint_lower.contains("breathing")
+        {
             Severity::Urgent
         } else if complaint_lower.contains("fracture") || complaint_lower.contains("severe pain") {
             Severity::Urgent
@@ -173,8 +181,14 @@ impl Transition<Patient, Patient> for RouteToDepartment {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<Patient, Self::Error> {
-        let severity = patient.severity.as_ref().expect("severity must be set by ClassifySeverity");
-        println!("  [RouteToDepartment] Routing patient {} ({:?})...", patient.name, severity);
+        let severity = patient
+            .severity
+            .as_ref()
+            .expect("severity must be set by ClassifySeverity");
+        println!(
+            "  [RouteToDepartment] Routing patient {} ({:?})...",
+            patient.name, severity
+        );
 
         let (branch, dept) = match severity {
             Severity::Critical => ("emergency", "Emergency Department"),
@@ -215,46 +229,58 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let patients = vec![
-        ("Normal headache → Outpatient", Patient {
-            id: "PT-001".to_string(),
-            name: "Alice".to_string(),
-            age: 32,
-            heart_rate: 72,
-            blood_pressure: 120,
-            temperature: 36.8,
-            chief_complaint: "Mild headache for 2 days".to_string(),
-            severity: None,
-        }),
-        ("Chest pain → Urgent Care", Patient {
-            id: "PT-002".to_string(),
-            name: "Bob".to_string(),
-            age: 55,
-            heart_rate: 95,
-            blood_pressure: 145,
-            temperature: 37.0,
-            chief_complaint: "Chest pain and shortness of breathing".to_string(),
-            severity: None,
-        }),
-        ("Critical vitals → Emergency (bypasses classification)", Patient {
-            id: "PT-003".to_string(),
-            name: "Carol".to_string(),
-            age: 68,
-            heart_rate: 160, // critical HR
-            blood_pressure: 210, // critical BP
-            temperature: 39.5,
-            chief_complaint: "Dizziness and confusion".to_string(),
-            severity: None,
-        }),
-        ("Fever → General Ward", Patient {
-            id: "PT-004".to_string(),
-            name: "David".to_string(),
-            age: 28,
-            heart_rate: 88,
-            blood_pressure: 118,
-            temperature: 38.5,
-            chief_complaint: "High fever and possible infection".to_string(),
-            severity: None,
-        }),
+        (
+            "Normal headache → Outpatient",
+            Patient {
+                id: "PT-001".to_string(),
+                name: "Alice".to_string(),
+                age: 32,
+                heart_rate: 72,
+                blood_pressure: 120,
+                temperature: 36.8,
+                chief_complaint: "Mild headache for 2 days".to_string(),
+                severity: None,
+            },
+        ),
+        (
+            "Chest pain → Urgent Care",
+            Patient {
+                id: "PT-002".to_string(),
+                name: "Bob".to_string(),
+                age: 55,
+                heart_rate: 95,
+                blood_pressure: 145,
+                temperature: 37.0,
+                chief_complaint: "Chest pain and shortness of breathing".to_string(),
+                severity: None,
+            },
+        ),
+        (
+            "Critical vitals → Emergency (bypasses classification)",
+            Patient {
+                id: "PT-003".to_string(),
+                name: "Carol".to_string(),
+                age: 68,
+                heart_rate: 160,     // critical HR
+                blood_pressure: 210, // critical BP
+                temperature: 39.5,
+                chief_complaint: "Dizziness and confusion".to_string(),
+                severity: None,
+            },
+        ),
+        (
+            "Fever → General Ward",
+            Patient {
+                id: "PT-004".to_string(),
+                name: "David".to_string(),
+                age: 28,
+                heart_rate: 88,
+                blood_pressure: 118,
+                temperature: 38.5,
+                chief_complaint: "High fever and possible infection".to_string(),
+                severity: None,
+            },
+        ),
     ];
 
     for (i, (label, patient)) in patients.into_iter().enumerate() {
@@ -265,7 +291,10 @@ async fn main() -> anyhow::Result<()> {
             Outcome::Branch(dept, payload) => {
                 println!("\n  Routed to: {}", dept);
                 if let Some(p) = payload {
-                    println!("  Details: {}", serde_json::to_string_pretty(&p).unwrap_or_default());
+                    println!(
+                        "  Details: {}",
+                        serde_json::to_string_pretty(&p).unwrap_or_default()
+                    );
                 }
             }
             Outcome::Next(p) => {

@@ -89,8 +89,13 @@ async fn scenario_checkpoint_recovery() -> Result<()> {
     );
 
     // Resume: execute remaining steps
-    store.append(envelope(trace_id, circuit, cursor.next_step, "Next")).await?;
-    println!("[step {}] checkpoint saved — send_confirmation", cursor.next_step);
+    store
+        .append(envelope(trace_id, circuit, cursor.next_step, "Next"))
+        .await?;
+    println!(
+        "[step {}] checkpoint saved — send_confirmation",
+        cursor.next_step
+    );
 
     store.complete(trace_id, CompletionState::Success).await?;
 
@@ -137,7 +142,9 @@ async fn scenario_compensation_hook() -> Result<()> {
     let circuit = "order-pipeline";
 
     let compensation_log = Arc::new(Mutex::new(Vec::<String>::new()));
-    let hook = RecordingCompensationHook { log: compensation_log.clone() };
+    let hook = RecordingCompensationHook {
+        log: compensation_log.clone(),
+    };
 
     // Steps 0 and 1 succeed
     store.append(envelope(trace_id, circuit, 0, "Next")).await?;
@@ -147,7 +154,9 @@ async fn scenario_compensation_hook() -> Result<()> {
     println!("[step 1] charge_payment — OK (external side effect committed!)");
 
     // Step 2 faults (e.g., inventory unavailable)
-    store.append(envelope(trace_id, circuit, 2, "Fault")).await?;
+    store
+        .append(envelope(trace_id, circuit, 2, "Fault"))
+        .await?;
     println!("[step 2] reserve_inventory — FAULT");
 
     // Trigger compensation
@@ -161,7 +170,9 @@ async fn scenario_compensation_hook() -> Result<()> {
     };
     hook.compensate(ctx).await?;
 
-    store.complete(trace_id, CompletionState::Compensated).await?;
+    store
+        .complete(trace_id, CompletionState::Compensated)
+        .await?;
 
     let final_trace = store.load(trace_id).await?.unwrap();
     assert_eq!(final_trace.completion, Some(CompletionState::Compensated));
@@ -188,7 +199,10 @@ async fn scenario_idempotent_compensation() -> Result<()> {
     for attempt in 1u32..=3 {
         let already_done = idempotency.was_compensated(idempotency_key).await?;
         if already_done {
-            println!("[attempt {}] compensation already done — skipping (idempotent)", attempt);
+            println!(
+                "[attempt {}] compensation already done — skipping (idempotent)",
+                attempt
+            );
             continue;
         }
 
@@ -215,8 +229,7 @@ async fn scenario_idempotent_compensation() -> Result<()> {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("warn".parse()?)
+            tracing_subscriber::EnvFilter::from_default_env().add_directive("warn".parse()?),
         )
         .init();
 

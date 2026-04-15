@@ -122,12 +122,7 @@ impl ActiveTraceRegistry {
         );
     }
 
-    fn complete(
-        &mut self,
-        circuit: &str,
-        outcome_type: Option<String>,
-        duration_ms: Option<u64>,
-    ) {
+    fn complete(&mut self, circuit: &str, outcome_type: Option<String>, duration_ms: Option<u64>) {
         // Find the active trace for this circuit (most recent)
         let key = self
             .active
@@ -590,7 +585,9 @@ impl Inspector {
 
     /// Configure Bearer token authentication for production deployments.
     pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
-        self.bearer_auth = auth::BearerAuth { token: Some(token.into()) };
+        self.bearer_auth = auth::BearerAuth {
+            token: Some(token.into()),
+        };
         self
     }
 
@@ -728,8 +725,7 @@ impl Inspector {
                 )
                 .route(
                     "/api/v1/breakpoints/:bp_id",
-                    axum::routing::delete(api_delete_breakpoint)
-                        .patch(api_patch_breakpoint),
+                    axum::routing::delete(api_delete_breakpoint).patch(api_patch_breakpoint),
                 )
                 .route("/api/v1/stalls", get(api_get_stalls))
                 .route("/api/v1/routes", get(api_get_routes))
@@ -741,10 +737,7 @@ impl Inspector {
                     "/api/v1/routes/sample",
                     axum::routing::post(api_post_routes_sample),
                 )
-                .route(
-                    "/api/v1/relay",
-                    axum::routing::post(api_post_relay),
-                )
+                .route("/api/v1/relay", axum::routing::post(api_post_relay))
                 .route("/api/v1/traces/stored", get(api_get_stored_traces))
                 .route("/api/v1/lineage/:trace_id", get(api_get_lineage))
                 .route("/api/v1/traces/diff", get(api_get_trace_diff));
@@ -1092,10 +1085,7 @@ async fn prometheus_metrics_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     state.bearer_auth.validate(&headers)?;
     let body = prometheus::render();
-    Ok((
-        [(header::CONTENT_TYPE, prometheus::CONTENT_TYPE)],
-        body,
-    ))
+    Ok(([(header::CONTENT_TYPE, prometheus::CONTENT_TYPE)], body))
 }
 
 async fn api_get_events(
@@ -1375,12 +1365,7 @@ impl<S> Layer<S> for InspectorLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    fn on_new_span(
-        &self,
-        attrs: &tracing::span::Attributes<'_>,
-        id: &Id,
-        ctx: Context<'_, S>,
-    ) {
+    fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         if let Some(span) = ctx.span(id) {
             let name = span.name();
             if name == "Node" || name == "Circuit" || name == "NodeRetry" {
@@ -1392,12 +1377,7 @@ where
         }
     }
 
-    fn on_record(
-        &self,
-        id: &Id,
-        values: &tracing::span::Record<'_>,
-        ctx: Context<'_, S>,
-    ) {
+    fn on_record(&self, id: &Id, values: &tracing::span::Record<'_>, ctx: Context<'_, S>) {
         if let Some(span) = ctx.span(id) {
             let name = span.name();
             if name == "Node" || name == "Circuit" || name == "NodeRetry" {
@@ -1419,8 +1399,7 @@ where
             };
             event.record(&mut visitor);
 
-            if let (Some(trace_id), Some(node_id)) =
-                (fields.get("trace_id"), fields.get("node_id"))
+            if let (Some(trace_id), Some(node_id)) = (fields.get("trace_id"), fields.get("node_id"))
             {
                 let msg = serde_json::json!({
                     "type": "node_paused",
@@ -1499,8 +1478,7 @@ where
                 let mut extensions = span.extensions_mut();
                 if let Some(data) = extensions.get_mut::<SpanData>() {
                     // Store duration for use in on_close (outcome fields not yet recorded)
-                    data.duration_ms =
-                        data.entered_at.map(|t| t.elapsed().as_millis() as u64);
+                    data.duration_ms = data.entered_at.map(|t| t.elapsed().as_millis() as u64);
                 }
             }
         }
@@ -1531,13 +1509,11 @@ where
                     let _ = get_sender().send(msg);
 
                     // Record metrics — resolve parent circuit name
-                    let circuit_name = span
-                        .parent()
-                        .and_then(|p| {
-                            p.extensions()
-                                .get::<SpanData>()
-                                .and_then(|d| d.circuit.clone())
-                        });
+                    let circuit_name = span.parent().and_then(|p| {
+                        p.extensions()
+                            .get::<SpanData>()
+                            .and_then(|d| d.circuit.clone())
+                    });
                     if let Some(node_id) = &data.node_id {
                         metrics::record_global_node_exit(
                             circuit_name.as_deref().unwrap_or("default"),
@@ -1576,11 +1552,7 @@ where
                     // Complete trace in registry
                     if let Some(circuit) = &data.circuit {
                         if let Ok(mut registry) = get_trace_registry().lock() {
-                            registry.complete(
-                                circuit,
-                                data.outcome_kind.clone(),
-                                data.duration_ms,
-                            );
+                            registry.complete(circuit, data.outcome_kind.clone(), data.duration_ms);
                         }
                     }
 
@@ -2137,10 +2109,7 @@ async fn api_post_routes_sample(
         } else {
             // Fallback: look in schematic nodes
             let schematic = state.schematic.lock().unwrap();
-            schematic
-                .nodes
-                .iter()
-                .find_map(|n| n.input_schema.clone())
+            schematic.nodes.iter().find_map(|n| n.input_schema.clone())
         }
     };
 

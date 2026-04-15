@@ -96,7 +96,10 @@ fn main() -> anyhow::Result<()> {
         User::export_all_to(&output_dir)?;
         println!("Exported TypeScript definitions to {}/", output_dir);
     } else {
-        println!("Tip: Run with --export to write .ts files to {}/", output_dir);
+        println!(
+            "Tip: Run with --export to write .ts files to {}/",
+            output_dir
+        );
     }
 
     println!("\ndone");

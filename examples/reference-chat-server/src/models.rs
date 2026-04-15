@@ -33,13 +33,36 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
-    Welcome { user: String },
-    Joined { room: String, user: String, count: usize },
-    Left { room: String, user: String, count: usize },
-    Message { room: String, user: String, message: String, timestamp: String },
-    History { room: String, messages: Vec<HistoryEntry> },
-    Error { code: String, detail: String },
-    RoomList { rooms: Vec<RoomInfo> },
+    Welcome {
+        user: String,
+    },
+    Joined {
+        room: String,
+        user: String,
+        count: usize,
+    },
+    Left {
+        room: String,
+        user: String,
+        count: usize,
+    },
+    Message {
+        room: String,
+        user: String,
+        message: String,
+        timestamp: String,
+    },
+    History {
+        room: String,
+        messages: Vec<HistoryEntry>,
+    },
+    Error {
+        code: String,
+        detail: String,
+    },
+    RoomList {
+        rooms: Vec<RoomInfo>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

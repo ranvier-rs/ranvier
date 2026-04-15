@@ -30,8 +30,8 @@ use ranvier_core::prelude::*;
 use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::Mutex;
 
 // ============================================================================

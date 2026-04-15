@@ -37,22 +37,24 @@ pub use static_gen::{
 // Prelude module for convenient imports
 pub mod prelude {
     pub use crate::bus::{Bus, BusAccessError, BusAccessPolicy, BusTypeRef};
-    pub use crate::config::{RanvierConfig, ServerConfig, LoggingConfig, TlsConfig, InspectorConfig, TelemetryConfig, OtlpProtocol, LogFormat, ConfigError};
+    pub use crate::config::{
+        ConfigError, InspectorConfig, LogFormat, LoggingConfig, OtlpProtocol, RanvierConfig,
+        ServerConfig, TelemetryConfig, TlsConfig,
+    };
     pub use crate::debug::{DebugControl, DebugState};
+    pub use crate::error::{RanvierError, TransitionErrorContext};
     pub use crate::event::{DeadLetter, DlqPolicy, DlqReader, DlqSink, EventSink, EventSource};
     pub use crate::iam::{
-        AuthContext, AuthScheme, IamError, IamHandle, IamIdentity, IamPolicy, IamToken,
-        IamVerifier,
+        AuthContext, AuthScheme, IamError, IamHandle, IamIdentity, IamPolicy, IamToken, IamVerifier,
     };
     pub use crate::metadata::StepMetadata;
+    pub use crate::never::Never;
     pub use crate::outcome::{BranchId, NodeId, Outcome};
     pub use crate::policy::{DynamicPolicy, PolicyRegistry};
     pub use crate::saga::{SagaCompensationRegistry, SagaPolicy, SagaStack, SagaTask};
     pub use crate::schematic::{Edge, EdgeType, Node, NodeKind, SchemaMigrationMapper, Schematic};
     pub use crate::tenant::{IsolationPolicy, TenantExtractor, TenantId, TenantResolver};
     pub use crate::timeline::{Timeline, TimelineEvent};
-    pub use crate::error::{RanvierError, TransitionErrorContext};
-    pub use crate::never::Never;
     pub use crate::transition::{ResourceRequirement, Transition};
 
     // Macros re-exported for convenient access via `use ranvier_core::prelude::*`

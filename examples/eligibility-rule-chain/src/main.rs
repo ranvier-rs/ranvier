@@ -81,7 +81,10 @@ impl Transition<Applicant, Applicant> for AgeRule {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<Applicant, Self::Error> {
-        println!("  [Rule: Age] Checking age {} for {}...", applicant.age, applicant.name);
+        println!(
+            "  [Rule: Age] Checking age {} for {}...",
+            applicant.age, applicant.name
+        );
 
         if applicant.age < 18 {
             return Outcome::Fault(format!(
@@ -120,8 +123,10 @@ impl Transition<Applicant, Applicant> for IncomeRule {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<Applicant, Self::Error> {
-        println!("  [Rule: Income] Checking income ${:.0} for {}...",
-            applicant.annual_income, applicant.name);
+        println!(
+            "  [Rule: Income] Checking income ${:.0} for {}...",
+            applicant.annual_income, applicant.name
+        );
 
         let threshold = 50_000.0;
         if applicant.annual_income > threshold {
@@ -132,8 +137,10 @@ impl Transition<Applicant, Applicant> for IncomeRule {
         }
 
         applicant.rules_passed.push("income".to_string());
-        println!("  [Rule: Income] ✓ Passed (${:.0} ≤ ${:.0})",
-            applicant.annual_income, threshold);
+        println!(
+            "  [Rule: Income] ✓ Passed (${:.0} ≤ ${:.0})",
+            applicant.annual_income, threshold
+        );
         Outcome::Next(applicant)
     }
 }
@@ -156,8 +163,10 @@ impl Transition<Applicant, Applicant> for ResidencyRule {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<Applicant, Self::Error> {
-        println!("  [Rule: Residency] Checking {} years residency for {}...",
-            applicant.residency_years, applicant.name);
+        println!(
+            "  [Rule: Residency] Checking {} years residency for {}...",
+            applicant.residency_years, applicant.name
+        );
 
         let min_years = 2;
         if applicant.residency_years < min_years {
@@ -168,8 +177,10 @@ impl Transition<Applicant, Applicant> for ResidencyRule {
         }
 
         applicant.rules_passed.push("residency".to_string());
-        println!("  [Rule: Residency] ✓ Passed ({} years ≥ {})",
-            applicant.residency_years, min_years);
+        println!(
+            "  [Rule: Residency] ✓ Passed ({} years ≥ {})",
+            applicant.residency_years, min_years
+        );
         Outcome::Next(applicant)
     }
 }
@@ -192,20 +203,28 @@ impl Transition<Applicant, EligibilityResult> for BenefitCapRule {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<EligibilityResult, Self::Error> {
-        println!("  [Rule: BenefitCap] Checking current benefits ({}) for {}...",
-            applicant.current_benefits.len(), applicant.name);
+        println!(
+            "  [Rule: BenefitCap] Checking current benefits ({}) for {}...",
+            applicant.current_benefits.len(),
+            applicant.name
+        );
 
         let max_benefits = 3;
         if applicant.current_benefits.len() >= max_benefits {
             return Outcome::Fault(format!(
                 "Benefit cap: {} already has {} benefits (max: {})",
-                applicant.name, applicant.current_benefits.len(), max_benefits
+                applicant.name,
+                applicant.current_benefits.len(),
+                max_benefits
             ));
         }
 
         applicant.rules_passed.push("benefit_cap".to_string());
-        println!("  [Rule: BenefitCap] ✓ Passed ({} < {})",
-            applicant.current_benefits.len(), max_benefits);
+        println!(
+            "  [Rule: BenefitCap] ✓ Passed ({} < {})",
+            applicant.current_benefits.len(),
+            max_benefits
+        );
 
         Outcome::Next(EligibilityResult {
             applicant_id: applicant.id,
@@ -238,55 +257,70 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let applicants = vec![
-        ("All rules pass", Applicant {
-            id: "WF-001".to_string(),
-            name: "Alice Park".to_string(),
-            age: 34,
-            annual_income: 28_000.0,
-            residency_years: 5,
-            current_benefits: vec!["Housing".to_string()],
-            rules_passed: vec![],
-        }),
-        ("Income too high", Applicant {
-            id: "WF-002".to_string(),
-            name: "Bob Lee".to_string(),
-            age: 42,
-            annual_income: 75_000.0, // exceeds $50k
-            residency_years: 10,
-            current_benefits: vec![],
-            rules_passed: vec![],
-        }),
-        ("Too young", Applicant {
-            id: "WF-003".to_string(),
-            name: "Carol Kim".to_string(),
-            age: 16, // under 18
-            annual_income: 0.0,
-            residency_years: 16,
-            current_benefits: vec![],
-            rules_passed: vec![],
-        }),
-        ("Benefit cap reached", Applicant {
-            id: "WF-004".to_string(),
-            name: "David Cho".to_string(),
-            age: 50,
-            annual_income: 32_000.0,
-            residency_years: 20,
-            current_benefits: vec![
-                "Housing".to_string(),
-                "Medical".to_string(),
-                "Food".to_string(),
-            ], // already at cap
-            rules_passed: vec![],
-        }),
-        ("Insufficient residency", Applicant {
-            id: "WF-005".to_string(),
-            name: "Eve Yoon".to_string(),
-            age: 29,
-            annual_income: 22_000.0,
-            residency_years: 1, // less than 2
-            current_benefits: vec![],
-            rules_passed: vec![],
-        }),
+        (
+            "All rules pass",
+            Applicant {
+                id: "WF-001".to_string(),
+                name: "Alice Park".to_string(),
+                age: 34,
+                annual_income: 28_000.0,
+                residency_years: 5,
+                current_benefits: vec!["Housing".to_string()],
+                rules_passed: vec![],
+            },
+        ),
+        (
+            "Income too high",
+            Applicant {
+                id: "WF-002".to_string(),
+                name: "Bob Lee".to_string(),
+                age: 42,
+                annual_income: 75_000.0, // exceeds $50k
+                residency_years: 10,
+                current_benefits: vec![],
+                rules_passed: vec![],
+            },
+        ),
+        (
+            "Too young",
+            Applicant {
+                id: "WF-003".to_string(),
+                name: "Carol Kim".to_string(),
+                age: 16, // under 18
+                annual_income: 0.0,
+                residency_years: 16,
+                current_benefits: vec![],
+                rules_passed: vec![],
+            },
+        ),
+        (
+            "Benefit cap reached",
+            Applicant {
+                id: "WF-004".to_string(),
+                name: "David Cho".to_string(),
+                age: 50,
+                annual_income: 32_000.0,
+                residency_years: 20,
+                current_benefits: vec![
+                    "Housing".to_string(),
+                    "Medical".to_string(),
+                    "Food".to_string(),
+                ], // already at cap
+                rules_passed: vec![],
+            },
+        ),
+        (
+            "Insufficient residency",
+            Applicant {
+                id: "WF-005".to_string(),
+                name: "Eve Yoon".to_string(),
+                age: 29,
+                annual_income: 22_000.0,
+                residency_years: 1, // less than 2
+                current_benefits: vec![],
+                rules_passed: vec![],
+            },
+        ),
     ];
 
     for (i, (label, applicant)) in applicants.into_iter().enumerate() {
@@ -295,8 +329,12 @@ async fn main() -> anyhow::Result<()> {
 
         match eligibility.execute(applicant, &(), &mut bus).await {
             Outcome::Next(result) => {
-                println!("\n  ELIGIBLE: {} passed {} rules: {:?}",
-                    result.applicant_id, result.rules_passed.len(), result.rules_passed);
+                println!(
+                    "\n  ELIGIBLE: {} passed {} rules: {:?}",
+                    result.applicant_id,
+                    result.rules_passed.len(),
+                    result.rules_passed
+                );
                 if let Some(benefit) = &result.approved_benefit {
                     println!("  Approved benefit: {}", benefit);
                 }

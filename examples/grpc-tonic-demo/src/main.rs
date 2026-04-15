@@ -77,10 +77,7 @@ impl Greeter for GreeterService {
     ) -> Result<Response<HelloReply>, Status> {
         let name = request.into_inner().name;
         let mut bus = Bus::new();
-        let result = self
-            .axon
-            .execute(GreetInput { name }, &(), &mut bus)
-            .await;
+        let result = self.axon.execute(GreetInput { name }, &(), &mut bus).await;
 
         match result {
             Outcome::Next(output) => Ok(Response::new(HelloReply {
@@ -91,8 +88,7 @@ impl Greeter for GreeterService {
         }
     }
 
-    type SayHelloStreamStream =
-        tokio_stream::wrappers::ReceiverStream<Result<HelloReply, Status>>;
+    type SayHelloStreamStream = tokio_stream::wrappers::ReceiverStream<Result<HelloReply, Status>>;
 
     async fn say_hello_stream(
         &self,
@@ -121,7 +117,9 @@ impl Greeter for GreeterService {
             }
         });
 
-        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(rx)))
+        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
+            rx,
+        )))
     }
 }
 
@@ -143,7 +141,10 @@ async fn main() -> anyhow::Result<()> {
     let service = GreeterService { axon };
 
     println!("gRPC server listening on {}", addr);
-    println!("  grpcurl -plaintext {} greeter.Greeter/SayHello -d '{{\"name\":\"World\"}}'", addr);
+    println!(
+        "  grpcurl -plaintext {} greeter.Greeter/SayHello -d '{{\"name\":\"World\"}}'",
+        addr
+    );
 
     tonic::transport::Server::builder()
         .add_service(GreeterServer::new(service))

@@ -124,7 +124,10 @@ impl Transition<CriticalTask, TaskResult> for LockedProcessor {
         // Try to acquire the distributed lock
         match lock.try_acquire(&self.lock_key).await {
             Ok(true) => {
-                println!("  [Lock] Acquired lock '{}' for task {}", self.lock_key, input.task_id);
+                println!(
+                    "  [Lock] Acquired lock '{}' for task {}",
+                    self.lock_key, input.task_id
+                );
 
                 // Simulate critical section work
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -141,7 +144,10 @@ impl Transition<CriticalTask, TaskResult> for LockedProcessor {
                 })
             }
             Ok(false) => {
-                println!("  [Lock] Could not acquire lock '{}' — another instance holds it", self.lock_key);
+                println!(
+                    "  [Lock] Could not acquire lock '{}' — another instance holds it",
+                    self.lock_key
+                );
                 Outcome::next(TaskResult {
                     task_id: input.task_id,
                     status: "skipped_lock_held".into(),
@@ -176,8 +182,8 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let axon = Axon::<CriticalTask, CriticalTask, String>::new("locked-processor")
-        .then(LockedProcessor {
+    let axon =
+        Axon::<CriticalTask, CriticalTask, String>::new("locked-processor").then(LockedProcessor {
             lock_key: "demo:critical-section".into(),
         });
 

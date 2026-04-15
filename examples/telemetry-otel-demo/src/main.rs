@@ -90,7 +90,10 @@ async fn main() {
         .readiness_liveness_default()
         .request_id_layer()
         .route("/", Axon::simple::<String>("Greet").then(greet))
-        .route("/telemetry-info", Axon::simple::<String>("TelemetryInfo").then(health_info));
+        .route(
+            "/telemetry-info",
+            Axon::simple::<String>("TelemetryInfo").then(health_info),
+        );
 
     tracing::info!(
         bind = %config.bind_addr(),

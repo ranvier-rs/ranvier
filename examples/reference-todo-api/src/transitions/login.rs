@@ -1,7 +1,7 @@
-use ranvier_core::prelude::*;
-use ranvier_macros::transition;
 use crate::auth;
 use crate::models::{LoginRequest, LoginResponse};
+use ranvier_core::prelude::*;
+use ranvier_macros::transition;
 
 /// Login transition — receives `LoginRequest` directly via `post_typed()`.
 ///

@@ -30,7 +30,7 @@
 //! ```
 
 use async_trait::async_trait;
-use ranvier_core::iam::{enforce_policy, IamIdentity, IamPolicy};
+use ranvier_core::iam::{IamIdentity, IamPolicy, enforce_policy};
 use ranvier_core::{bus::Bus, outcome::Outcome, transition::Transition};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -122,12 +122,20 @@ impl<T> CorsGuard<T> {
             config: CorsConfig {
                 allowed_origins: vec!["*".to_string()],
                 allowed_methods: vec![
-                    "GET".into(), "POST".into(), "PUT".into(), "DELETE".into(),
-                    "PATCH".into(), "OPTIONS".into(), "HEAD".into(),
+                    "GET".into(),
+                    "POST".into(),
+                    "PUT".into(),
+                    "DELETE".into(),
+                    "PATCH".into(),
+                    "OPTIONS".into(),
+                    "HEAD".into(),
                 ],
                 allowed_headers: vec![
-                    "Content-Type".into(), "Authorization".into(), "Accept".into(),
-                    "Origin".into(), "X-Requested-With".into(),
+                    "Content-Type".into(),
+                    "Authorization".into(),
+                    "Accept".into(),
+                    "Origin".into(),
+                    "X-Requested-With".into(),
                 ],
                 max_age_seconds: 86400,
                 allow_credentials: false,
@@ -211,7 +219,11 @@ pub struct RateLimitError {
 
 impl std::fmt::Display for RateLimitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} (retry after {}ms)", self.message, self.retry_after_ms)
+        write!(
+            f,
+            "{} (retry after {}ms)",
+            self.message, self.retry_after_ms
+        )
     }
 }
 
@@ -808,13 +820,7 @@ impl<T> Default for CompressionGuard<T> {
 fn parse_accept_encoding(header: &str) -> HashSet<String> {
     header
         .split(',')
-        .map(|s| {
-            s.split(';')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_lowercase()
-        })
+        .map(|s| s.split(';').next().unwrap_or("").trim().to_lowercase())
         .filter(|s| !s.is_empty())
         .collect()
 }
@@ -840,7 +846,10 @@ where
 
         // Negotiate: pick first preferred encoding the client accepts
         let selected = if accepted.is_empty() || accepted.contains("*") {
-            self.preferred.first().copied().unwrap_or(CompressionEncoding::Identity)
+            self.preferred
+                .first()
+                .copied()
+                .unwrap_or(CompressionEncoding::Identity)
         } else {
             self.preferred
                 .iter()
@@ -1020,9 +1029,7 @@ pub enum AuthStrategy {
     ///
     /// Compares the request's `Authorization: Bearer <token>` against a set
     /// of valid tokens using constant-time comparison to prevent timing attacks.
-    Bearer {
-        tokens: Vec<String>,
-    },
+    Bearer { tokens: Vec<String> },
 
     /// API key authentication from a custom header.
     ///
@@ -1069,7 +1076,10 @@ impl std::fmt::Debug for AuthStrategy {
                 .debug_struct("Bearer")
                 .field("token_count", &tokens.len())
                 .finish(),
-            Self::ApiKey { header_name, valid_keys } => f
+            Self::ApiKey {
+                header_name,
+                valid_keys,
+            } => f
                 .debug_struct("ApiKey")
                 .field("header_name", header_name)
                 .field("key_count", &valid_keys.len())
@@ -1203,18 +1213,14 @@ where
                     );
                 };
                 let Some(token) = auth.strip_prefix("Bearer ") else {
-                    return Outcome::fault(
-                        "401 Unauthorized: expected Bearer scheme".to_string(),
-                    );
+                    return Outcome::fault("401 Unauthorized: expected Bearer scheme".to_string());
                 };
                 let token = token.trim();
                 let matched = tokens
                     .iter()
                     .any(|valid| ct_eq(token.as_bytes(), valid.as_bytes()));
                 if !matched {
-                    return Outcome::fault(
-                        "401 Unauthorized: invalid bearer token".to_string(),
-                    );
+                    return Outcome::fault("401 Unauthorized: invalid bearer token".to_string());
                 }
                 IamIdentity::new("bearer-authenticated")
             }
@@ -1687,13 +1693,13 @@ pub use distributed::DistributedRateLimitGuard;
 
 pub mod prelude {
     pub use crate::{
-        AcceptEncoding, AccessLogEntry, AccessLogGuard, AccessLogRequest, AuthGuard,
-        AuthStrategy, AuthorizationHeader, ClientIdentity, ClientIp, CompressionConfig,
-        CompressionEncoding, CompressionGuard, ContentLength, ContentTypeGuard, CorsConfig,
-        CorsGuard, CorsHeaders, IdempotencyCache, IdempotencyCachedResponse, IdempotencyGuard,
-        IdempotencyKey, IpFilterGuard, RateLimitGuard, RequestContentType, RequestId,
-        RequestIdGuard, RequestOrigin, RequestSizeLimitGuard, SecurityHeaders,
-        SecurityHeadersGuard, SecurityPolicy, TimeoutDeadline, TimeoutGuard,
+        AcceptEncoding, AccessLogEntry, AccessLogGuard, AccessLogRequest, AuthGuard, AuthStrategy,
+        AuthorizationHeader, ClientIdentity, ClientIp, CompressionConfig, CompressionEncoding,
+        CompressionGuard, ContentLength, ContentTypeGuard, CorsConfig, CorsGuard, CorsHeaders,
+        IdempotencyCache, IdempotencyCachedResponse, IdempotencyGuard, IdempotencyKey,
+        IpFilterGuard, RateLimitGuard, RequestContentType, RequestId, RequestIdGuard,
+        RequestOrigin, RequestSizeLimitGuard, SecurityHeaders, SecurityHeadersGuard,
+        SecurityPolicy, TimeoutDeadline, TimeoutGuard,
     };
 
     #[cfg(feature = "advanced")]
@@ -1828,7 +1834,9 @@ mod tests {
             path: "/api/orders".into(),
         });
         let _result = guard.run("ok".into(), &(), &mut bus).await;
-        let entry = bus.read::<AccessLogEntry>().expect("entry should be in bus");
+        let entry = bus
+            .read::<AccessLogEntry>()
+            .expect("entry should be in bus");
         assert_eq!(entry.method, "POST");
         assert_eq!(entry.path, "/api/orders");
     }
@@ -1842,7 +1850,9 @@ mod tests {
             path: "/auth/login".into(),
         });
         let _result = guard.run("ok".into(), &(), &mut bus).await;
-        let entry = bus.read::<AccessLogEntry>().expect("entry should be in bus");
+        let entry = bus
+            .read::<AccessLogEntry>()
+            .expect("entry should be in bus");
         assert_eq!(entry.path, "[redacted]");
     }
 
@@ -1852,7 +1862,9 @@ mod tests {
         let mut bus = Bus::new();
         let result = guard.run("ok".into(), &(), &mut bus).await;
         assert!(matches!(result, Outcome::Next(_)));
-        let entry = bus.read::<AccessLogEntry>().expect("entry should be in bus");
+        let entry = bus
+            .read::<AccessLogEntry>()
+            .expect("entry should be in bus");
         assert_eq!(entry.method, "");
         assert_eq!(entry.path, "");
     }
@@ -1897,8 +1909,7 @@ mod tests {
 
     #[tokio::test]
     async fn access_log_guard_non_redacted_path_preserved() {
-        let guard = AccessLogGuard::<String>::new()
-            .redact_paths(vec!["/auth/login".into()]);
+        let guard = AccessLogGuard::<String>::new().redact_paths(vec!["/auth/login".into()]);
         let mut bus = Bus::new();
         bus.insert(AccessLogRequest {
             method: "GET".into(),
@@ -2010,7 +2021,9 @@ mod tests {
         let mut bus = Bus::new();
         let result = guard.run("ok".into(), &(), &mut bus).await;
         assert!(matches!(result, Outcome::Next(_)));
-        let rid = bus.read::<RequestId>().expect("request id should be in bus");
+        let rid = bus
+            .read::<RequestId>()
+            .expect("request id should be in bus");
         assert_eq!(rid.0.len(), 36); // UUID v4 format
     }
 
@@ -2033,7 +2046,9 @@ mod tests {
         bus.insert(AuthorizationHeader("Bearer secret-token".into()));
         let result = guard.run("ok".into(), &(), &mut bus).await;
         assert!(matches!(result, Outcome::Next(_)));
-        let identity = bus.read::<IamIdentity>().expect("identity should be in bus");
+        let identity = bus
+            .read::<IamIdentity>()
+            .expect("identity should be in bus");
         assert_eq!(identity.subject, "bearer-authenticated");
     }
 
@@ -2105,7 +2120,9 @@ mod tests {
         // Ensure different-length tokens don't short-circuit
         let guard = AuthGuard::<String>::bearer(vec!["short".into()]);
         let mut bus = Bus::new();
-        bus.insert(AuthorizationHeader("Bearer a-very-long-different-token".into()));
+        bus.insert(AuthorizationHeader(
+            "Bearer a-very-long-different-token".into(),
+        ));
         let result = guard.run("ok".into(), &(), &mut bus).await;
         assert!(matches!(result, Outcome::Fault(_)));
     }
@@ -2151,7 +2168,9 @@ mod tests {
     async fn content_type_form() {
         let guard = ContentTypeGuard::<String>::form();
         let mut bus = Bus::new();
-        bus.insert(RequestContentType("application/x-www-form-urlencoded".into()));
+        bus.insert(RequestContentType(
+            "application/x-www-form-urlencoded".into(),
+        ));
         let result = guard.run("ok".into(), &(), &mut bus).await;
         assert!(matches!(result, Outcome::Next(_)));
     }
@@ -2173,7 +2192,9 @@ mod tests {
         let mut bus = Bus::new();
         let result = guard.run("ok".into(), &(), &mut bus).await;
         assert!(matches!(result, Outcome::Next(_)));
-        let deadline = bus.read::<TimeoutDeadline>().expect("deadline should be in bus");
+        let deadline = bus
+            .read::<TimeoutDeadline>()
+            .expect("deadline should be in bus");
         assert!(!deadline.is_expired());
         assert!(deadline.remaining().as_secs() >= 29);
     }
@@ -2210,13 +2231,17 @@ mod tests {
     async fn idempotency_cache_hit() {
         let guard = IdempotencyGuard::<String>::ttl_5min();
         // Pre-populate cache
-        guard.cache().insert("key-1".into(), b"cached-body".to_vec());
+        guard
+            .cache()
+            .insert("key-1".into(), b"cached-body".to_vec());
 
         let mut bus = Bus::new();
         bus.insert(IdempotencyKey("key-1".into()));
         let result = guard.run("ok".into(), &(), &mut bus).await;
         assert!(matches!(result, Outcome::Next(_)));
-        let cached = bus.read::<IdempotencyCachedResponse>().expect("cached response");
+        let cached = bus
+            .read::<IdempotencyCachedResponse>()
+            .expect("cached response");
         assert_eq!(cached.body, b"cached-body");
     }
 
@@ -2256,7 +2281,10 @@ mod tests {
         let result = guard.run("ok".into(), &(), &mut bus).await;
         assert!(matches!(result, Outcome::Next(_)));
         let headers = bus.read::<CorsHeaders>().unwrap();
-        assert_eq!(headers.access_control_allow_origin, "https://app.example.com");
+        assert_eq!(
+            headers.access_control_allow_origin,
+            "https://app.example.com"
+        );
     }
 
     #[tokio::test]
@@ -2276,8 +2304,7 @@ mod tests {
 
     #[tokio::test]
     async fn security_headers_custom_csp() {
-        let policy = SecurityPolicy::default()
-            .with_csp("default-src 'self'; script-src 'none'");
+        let policy = SecurityPolicy::default().with_csp("default-src 'self'; script-src 'none'");
         let guard = SecurityHeadersGuard::<String>::new(policy);
         let mut bus = Bus::new();
         let _ = guard.run("ok".into(), &(), &mut bus).await;

@@ -2,8 +2,7 @@ use proc_macro::TokenStream;
 use quote::{ToTokens, quote};
 use std::collections::HashSet;
 use syn::{
-    DeriveInput, FnArg, GenericArgument, ItemFn, PathArguments, ReturnType, Type,
-    parse_macro_input,
+    DeriveInput, FnArg, GenericArgument, ItemFn, PathArguments, ReturnType, Type, parse_macro_input,
 };
 
 /// Attribute macro to transform an async function into a `Transition` implementation.
@@ -739,14 +738,13 @@ mod tests {
 
     #[cfg(feature = "streaming")]
     mod streaming_tests {
-        use crate::{extract_result_stream_types};
+        use crate::extract_result_stream_types;
         use syn::{Type, parse_quote};
 
         #[test]
         fn extracts_item_from_impl_stream() {
             let ty: Type = parse_quote!(Result<impl Stream<Item = ChatChunk> + Send, LlmError>);
-            let (item, err) =
-                extract_result_stream_types(&ty).expect("should parse stream types");
+            let (item, err) = extract_result_stream_types(&ty).expect("should parse stream types");
             assert_eq!(format!("{}", item), "ChatChunk");
             assert_eq!(format!("{}", err), "LlmError");
         }
@@ -754,8 +752,7 @@ mod tests {
         #[test]
         fn extracts_item_from_impl_stream_without_send() {
             let ty: Type = parse_quote!(Result<impl Stream<Item = String>, MyError>);
-            let (item, err) =
-                extract_result_stream_types(&ty).expect("should parse stream types");
+            let (item, err) = extract_result_stream_types(&ty).expect("should parse stream types");
             assert_eq!(format!("{}", item), "String");
             assert_eq!(format!("{}", err), "MyError");
         }
@@ -764,8 +761,7 @@ mod tests {
         fn extracts_item_from_pin_box_dyn_stream() {
             let ty: Type =
                 parse_quote!(Result<Pin<Box<dyn Stream<Item = ChatChunk> + Send>>, String>);
-            let (item, err) =
-                extract_result_stream_types(&ty).expect("should parse stream types");
+            let (item, err) = extract_result_stream_types(&ty).expect("should parse stream types");
             assert_eq!(format!("{}", item), "ChatChunk");
             assert_eq!(format!("{}", err), "String");
         }

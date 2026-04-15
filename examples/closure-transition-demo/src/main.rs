@@ -58,10 +58,7 @@ async fn repeat_text(
     _res: &(),
     bus: &mut Bus,
 ) -> Outcome<serde_json::Value, String> {
-    let multiplier = bus
-        .read::<usize>()
-        .copied()
-        .unwrap_or(1);
+    let multiplier = bus.read::<usize>().copied().unwrap_or(1);
 
     let repeated = input.repeat(multiplier);
     let char_count = repeated.len();
@@ -103,19 +100,21 @@ fn greet_pipeline() -> Axon<GreetRequest, serde_json::Value, String> {
 /// - Step 2 (macro):   repeat text using Bus-stored multiplier
 fn transform_pipeline() -> Axon<TransformRequest, serde_json::Value, String> {
     Axon::typed::<TransformRequest, String>("transform")
-        .then_fn("extract-and-prepare", |req: TransformRequest, bus: &mut Bus| {
-            bus.insert(req.multiplier);
-            Outcome::Next(req.text.to_uppercase())
-        })
+        .then_fn(
+            "extract-and-prepare",
+            |req: TransformRequest, bus: &mut Bus| {
+                bus.insert(req.multiplier);
+                Outcome::Next(req.text.to_uppercase())
+            },
+        )
         .then(repeat_text)
 }
 
 /// Single-step closure pipeline for health checks.
 fn health_pipeline() -> Axon<(), serde_json::Value, String> {
-    Axon::simple::<String>("health")
-        .then_fn("health-check", |_input: (), _bus: &mut Bus| {
-            Outcome::Next(serde_json::json!({ "status": "ok" }))
-        })
+    Axon::simple::<String>("health").then_fn("health-check", |_input: (), _bus: &mut Bus| {
+        Outcome::Next(serde_json::json!({ "status": "ok" }))
+    })
 }
 
 // ── Main ────────────────────────────────────────────────────────────

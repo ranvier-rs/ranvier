@@ -29,11 +29,11 @@
 //! | Inspector :3001 | `/metrics` (Prometheus), `/schematic`, `/api/v1/metrics` |
 
 use ranvier_core::config::RanvierConfig;
+use ranvier_guard::prelude::*;
 use ranvier_http::Ranvier;
 use ranvier_inspector::Inspector;
 use ranvier_macros::transition;
 use ranvier_runtime::Axon;
-use ranvier_guard::prelude::*;
 
 // ── Transitions ───────────────────────────────────────────────────────────
 

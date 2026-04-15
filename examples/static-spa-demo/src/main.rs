@@ -61,10 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .exclude_prefix("/events")
                 .exclude_prefix("/ws"),
         )
-        .get(
-            "/api/ping",
-            Axon::simple::<String>("ApiPing").then(ApiPing),
-        )
+        .get("/api/ping", Axon::simple::<String>("ApiPing").then(ApiPing))
         .run(())
         .await
 }

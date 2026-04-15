@@ -182,9 +182,7 @@ where
         bus: &mut Bus,
     ) -> Outcome<T, Self::Error> {
         // Check If-None-Match vs ETag
-        if let (Some(if_none_match), Some(etag)) =
-            (bus.read::<IfNoneMatch>(), bus.read::<ETag>())
-        {
+        if let (Some(if_none_match), Some(etag)) = (bus.read::<IfNoneMatch>(), bus.read::<ETag>()) {
             let client_etag = if_none_match.0.trim().trim_matches('"');
             let server_etag = etag.0.trim().trim_matches('"');
             if client_etag == server_etag || client_etag == "*" {
@@ -304,10 +302,7 @@ where
 
         for rule in &self.rules {
             if rule.from == path {
-                return Outcome::fault(format!(
-                    "{} Location: {}",
-                    rule.status, rule.to
-                ));
+                return Outcome::fault(format!("{} Location: {}", rule.status, rule.to));
             }
         }
 
@@ -335,8 +330,8 @@ mod tests {
 
     #[tokio::test]
     async fn decompression_gzip_decompresses() {
-        use flate2::write::GzEncoder;
         use flate2::Compression;
+        use flate2::write::GzEncoder;
         use std::io::Write;
 
         let guard = DecompressionGuard::<String>::new();
@@ -438,9 +433,7 @@ mod tests {
 
     #[tokio::test]
     async fn redirect_matches_rule() {
-        let guard = RedirectGuard::<String>::new(vec![
-            RedirectRule::permanent("/old", "/new"),
-        ]);
+        let guard = RedirectGuard::<String>::new(vec![RedirectRule::permanent("/old", "/new")]);
         let mut bus = Bus::new();
         bus.insert(RedirectRequestPath("/old".into()));
 
@@ -450,9 +443,7 @@ mod tests {
 
     #[tokio::test]
     async fn redirect_temporary() {
-        let guard = RedirectGuard::<String>::new(vec![
-            RedirectRule::temporary("/temp", "/target"),
-        ]);
+        let guard = RedirectGuard::<String>::new(vec![RedirectRule::temporary("/temp", "/target")]);
         let mut bus = Bus::new();
         bus.insert(RedirectRequestPath("/temp".into()));
 
@@ -462,9 +453,7 @@ mod tests {
 
     #[tokio::test]
     async fn redirect_no_match_passes() {
-        let guard = RedirectGuard::<String>::new(vec![
-            RedirectRule::permanent("/old", "/new"),
-        ]);
+        let guard = RedirectGuard::<String>::new(vec![RedirectRule::permanent("/old", "/new")]);
         let mut bus = Bus::new();
         bus.insert(RedirectRequestPath("/other".into()));
 

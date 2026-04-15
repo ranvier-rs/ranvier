@@ -5,27 +5,23 @@ use ranvier_http::prelude::*;
 use std::sync::Arc;
 
 /// WebSocket connection handler for the chat server.
-pub async fn handle_ws(
-    mut ws: WebSocketConnection,
-    _resources: Arc<()>,
-    bus: ranvier_core::Bus,
-) {
+pub async fn handle_ws(mut ws: WebSocketConnection, _resources: Arc<()>, bus: ranvier_core::Bus) {
     let room_manager = bus.get_cloned::<RoomManager>().unwrap();
     let token_store = bus.get_cloned::<TokenStore>().unwrap();
 
     // Extract token from query string: ?token=tok_xxx
-    let token = ws
-        .session()
-        .query()
-        .and_then(|q| {
-            q.split('&')
-                .find_map(|pair| {
-                    let mut parts = pair.splitn(2, '=');
-                    let key = parts.next()?;
-                    let value = parts.next()?;
-                    if key == "token" { Some(value.to_string()) } else { None }
-                })
-        });
+    let token = ws.session().query().and_then(|q| {
+        q.split('&').find_map(|pair| {
+            let mut parts = pair.splitn(2, '=');
+            let key = parts.next()?;
+            let value = parts.next()?;
+            if key == "token" {
+                Some(value.to_string())
+            } else {
+                None
+            }
+        })
+    });
 
     let claims = match token.and_then(|t| auth::verify_token(&token_store, &t)) {
         Some(c) => c,
@@ -33,7 +29,8 @@ pub async fn handle_ws(
             let _ = ws
                 .send_json(&ServerMessage::Error {
                     code: "auth_failed".to_string(),
-                    detail: "Invalid or missing token. Connect with ?token=<your_token>".to_string(),
+                    detail: "Invalid or missing token. Connect with ?token=<your_token>"
+                        .to_string(),
                 })
                 .await;
             return;
@@ -56,9 +53,7 @@ pub async fn handle_ws(
 
     // Send room list
     let rooms = room_manager.list_rooms();
-    let _ = ws
-        .send_json(&ServerMessage::RoomList { rooms })
-        .await;
+    let _ = ws.send_json(&ServerMessage::RoomList { rooms }).await;
 
     // Single event loop: handle both incoming WS messages and outgoing channel messages
     loop {
@@ -135,7 +130,8 @@ async fn handle_client_message(
                 .await;
         }
         ClientMessage::Chat { room, message } => {
-            if let Err(detail) = room_manager.broadcast_message(&room, user_id, username, &message) {
+            if let Err(detail) = room_manager.broadcast_message(&room, user_id, username, &message)
+            {
                 let _ = ws
                     .send_json(&ServerMessage::Error {
                         code: "send_failed".to_string(),

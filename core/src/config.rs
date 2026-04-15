@@ -540,9 +540,9 @@ impl RanvierConfig {
 ///
 /// Panics if the global subscriber has already been set (call only once).
 pub fn init_logging(config: &LoggingConfig) {
+    use tracing_subscriber::EnvFilter;
     use tracing_subscriber::fmt;
     use tracing_subscriber::prelude::*;
-    use tracing_subscriber::EnvFilter;
 
     let mut filter = EnvFilter::try_new(&config.level).unwrap_or_else(|_| EnvFilter::new("info"));
     for (module, level) in &config.module_levels {
@@ -724,10 +724,7 @@ enabled = true
     #[test]
     fn shutdown_timeout_duration() {
         let cfg = RanvierConfig::default();
-        assert_eq!(
-            cfg.shutdown_timeout(),
-            std::time::Duration::from_secs(30)
-        );
+        assert_eq!(cfg.shutdown_timeout(), std::time::Duration::from_secs(30));
     }
 
     #[test]

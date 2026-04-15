@@ -28,7 +28,10 @@ pub async fn create_room(
     if name.is_empty() {
         return Outcome::Fault("name is required".to_string());
     }
-    let is_public = body.get("is_public").and_then(|v| v.as_bool()).unwrap_or(true);
+    let is_public = body
+        .get("is_public")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
 
     let room_manager = bus.get_cloned::<RoomManager>().expect("RoomManager");
     let room = room_manager.create_room(name, &claims.user_id, is_public);

@@ -1,5 +1,5 @@
-use actix_web::{web, App, HttpServer, HttpRequest, HttpResponse};
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation, Algorithm};
+use actix_web::{App, HttpRequest, HttpResponse, HttpServer, web};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -60,20 +60,16 @@ async fn main() -> std::io::Result<()> {
     }
 
     println!("Starting Actix-web Benchmark Server (Scenario 2: Auth) on 0.0.0.0:5001");
-    HttpServer::new(|| {
-        App::new().route("/protected", web::get().to(protected_handler))
-    })
-    .bind("0.0.0.0:5001")?
-    .run()
-    .await
+    HttpServer::new(|| App::new().route("/protected", web::get().to(protected_handler)))
+        .bind("0.0.0.0:5001")?
+        .run()
+        .await
 }
 
 fn generate_bench_token(secret: &str) -> anyhow::Result<String> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)?
-        .as_secs() as usize;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as usize;
 
     let claims = Claims {
         sub: "bench-user".to_string(),

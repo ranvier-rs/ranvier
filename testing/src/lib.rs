@@ -286,21 +286,22 @@ mod tests {
         let (outcome, bus) = TestAxon::run(axon, (), &(), TestBus::new()).await;
         assert_outcome_err!(outcome, |err: String| assert_eq!(err, "boom"));
         // TransitionErrorContext should be in Bus
-        let ctx = bus.read::<ranvier_core::error::TransitionErrorContext>().unwrap();
+        let ctx = bus
+            .read::<ranvier_core::error::TransitionErrorContext>()
+            .unwrap();
         assert_eq!(ctx.transition_name, "fail");
     }
 
     #[tokio::test]
     async fn test_bus_with_pre_populated_values() {
-        let axon = ranvier_runtime::Axon::simple::<String>("test")
-            .then_fn("read-bus", |_: (), bus: &mut Bus| {
+        let axon = ranvier_runtime::Axon::simple::<String>("test").then_fn(
+            "read-bus",
+            |_: (), bus: &mut Bus| {
                 let val = bus.read::<i32>().copied().unwrap_or(0);
                 Outcome::Next(val)
-            });
-        let (outcome, _bus) = TestAxon::run(
-            axon, (), &(),
-            TestBus::new().with(99_i32),
-        ).await;
+            },
+        );
+        let (outcome, _bus) = TestAxon::run(axon, (), &(), TestBus::new().with(99_i32)).await;
         assert_outcome_ok!(outcome, |val: i32| assert_eq!(val, 99));
     }
 

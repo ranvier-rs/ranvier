@@ -1,4 +1,4 @@
-use axum::{routing::get, Json, Router};
+use axum::{Json, Router, routing::get};
 use serde::Serialize;
 use std::time::Duration;
 
@@ -14,7 +14,10 @@ async fn main() {
 
     let addr = "0.0.0.0:4003";
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    println!("Starting Axum Benchmark Server (Scenario 4: High Concurrency) on {}", addr);
+    println!(
+        "Starting Axum Benchmark Server (Scenario 4: High Concurrency) on {}",
+        addr
+    );
     axum::serve(listener, app).await.unwrap();
 }
 

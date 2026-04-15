@@ -180,10 +180,12 @@ pub struct CookieJar {
 ///         DIGIT / ALPHA / "^" / "_" / "`" / "|" / "~"
 fn is_valid_cookie_name(name: &str) -> bool {
     !name.is_empty()
-        && name.bytes().all(|b| matches!(b,
-            b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.' |
-            b'0'..=b'9' | b'A'..=b'Z' | b'^' | b'_' | b'`' | b'a'..=b'z' | b'|' | b'~'
-        ))
+        && name.bytes().all(|b| {
+            matches!(b,
+                b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.' |
+                b'0'..=b'9' | b'A'..=b'Z' | b'^' | b'_' | b'`' | b'a'..=b'z' | b'|' | b'~'
+            )
+        })
 }
 
 /// Strip surrounding double-quotes from a cookie value (RFC 6265 §4.1.1).
@@ -238,10 +240,7 @@ impl CookieJar {
                     if let Some((key, val)) = pair.split_once('=') {
                         let name = key.trim();
                         if !is_valid_cookie_name(name) {
-                            tracing::warn!(
-                                cookie_name = name,
-                                "skipping cookie with invalid name"
-                            );
+                            tracing::warn!(cookie_name = name, "skipping cookie with invalid name");
                             continue;
                         }
                         let val = unquote_cookie_value(val.trim());

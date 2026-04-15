@@ -140,8 +140,7 @@ async fn main() -> anyhow::Result<()> {
     //                (JWT validation)    (Business logic)
     //
     // The Ranvier pipeline assumes AuthContext is already validated.
-    let ranvier_pipeline = Axon::simple::<AppError>("protected-handler")
-        .then(protected_handler);
+    let ranvier_pipeline = Axon::simple::<AppError>("protected-handler").then(protected_handler);
 
     if ranvier_pipeline.maybe_export_and_exit()? {
         return Ok(());
@@ -208,7 +207,7 @@ async fn demo_execution(
 
 /// Helper to create test JWT tokens.
 fn create_test_token(user_id: &str, roles: Vec<String>, secret: &str) -> String {
-    use jsonwebtoken::{encode, EncodingKey, Header};
+    use jsonwebtoken::{EncodingKey, Header, encode};
     use serde::Serialize;
 
     #[derive(Serialize)]

@@ -3,7 +3,7 @@
 //! Implements `IamVerifier` for HS256 JWT tokens with role-based claims.
 
 use async_trait::async_trait;
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use ranvier_core::iam::{IamError, IamIdentity, IamVerifier};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;

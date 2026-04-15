@@ -1,7 +1,7 @@
+use crate::models::Todo;
 use ranvier_core::prelude::*;
 use ranvier_http::BusHttpExt;
 use ranvier_macros::transition;
-use crate::models::Todo;
 use std::sync::{Arc, Mutex};
 
 /// Delete todo by ID — reads `:id` path param via `BusHttpExt::path_param()`.

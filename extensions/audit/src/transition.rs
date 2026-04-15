@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use crate::{AuditEvent, AuditSink};
+use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -169,10 +169,7 @@ mod tests {
         assert_eq!(AuditAction::Login.to_string(), "Login");
         assert_eq!(AuditAction::Logout.to_string(), "Logout");
         assert_eq!(AuditAction::Export.to_string(), "Export");
-        assert_eq!(
-            AuditAction::Custom("Approve".into()).to_string(),
-            "Approve"
-        );
+        assert_eq!(AuditAction::Custom("Approve".into()).to_string(), "Approve");
     }
 
     #[test]
@@ -196,8 +193,7 @@ mod tests {
     fn audit_log_label() {
         let sink = Arc::new(InMemoryAuditSink::new());
         let log = AuditLog::new(sink, AuditAction::Create, "departments");
-        let label =
-            <AuditLog<InMemoryAuditSink> as Transition<String, String>>::label(&log);
+        let label = <AuditLog<InMemoryAuditSink> as Transition<String, String>>::label(&log);
         assert_eq!(label, "AuditLog(Create:departments)");
     }
 
@@ -244,8 +240,7 @@ mod tests {
     #[tokio::test]
     async fn audit_log_continues_on_sink_failure() {
         let sink = Arc::new(FailingSink);
-        let log: AuditLog<FailingSink> =
-            AuditLog::new(sink, AuditAction::Update, "interfaces");
+        let log: AuditLog<FailingSink> = AuditLog::new(sink, AuditAction::Update, "interfaces");
 
         let mut bus = Bus::new();
         let input = vec![1, 2, 3];
@@ -294,10 +289,7 @@ mod tests {
 
     #[test]
     fn audit_action_serde_roundtrip() {
-        let actions = vec![
-            AuditAction::Create,
-            AuditAction::Custom("BatchRun".into()),
-        ];
+        let actions = vec![AuditAction::Create, AuditAction::Custom("BatchRun".into())];
         let json = serde_json::to_string(&actions).unwrap();
         let parsed: Vec<AuditAction> = serde_json::from_str(&json).unwrap();
         assert_eq!(actions, parsed);

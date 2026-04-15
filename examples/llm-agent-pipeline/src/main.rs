@@ -104,7 +104,10 @@ impl Transition<Query, ClassifiedQuery> for ClassifyIntent {
         println!("  [ClassifyIntent] Analyzing: \"{}\"", query.text);
 
         // Simulate intent classification (in production, this calls an LLM)
-        let (intent, confidence) = if query.text.contains("calculate") || query.text.contains('+') || query.text.contains('*') {
+        let (intent, confidence) = if query.text.contains("calculate")
+            || query.text.contains('+')
+            || query.text.contains('*')
+        {
             (Intent::Calculator, 0.95)
         } else if query.text.contains("search") || query.text.contains("find") {
             (Intent::Search, 0.88)
@@ -114,7 +117,11 @@ impl Transition<Query, ClassifiedQuery> for ClassifyIntent {
             (Intent::Unknown, 0.30)
         };
 
-        println!("  [ClassifyIntent] Intent: {:?} (confidence: {:.0}%)", intent, confidence * 100.0);
+        println!(
+            "  [ClassifyIntent] Intent: {:?} (confidence: {:.0}%)",
+            intent,
+            confidence * 100.0
+        );
 
         // Store confidence in Bus for downstream stages
         bus.insert(confidence);
@@ -146,7 +153,10 @@ impl Transition<ClassifiedQuery, ToolResult> for ExecuteTool {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<ToolResult, Self::Error> {
-        println!("  [ExecuteTool] Selecting tool for intent {:?}...", query.intent);
+        println!(
+            "  [ExecuteTool] Selecting tool for intent {:?}...",
+            query.intent
+        );
 
         let tool_output = match &query.intent {
             Intent::Calculator => {
@@ -252,7 +262,11 @@ async fn main() -> anyhow::Result<()> {
         match pipeline.execute(query, &(), &mut bus).await {
             Outcome::Next(resp) => {
                 println!("\n  Response to {}: {}", resp.user_id, resp.answer);
-                println!("  Tool: {}, Confidence: {:.0}%", resp.tool_used, resp.confidence * 100.0);
+                println!(
+                    "  Tool: {}, Confidence: {:.0}%",
+                    resp.tool_used,
+                    resp.confidence * 100.0
+                );
             }
             Outcome::Fault(err) => println!("\n  Error: {}", err),
             other => println!("\n  Unexpected: {:?}", other),
@@ -271,7 +285,11 @@ async fn main() -> anyhow::Result<()> {
         match pipeline.execute(query, &(), &mut bus).await {
             Outcome::Next(resp) => {
                 println!("\n  Response to {}: {}", resp.user_id, resp.answer);
-                println!("  Tool: {}, Confidence: {:.0}%", resp.tool_used, resp.confidence * 100.0);
+                println!(
+                    "  Tool: {}, Confidence: {:.0}%",
+                    resp.tool_used,
+                    resp.confidence * 100.0
+                );
             }
             Outcome::Fault(err) => println!("\n  Error: {}", err),
             other => println!("\n  Unexpected: {:?}", other),

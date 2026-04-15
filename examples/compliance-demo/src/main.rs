@@ -103,9 +103,9 @@ fn main() {
 
     // Display individual fields
     println!("   Display individual fields:");
-    println!("     email = {}", user.email);        // [REDACTED]
-    println!("     ssn   = {}", user.ssn);          // [REDACTED]
-    println!("     phone = {}", user.phone);        // [REDACTED]
+    println!("     email = {}", user.email); // [REDACTED]
+    println!("     ssn   = {}", user.ssn); // [REDACTED]
+    println!("     phone = {}", user.phone); // [REDACTED]
     println!();
 
     // Serialize output: actual values transmitted (assumes TLS)
@@ -143,7 +143,10 @@ fn main() {
 
     let deserialized: PaymentInfo = serde_json::from_str(&serialized).unwrap();
     println!("   Deserialized card (debug): {}", deserialized.card_number);
-    println!("   Deserialized card (expose): {}", deserialized.card_number.expose());
+    println!(
+        "   Deserialized card (expose): {}",
+        deserialized.card_number.expose()
+    );
     println!();
 
     // ── 4. Custom Redact trait ───────────────────────────────────
@@ -170,10 +173,12 @@ fn main() {
 
     for (text, expected) in test_cases {
         let detected = detector.contains_pii(text);
-        let status = if detected == expected { "OK" } else { "MISMATCH" };
-        println!(
-            "   [{status}] \"{text}\" -> pii={detected} (expected={expected})"
-        );
+        let status = if detected == expected {
+            "OK"
+        } else {
+            "MISMATCH"
+        };
+        println!("   [{status}] \"{text}\" -> pii={detected} (expected={expected})");
     }
     println!();
 
@@ -188,10 +193,7 @@ fn main() {
     println!("   -> PII fields automatically redacted in log output.");
     println!();
     println!("   Transmitting to secure service (serialized):");
-    println!(
-        "   [SEND] {}",
-        serde_json::to_string(&user.email).unwrap()
-    );
+    println!("   [SEND] {}", serde_json::to_string(&user.email).unwrap());
     println!("   -> Actual value transmitted over TLS-encrypted channel.");
     println!();
 
@@ -221,9 +223,15 @@ fn main() {
     println!("   Reason:  {:?}", request.reason);
 
     let result = erasure_sink.erase(&request);
-    println!("   Result:  success={}, records_erased={}", result.success, result.records_erased);
+    println!(
+        "   Result:  success={}, records_erased={}",
+        result.success, result.records_erased
+    );
 
     // Verify erasure
     let verify = erasure_sink.erase(&request);
-    println!("   Verify:  records_erased={} (should be 0 after erasure)", verify.records_erased);
+    println!(
+        "   Verify:  records_erased={} (should be 0 after erasure)",
+        verify.records_erased
+    );
 }

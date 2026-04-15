@@ -17,8 +17,8 @@ use ranvier_core::outcome::Outcome;
 use ranvier_core::schematic::Schematic;
 use ranvier_core::streaming::StreamTimeoutConfig;
 use ranvier_core::transition::ResourceRequirement;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::fmt::Debug;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -52,8 +52,10 @@ type StreamExecutor<In, Item, E, Res> = Arc<
             In,
             &'a Res,
             &'a mut Bus,
-        ) -> BoxFuture<'a, Result<Pin<Box<dyn Stream<Item = Item> + Send>>, StreamingAxonError<E>>>
-        + Send
+        ) -> BoxFuture<
+            'a,
+            Result<Pin<Box<dyn Stream<Item = Item> + Send>>, StreamingAxonError<E>>,
+        > + Send
         + Sync,
 >;
 
@@ -127,7 +129,9 @@ where
 
         // Apply timeout wrapping if configured
         match &self.timeout_config {
-            Some(config) if config.init.is_some() || config.idle.is_some() || config.total.is_some() => {
+            Some(config)
+                if config.init.is_some() || config.idle.is_some() || config.total.is_some() =>
+            {
                 Ok(Box::pin(TimeoutStream::new(stream, config.clone())))
             }
             _ => Ok(stream),
@@ -186,10 +190,8 @@ where
                 let f = f.clone();
                 Box::pin(async move {
                     let stream = prev(input, res, bus).await?;
-                    Ok(
-                        Box::pin(stream.map(move |item| f(item)))
-                            as Pin<Box<dyn Stream<Item = Item> + Send>>,
-                    )
+                    Ok(Box::pin(stream.map(move |item| f(item)))
+                        as Pin<Box<dyn Stream<Item = Item> + Send>>)
                 })
             },
         );
@@ -223,14 +225,12 @@ where
         });
 
         if !last_node_id.is_empty() {
-            schematic
-                .edges
-                .push(ranvier_core::schematic::Edge {
-                    from: last_node_id,
-                    to: map_node_id,
-                    kind: ranvier_core::schematic::EdgeType::Linear,
-                    label: Some("map".to_string()),
-                });
+            schematic.edges.push(ranvier_core::schematic::Edge {
+                from: last_node_id,
+                to: map_node_id,
+                kind: ranvier_core::schematic::EdgeType::Linear,
+                label: Some("map".to_string()),
+            });
         }
 
         StreamingAxon {
@@ -258,7 +258,10 @@ where
         let timeout_config = self.timeout_config.clone();
 
         let executor: crate::axon::Executor<In, Vec<Item>, String, Res> = Arc::new(
-            move |input: In, res: &Res, bus: &mut Bus| -> BoxFuture<'_, Outcome<Vec<Item>, String>> {
+            move |input: In,
+                  res: &Res,
+                  bus: &mut Bus|
+                  -> BoxFuture<'_, Outcome<Vec<Item>, String>> {
                 let stream_executor = stream_executor.clone();
                 let timeout_config = timeout_config.clone();
 
@@ -430,7 +433,10 @@ mod tests {
         };
 
         let mut bus = Bus::new();
-        let stream = sa.execute("hello".to_string(), &(), &mut bus).await.unwrap();
+        let stream = sa
+            .execute("hello".to_string(), &(), &mut bus)
+            .await
+            .unwrap();
         let items: Vec<String> = stream.collect().await;
         assert_eq!(items.len(), 3);
         assert_eq!(items[0], "chunk1: hello");
@@ -490,10 +496,7 @@ mod tests {
         let stream_executor: StreamExecutor<String, String, String, ()> =
             Arc::new(|input: String, _res: &(), _bus: &mut Bus| {
                 Box::pin(async move {
-                    let items = vec![
-                        format!("hello {}", input),
-                        format!("world {}", input),
-                    ];
+                    let items = vec![format!("hello {}", input), format!("world {}", input)];
                     Ok(Box::pin(stream::iter(items)) as Pin<Box<dyn Stream<Item = String> + Send>>)
                 })
             });
@@ -559,7 +562,12 @@ mod tests {
 
         let sa2 = sa.clone();
         let mut bus = Bus::new();
-        let items: Vec<String> = sa2.execute((), &(), &mut bus).await.unwrap().collect().await;
+        let items: Vec<String> = sa2
+            .execute((), &(), &mut bus)
+            .await
+            .unwrap()
+            .collect()
+            .await;
         assert_eq!(items, vec!["x"]);
     }
 }

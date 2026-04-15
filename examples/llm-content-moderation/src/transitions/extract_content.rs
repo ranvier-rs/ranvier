@@ -1,6 +1,6 @@
+use crate::models::ContentInput;
 use ranvier_core::prelude::*;
 use ranvier_macros::transition;
-use crate::models::ContentInput;
 
 /// Extract and validate user content received via `post_typed()`.
 ///

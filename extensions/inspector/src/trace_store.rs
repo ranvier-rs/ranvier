@@ -293,10 +293,16 @@ mod tests {
 
         // Insert traces: 3 old (10 seconds ago) and 2 recent
         for i in 0..3 {
-            store.save(make_trace(&format!("old-{i}"), "C", now_ms - 10_000 + i)).await.unwrap();
+            store
+                .save(make_trace(&format!("old-{i}"), "C", now_ms - 10_000 + i))
+                .await
+                .unwrap();
         }
         for i in 0..2 {
-            store.save(make_trace(&format!("new-{i}"), "C", now_ms + i)).await.unwrap();
+            store
+                .save(make_trace(&format!("new-{i}"), "C", now_ms + i))
+                .await
+                .unwrap();
         }
         assert_eq!(store.count().await.unwrap(), 5);
 
@@ -318,18 +324,27 @@ mod tests {
         let mut fault_trace = make_trace("t2", "Order", now_ms + 1);
         fault_trace.status = "faulted".to_string();
         store.save(fault_trace).await.unwrap();
-        store.save(make_trace("t3", "Auth", now_ms + 2)).await.unwrap();
+        store
+            .save(make_trace("t3", "Auth", now_ms + 2))
+            .await
+            .unwrap();
 
-        let auth_only = store.query(TraceQuery {
-            circuit: Some("Auth".to_string()),
-            ..Default::default()
-        }).await.unwrap();
+        let auth_only = store
+            .query(TraceQuery {
+                circuit: Some("Auth".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         assert_eq!(auth_only.len(), 2);
 
-        let faulted = store.query(TraceQuery {
-            status: Some("faulted".to_string()),
-            ..Default::default()
-        }).await.unwrap();
+        let faulted = store
+            .query(TraceQuery {
+                status: Some("faulted".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
         assert_eq!(faulted.len(), 1);
         assert_eq!(faulted[0].trace_id, "t2");
     }

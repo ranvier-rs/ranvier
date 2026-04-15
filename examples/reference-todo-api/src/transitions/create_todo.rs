@@ -1,6 +1,6 @@
+use crate::models::{CreateTodoRequest, Todo};
 use ranvier_core::prelude::*;
 use ranvier_macros::transition;
-use crate::models::{CreateTodoRequest, Todo};
 use std::sync::{Arc, Mutex};
 
 /// Create todo transition — receives `CreateTodoRequest` directly via `post_typed()`.

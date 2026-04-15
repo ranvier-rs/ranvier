@@ -1,7 +1,7 @@
-use ranvier_core::prelude::*;
-use ranvier_macros::transition;
 use crate::models::OrderStatus;
 use crate::store::AppStore;
+use ranvier_core::prelude::*;
+use ranvier_macros::transition;
 
 #[transition]
 pub async fn reserve_inventory(
@@ -30,9 +30,7 @@ pub async fn reserve_inventory(
             }
             tracing::warn!(order_id, product_id, "Insufficient inventory");
             store.update_order_status(order_id, OrderStatus::FailedInventory);
-            return Outcome::Fault(format!(
-                "Insufficient inventory for product: {product_id}"
-            ));
+            return Outcome::Fault(format!("Insufficient inventory for product: {product_id}"));
         }
         reserved.push((product_id.to_string(), quantity));
     }

@@ -78,7 +78,10 @@ impl Transition<Applicant, Applicant> for SanctionsCheck {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<Applicant, Self::Error> {
-        println!("  [Screen 1: Sanctions] Checking {} against sanctions list...", applicant.name);
+        println!(
+            "  [Screen 1: Sanctions] Checking {} against sanctions list...",
+            applicant.name
+        );
 
         // Simulate: sanctioned countries
         let sanctioned = ["NK", "SY"];
@@ -113,7 +116,10 @@ impl Transition<Applicant, Applicant> for PepCheck {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<Applicant, Self::Error> {
-        println!("  [Screen 2: PEP] Checking if {} is a PEP...", applicant.name);
+        println!(
+            "  [Screen 2: PEP] Checking if {} is a PEP...",
+            applicant.name
+        );
 
         if applicant.is_pep {
             return Outcome::Fault(format!(
@@ -146,8 +152,10 @@ impl Transition<Applicant, Applicant> for RiskScoring {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<Applicant, Self::Error> {
-        println!("  [Screen 3: Risk] Evaluating risk score for {} (score: {})...",
-            applicant.name, applicant.risk_score);
+        println!(
+            "  [Screen 3: Risk] Evaluating risk score for {} (score: {})...",
+            applicant.name, applicant.risk_score
+        );
 
         if applicant.risk_score > 80 {
             return Outcome::Fault(format!(
@@ -157,7 +165,10 @@ impl Transition<Applicant, Applicant> for RiskScoring {
         }
 
         applicant.screens_passed.push("risk_scoring".to_string());
-        println!("  [Screen 3: Risk] ✓ Passed (score: {} ≤ 80)", applicant.risk_score);
+        println!(
+            "  [Screen 3: Risk] ✓ Passed (score: {} ≤ 80)",
+            applicant.risk_score
+        );
         Outcome::Next(applicant)
     }
 }
@@ -180,7 +191,10 @@ impl Transition<Applicant, ScreeningResult> for DocumentVerification {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<ScreeningResult, Self::Error> {
-        println!("  [Screen 4: Docs] Verifying documents for {}...", applicant.name);
+        println!(
+            "  [Screen 4: Docs] Verifying documents for {}...",
+            applicant.name
+        );
 
         if !applicant.has_documents {
             return Outcome::Fault(format!(
@@ -237,8 +251,12 @@ async fn main() -> anyhow::Result<()> {
 
         match screening.execute(applicant, &(), &mut bus).await {
             Outcome::Next(result) => {
-                println!("\n  APPROVED: {} passed {} screens: {:?}",
-                    result.applicant_id, result.screens_passed.len(), result.screens_passed);
+                println!(
+                    "\n  APPROVED: {} passed {} screens: {:?}",
+                    result.applicant_id,
+                    result.screens_passed.len(),
+                    result.screens_passed
+                );
             }
             Outcome::Fault(err) => println!("\n  {}", err),
             other => println!("\n  Unexpected: {:?}", other),

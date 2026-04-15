@@ -26,10 +26,7 @@ pub enum AlertEvent {
         threshold: f64,
     },
     /// A schematic policy violation was detected.
-    PolicyViolation {
-        rule: String,
-        detail: String,
-    },
+    PolicyViolation { rule: String, detail: String },
     /// Custom application-defined alert.
     Custom {
         name: String,
@@ -41,7 +38,9 @@ impl AlertEvent {
     /// Returns a deduplication key for debounce logic.
     fn dedup_key(&self) -> String {
         match self {
-            AlertEvent::StallDetected { circuit, node_id, .. } => {
+            AlertEvent::StallDetected {
+                circuit, node_id, ..
+            } => {
                 format!("stall:{circuit}:{node_id}")
             }
             AlertEvent::ErrorRate { circuit, .. } => format!("error_rate:{circuit}"),

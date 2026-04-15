@@ -1,6 +1,6 @@
+use crate::models::{ContentInput, ModerationCategory, ModerationResult};
 use ranvier_core::prelude::*;
 use ranvier_macros::transition;
-use crate::models::{ContentInput, ModerationCategory, ModerationResult};
 
 /// Mock LLM classification transition.
 ///
@@ -51,7 +51,13 @@ pub async fn moderate_content(
 /// Returns a `ModerationResult` with a category and confidence score.
 fn classify_text(text: &str) -> ModerationResult {
     // Spam indicators
-    let spam_keywords = ["buy now", "free money", "click here", "spam", "limited offer"];
+    let spam_keywords = [
+        "buy now",
+        "free money",
+        "click here",
+        "spam",
+        "limited offer",
+    ];
     if let Some(keyword) = spam_keywords.iter().find(|kw| text.contains(*kw)) {
         return ModerationResult {
             category: ModerationCategory::Spam,

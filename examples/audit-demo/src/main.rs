@@ -131,8 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let logger: SharedAuditLogger = Arc::new(AuditLogger::new(sink));
 
     // Build the audited pipeline
-    let axon = Axon::<UserAction, UserAction, String>::new("AuditedPipeline")
-        .then(AuditedAction);
+    let axon = Axon::<UserAction, UserAction, String>::new("AuditedPipeline").then(AuditedAction);
 
     // Simulate various user actions
     let actions = vec![

@@ -42,7 +42,12 @@ impl RetryPolicy {
     /// - `initial`: Initial delay (e.g., 100ms)
     /// - `multiplier`: Backoff multiplier (e.g., 2.0 for doubling)
     /// - `max`: Maximum delay cap
-    pub fn exponential(max_retries: u32, initial: Duration, multiplier: f64, max: Duration) -> Self {
+    pub fn exponential(
+        max_retries: u32,
+        initial: Duration,
+        multiplier: f64,
+        max: Duration,
+    ) -> Self {
         Self {
             max_retries,
             backoff: BackoffStrategy::Exponential {
@@ -73,8 +78,7 @@ impl RetryPolicy {
                 multiplier,
                 max,
             } => {
-                let delay_ms =
-                    initial.as_millis() as f64 * multiplier.powi(attempt as i32);
+                let delay_ms = initial.as_millis() as f64 * multiplier.powi(attempt as i32);
                 let delay = Duration::from_millis(delay_ms as u64);
                 if delay > *max { *max } else { delay }
             }
@@ -96,12 +100,8 @@ mod tests {
 
     #[test]
     fn exponential_delay_doubles() {
-        let policy = RetryPolicy::exponential(
-            5,
-            Duration::from_millis(100),
-            2.0,
-            Duration::from_secs(10),
-        );
+        let policy =
+            RetryPolicy::exponential(5, Duration::from_millis(100), 2.0, Duration::from_secs(10));
         assert_eq!(policy.delay_for_attempt(0), Duration::from_millis(100));
         assert_eq!(policy.delay_for_attempt(1), Duration::from_millis(200));
         assert_eq!(policy.delay_for_attempt(2), Duration::from_millis(400));

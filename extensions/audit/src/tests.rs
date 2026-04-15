@@ -37,10 +37,7 @@ async fn audit_chain_links_events_with_hashes() {
     let linked2 = chain.append(e2).await;
 
     assert!(linked1.prev_hash.is_none(), "First event has no prev_hash");
-    assert!(
-        linked2.prev_hash.is_some(),
-        "Second event links to first"
-    );
+    assert!(linked2.prev_hash.is_some(), "Second event links to first");
     assert_eq!(linked2.prev_hash.unwrap(), linked1.compute_hash());
 }
 
@@ -81,7 +78,10 @@ async fn audit_chain_detect_tampered_event() {
     let result = chain.verify().await;
     assert!(result.is_err(), "Tampered chain should fail verification");
     if let Err(AuditError::IntegrityViolation { index, .. }) = result {
-        assert_eq!(index, 1, "Violation detected at event following the tampered one");
+        assert_eq!(
+            index, 1,
+            "Violation detected at event following the tampered one"
+        );
     }
 }
 
@@ -113,15 +113,30 @@ async fn audit_chain_detect_deleted_event() {
 async fn query_filter_by_action() {
     let sink = InMemoryAuditSink::new();
 
-    sink.append(&AuditEvent::new("1".into(), "u1".into(), "CREATE".into(), "t".into()))
-        .await
-        .unwrap();
-    sink.append(&AuditEvent::new("2".into(), "u1".into(), "DELETE".into(), "t".into()))
-        .await
-        .unwrap();
-    sink.append(&AuditEvent::new("3".into(), "u2".into(), "CREATE".into(), "t".into()))
-        .await
-        .unwrap();
+    sink.append(&AuditEvent::new(
+        "1".into(),
+        "u1".into(),
+        "CREATE".into(),
+        "t".into(),
+    ))
+    .await
+    .unwrap();
+    sink.append(&AuditEvent::new(
+        "2".into(),
+        "u1".into(),
+        "DELETE".into(),
+        "t".into(),
+    ))
+    .await
+    .unwrap();
+    sink.append(&AuditEvent::new(
+        "3".into(),
+        "u2".into(),
+        "CREATE".into(),
+        "t".into(),
+    ))
+    .await
+    .unwrap();
 
     let query = AuditQuery::new().action("CREATE");
     let results = sink.query(&query).await.unwrap();
@@ -133,15 +148,30 @@ async fn query_filter_by_action() {
 async fn query_filter_by_actor() {
     let sink = InMemoryAuditSink::new();
 
-    sink.append(&AuditEvent::new("1".into(), "alice".into(), "READ".into(), "doc".into()))
-        .await
-        .unwrap();
-    sink.append(&AuditEvent::new("2".into(), "bob".into(), "READ".into(), "doc".into()))
-        .await
-        .unwrap();
-    sink.append(&AuditEvent::new("3".into(), "alice".into(), "WRITE".into(), "doc".into()))
-        .await
-        .unwrap();
+    sink.append(&AuditEvent::new(
+        "1".into(),
+        "alice".into(),
+        "READ".into(),
+        "doc".into(),
+    ))
+    .await
+    .unwrap();
+    sink.append(&AuditEvent::new(
+        "2".into(),
+        "bob".into(),
+        "READ".into(),
+        "doc".into(),
+    ))
+    .await
+    .unwrap();
+    sink.append(&AuditEvent::new(
+        "3".into(),
+        "alice".into(),
+        "WRITE".into(),
+        "doc".into(),
+    ))
+    .await
+    .unwrap();
 
     let query = AuditQuery::new().actor("alice");
     let results = sink.query(&query).await.unwrap();
@@ -178,15 +208,30 @@ async fn query_filter_by_time_range() {
 async fn query_combined_filters() {
     let sink = InMemoryAuditSink::new();
 
-    sink.append(&AuditEvent::new("1".into(), "alice".into(), "CREATE".into(), "user".into()))
-        .await
-        .unwrap();
-    sink.append(&AuditEvent::new("2".into(), "alice".into(), "DELETE".into(), "user".into()))
-        .await
-        .unwrap();
-    sink.append(&AuditEvent::new("3".into(), "bob".into(), "CREATE".into(), "user".into()))
-        .await
-        .unwrap();
+    sink.append(&AuditEvent::new(
+        "1".into(),
+        "alice".into(),
+        "CREATE".into(),
+        "user".into(),
+    ))
+    .await
+    .unwrap();
+    sink.append(&AuditEvent::new(
+        "2".into(),
+        "alice".into(),
+        "DELETE".into(),
+        "user".into(),
+    ))
+    .await
+    .unwrap();
+    sink.append(&AuditEvent::new(
+        "3".into(),
+        "bob".into(),
+        "CREATE".into(),
+        "user".into(),
+    ))
+    .await
+    .unwrap();
 
     let query = AuditQuery::new().actor("alice").action("CREATE");
     let results = sink.query(&query).await.unwrap();
@@ -227,18 +272,10 @@ async fn retention_max_age() {
     let now = Utc::now();
 
     for i in 0..5 {
-        let mut event = AuditEvent::new(
-            format!("evt_{i}"),
-            "sys".into(),
-            "LOG".into(),
-            "svc".into(),
-        );
+        let mut event =
+            AuditEvent::new(format!("evt_{i}"), "sys".into(), "LOG".into(), "svc".into());
         // Events 0-2 are 2 hours old, events 3-4 are fresh
-        event.timestamp = if i < 3 {
-            now - Duration::hours(2)
-        } else {
-            now
-        };
+        event.timestamp = if i < 3 { now - Duration::hours(2) } else { now };
         sink.append(&event).await.unwrap();
     }
 
@@ -257,7 +294,12 @@ async fn retention_archive_strategy() {
 
 #[tokio::test]
 async fn event_hash_deterministic() {
-    let event = AuditEvent::new("id".into(), "actor".into(), "action".into(), "target".into());
+    let event = AuditEvent::new(
+        "id".into(),
+        "actor".into(),
+        "action".into(),
+        "target".into(),
+    );
     let hash1 = event.compute_hash();
     let hash2 = event.compute_hash();
     assert_eq!(hash1, hash2, "Hash should be deterministic");
@@ -268,12 +310,22 @@ async fn event_hash_deterministic() {
 async fn in_memory_sink_implements_query() {
     let sink = InMemoryAuditSink::new();
 
-    sink.append(&AuditEvent::new("1".into(), "u".into(), "A".into(), "t".into()))
-        .await
-        .unwrap();
-    sink.append(&AuditEvent::new("2".into(), "u".into(), "B".into(), "t".into()))
-        .await
-        .unwrap();
+    sink.append(&AuditEvent::new(
+        "1".into(),
+        "u".into(),
+        "A".into(),
+        "t".into(),
+    ))
+    .await
+    .unwrap();
+    sink.append(&AuditEvent::new(
+        "2".into(),
+        "u".into(),
+        "B".into(),
+        "t".into(),
+    ))
+    .await
+    .unwrap();
 
     let query = AuditQuery::new().target("t");
     let results = sink.query(&query).await.unwrap();

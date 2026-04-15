@@ -11,10 +11,10 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use http::Request;
+use ranvier_core::Never;
 use ranvier_core::bus::Bus;
 use ranvier_core::outcome::Outcome;
 use ranvier_core::static_gen::{StaticAxon, StaticManifest, write_json_file};
-use ranvier_core::Never;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::PathBuf;

@@ -77,7 +77,10 @@ impl Transition<Order, Order> for ReserveInventory {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<Order, Self::Error> {
-        println!("  [ReserveInventory] Reserving {} items for order {}", order.item_count, order.id);
+        println!(
+            "  [ReserveInventory] Reserving {} items for order {}",
+            order.item_count, order.id
+        );
 
         // Simulate: orders with 0 items fail
         if order.item_count == 0 {
@@ -85,7 +88,9 @@ impl Transition<Order, Order> for ReserveInventory {
         }
 
         order.status = OrderStatus::InventoryReserved;
-        order.compensation_log.push("inventory_reserved".to_string());
+        order
+            .compensation_log
+            .push("inventory_reserved".to_string());
         println!("  [ReserveInventory] ✓ Inventory reserved");
         Outcome::Next(order)
     }
@@ -109,7 +114,10 @@ impl Transition<Order, Order> for ChargePayment {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<Order, Self::Error> {
-        println!("  [ChargePayment] Charging ${:.2} for order {}", order.amount, order.id);
+        println!(
+            "  [ChargePayment] Charging ${:.2} for order {}",
+            order.amount, order.id
+        );
 
         // Simulate: amounts over $10,000 fail (fraud threshold)
         if order.amount > 10_000.0 {
@@ -144,10 +152,15 @@ impl Transition<Order, Order> for ConfirmShipping {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<Order, Self::Error> {
-        println!("  [ConfirmShipping] Confirming shipping for order {}", order.id);
+        println!(
+            "  [ConfirmShipping] Confirming shipping for order {}",
+            order.id
+        );
 
         order.status = OrderStatus::ShippingConfirmed;
-        order.compensation_log.push("shipping_confirmed".to_string());
+        order
+            .compensation_log
+            .push("shipping_confirmed".to_string());
         println!("  [ConfirmShipping] ✓ Shipping confirmed");
         Outcome::Next(order)
     }
@@ -163,8 +176,14 @@ fn compensate(order: &Order) {
     for step in order.compensation_log.iter().rev() {
         match step.as_str() {
             "shipping_confirmed" => println!("  [Compensation] ↩ Cancelling shipping"),
-            "payment_charged" => println!("  [Compensation] ↩ Refunding payment of ${:.2}", order.amount),
-            "inventory_reserved" => println!("  [Compensation] ↩ Releasing {} reserved items", order.item_count),
+            "payment_charged" => println!(
+                "  [Compensation] ↩ Refunding payment of ${:.2}",
+                order.amount
+            ),
+            "inventory_reserved" => println!(
+                "  [Compensation] ↩ Releasing {} reserved items",
+                order.item_count
+            ),
             other => println!("  [Compensation] ↩ Unknown step: {}", other),
         }
     }
@@ -205,7 +224,10 @@ async fn main() -> anyhow::Result<()> {
 
         match saga.execute(order, &(), &mut bus).await {
             Outcome::Next(completed) => {
-                println!("\n  Result: Order {} completed ({:?})", completed.id, completed.status);
+                println!(
+                    "\n  Result: Order {} completed ({:?})",
+                    completed.id, completed.status
+                );
             }
             Outcome::Fault(err) => {
                 println!("\n  Fault: {}", err);
@@ -233,11 +255,16 @@ async fn main() -> anyhow::Result<()> {
         // In a real system, the Bus or a database would carry this state.
         // Here we simulate by running steps manually to capture the log.
         let mut tracked_order = order.clone();
-        tracked_order.compensation_log.push("inventory_reserved".to_string());
+        tracked_order
+            .compensation_log
+            .push("inventory_reserved".to_string());
 
         match saga.execute(order, &(), &mut bus).await {
             Outcome::Next(completed) => {
-                println!("\n  Result: Order {} completed ({:?})", completed.id, completed.status);
+                println!(
+                    "\n  Result: Order {} completed ({:?})",
+                    completed.id, completed.status
+                );
             }
             Outcome::Fault(err) => {
                 println!("\n  Fault: {}", err);
@@ -261,7 +288,10 @@ async fn main() -> anyhow::Result<()> {
 
         match saga.execute(order, &(), &mut bus).await {
             Outcome::Next(completed) => {
-                println!("\n  Result: Order {} completed ({:?})", completed.id, completed.status);
+                println!(
+                    "\n  Result: Order {} completed ({:?})",
+                    completed.id, completed.status
+                );
             }
             Outcome::Fault(err) => {
                 println!("\n  Fault: {}", err);

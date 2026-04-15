@@ -30,9 +30,9 @@ pub enum AuthError {
 /// JWT claims structure matching our AuthContext.
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
-    sub: String,  // user_id
+    sub: String, // user_id
     roles: Vec<String>,
-    exp: usize,   // expiration time
+    exp: usize, // expiration time
 }
 
 /// Validate JWT token and extract AuthContext.
@@ -40,19 +40,18 @@ struct Claims {
 /// This is a helper function (not a Transition) that performs JWT validation.
 /// The actual Transition wraps this to return Outcome.
 pub fn validate_jwt(token: &str, secret: &str) -> Result<AuthContext, AuthError> {
-    use jsonwebtoken::{decode, DecodingKey, Validation};
+    use jsonwebtoken::{DecodingKey, Validation, decode};
 
     let key = DecodingKey::from_secret(secret.as_bytes());
     let validation = Validation::default();
 
-    let token_data = decode::<Claims>(token, &key, &validation)
-        .map_err(|e| {
-            if e.to_string().contains("ExpiredSignature") {
-                AuthError::ExpiredToken
-            } else {
-                AuthError::InvalidToken(e.to_string())
-            }
-        })?;
+    let token_data = decode::<Claims>(token, &key, &validation).map_err(|e| {
+        if e.to_string().contains("ExpiredSignature") {
+            AuthError::ExpiredToken
+        } else {
+            AuthError::InvalidToken(e.to_string())
+        }
+    })?;
 
     Ok(AuthContext {
         user_id: token_data.claims.sub,
@@ -63,7 +62,7 @@ pub fn validate_jwt(token: &str, secret: &str) -> Result<AuthContext, AuthError>
 /// Helper to create a test JWT token (for development/testing).
 #[cfg(test)]
 pub fn create_test_token(user_id: &str, roles: Vec<String>, secret: &str) -> String {
-    use jsonwebtoken::{encode, EncodingKey, Header};
+    use jsonwebtoken::{EncodingKey, Header, encode};
 
     let claims = Claims {
         sub: user_id.to_string(),

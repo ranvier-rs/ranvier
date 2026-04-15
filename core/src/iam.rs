@@ -301,7 +301,11 @@ mod tests {
 
     #[test]
     fn auth_context_has_role() {
-        let ctx = AuthContext::new("alice", vec!["admin".into(), "user".into()], AuthScheme::Bearer);
+        let ctx = AuthContext::new(
+            "alice",
+            vec!["admin".into(), "user".into()],
+            AuthScheme::Bearer,
+        );
         assert!(ctx.has_role("admin"));
         assert!(ctx.has_role("user"));
         assert!(!ctx.has_role("superadmin"));

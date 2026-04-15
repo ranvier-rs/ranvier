@@ -258,9 +258,7 @@ impl<S: AuditSink> MerkleAuditSink<S> {
             *counter
         };
 
-        self.anchor
-            .anchor(batch_id, &root, events.len())
-            .await?;
+        self.anchor.anchor(batch_id, &root, events.len()).await?;
 
         for event in &events {
             self.inner.append(event).await?;

@@ -35,10 +35,10 @@ use ranvier::prelude::*;
 
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
-use ranvier_runtime::{retry::RetryPolicy, Axon};
+use ranvier_runtime::{Axon, retry::RetryPolicy};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 // ============================================================================
@@ -97,10 +97,7 @@ impl Transition<ApiRequest, ApiResponse> for FlakyApiCall {
                 "  [FlakyApiCall] Attempt {} for {} -> FAILED (simulated error)",
                 attempt, request.endpoint
             );
-            return Outcome::Fault(format!(
-                "Connection refused (attempt {})",
-                attempt
-            ));
+            return Outcome::Fault(format!("Connection refused (attempt {})", attempt));
         }
 
         println!(
@@ -185,10 +182,7 @@ impl Transition<ApiRequest, ApiRequest> for FlakyValidation {
     ) -> Outcome<ApiRequest, Self::Error> {
         let attempt = self.fail_count.fetch_add(1, Ordering::SeqCst) + 1;
         if attempt <= self.fail_until {
-            println!(
-                "  [FlakyValidation] Attempt {} -> FAILED",
-                attempt
-            );
+            println!("  [FlakyValidation] Attempt {} -> FAILED", attempt);
             return Outcome::Fault("Validation service unavailable".to_string());
         }
         println!("  [FlakyValidation] Attempt {} -> passed", attempt);
@@ -268,10 +262,7 @@ async fn main() -> anyhow::Result<()> {
         let flaky = FlakyApiCall::new(2); // fails first 2 calls
         let pipeline = Axon::<ApiRequest, ApiRequest, String>::new("RetryFlow")
             .then(ValidateRequest)
-            .then_with_retry(
-                flaky,
-                RetryPolicy::exponential_default(3, 50),
-            );
+            .then_with_retry(flaky, RetryPolicy::exponential_default(3, 50));
 
         let request = ApiRequest {
             endpoint: "/api/orders".into(),
@@ -302,11 +293,9 @@ async fn main() -> anyhow::Result<()> {
         };
         let pipeline = Axon::<ApiRequest, ApiRequest, String>::new("TimeoutSuccessFlow")
             .then(ValidateRequest)
-            .then_with_timeout(
-                fast,
-                Duration::from_millis(200),
-                || "Request timed out".to_string(),
-            );
+            .then_with_timeout(fast, Duration::from_millis(200), || {
+                "Request timed out".to_string()
+            });
 
         let request = ApiRequest {
             endpoint: "/api/fast".into(),
@@ -334,11 +323,9 @@ async fn main() -> anyhow::Result<()> {
         };
         let pipeline = Axon::<ApiRequest, ApiRequest, String>::new("TimeoutFailFlow")
             .then(ValidateRequest)
-            .then_with_timeout(
-                slow,
-                Duration::from_millis(100),
-                || "Request timed out after 100ms".to_string(),
-            );
+            .then_with_timeout(slow, Duration::from_millis(100), || {
+                "Request timed out after 100ms".to_string()
+            });
 
         let request = ApiRequest {
             endpoint: "/api/slow".into(),
@@ -374,11 +361,9 @@ async fn main() -> anyhow::Result<()> {
                 flaky_validate,
                 RetryPolicy::fixed(2, Duration::from_millis(30)),
             )
-            .then_with_timeout(
-                slow_respond,
-                Duration::from_millis(200),
-                || "Timed out".to_string(),
-            );
+            .then_with_timeout(slow_respond, Duration::from_millis(200), || {
+                "Timed out".to_string()
+            });
 
         let request = ApiRequest {
             endpoint: "/api/combined".into(),
@@ -388,10 +373,7 @@ async fn main() -> anyhow::Result<()> {
 
         match pipeline.execute(request, &(), &mut bus).await {
             Outcome::Next(resp) => {
-                println!(
-                    "  Result: status={}, body={}",
-                    resp.status, resp.body
-                );
+                println!("  Result: status={}, body={}", resp.status, resp.body);
             }
             Outcome::Fault(err) => println!("  Final fault: {}", err),
             other => println!("  Unexpected: {:?}", other),

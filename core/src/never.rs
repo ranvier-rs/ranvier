@@ -77,10 +77,12 @@ mod tests {
         // Never cannot be instantiated, so we only verify deserialization fails gracefully
         let result: Result<Never, _> = serde_json::from_str("null");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("cannot be deserialized"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("cannot be deserialized")
+        );
     }
 
     #[test]

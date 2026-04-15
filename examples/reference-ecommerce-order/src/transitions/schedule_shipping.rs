@@ -1,7 +1,7 @@
-use ranvier_core::prelude::*;
-use ranvier_macros::transition;
 use crate::models::OrderStatus;
 use crate::store::AppStore;
+use ranvier_core::prelude::*;
+use ranvier_macros::transition;
 
 #[transition]
 pub async fn schedule_shipping(
@@ -18,9 +18,7 @@ pub async fn schedule_shipping(
         if let Ok(store) = bus.get_cloned::<AppStore>() {
             store.update_order_status(order_id, OrderStatus::FailedShipping);
         }
-        return Outcome::Fault(format!(
-            "Shipping unavailable for customer: {customer_id}"
-        ));
+        return Outcome::Fault(format!("Shipping unavailable for customer: {customer_id}"));
     }
 
     let shipping_id = format!("SHIP-{}", uuid::Uuid::new_v4());

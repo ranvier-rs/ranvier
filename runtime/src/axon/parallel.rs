@@ -3,7 +3,7 @@ use ranvier_core::outcome::Outcome;
 use ranvier_core::schematic::{Edge, EdgeType, Node, NodeKind, SourceLocation};
 use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_core::transition::Transition;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::panic::Location;
 use std::sync::Arc;
 

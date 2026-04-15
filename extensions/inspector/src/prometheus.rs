@@ -20,7 +20,11 @@ fn render_snapshots(snapshots: &[CircuitMetricsSnapshot]) -> String {
     let mut out = String::with_capacity(4096);
 
     // -- per-node invocation count ----------------------------------------
-    writeln!(out, "# HELP ranvier_node_invocations_total Per-node invocation count within the sliding window.").ok();
+    writeln!(
+        out,
+        "# HELP ranvier_node_invocations_total Per-node invocation count within the sliding window."
+    )
+    .ok();
     writeln!(out, "# TYPE ranvier_node_invocations_total gauge").ok();
     for snap in snapshots {
         for (node, m) in &snap.nodes {
@@ -202,15 +206,21 @@ mod tests {
             "ranvier_node_invocations_total{circuit=\"checkout\",node=\"validate_cart\"} 60"
         ));
 
+        assert!(
+            output.contains(
+                "ranvier_node_errors_total{circuit=\"checkout\",node=\"validate_cart\"} 3"
+            )
+        );
+
         assert!(output.contains(
-            "ranvier_node_errors_total{circuit=\"checkout\",node=\"validate_cart\"} 3"
+            "ranvier_node_error_rate{circuit=\"checkout\",node=\"validate_cart\"} 0.050000"
         ));
 
-        assert!(output.contains("ranvier_node_error_rate{circuit=\"checkout\",node=\"validate_cart\"} 0.050000"));
-
-        assert!(output.contains(
-            "ranvier_node_throughput{circuit=\"checkout\",node=\"validate_cart\"} 42"
-        ));
+        assert!(
+            output.contains(
+                "ranvier_node_throughput{circuit=\"checkout\",node=\"validate_cart\"} 42"
+            )
+        );
 
         assert!(output.contains(
             "ranvier_node_latency_ms{circuit=\"checkout\",node=\"validate_cart\",quantile=\"0.5\"} 12.500"
@@ -245,10 +255,7 @@ mod tests {
 
     #[test]
     fn content_type_is_prometheus_v004() {
-        assert_eq!(
-            CONTENT_TYPE,
-            "text/plain; version=0.0.4; charset=utf-8"
-        );
+        assert_eq!(CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8");
     }
 
     #[test]
@@ -342,8 +349,8 @@ mod tests {
             nodes,
         };
         let output = render_snapshots(&[snap]);
-        assert!(output.contains(
-            "ranvier_node_error_rate{circuit=\"clean\",node=\"ok_node\"} 0.000000"
-        ));
+        assert!(
+            output.contains("ranvier_node_error_rate{circuit=\"clean\",node=\"ok_node\"} 0.000000")
+        );
     }
 }

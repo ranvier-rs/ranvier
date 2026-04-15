@@ -51,9 +51,9 @@ use async_trait::async_trait;
 use ranvier_core::bus::Bus;
 use ranvier_core::outcome::Outcome;
 use ranvier_core::transition::Transition;
+use ranvier_inspector::Inspector;
 use ranvier_inspector::metrics;
 use ranvier_inspector::payload::PayloadCapturePolicy;
-use ranvier_inspector::Inspector;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 
@@ -210,7 +210,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             order_id: "ORD-003".into(),
             customer: "Charlie".into(),
             amount: 1500.00,
-            items: vec!["Premium Kit".into(), "Add-on Pack".into(), "Support Plan".into()],
+            items: vec![
+                "Premium Kit".into(),
+                "Add-on Pack".into(),
+                "Support Plan".into(),
+            ],
         },
     ];
 
@@ -219,7 +223,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let result = axon.execute(order.clone(), &(), &mut bus).await;
         match &result {
             Outcome::Next(processed) => {
-                println!("  Order {} -> {} (${:.2})", processed.order_id, processed.status, processed.total);
+                println!(
+                    "  Order {} -> {} (${:.2})",
+                    processed.order_id, processed.status, processed.total
+                );
             }
             Outcome::Fault(e) => {
                 println!("  Order failed: {e}");
@@ -235,7 +242,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         for (node_id, node) in &snapshot.nodes {
             println!(
                 "  {node_id}: throughput={}, errors={}, p50={:.1}ms, p95={:.1}ms, p99={:.1}ms",
-                node.throughput, node.error_count, node.latency_p50, node.latency_p95, node.latency_p99
+                node.throughput,
+                node.error_count,
+                node.latency_p50,
+                node.latency_p95,
+                node.latency_p99
             );
         }
     }

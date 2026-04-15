@@ -1,4 +1,4 @@
-use axum::{routing::get, Json, Router};
+use axum::{Json, Router, routing::get};
 use serde::Serialize;
 
 #[derive(Serialize, Clone)]
@@ -14,7 +14,10 @@ async fn main() {
 
     let addr = "0.0.0.0:4002";
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    println!("Starting Axum Benchmark Server (Scenario 3: Multi-step Workflow) on {}", addr);
+    println!(
+        "Starting Axum Benchmark Server (Scenario 3: Multi-step Workflow) on {}",
+        addr
+    );
     axum::serve(listener, app).await.unwrap();
 }
 

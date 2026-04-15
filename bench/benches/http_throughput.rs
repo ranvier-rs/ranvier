@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 
 fn bench_http_throughput(_c: &mut Criterion) {
     // Placeholder for HTTP throughput benchmark

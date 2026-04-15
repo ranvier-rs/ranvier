@@ -180,12 +180,7 @@ pub fn get_metrics_registry() -> Arc<Mutex<HashMap<String, MetricsCollector>>> {
 }
 
 /// Record a node exit in the global metrics registry.
-pub fn record_global_node_exit(
-    circuit: &str,
-    node_id: &str,
-    duration_ms: u64,
-    is_error: bool,
-) {
+pub fn record_global_node_exit(circuit: &str, node_id: &str, duration_ms: u64, is_error: bool) {
     if let Ok(mut registry) = get_metrics_registry().lock() {
         let collector = registry
             .entry(circuit.to_string())
@@ -207,12 +202,7 @@ pub fn snapshot_all() -> Vec<CircuitMetricsSnapshot> {
     get_metrics_registry()
         .lock()
         .ok()
-        .map(|mut registry| {
-            registry
-                .iter_mut()
-                .map(|(_, c)| c.snapshot())
-                .collect()
-        })
+        .map(|mut registry| registry.iter_mut().map(|(_, c)| c.snapshot()).collect())
         .unwrap_or_default()
 }
 

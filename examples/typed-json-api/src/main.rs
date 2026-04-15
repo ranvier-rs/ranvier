@@ -190,14 +190,21 @@ impl Transition<(), DeleteResult> for DeleteItem {
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
     let store: Store = Arc::new(RwLock::new(vec![
-        Item { id: Uuid::new_v4().to_string(), name: "Widget".into(), price: 19.99 },
-        Item { id: Uuid::new_v4().to_string(), name: "Gadget".into(), price: 49.99 },
+        Item {
+            id: Uuid::new_v4().to_string(),
+            name: "Widget".into(),
+            price: 19.99,
+        },
+        Item {
+            id: Uuid::new_v4().to_string(),
+            name: "Gadget".into(),
+            price: 49.99,
+        },
     ]));
 
     let list = Axon::simple::<String>("list-items").then(ListItems);

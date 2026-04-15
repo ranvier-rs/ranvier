@@ -111,15 +111,24 @@ async fn synthesize_stream(
 ) -> Result<impl Stream<Item = ChatChunk> + Send, String> {
     let tokens = match input.intent.as_str() {
         "code_generation" => vec![
-            "Here's", " a", " simple", " example:\n",
-            "```rust\n", "fn ", "hello", "() ", "{\n",
-            "    ", "println!", "(\"Hello!\");\n",
-            "}\n", "```",
+            "Here's",
+            " a",
+            " simple",
+            " example:\n",
+            "```rust\n",
+            "fn ",
+            "hello",
+            "() ",
+            "{\n",
+            "    ",
+            "println!",
+            "(\"Hello!\");\n",
+            "}\n",
+            "```",
         ],
         _ => vec![
-            "Hello", "!", " I'm", " doing", " great,",
-            " thank", " you", " for", " asking.", " How",
-            " can", " I", " help", " you", " today?",
+            "Hello", "!", " I'm", " doing", " great,", " thank", " you", " for", " asking.",
+            " How", " can", " I", " help", " you", " today?",
         ],
     };
 
@@ -163,7 +172,9 @@ impl Transition<ClassifiedChat, serde_json::Value> for SynthesizeBatch {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         let reply = match input.intent.as_str() {
-            "code_generation" => "Here's a simple example:\n```rust\nfn hello() {\n    println!(\"Hello!\");\n}\n```",
+            "code_generation" => {
+                "Here's a simple example:\n```rust\nfn hello() {\n    println!(\"Hello!\");\n}\n```"
+            }
             _ => "Hello! I'm doing great, thank you for asking. How can I help you today?",
         };
 

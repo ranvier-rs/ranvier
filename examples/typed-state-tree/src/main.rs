@@ -62,9 +62,7 @@ impl Transition<FlowState, FlowState> for Authenticate {
                 path: uri,
             })
         } else {
-            Outcome::Fault(
-                "Unexpected State: Expected RequestReceived".to_string()
-            )
+            Outcome::Fault("Unexpected State: Expected RequestReceived".to_string())
         }
     }
 }

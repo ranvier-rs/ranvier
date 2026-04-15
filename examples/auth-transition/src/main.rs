@@ -28,7 +28,7 @@
 
 mod auth;
 
-use auth::{validate_jwt, AuthContext, AuthError};
+use auth::{AuthContext, AuthError, validate_jwt};
 use ranvier_core::{Bus, Outcome};
 use ranvier_macros::transition;
 use ranvier_runtime::Axon;
@@ -50,7 +50,7 @@ struct Response {
 #[derive(Debug, thiserror::Error, Serialize, Deserialize)]
 enum AppError {
     #[error("Auth error: {0}")]
-    Auth(String),  // Can't use #[from] with serde
+    Auth(String), // Can't use #[from] with serde
 
     #[error("Internal server error: {0}")]
     Internal(String),
@@ -110,7 +110,9 @@ async fn authorize(_input: AuthContext, _res: &(), bus: &mut Bus) -> Outcome<(),
             actual_roles = ?auth.roles,
             "Authorization failed: missing required role"
         );
-        return Outcome::Fault(AppError::Auth(AuthError::Unauthorized(required_role.into()).to_string()));
+        return Outcome::Fault(AppError::Auth(
+            AuthError::Unauthorized(required_role.into()).to_string(),
+        ));
     }
 
     tracing::info!(
@@ -200,13 +202,14 @@ async fn demo_execution(pipeline: Axon<(), Response, AppError, ()>) -> anyhow::R
     // Scenario 1: Valid admin token
     {
         tracing::info!("Scenario 1: Valid admin token");
-        let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| "default-secret-key".to_string());
+        let jwt_secret =
+            env::var("JWT_SECRET").unwrap_or_else(|_| "default-secret-key".to_string());
 
         // Create test token (in real app, this comes from login endpoint)
         let token = create_test_token("alice", vec!["admin".into(), "user".into()], &jwt_secret);
 
         let mut bus = Bus::new();
-        bus.insert(token);  // Put token in Bus (simulating HTTP middleware)
+        bus.insert(token); // Put token in Bus (simulating HTTP middleware)
 
         match pipeline.execute((), &(), &mut bus).await {
             Outcome::Next(response) => {
@@ -221,7 +224,8 @@ async fn demo_execution(pipeline: Axon<(), Response, AppError, ()>) -> anyhow::R
     // Scenario 2: Valid token but missing "admin" role
     {
         tracing::info!("\nScenario 2: Valid token, no admin role");
-        let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| "default-secret-key".to_string());
+        let jwt_secret =
+            env::var("JWT_SECRET").unwrap_or_else(|_| "default-secret-key".to_string());
 
         let token = create_test_token("bob", vec!["user".into()], &jwt_secret);
 
@@ -241,7 +245,7 @@ async fn demo_execution(pipeline: Axon<(), Response, AppError, ()>) -> anyhow::R
     // Scenario 3: Missing token
     {
         tracing::info!("\nScenario 3: Missing token");
-        let mut bus = Bus::new();  // Empty bus
+        let mut bus = Bus::new(); // Empty bus
 
         match pipeline.execute((), &(), &mut bus).await {
             Outcome::Next(_) => {
@@ -274,7 +278,7 @@ async fn demo_execution(pipeline: Axon<(), Response, AppError, ()>) -> anyhow::R
 
 /// Helper to create test JWT tokens (for demonstration).
 fn create_test_token(user_id: &str, roles: Vec<String>, secret: &str) -> String {
-    use jsonwebtoken::{encode, EncodingKey, Header};
+    use jsonwebtoken::{EncodingKey, Header, encode};
     use serde::Serialize;
 
     #[derive(Serialize)]

@@ -1,4 +1,4 @@
-use crate::models::{ChatMessage, Room, ServerMessage, HistoryEntry, RoomInfo};
+use crate::models::{ChatMessage, HistoryEntry, Room, RoomInfo, ServerMessage};
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -80,7 +80,11 @@ impl RoomManager {
         let members = inner.members.entry(room_id.to_string()).or_default();
         members.insert(user_id.to_string());
         let count = members.len();
-        let other_members: Vec<String> = members.iter().filter(|m| m.as_str() != user_id).cloned().collect();
+        let other_members: Vec<String> = members
+            .iter()
+            .filter(|m| m.as_str() != user_id)
+            .cloned()
+            .collect();
 
         // Broadcast join to other members
         let msg = ServerMessage::Joined {
@@ -123,7 +127,13 @@ impl RoomManager {
     }
 
     /// Broadcast a chat message to all members in a room.
-    pub fn broadcast_message(&self, room_id: &str, user_id: &str, username: &str, content: &str) -> Result<(), String> {
+    pub fn broadcast_message(
+        &self,
+        room_id: &str,
+        user_id: &str,
+        username: &str,
+        content: &str,
+    ) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
         if !inner.rooms.contains_key(room_id) {
             return Err(format!("Room '{}' not found", room_id));

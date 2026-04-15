@@ -1,9 +1,9 @@
 pub mod file_sink;
-pub mod transition;
 #[cfg(feature = "merkle")]
 pub mod merkle;
 #[cfg(feature = "postgres")]
 pub mod postgres;
+pub mod transition;
 
 pub use transition::{AuditAction, AuditActor, AuditLog};
 

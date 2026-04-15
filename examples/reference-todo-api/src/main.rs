@@ -41,12 +41,8 @@ use ranvier_runtime::Axon;
 use std::sync::{Arc, Mutex};
 
 use transitions::{
-    create_todo::create_todo,
-    delete_todo::delete_todo,
-    get_todo::get_todo,
-    list_todos::list_todos,
-    login::login,
-    update_todo::update_todo,
+    create_todo::create_todo, delete_todo::delete_todo, get_todo::get_todo, list_todos::list_todos,
+    login::login, update_todo::update_todo,
 };
 
 #[tokio::main]
@@ -79,13 +75,31 @@ async fn main() -> Result<()> {
             }
         })
         // Typed body routes — JSON auto-deserialized as Axon input
-        .post_typed("/login", Axon::typed::<models::LoginRequest, String>("login").then(login))
-        .post_typed("/todos", Axon::typed::<models::CreateTodoRequest, String>("create-todo").then(create_todo))
-        .put_typed("/todos/:id", Axon::typed::<models::UpdateTodoRequest, String>("update-todo").then(update_todo))
+        .post_typed(
+            "/login",
+            Axon::typed::<models::LoginRequest, String>("login").then(login),
+        )
+        .post_typed(
+            "/todos",
+            Axon::typed::<models::CreateTodoRequest, String>("create-todo").then(create_todo),
+        )
+        .put_typed(
+            "/todos/:id",
+            Axon::typed::<models::UpdateTodoRequest, String>("update-todo").then(update_todo),
+        )
         // Non-body routes — input is ()
-        .get("/todos", Axon::simple::<String>("list-todos").then(list_todos))
-        .get("/todos/:id", Axon::simple::<String>("get-todo").then(get_todo))
-        .delete("/todos/:id", Axon::simple::<String>("delete-todo").then(delete_todo))
+        .get(
+            "/todos",
+            Axon::simple::<String>("list-todos").then(list_todos),
+        )
+        .get(
+            "/todos/:id",
+            Axon::simple::<String>("get-todo").then(get_todo),
+        )
+        .delete(
+            "/todos/:id",
+            Axon::simple::<String>("delete-todo").then(delete_todo),
+        )
         .run(())
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;

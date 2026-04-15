@@ -42,8 +42,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SensorReading {
     sensor_id: String,
-    soil_moisture: f64,  // 0.0 (dry) to 1.0 (saturated)
-    temperature: f64,    // Celsius
+    soil_moisture: f64, // 0.0 (dry) to 1.0 (saturated)
+    temperature: f64,   // Celsius
     timestamp: String,
 }
 
@@ -66,9 +66,9 @@ enum MoistureStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum TempStatus {
-    Cold,    // < 10°C
-    Normal,  // 10-35°C
-    Hot,     // > 35°C
+    Cold,   // < 10°C
+    Normal, // 10-35°C
+    Hot,    // > 35°C
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,10 +80,10 @@ struct ActuatorCommand {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Action {
-    IrrigateHigh,    // Full irrigation
-    IrrigateLow,     // Light irrigation
-    NoAction,        // Everything normal
-    AlertOperator,   // Abnormal conditions
+    IrrigateHigh,  // Full irrigation
+    IrrigateLow,   // Light irrigation
+    NoAction,      // Everything normal
+    AlertOperator, // Abnormal conditions
 }
 
 // ============================================================================
@@ -104,8 +104,10 @@ impl Transition<SensorReading, EvaluatedReading> for EvaluateThresholds {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<EvaluatedReading, Self::Error> {
-        println!("  [EvaluateThresholds] Sensor {}: moisture={:.2}, temp={:.1}°C",
-            reading.sensor_id, reading.soil_moisture, reading.temperature);
+        println!(
+            "  [EvaluateThresholds] Sensor {}: moisture={:.2}, temp={:.1}°C",
+            reading.sensor_id, reading.soil_moisture, reading.temperature
+        );
 
         // Validate sensor data
         if reading.soil_moisture < 0.0 || reading.soil_moisture > 1.0 {
@@ -128,7 +130,10 @@ impl Transition<SensorReading, EvaluatedReading> for EvaluateThresholds {
             _ => TempStatus::Hot,
         };
 
-        println!("  [EvaluateThresholds] Moisture: {:?}, Temp: {:?}", moisture_status, temp_status);
+        println!(
+            "  [EvaluateThresholds] Moisture: {:?}, Temp: {:?}",
+            moisture_status, temp_status
+        );
 
         Outcome::Next(EvaluatedReading {
             sensor_id: reading.sensor_id,
@@ -158,45 +163,63 @@ impl Transition<EvaluatedReading, ActuatorCommand> for MakeDecision {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<ActuatorCommand, Self::Error> {
-        println!("  [MakeDecision] Determining action for sensor {}...", reading.sensor_id);
+        println!(
+            "  [MakeDecision] Determining action for sensor {}...",
+            reading.sensor_id
+        );
 
         let (action, reason) = match (&reading.moisture_status, &reading.temp_status) {
             // Critical moisture → irrigate regardless
             (MoistureStatus::Critical, _) => (
                 Action::IrrigateHigh,
-                format!("Critical moisture ({:.2}) — full irrigation", reading.soil_moisture),
+                format!(
+                    "Critical moisture ({:.2}) — full irrigation",
+                    reading.soil_moisture
+                ),
             ),
             // Low moisture + hot → irrigate
             (MoistureStatus::Low, TempStatus::Hot) => (
                 Action::IrrigateHigh,
-                format!("Low moisture ({:.2}) + high temp ({:.1}°C) — full irrigation",
-                    reading.soil_moisture, reading.temperature),
+                format!(
+                    "Low moisture ({:.2}) + high temp ({:.1}°C) — full irrigation",
+                    reading.soil_moisture, reading.temperature
+                ),
             ),
             // Low moisture + normal → light irrigation
             (MoistureStatus::Low, TempStatus::Normal) => (
                 Action::IrrigateLow,
-                format!("Low moisture ({:.2}) — light irrigation", reading.soil_moisture),
+                format!(
+                    "Low moisture ({:.2}) — light irrigation",
+                    reading.soil_moisture
+                ),
             ),
             // Low moisture + cold → alert (irrigation risk in cold)
             (MoistureStatus::Low, TempStatus::Cold) => (
                 Action::AlertOperator,
-                format!("Low moisture ({:.2}) + cold ({:.1}°C) — operator review needed",
-                    reading.soil_moisture, reading.temperature),
+                format!(
+                    "Low moisture ({:.2}) + cold ({:.1}°C) — operator review needed",
+                    reading.soil_moisture, reading.temperature
+                ),
             ),
             // Normal conditions
-            (MoistureStatus::Normal, TempStatus::Normal) => (
-                Action::NoAction,
-                "All readings normal".to_string(),
-            ),
+            (MoistureStatus::Normal, TempStatus::Normal) => {
+                (Action::NoAction, "All readings normal".to_string())
+            }
             // Hot but moisture OK → alert
             (MoistureStatus::Normal, TempStatus::Hot) => (
                 Action::AlertOperator,
-                format!("High temperature ({:.1}°C) — monitoring recommended", reading.temperature),
+                format!(
+                    "High temperature ({:.1}°C) — monitoring recommended",
+                    reading.temperature
+                ),
             ),
             // High moisture → no irrigation
             (MoistureStatus::High, _) => (
                 Action::NoAction,
-                format!("Moisture already high ({:.2}) — no irrigation", reading.soil_moisture),
+                format!(
+                    "Moisture already high ({:.2}) — no irrigation",
+                    reading.soil_moisture
+                ),
             ),
             // Cold but moisture OK → no action
             (MoistureStatus::Normal, TempStatus::Cold) => (
@@ -234,36 +257,51 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let scenarios = vec![
-        ("Normal conditions", SensorReading {
-            sensor_id: "FARM-A1".to_string(),
-            soil_moisture: 0.55,
-            temperature: 24.0,
-            timestamp: "2026-03-28T10:00:00Z".to_string(),
-        }),
-        ("Critical drought", SensorReading {
-            sensor_id: "FARM-B2".to_string(),
-            soil_moisture: 0.12,
-            temperature: 32.0,
-            timestamp: "2026-03-28T14:00:00Z".to_string(),
-        }),
-        ("Low moisture + heat", SensorReading {
-            sensor_id: "FARM-C3".to_string(),
-            soil_moisture: 0.35,
-            temperature: 38.0,
-            timestamp: "2026-03-28T15:30:00Z".to_string(),
-        }),
-        ("Low moisture + frost risk", SensorReading {
-            sensor_id: "FARM-D4".to_string(),
-            soil_moisture: 0.28,
-            temperature: 3.0,
-            timestamp: "2026-03-28T05:00:00Z".to_string(),
-        }),
-        ("Invalid sensor data", SensorReading {
-            sensor_id: "FARM-E5".to_string(),
-            soil_moisture: -0.5, // invalid
-            temperature: 20.0,
-            timestamp: "2026-03-28T12:00:00Z".to_string(),
-        }),
+        (
+            "Normal conditions",
+            SensorReading {
+                sensor_id: "FARM-A1".to_string(),
+                soil_moisture: 0.55,
+                temperature: 24.0,
+                timestamp: "2026-03-28T10:00:00Z".to_string(),
+            },
+        ),
+        (
+            "Critical drought",
+            SensorReading {
+                sensor_id: "FARM-B2".to_string(),
+                soil_moisture: 0.12,
+                temperature: 32.0,
+                timestamp: "2026-03-28T14:00:00Z".to_string(),
+            },
+        ),
+        (
+            "Low moisture + heat",
+            SensorReading {
+                sensor_id: "FARM-C3".to_string(),
+                soil_moisture: 0.35,
+                temperature: 38.0,
+                timestamp: "2026-03-28T15:30:00Z".to_string(),
+            },
+        ),
+        (
+            "Low moisture + frost risk",
+            SensorReading {
+                sensor_id: "FARM-D4".to_string(),
+                soil_moisture: 0.28,
+                temperature: 3.0,
+                timestamp: "2026-03-28T05:00:00Z".to_string(),
+            },
+        ),
+        (
+            "Invalid sensor data",
+            SensorReading {
+                sensor_id: "FARM-E5".to_string(),
+                soil_moisture: -0.5, // invalid
+                temperature: 20.0,
+                timestamp: "2026-03-28T12:00:00Z".to_string(),
+            },
+        ),
     ];
 
     for (i, (label, reading)) in scenarios.into_iter().enumerate() {

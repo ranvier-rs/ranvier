@@ -35,5 +35,7 @@ pub fn verify_token(store: &TokenStore, token: &str) -> Option<Claims> {
 
 /// Extract bearer token from "Authorization: Bearer <token>" header.
 pub fn extract_bearer(header_value: &str) -> Option<&str> {
-    header_value.strip_prefix("Bearer ").or_else(|| header_value.strip_prefix("bearer "))
+    header_value
+        .strip_prefix("Bearer ")
+        .or_else(|| header_value.strip_prefix("bearer "))
 }

@@ -26,8 +26,8 @@
 
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
-use ranvier_core::transition::ResourceRequirement;
 use ranvier_core::tenant::TenantId;
+use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -211,7 +211,10 @@ async fn main() -> anyhow::Result<()> {
     .then(ValidateTenantContext)
     .then(StoreItem);
 
-    for (name, desc) in [("Widget", "A standard widget"), ("Gadget", "A fancy gadget")] {
+    for (name, desc) in [
+        ("Widget", "A standard widget"),
+        ("Gadget", "A fancy gadget"),
+    ] {
         let mut bus = Bus::new();
         bus.insert(TenantId::new("tenant-a"));
 

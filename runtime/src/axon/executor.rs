@@ -1,25 +1,24 @@
+use ranvier_audit::AuditEvent;
 use ranvier_core::bus::Bus;
 use ranvier_core::outcome::Outcome;
 use ranvier_core::saga::{SagaPolicy, SagaStack};
 use ranvier_core::timeline::{Timeline, TimelineEvent};
-use ranvier_audit::AuditEvent;
 use serde::{Serialize, de::DeserializeOwned};
 use std::panic::AssertUnwindSafe;
 use tracing::Instrument;
 
 use super::*;
 use super::{
-    ExecutionMode, ManualJump, StartStep, ResumptionState,
-    extract_panic_message, outcome_type_name, outcome_kind_name, outcome_target,
-    persistence_trace_id, persistence_auto_complete, compensation_auto_trigger,
-    compensation_retry_policy, persist_execution_event, load_persistence_version,
-    persist_completion, run_compensation, now_ms, maybe_export_timeline, ensure_timeline,
-    should_attach_timeline, completion_from_outcome,
+    ExecutionMode, ManualJump, ResumptionState, StartStep, compensation_auto_trigger,
+    compensation_retry_policy, completion_from_outcome, ensure_timeline, extract_panic_message,
+    load_persistence_version, maybe_export_timeline, now_ms, outcome_kind_name, outcome_target,
+    outcome_type_name, persist_completion, persist_execution_event, persistence_auto_complete,
+    persistence_trace_id, run_compensation, should_attach_timeline,
 };
 
 use crate::persistence::{
-    PersistenceHandle, CompensationHandle, CompensationContext,
-    CompensationIdempotencyHandle, CompletionState,
+    CompensationContext, CompensationHandle, CompensationIdempotencyHandle, CompletionState,
+    PersistenceHandle,
 };
 
 impl<In, Out, E, Res> Axon<In, Out, E, Res>
@@ -408,8 +407,7 @@ where
         );
         let outcome = {
             use futures_util::FutureExt as _;
-            let fut = (self.executor)(input, resources, bus)
-                .instrument(circuit_span.clone());
+            let fut = (self.executor)(input, resources, bus).instrument(circuit_span.clone());
             match AssertUnwindSafe(fut).catch_unwind().await {
                 Ok(outcome) => outcome,
                 Err(panic_payload) => {
@@ -452,7 +450,10 @@ where
                 tracing::info!(trace_id = %trace_id, node_id = %task.node_id, "Compensating step: {}", task.node_label);
 
                 let handler = {
-                    let registry = self.saga_compensation_registry.read().expect("saga compensation registry lock poisoned");
+                    let registry = self
+                        .saga_compensation_registry
+                        .read()
+                        .expect("saga compensation registry lock poisoned");
                     registry.get(&task.node_id)
                 };
                 if let Some(handler) = handler {

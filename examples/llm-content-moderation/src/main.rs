@@ -28,9 +28,7 @@ use ranvier_runtime::Axon;
 
 use models::ContentInput;
 use transitions::{
-    extract_content::extract_content,
-    moderate::moderate_content,
-    apply_policy::apply_policy,
+    apply_policy::apply_policy, extract_content::extract_content, moderate::moderate_content,
 };
 
 /// Build the 3-stage content-moderation pipeline.

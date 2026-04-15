@@ -75,9 +75,7 @@ impl Transition<UserId, UserId> for ValidateUserId {
         _bus: &mut Bus,
     ) -> Outcome<UserId, Self::Error> {
         if id.0.is_empty() {
-            return Outcome::Fault(AppError::Validation(
-                "User ID cannot be empty".into(),
-            ));
+            return Outcome::Fault(AppError::Validation("User ID cannot be empty".into()));
         }
         if id.0.len() < 3 {
             return Outcome::Fault(AppError::Validation(

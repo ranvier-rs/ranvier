@@ -24,9 +24,7 @@ use ranvier_core::event::{DlqPolicy, DlqSink};
 use ranvier_core::outcome::Outcome;
 use ranvier_core::policy::DynamicPolicy;
 use ranvier_core::saga::{SagaPolicy, SagaStack};
-use ranvier_core::schematic::{
-    BusCapabilitySchema, Schematic,
-};
+use ranvier_core::schematic::{BusCapabilitySchema, Schematic};
 use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_core::transition::Transition;
 
@@ -461,9 +459,8 @@ async fn load_persistence_version(
                     (
                         resume_from_step.saturating_add(1),
                         anchor_event.and_then(|event| event.node_id.clone()),
-                        anchor_event.and_then(|event| {
-                            unwrap_outcome_payload(event.payload.as_ref())
-                        }),
+                        anchor_event
+                            .and_then(|event| unwrap_outcome_payload(event.payload.as_ref())),
                     )
                 } else {
                     let last_event = trace.events.last();
@@ -472,9 +469,7 @@ async fn load_persistence_version(
                             .map(|event| event.step.saturating_add(1))
                             .unwrap_or(0),
                         last_event.and_then(|event| event.node_id.clone()),
-                        last_event.and_then(|event| {
-                            unwrap_outcome_payload(event.payload.as_ref())
-                        }),
+                        last_event.and_then(|event| unwrap_outcome_payload(event.payload.as_ref())),
                     )
                 };
 
@@ -2816,14 +2811,18 @@ mod tests {
         use super::ParallelStrategy;
 
         let mut bus = Bus::new();
-        let axon = Axon::<i32, i32, TestInfallible>::start("ParallelAllSucceed")
-            .parallel(
-                vec![
-                    Arc::new(AddOne) as Arc<dyn Transition<i32, i32, Resources = (), Error = TestInfallible> + Send + Sync>,
-                    Arc::new(MultiplyByTwo),
-                ],
-                ParallelStrategy::AllMustSucceed,
-            );
+        let axon = Axon::<i32, i32, TestInfallible>::start("ParallelAllSucceed").parallel(
+            vec![
+                Arc::new(AddOne)
+                    as Arc<
+                        dyn Transition<i32, i32, Resources = (), Error = TestInfallible>
+                            + Send
+                            + Sync,
+                    >,
+                Arc::new(MultiplyByTwo),
+            ],
+            ParallelStrategy::AllMustSucceed,
+        );
 
         // Input 5: AddOne -> 6, MultiplyByTwo -> 10.
         // AllMustSucceed returns the first Next (AddOne = 6).
@@ -2836,14 +2835,14 @@ mod tests {
         use super::ParallelStrategy;
 
         let mut bus = Bus::new();
-        let axon = Axon::<i32, i32, String>::start("ParallelAllFault")
-            .parallel(
-                vec![
-                    Arc::new(AddOneString) as Arc<dyn Transition<i32, i32, Resources = (), Error = String> + Send + Sync>,
-                    Arc::new(AlwaysFault),
-                ],
-                ParallelStrategy::AllMustSucceed,
-            );
+        let axon = Axon::<i32, i32, String>::start("ParallelAllFault").parallel(
+            vec![
+                Arc::new(AddOneString)
+                    as Arc<dyn Transition<i32, i32, Resources = (), Error = String> + Send + Sync>,
+                Arc::new(AlwaysFault),
+            ],
+            ParallelStrategy::AllMustSucceed,
+        );
 
         let outcome = axon.execute(5, &(), &mut bus).await;
         assert!(
@@ -2858,14 +2857,14 @@ mod tests {
         use super::ParallelStrategy;
 
         let mut bus = Bus::new();
-        let axon = Axon::<i32, i32, String>::start("ParallelAnyCanFail")
-            .parallel(
-                vec![
-                    Arc::new(AlwaysFault) as Arc<dyn Transition<i32, i32, Resources = (), Error = String> + Send + Sync>,
-                    Arc::new(AddOneString),
-                ],
-                ParallelStrategy::AnyCanFail,
-            );
+        let axon = Axon::<i32, i32, String>::start("ParallelAnyCanFail").parallel(
+            vec![
+                Arc::new(AlwaysFault)
+                    as Arc<dyn Transition<i32, i32, Resources = (), Error = String> + Send + Sync>,
+                Arc::new(AddOneString),
+            ],
+            ParallelStrategy::AnyCanFail,
+        );
 
         // AlwaysFault faults, but AddOneString succeeds (5 + 1 = 6).
         let outcome = axon.execute(5, &(), &mut bus).await;
@@ -2886,20 +2885,25 @@ mod tests {
         impl Transition<i32, i32> for AlwaysFault2 {
             type Error = String;
             type Resources = ();
-            async fn run(&self, _state: i32, _resources: &(), _bus: &mut Bus) -> Outcome<i32, String> {
+            async fn run(
+                &self,
+                _state: i32,
+                _resources: &(),
+                _bus: &mut Bus,
+            ) -> Outcome<i32, String> {
                 Outcome::Fault("boom2".to_string())
             }
         }
 
         let mut bus = Bus::new();
-        let axon = Axon::<i32, i32, String>::start("ParallelAllFault2")
-            .parallel(
-                vec![
-                    Arc::new(AlwaysFault) as Arc<dyn Transition<i32, i32, Resources = (), Error = String> + Send + Sync>,
-                    Arc::new(AlwaysFault2),
-                ],
-                ParallelStrategy::AnyCanFail,
-            );
+        let axon = Axon::<i32, i32, String>::start("ParallelAllFault2").parallel(
+            vec![
+                Arc::new(AlwaysFault)
+                    as Arc<dyn Transition<i32, i32, Resources = (), Error = String> + Send + Sync>,
+                Arc::new(AlwaysFault2),
+            ],
+            ParallelStrategy::AnyCanFail,
+        );
 
         let outcome = axon.execute(5, &(), &mut bus).await;
         // Should return the first fault
@@ -2915,15 +2919,19 @@ mod tests {
         use super::ParallelStrategy;
         use ranvier_core::schematic::{EdgeType, NodeKind};
 
-        let axon = Axon::<i32, i32, TestInfallible>::start("ParallelSchematic")
-            .parallel(
-                vec![
-                    Arc::new(AddOne) as Arc<dyn Transition<i32, i32, Resources = (), Error = TestInfallible> + Send + Sync>,
-                    Arc::new(MultiplyByTwo),
-                    Arc::new(AddTen),
-                ],
-                ParallelStrategy::AllMustSucceed,
-            );
+        let axon = Axon::<i32, i32, TestInfallible>::start("ParallelSchematic").parallel(
+            vec![
+                Arc::new(AddOne)
+                    as Arc<
+                        dyn Transition<i32, i32, Resources = (), Error = TestInfallible>
+                            + Send
+                            + Sync,
+                    >,
+                Arc::new(MultiplyByTwo),
+                Arc::new(AddTen),
+            ],
+            ParallelStrategy::AllMustSucceed,
+        );
 
         // Should have: Ingress + FanOut + 3 branch Atoms + FanIn = 6 nodes
         assert_eq!(axon.schematic.nodes.len(), 6);
@@ -2934,11 +2942,13 @@ mod tests {
         assert!(matches!(axon.schematic.nodes[5].kind, NodeKind::FanIn));
 
         // Check FanOut description
-        assert!(axon.schematic.nodes[1]
-            .description
-            .as_ref()
-            .unwrap()
-            .contains("3 branches"));
+        assert!(
+            axon.schematic.nodes[1]
+                .description
+                .as_ref()
+                .unwrap()
+                .contains("3 branches")
+        );
 
         // Check parallel edges from FanOut to branches
         let parallel_edges: Vec<_> = axon
@@ -2960,7 +2970,12 @@ mod tests {
             .then(AddOne)
             .parallel(
                 vec![
-                    Arc::new(AddOne) as Arc<dyn Transition<i32, i32, Resources = (), Error = TestInfallible> + Send + Sync>,
+                    Arc::new(AddOne)
+                        as Arc<
+                            dyn Transition<i32, i32, Resources = (), Error = TestInfallible>
+                                + Send
+                                + Sync,
+                        >,
                     Arc::new(MultiplyByTwo),
                 ],
                 ParallelStrategy::AllMustSucceed,
@@ -2984,14 +2999,18 @@ mod tests {
         let mut bus = Bus::new();
         bus.insert(Timeline::new());
 
-        let axon = Axon::<i32, i32, TestInfallible>::start("ParallelTimeline")
-            .parallel(
-                vec![
-                    Arc::new(AddOne) as Arc<dyn Transition<i32, i32, Resources = (), Error = TestInfallible> + Send + Sync>,
-                    Arc::new(MultiplyByTwo),
-                ],
-                ParallelStrategy::AllMustSucceed,
-            );
+        let axon = Axon::<i32, i32, TestInfallible>::start("ParallelTimeline").parallel(
+            vec![
+                Arc::new(AddOne)
+                    as Arc<
+                        dyn Transition<i32, i32, Resources = (), Error = TestInfallible>
+                            + Send
+                            + Sync,
+                    >,
+                Arc::new(MultiplyByTwo),
+            ],
+            ParallelStrategy::AllMustSucceed,
+        );
 
         let outcome = axon.execute(3, &(), &mut bus).await;
         assert!(matches!(outcome, Outcome::Next(4)));
@@ -3083,15 +3102,17 @@ mod tests {
 
     #[tokio::test]
     async fn then_fn_reads_bus() {
-        let axon = Axon::simple::<String>("BusReadClosure")
-            .then_fn("check_score", |_input: (), bus: &mut Bus| {
+        let axon = Axon::simple::<String>("BusReadClosure").then_fn(
+            "check_score",
+            |_input: (), bus: &mut Bus| {
                 let score = bus.read::<u32>().copied().unwrap_or(0);
                 if score > 75 {
                     Outcome::next("REJECTED".to_string())
                 } else {
                     Outcome::next("APPROVED".to_string())
                 }
-            });
+            },
+        );
 
         let mut bus = Bus::new();
         bus.insert(80u32);

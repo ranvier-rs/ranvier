@@ -1,16 +1,12 @@
+use crate::models::Todo;
 use ranvier_core::prelude::*;
 use ranvier_http::BusHttpExt;
 use ranvier_macros::transition;
-use crate::models::Todo;
 use std::sync::{Arc, Mutex};
 
 /// Get todo by ID — reads `:id` path param via `BusHttpExt::path_param()`.
 #[transition]
-pub async fn get_todo(
-    _input: (),
-    _res: &(),
-    bus: &mut Bus,
-) -> Outcome<serde_json::Value, String> {
+pub async fn get_todo(_input: (), _res: &(), bus: &mut Bus) -> Outcome<serde_json::Value, String> {
     let id: u64 = match bus.path_param("id") {
         Ok(id) => id,
         Err(e) => return Outcome::Fault(e),

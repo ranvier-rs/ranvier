@@ -7,12 +7,12 @@
 use async_trait::async_trait;
 use ranvier::prelude::*;
 use ranvier_audit::{AuditChain, AuditEvent, AuditLogger, InMemoryAuditSink};
-use ranvier_guard::{AccessLogEntry, AccessLogGuard, AccessLogRequest};
 use ranvier_compliance::Sensitive;
 use ranvier_core::bus::Bus;
 use ranvier_core::config::RanvierConfig;
 use ranvier_core::outcome::Outcome;
 use ranvier_core::transition::Transition;
+use ranvier_guard::{AccessLogEntry, AccessLogGuard, AccessLogRequest};
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -50,9 +50,7 @@ impl Transition<UserRequest, AuditedResult> for AuditingTransition {
         _resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<AuditedResult, String> {
-        let logger = bus
-            .read::<Arc<AuditLogger<InMemoryAuditSink>>>()
-            .cloned();
+        let logger = bus.read::<Arc<AuditLogger<InMemoryAuditSink>>>().cloned();
         if let Some(logger) = logger {
             let event = AuditEvent::new(
                 format!("evt-{}", input.user_id),
@@ -107,8 +105,8 @@ async fn test_audit_pipeline_integration() {
     let sink = InMemoryAuditSink::new();
     let logger = Arc::new(AuditLogger::new(sink.clone()));
 
-    let axon = Axon::<UserRequest, UserRequest, String>::new("AuditPipeline")
-        .then(AuditingTransition);
+    let axon =
+        Axon::<UserRequest, UserRequest, String>::new("AuditPipeline").then(AuditingTransition);
 
     let mut bus = Bus::new();
     bus.insert(logger.clone());
@@ -263,8 +261,8 @@ async fn test_access_log_redaction_in_pipeline() {
 /// Crosses: openapi × http (HttpRouteDescriptor) × core (types)
 #[test]
 fn test_openapi_security_and_problem_detail_combined() {
-    use ranvier_http::HttpRouteDescriptor;
     use http::Method;
+    use ranvier_http::HttpRouteDescriptor;
 
     let doc = ranvier_openapi::OpenApiGenerator::from_descriptors(vec![
         HttpRouteDescriptor::new(Method::GET, "/api/users"),
@@ -368,8 +366,8 @@ async fn test_audit_query_across_executions() {
     let sink = InMemoryAuditSink::new();
     let logger = Arc::new(AuditLogger::new(sink.clone()));
 
-    let axon = Axon::<UserRequest, UserRequest, String>::new("QueryPipeline")
-        .then(AuditingTransition);
+    let axon =
+        Axon::<UserRequest, UserRequest, String>::new("QueryPipeline").then(AuditingTransition);
 
     // Execute multiple actions
     let actions = vec![

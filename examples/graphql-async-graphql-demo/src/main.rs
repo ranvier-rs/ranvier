@@ -44,8 +44,16 @@ impl QueryRoot {
 
     async fn users(&self) -> Vec<User> {
         vec![
-            User { id: 1, name: "Alice".into(), email: "alice@example.com".into() },
-            User { id: 2, name: "Bob".into(), email: "bob@example.com".into() },
+            User {
+                id: 1,
+                name: "Alice".into(),
+                email: "alice@example.com".into(),
+            },
+            User {
+                id: 2,
+                name: "Bob".into(),
+                email: "bob@example.com".into(),
+            },
         ]
     }
 }
@@ -55,7 +63,11 @@ struct MutationRoot;
 #[Object]
 impl MutationRoot {
     async fn create_user(&self, name: String, email: String) -> User {
-        User { id: 42, name, email }
+        User {
+            id: 42,
+            name,
+            email,
+        }
     }
 }
 
@@ -109,8 +121,7 @@ async fn main() -> anyhow::Result<()> {
 
     let schema = Schema::build(QueryRoot, MutationRoot, EmptySubscription).finish();
 
-    let axon = Axon::<String, String, String>::new("GraphQL Executor")
-        .then(ExecuteGraphQl);
+    let axon = Axon::<String, String, String>::new("GraphQL Executor").then(ExecuteGraphQl);
 
     // ── Query: list users ────────────────────────────────────────────────
 

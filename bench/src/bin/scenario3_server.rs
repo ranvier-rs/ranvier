@@ -1,5 +1,5 @@
-use ranvier_core::Never;
 use ranvier::prelude::*;
+use ranvier_core::Never;
 use ranvier_macros::transition;
 
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -17,17 +17,25 @@ async fn step1(_input: (), _res: &(), _bus: &mut Bus) -> Outcome<WorkflowState, 
 }
 
 #[transition]
-async fn step2(mut state: WorkflowState, _res: &(), _bus: &mut Bus) -> Outcome<WorkflowState, Never> {
+async fn step2(
+    mut state: WorkflowState,
+    _res: &(),
+    _bus: &mut Bus,
+) -> Outcome<WorkflowState, Never> {
     state.counter *= 10;
     state.steps_completed.push("step2".to_string());
     Outcome::Next(state)
 }
 
 #[transition]
-async fn step3(mut state: WorkflowState, _res: &(), _bus: &mut Bus) -> Outcome<serde_json::Value, Never> {
+async fn step3(
+    mut state: WorkflowState,
+    _res: &(),
+    _bus: &mut Bus,
+) -> Outcome<serde_json::Value, Never> {
     state.counter += 5;
     state.steps_completed.push("step3".to_string());
-    
+
     Outcome::Next(serde_json::json!({
         "final_counter": state.counter,
         "history": state.steps_completed,
@@ -38,7 +46,10 @@ async fn step3(mut state: WorkflowState, _res: &(), _bus: &mut Bus) -> Outcome<s
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let addr = "0.0.0.0:3002";
-    println!("Starting Ranvier Benchmark Server (Scenario 3: Multi-step Workflow) on {}", addr);
+    println!(
+        "Starting Ranvier Benchmark Server (Scenario 3: Multi-step Workflow) on {}",
+        addr
+    );
 
     let workflow_axon = Axon::<(), (), Never>::new("workflow")
         .then(step1)

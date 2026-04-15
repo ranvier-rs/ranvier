@@ -33,9 +33,9 @@ use ranvier_http::Ranvier;
 use ranvier_runtime::Axon;
 use ws::room_manager::RoomManager;
 
-use transitions::login::login;
 use transitions::create_room::create_room;
 use transitions::list_rooms::list_rooms;
+use transitions::login::login;
 use transitions::room_history::room_history;
 
 #[tokio::main]
@@ -65,10 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .graceful_shutdown(config.shutdown_timeout())
         .health_endpoint("/health")
         .readiness_liveness_default()
-        .post(
-            "/login",
-            Axon::simple::<String>("login").then(login),
-        )
+        .post("/login", Axon::simple::<String>("login").then(login))
         .get(
             "/rooms",
             Axon::simple::<String>("list_rooms").then(list_rooms),

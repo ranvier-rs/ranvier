@@ -1,7 +1,7 @@
+use crate::models::{Todo, UpdateTodoRequest};
 use ranvier_core::prelude::*;
 use ranvier_http::BusHttpExt;
 use ranvier_macros::transition;
-use crate::models::{Todo, UpdateTodoRequest};
 use std::sync::{Arc, Mutex};
 
 /// Update todo transition — receives `UpdateTodoRequest` directly via `put_typed()`.

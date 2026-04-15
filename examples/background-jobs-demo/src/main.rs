@@ -17,8 +17,8 @@ use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio_cron_scheduler::{Job, JobScheduler};
 
 // ============================================================================
@@ -81,7 +81,9 @@ async fn main() -> anyhow::Result<()> {
     let counter = Arc::new(AtomicU64::new(0));
 
     // Create the scheduler
-    let mut scheduler = JobScheduler::new().await.map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut scheduler = JobScheduler::new()
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Schedule a job that runs every 2 seconds
     let axon_clone = axon.clone();
@@ -99,23 +101,35 @@ async fn main() -> anyhow::Result<()> {
             };
             let result = axon.execute(ctx, &(), &mut bus).await;
             match &result {
-                Outcome::Next(r) => println!("  [Scheduler] {} #{}: {}", r.job_name, r.run_number, r.status),
+                Outcome::Next(r) => println!(
+                    "  [Scheduler] {} #{}: {}",
+                    r.job_name, r.run_number, r.status
+                ),
                 other => println!("  [Scheduler] Unexpected: {:?}", other),
             }
         })
     })
     .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    scheduler.add(job).await.map_err(|e| anyhow::anyhow!("{}", e))?;
+    scheduler
+        .add(job)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Start scheduler
-    scheduler.start().await.map_err(|e| anyhow::anyhow!("{}", e))?;
+    scheduler
+        .start()
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     println!("Scheduler started. Running for 7 seconds...\n");
     tokio::time::sleep(std::time::Duration::from_secs(7)).await;
 
     // Shutdown
-    scheduler.shutdown().await.map_err(|e| anyhow::anyhow!("{}", e))?;
+    scheduler
+        .shutdown()
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let total = counter.load(Ordering::SeqCst);
     println!("\nScheduler stopped after {} runs.", total);

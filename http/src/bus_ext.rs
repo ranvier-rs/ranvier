@@ -131,7 +131,10 @@ mod tests {
     fn path_param_parses_uuid() {
         let mut bus = Bus::new();
         let mut values = HashMap::new();
-        values.insert("id".to_string(), "550e8400-e29b-41d4-a716-446655440000".to_string());
+        values.insert(
+            "id".to_string(),
+            "550e8400-e29b-41d4-a716-446655440000".to_string(),
+        );
         bus.insert(PathParams::new(values));
 
         let id: uuid::Uuid = bus.path_param("id").unwrap();

@@ -21,8 +21,8 @@ use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
-use serde::{Deserialize, Serialize};
 use safe_query_builder::{QueryBuilder, SortDirection};
+use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Row, SqlitePool};
 
@@ -151,16 +151,13 @@ impl Transition<(), UserList> for ListUsers {
                 safe_query_builder::SqlValue::Float(v) => statement.bind(v),
                 safe_query_builder::SqlValue::Text(v) => statement.bind(v),
                 safe_query_builder::SqlValue::Bool(v) => statement.bind(v),
-                safe_query_builder::SqlValue::Null => unreachable!(
-                    "QueryBuilder::filter renders NULL as IS NULL without bindings"
-                ),
+                safe_query_builder::SqlValue::Null => {
+                    unreachable!("QueryBuilder::filter renders NULL as IS NULL without bindings")
+                }
             };
         }
 
-        let rows = match statement
-            .fetch_all(&resources.0)
-            .await
-        {
+        let rows = match statement.fetch_all(&resources.0).await {
             Ok(r) => r,
             Err(e) => return Outcome::fault(format!("Query failed: {}", e)),
         };

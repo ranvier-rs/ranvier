@@ -122,14 +122,8 @@ fn generate_array(schema: &Value, root: &Value, randomize: bool) -> Value {
 
     let items_schema = schema.get("items").unwrap_or(&Value::Null);
     let mut rng = rand::rng();
-    let min_items = schema
-        .get("minItems")
-        .and_then(Value::as_u64)
-        .unwrap_or(1) as usize;
-    let max_items = schema
-        .get("maxItems")
-        .and_then(Value::as_u64)
-        .unwrap_or(3) as usize;
+    let min_items = schema.get("minItems").and_then(Value::as_u64).unwrap_or(1) as usize;
+    let max_items = schema.get("maxItems").and_then(Value::as_u64).unwrap_or(3) as usize;
     let count = rng.random_range(min_items..=max_items);
 
     let items: Vec<Value> = (0..count)
@@ -164,17 +158,16 @@ fn generate_string(schema: &Value, randomize: bool) -> Value {
         };
     }
 
-    let min_len = schema
-        .get("minLength")
-        .and_then(Value::as_u64)
-        .unwrap_or(3) as usize;
+    let min_len = schema.get("minLength").and_then(Value::as_u64).unwrap_or(3) as usize;
     let max_len = schema
         .get("maxLength")
         .and_then(Value::as_u64)
         .unwrap_or(12) as usize;
     let len = rng.random_range(min_len..=max_len);
 
-    let s: String = (0..len).map(|_| rng.random_range(b'a'..=b'z') as char).collect();
+    let s: String = (0..len)
+        .map(|_| rng.random_range(b'a'..=b'z') as char)
+        .collect();
     json!(s)
 }
 

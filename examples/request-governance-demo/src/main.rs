@@ -28,7 +28,7 @@ use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use ranvier_core::prelude::*;
 use ranvier_core::transition::ResourceRequirement;
 use ranvier_guard::prelude::*;
@@ -36,11 +36,12 @@ use ranvier_http::prelude::*;
 use ranvier_runtime::Axon;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
+use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
 use thiserror::Error;
 
-static JWT_SECRET: LazyLock<String> =
-    LazyLock::new(|| std::env::var("JWT_SECRET").unwrap_or_else(|_| "request-governance-demo-secret".to_string()));
+static JWT_SECRET: LazyLock<String> = LazyLock::new(|| {
+    std::env::var("JWT_SECRET").unwrap_or_else(|_| "request-governance-demo-secret".to_string())
+});
 
 #[derive(Clone)]
 struct RequestHeaders(HashMap<String, String>);
@@ -111,9 +112,8 @@ impl IntoProblemDetail for GovernanceError {
         match self {
             GovernanceError::Unauthorized => ProblemDetail::new(401, "Unauthorized"),
             GovernanceError::Forbidden => ProblemDetail::new(403, "Forbidden"),
-            GovernanceError::NotFound(id) => {
-                ProblemDetail::new(404, "Request Not Found").with_detail(format!("Request {id} does not exist"))
-            }
+            GovernanceError::NotFound(id) => ProblemDetail::new(404, "Request Not Found")
+                .with_detail(format!("Request {id} does not exist")),
             GovernanceError::Validation(msg) => {
                 ProblemDetail::new(400, "Validation Error").with_detail(msg.clone())
             }
@@ -244,7 +244,10 @@ async fn insert_audit_event(
     Ok(())
 }
 
-async fn fetch_request(pool: &SqlitePool, id: i64) -> Result<Option<RequestRecord>, GovernanceError> {
+async fn fetch_request(
+    pool: &SqlitePool,
+    id: i64,
+) -> Result<Option<RequestRecord>, GovernanceError> {
     let row = sqlx::query(
         r#"
         SELECT id, title, status, created_by, approved_by
@@ -259,11 +262,21 @@ async fn fetch_request(pool: &SqlitePool, id: i64) -> Result<Option<RequestRecor
 
     match row {
         Some(row) => Ok(Some(RequestRecord {
-            id: row.try_get("id").map_err(|e| GovernanceError::Internal(format!("decode id failed: {e}")))?,
-            title: row.try_get("title").map_err(|e| GovernanceError::Internal(format!("decode title failed: {e}")))?,
-            status: row.try_get("status").map_err(|e| GovernanceError::Internal(format!("decode status failed: {e}")))?,
-            created_by: row.try_get("created_by").map_err(|e| GovernanceError::Internal(format!("decode created_by failed: {e}")))?,
-            approved_by: row.try_get("approved_by").map_err(|e| GovernanceError::Internal(format!("decode approved_by failed: {e}")))?,
+            id: row
+                .try_get("id")
+                .map_err(|e| GovernanceError::Internal(format!("decode id failed: {e}")))?,
+            title: row
+                .try_get("title")
+                .map_err(|e| GovernanceError::Internal(format!("decode title failed: {e}")))?,
+            status: row
+                .try_get("status")
+                .map_err(|e| GovernanceError::Internal(format!("decode status failed: {e}")))?,
+            created_by: row
+                .try_get("created_by")
+                .map_err(|e| GovernanceError::Internal(format!("decode created_by failed: {e}")))?,
+            approved_by: row.try_get("approved_by").map_err(|e| {
+                GovernanceError::Internal(format!("decode approved_by failed: {e}"))
+            })?,
         })),
         None => Ok(None),
     }
@@ -320,7 +333,9 @@ impl Transition<CreateRequestInput, RequestRecord> for CreateRequest {
         };
 
         if input.title.trim().is_empty() {
-            return Outcome::Fault(GovernanceError::Validation("title cannot be empty".to_string()));
+            return Outcome::Fault(GovernanceError::Validation(
+                "title cannot be empty".to_string(),
+            ));
         }
 
         let result = sqlx::query(
@@ -338,17 +353,31 @@ impl Transition<CreateRequestInput, RequestRecord> for CreateRequest {
 
         let result = match result {
             Ok(result) => result,
-            Err(error) => return Outcome::Fault(GovernanceError::Internal(format!("create request failed: {error}"))),
+            Err(error) => {
+                return Outcome::Fault(GovernanceError::Internal(format!(
+                    "create request failed: {error}"
+                )));
+            }
         };
 
         let id = result.last_insert_rowid();
-        if let Err(error) = insert_audit_event(&resources.pool, "request.created", Some(id), &claims.sub, &input.title).await {
+        if let Err(error) = insert_audit_event(
+            &resources.pool,
+            "request.created",
+            Some(id),
+            &claims.sub,
+            &input.title,
+        )
+        .await
+        {
             return Outcome::Fault(error);
         }
 
         match fetch_request(&resources.pool, id).await {
             Ok(Some(record)) => Outcome::Next(record),
-            Ok(None) => Outcome::Fault(GovernanceError::Internal(format!("created request missing: {id}"))),
+            Ok(None) => Outcome::Fault(GovernanceError::Internal(format!(
+                "created request missing: {id}"
+            ))),
             Err(error) => Outcome::Fault(error),
         }
     }
@@ -378,9 +407,9 @@ impl Transition<(), serde_json::Value> for GetRequest {
         };
 
         match fetch_request(&resources.pool, id).await {
-            Ok(Some(record)) => {
-                Outcome::Next(serde_json::to_value(record).unwrap_or_else(|_| serde_json::json!({})))
-            }
+            Ok(Some(record)) => Outcome::Next(
+                serde_json::to_value(record).unwrap_or_else(|_| serde_json::json!({})),
+            ),
             Ok(None) => Outcome::Fault(GovernanceError::NotFound(id)),
             Err(error) => Outcome::Fault(error),
         }
@@ -418,7 +447,9 @@ impl Transition<(), serde_json::Value> for ApproveRequest {
         };
 
         if existing.status == "approved" {
-            return Outcome::Fault(GovernanceError::Validation("request already approved".to_string()));
+            return Outcome::Fault(GovernanceError::Validation(
+                "request already approved".to_string(),
+            ));
         }
 
         let result = sqlx::query(
@@ -435,11 +466,19 @@ impl Transition<(), serde_json::Value> for ApproveRequest {
         .await;
 
         if let Err(error) = result {
-            return Outcome::Fault(GovernanceError::Internal(format!("approve request failed: {error}")));
+            return Outcome::Fault(GovernanceError::Internal(format!(
+                "approve request failed: {error}"
+            )));
         }
 
-        if let Err(error) =
-            insert_audit_event(&resources.pool, "request.approved", Some(id), &claims.sub, "approved by policy").await
+        if let Err(error) = insert_audit_event(
+            &resources.pool,
+            "request.approved",
+            Some(id),
+            &claims.sub,
+            "approved by policy",
+        )
+        .await
         {
             return Outcome::Fault(error);
         }
@@ -447,7 +486,9 @@ impl Transition<(), serde_json::Value> for ApproveRequest {
         let updated = match fetch_request(&resources.pool, id).await {
             Ok(Some(record)) => record,
             Ok(None) => {
-                return Outcome::Fault(GovernanceError::Internal(format!("approved request missing: {id}")));
+                return Outcome::Fault(GovernanceError::Internal(format!(
+                    "approved request missing: {id}"
+                )));
             }
             Err(error) => return Outcome::Fault(error),
         };
@@ -481,10 +522,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let state = AppState { pool };
 
-    let login = Axon::<LoginRequest, LoginRequest, GovernanceError, AppState>::new("login").then(Login);
-    let create_request = Axon::<CreateRequestInput, CreateRequestInput, GovernanceError, AppState>::new("create-request").then(CreateRequest);
-    let get_request = Axon::<(), (), GovernanceError, AppState>::new("get-request").then(GetRequest);
-    let approve_request = Axon::<(), (), GovernanceError, AppState>::new("approve-request").then(ApproveRequest);
+    let login =
+        Axon::<LoginRequest, LoginRequest, GovernanceError, AppState>::new("login").then(Login);
+    let create_request =
+        Axon::<CreateRequestInput, CreateRequestInput, GovernanceError, AppState>::new(
+            "create-request",
+        )
+        .then(CreateRequest);
+    let get_request =
+        Axon::<(), (), GovernanceError, AppState>::new("get-request").then(GetRequest);
+    let approve_request =
+        Axon::<(), (), GovernanceError, AppState>::new("approve-request").then(ApproveRequest);
 
     println!("Request Governance Demo listening on http://{addr}");
     println!("  POST /login");
@@ -515,7 +563,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .post_typed_json_out("/login", login)
         .post_typed_json_out("/requests", create_request)
         .get_with_error("/requests/:id", get_request, governance_error_response)
-        .post_with_error("/requests/:id/approve", approve_request, governance_error_response)
+        .post_with_error(
+            "/requests/:id/approve",
+            approve_request,
+            governance_error_response,
+        )
         .run(state)
         .await
 }

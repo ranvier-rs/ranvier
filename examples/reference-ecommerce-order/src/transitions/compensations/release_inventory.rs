@@ -1,6 +1,6 @@
+use crate::store::AppStore;
 use ranvier_core::prelude::*;
 use ranvier_macros::transition;
-use crate::store::AppStore;
 
 /// Saga compensation: release reserved inventory.
 /// Receives the output of the `reserve_inventory` step as input.

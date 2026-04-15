@@ -36,10 +36,7 @@ impl BearerAuth {
 
     /// Validate the Authorization header against the configured token.
     /// Returns Ok(()) if auth passes, Err with status code and error body if not.
-    pub fn validate(
-        &self,
-        headers: &HeaderMap,
-    ) -> Result<(), (StatusCode, axum::Json<Value>)> {
+    pub fn validate(&self, headers: &HeaderMap) -> Result<(), (StatusCode, axum::Json<Value>)> {
         let Some(expected) = &self.token else {
             return Ok(()); // Auth not enabled
         };
@@ -53,9 +50,7 @@ impl BearerAuth {
             let provided = token.trim().as_bytes();
             let expected_bytes = expected.as_bytes();
             // Use constant-time comparison to prevent timing attacks.
-            if provided.len() == expected_bytes.len()
-                && provided.ct_eq(expected_bytes).into()
-            {
+            if provided.len() == expected_bytes.len() && provided.ct_eq(expected_bytes).into() {
                 return Ok(());
             }
             return Err((

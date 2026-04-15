@@ -37,9 +37,9 @@ pub mod prelude {
     pub use ranvier_core::prelude::*;
     #[cfg(feature = "guard")]
     pub use ranvier_guard::prelude::*;
-    pub use ranvier_macros::ResourceRequirement;
     #[cfg(feature = "http")]
     pub use ranvier_http::prelude::*;
+    pub use ranvier_macros::ResourceRequirement;
     #[cfg(feature = "openapi")]
     pub use ranvier_openapi::prelude::*;
     pub use ranvier_runtime::prelude::*;

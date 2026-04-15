@@ -156,7 +156,10 @@ fn build_order_axon() -> Axon<OrderState, String, String> {
 }
 
 fn print_trace(label: &str, trace: &ranvier_runtime::PersistedTrace) {
-    println!("  [Trace:{}] id={} circuit={}", label, trace.trace_id, trace.circuit);
+    println!(
+        "  [Trace:{}] id={} circuit={}",
+        label, trace.trace_id, trace.circuit
+    );
     println!("    events: {}", trace.events.len());
     for event in &trace.events {
         println!(

@@ -140,28 +140,26 @@ impl Transition<UserLookupRequest, UserProfile> for FetchUserFromApi {
 
         // Step 2: Map HTTP status to Outcome
         match status {
-            200..=299 => {
-                match response.json::<serde_json::Value>().await {
-                    Ok(json) => {
-                        let name = json["name"].as_str().unwrap_or("unknown");
-                        let email = json["email"].as_str().unwrap_or("unknown");
-                        let company = json["company"]["name"].as_str().unwrap_or("unknown");
+            200..=299 => match response.json::<serde_json::Value>().await {
+                Ok(json) => {
+                    let name = json["name"].as_str().unwrap_or("unknown");
+                    let email = json["email"].as_str().unwrap_or("unknown");
+                    let company = json["company"]["name"].as_str().unwrap_or("unknown");
 
-                        let profile = UserProfile {
-                            id: input.user_id,
-                            name: name.to_string(),
-                            email: email.to_string(),
-                            company: company.to_string(),
-                        };
-                        println!(
-                            "  [FetchUserFromApi] 200 OK: {} <{}>",
-                            profile.name, profile.email
-                        );
-                        Outcome::Next(profile)
-                    }
-                    Err(e) => Outcome::Fault(format!("JSON parse error: {}", e)),
+                    let profile = UserProfile {
+                        id: input.user_id,
+                        name: name.to_string(),
+                        email: email.to_string(),
+                        company: company.to_string(),
+                    };
+                    println!(
+                        "  [FetchUserFromApi] 200 OK: {} <{}>",
+                        profile.name, profile.email
+                    );
+                    Outcome::Next(profile)
                 }
-            }
+                Err(e) => Outcome::Fault(format!("JSON parse error: {}", e)),
+            },
             400..=499 => {
                 // Client error → Branch (non-retryable, handled separately)
                 println!("  [FetchUserFromApi] {} Client Error", status);
@@ -263,25 +261,29 @@ async fn main() -> anyhow::Result<()> {
     println!("--- Scenario 2: Client error (404) → Branch ---");
     println!("    Fetch user #999 → HTTP 404 → Branch(\"client_error\")\n");
     {
-        let pipeline =
-            Axon::<UserLookupRequest, UserLookupRequest, String, ApiResources>::new(
-                "UserLookup404",
-            )
-            .then(ValidateRequest)
-            .then(FetchUserFromApi)
-            .then(EnrichProfile);
+        let pipeline = Axon::<UserLookupRequest, UserLookupRequest, String, ApiResources>::new(
+            "UserLookup404",
+        )
+        .then(ValidateRequest)
+        .then(FetchUserFromApi)
+        .then(EnrichProfile);
 
         let request = UserLookupRequest { user_id: 999 };
         let mut bus = Bus::new();
 
         match pipeline.execute(request, &resources, &mut bus).await {
             Outcome::Next(profile) => {
-                println!("  Result: {} (API returned 200 for unknown ID)", profile.user.name);
+                println!(
+                    "  Result: {} (API returned 200 for unknown ID)",
+                    profile.user.name
+                );
             }
             Outcome::Fault(err) => println!("  Fault: {}", err),
             Outcome::Branch(id, payload) => {
                 println!("  Branch(\"{}\"): {:?}", id, payload);
-                println!("  → In production, route to a fallback handler or return a friendly error");
+                println!(
+                    "  → In production, route to a fallback handler or return a friendly error"
+                );
             }
             other => println!("  Unexpected: {:?}", other),
         }
@@ -293,17 +295,14 @@ async fn main() -> anyhow::Result<()> {
     println!("--- Scenario 3: Resilient service call (retry + timeout) ---");
     println!("    Validate → Fetch with retry(2) + timeout(5s) → Enrich\n");
     {
-        let pipeline =
-            Axon::<UserLookupRequest, UserLookupRequest, String, ApiResources>::new(
-                "ResilientLookup",
-            )
-            .then(ValidateRequest)
-            .then_with_timeout(
-                FetchUserFromApi,
-                Duration::from_secs(5),
-                || "Service call timed out after 5s".to_string(),
-            )
-            .then(EnrichProfile);
+        let pipeline = Axon::<UserLookupRequest, UserLookupRequest, String, ApiResources>::new(
+            "ResilientLookup",
+        )
+        .then(ValidateRequest)
+        .then_with_timeout(FetchUserFromApi, Duration::from_secs(5), || {
+            "Service call timed out after 5s".to_string()
+        })
+        .then(EnrichProfile);
 
         let request = UserLookupRequest { user_id: 3 };
         let mut bus = Bus::new();
@@ -326,13 +325,12 @@ async fn main() -> anyhow::Result<()> {
     println!("--- Scenario 4: Local validation failure ---");
     println!("    Validate user_id=0 → immediate Fault (no network call)\n");
     {
-        let pipeline =
-            Axon::<UserLookupRequest, UserLookupRequest, String, ApiResources>::new(
-                "ValidationFail",
-            )
-            .then(ValidateRequest)
-            .then(FetchUserFromApi)
-            .then(EnrichProfile);
+        let pipeline = Axon::<UserLookupRequest, UserLookupRequest, String, ApiResources>::new(
+            "ValidationFail",
+        )
+        .then(ValidateRequest)
+        .then(FetchUserFromApi)
+        .then(EnrichProfile);
 
         let request = UserLookupRequest { user_id: 0 };
         let mut bus = Bus::new();
