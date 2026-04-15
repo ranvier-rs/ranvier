@@ -188,6 +188,11 @@ pub trait GuardIntegration: Send + Sync + 'static {
         short_type_name(std::any::type_name::<Self>())
     }
 
+    /// Optional OpenAPI security-scheme hint exposed through route descriptors.
+    fn security_scheme_hint(&self) -> Option<String> {
+        None
+    }
+
     /// Consume self and produce a complete guard registration.
     fn register(self) -> RegisteredGuard;
 }
@@ -201,8 +206,14 @@ fn short_type_name(full: &str) -> String {
         .to_string()
 }
 
-fn guard_label_registry() -> &'static Mutex<HashMap<usize, String>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<usize, String>>> = OnceLock::new();
+#[derive(Clone, Debug)]
+struct RegisteredGuardMetadata {
+    label: String,
+    security_scheme_hint: Option<String>,
+}
+
+fn guard_metadata_registry() -> &'static Mutex<HashMap<usize, RegisteredGuardMetadata>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<usize, RegisteredGuardMetadata>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -210,19 +221,38 @@ fn guard_exec_key(exec: &Arc<dyn GuardExec>) -> usize {
     Arc::as_ptr(exec) as *const () as usize
 }
 
-fn remember_guard_label(exec: &Arc<dyn GuardExec>, label: String) {
-    if let Ok(mut registry) = guard_label_registry().lock() {
-        registry.insert(guard_exec_key(exec), label);
+fn remember_guard_metadata(
+    exec: &Arc<dyn GuardExec>,
+    label: String,
+    security_scheme_hint: Option<String>,
+) {
+    if let Ok(mut registry) = guard_metadata_registry().lock() {
+        registry.insert(
+            guard_exec_key(exec),
+            RegisteredGuardMetadata {
+                label,
+                security_scheme_hint,
+            },
+        );
     }
 }
 
 pub(crate) fn registered_guard_label(exec: &Arc<dyn GuardExec>) -> String {
-    if let Ok(registry) = guard_label_registry().lock() {
-        if let Some(label) = registry.get(&guard_exec_key(exec)) {
-            return label.clone();
+    if let Ok(registry) = guard_metadata_registry().lock() {
+        if let Some(metadata) = registry.get(&guard_exec_key(exec)) {
+            return metadata.label.clone();
         }
     }
     exec.guard_label()
+}
+
+pub(crate) fn registered_guard_security_scheme_hint(exec: &Arc<dyn GuardExec>) -> Option<String> {
+    if let Ok(registry) = guard_metadata_registry().lock() {
+        if let Some(metadata) = registry.get(&guard_exec_key(exec)) {
+            return metadata.security_scheme_hint.clone();
+        }
+    }
+    None
 }
 
 /// Register a guard and record its label for later introspection.
@@ -231,8 +261,9 @@ where
     G: GuardIntegration,
 {
     let label = guard.guard_label();
+    let security_scheme_hint = guard.security_scheme_hint();
     let registration = guard.register();
-    remember_guard_label(&registration.exec, label);
+    remember_guard_metadata(&registration.exec, label, security_scheme_hint);
     registration
 }
 
@@ -565,6 +596,13 @@ impl<T> GuardIntegration for ranvier_guard::AuthGuard<T>
 where
     T: Send + Sync + 'static,
 {
+    fn security_scheme_hint(&self) -> Option<String> {
+        match self.strategy() {
+            ranvier_guard::AuthStrategy::Bearer { .. } => Some("bearerAuth".to_string()),
+            _ => None,
+        }
+    }
+
     fn register(self) -> RegisteredGuard {
         // Determine the header to extract based on strategy
         let header_name: &'static str = match self.strategy() {

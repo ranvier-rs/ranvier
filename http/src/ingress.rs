@@ -44,6 +44,7 @@ use tracing::Instrument;
 use crate::guard_integration::{
     GuardExec, GuardIntegration, PreflightConfig, RegisteredGuard, ResponseBodyTransformFn,
     ResponseExtractorFn, register_guard, registered_guard_label,
+    registered_guard_security_scheme_hint,
 };
 use crate::response::{
     HttpResponse, IntoResponse, json_error_response, outcome_to_json_response,
@@ -403,18 +404,19 @@ pub struct HttpRouteDescriptor {
     pub body_schema: Option<serde_json::Value>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum HttpGuardScope {
     Global,
     Group,
     Route,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct HttpGuardDescriptor {
     name: String,
     scope: HttpGuardScope,
     scope_path: Option<String>,
+    security_scheme_hint: Option<String>,
 }
 
 impl HttpGuardDescriptor {
@@ -423,6 +425,7 @@ impl HttpGuardDescriptor {
             name: name.into(),
             scope: HttpGuardScope::Global,
             scope_path: None,
+            security_scheme_hint: None,
         }
     }
 
@@ -431,6 +434,7 @@ impl HttpGuardDescriptor {
             name: name.into(),
             scope: HttpGuardScope::Group,
             scope_path: Some(prefix.into()),
+            security_scheme_hint: None,
         }
     }
 
@@ -439,6 +443,7 @@ impl HttpGuardDescriptor {
             name: name.into(),
             scope: HttpGuardScope::Route,
             scope_path: Some(path.into()),
+            security_scheme_hint: None,
         }
     }
 
@@ -452,6 +457,15 @@ impl HttpGuardDescriptor {
 
     pub fn scope_path(&self) -> Option<&str> {
         self.scope_path.as_deref()
+    }
+
+    pub fn security_scheme_hint(&self) -> Option<&str> {
+        self.security_scheme_hint.as_deref()
+    }
+
+    pub fn with_security_scheme_hint(mut self, security_scheme_hint: impl Into<String>) -> Self {
+        self.security_scheme_hint = Some(security_scheme_hint.into());
+        self
     }
 }
 
@@ -476,6 +490,12 @@ impl HttpRouteDescriptor {
     /// Returns the effective guard stack for this route in execution order.
     pub fn guard_descriptors(&self) -> &[HttpGuardDescriptor] {
         &self.guards
+    }
+
+    /// Returns a copy of this descriptor with the provided guard metadata.
+    pub fn with_guard_descriptors(mut self, guards: Vec<HttpGuardDescriptor>) -> Self {
+        self.guards = guards;
+        self
     }
 
     /// Returns the JSON Schema for the request body, if available.
@@ -1256,9 +1276,14 @@ where
             self.bus_injectors.push(injector);
         }
         let guard_label = registered_guard_label(&registration.exec);
+        let security_scheme_hint = registered_guard_security_scheme_hint(&registration.exec);
         self.guard_execs.push(registration.exec);
-        self.guard_descriptors
-            .push(HttpGuardDescriptor::global(guard_label));
+        let descriptor = if let Some(security_scheme_hint) = security_scheme_hint {
+            HttpGuardDescriptor::global(guard_label).with_security_scheme_hint(security_scheme_hint)
+        } else {
+            HttpGuardDescriptor::global(guard_label)
+        };
+        self.guard_descriptors.push(descriptor);
         if let Some(extractor) = registration.response_extractor {
             self.guard_response_extractors.push(extractor);
         }
@@ -3107,9 +3132,15 @@ where
                 self.bus_injectors.push(injector);
             }
             let guard_label = registered_guard_label(&registration.exec);
+            let security_scheme_hint = registered_guard_security_scheme_hint(&registration.exec);
             self.guard_execs.push(registration.exec);
-            self.guard_descriptors
-                .push(HttpGuardDescriptor::route(guard_label, route_path.clone()));
+            let descriptor = if let Some(security_scheme_hint) = security_scheme_hint {
+                HttpGuardDescriptor::route(guard_label, route_path.clone())
+                    .with_security_scheme_hint(security_scheme_hint)
+            } else {
+                HttpGuardDescriptor::route(guard_label, route_path.clone())
+            };
+            self.guard_descriptors.push(descriptor);
             if let Some(extractor) = registration.response_extractor {
                 self.guard_response_extractors.push(extractor);
             }
@@ -4711,10 +4742,15 @@ where
             self.ingress.bus_injectors.push(injector);
         }
         let guard_label = registered_guard_label(&registration.exec);
+        let security_scheme_hint = registered_guard_security_scheme_hint(&registration.exec);
         self.ingress.guard_execs.push(registration.exec);
-        self.ingress
-            .guard_descriptors
-            .push(HttpGuardDescriptor::group(guard_label, self.prefix.clone()));
+        let descriptor = if let Some(security_scheme_hint) = security_scheme_hint {
+            HttpGuardDescriptor::group(guard_label, self.prefix.clone())
+                .with_security_scheme_hint(security_scheme_hint)
+        } else {
+            HttpGuardDescriptor::group(guard_label, self.prefix.clone())
+        };
+        self.ingress.guard_descriptors.push(descriptor);
         if let Some(extractor) = registration.response_extractor {
             self.ingress.guard_response_extractors.push(extractor);
         }

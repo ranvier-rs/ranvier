@@ -49,6 +49,7 @@ This example does **not** expose OpenAPI. Its role is different from `admin-crud
 
 - `admin-crud-demo` is the OpenAPI/reference-doc surface
 - `request-governance-demo` is the structured error + guard/observability surface
+- for M386, this service is the explicit ProblemDetail runtime reference, not the OpenAPI-bearing example
 
 ## Run
 

@@ -10,10 +10,14 @@
 //! ## Key Concepts
 //! - OpenApiGenerator extracts routes from Ingress
 //! - `post_typed()` auto-captures request body JSON Schema (v0.36+)
+//! - `AuthGuard` metadata can drive bearer security hints for protected routes
 //! - Manual schema overrides for response types
+//! - health/readiness/liveness endpoints are exported from ingress descriptors
 //! - Embedded Swagger UI with interactive docs
 
 use ranvier_core::prelude::*;
+use ranvier_guard::prelude::*;
+use ranvier_http::guards;
 use ranvier_http::prelude::*;
 use ranvier_openapi::prelude::*;
 use ranvier_runtime::Axon;
@@ -140,9 +144,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ingress = Ranvier::http::<DocsResources>()
         .bind("127.0.0.1:3111")
         .get("/users/:id", get_user)
+        .get_with_guards(
+            "/users/me",
+            Axon::<(), (), String, DocsResources>::new("GetMe").then(GetUser),
+            guards![AuthGuard::<DocsResources>::bearer(vec![
+                "demo-token".into()
+            ])],
+        )
         .post_typed("/users", create_user)
         .get("/openapi.json", openapi_route)
-        .get("/docs", docs_route);
+        .get("/docs", docs_route)
+        .health_endpoint("/healthz")
+        .readiness_liveness("/readyz", "/livez");
 
     let openapi_json = OpenApiGenerator::from_ingress(&ingress)
         .title("Ranvier OpenAPI Demo")
@@ -152,7 +165,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_bearer_auth()
         .with_problem_detail_errors()
         .summary(http::Method::GET, "/users/:id", "Get a user by id")
+        .summary(http::Method::GET, "/users/me", "Get the authenticated user")
         .summary(http::Method::POST, "/users", "Create a user")
+        .json_response_schema_from_into_response::<CreateUserResponse>(
+            http::Method::GET,
+            "/users/:id",
+        )
+        .json_response_schema_from_into_response::<CreateUserResponse>(
+            http::Method::GET,
+            "/users/me",
+        )
         // Request body schema auto-captured from post_typed::<CreateUserRequest>()
         .json_response_schema_from_into_response::<CreateUserResponse>(http::Method::POST, "/users")
         .build_json();
@@ -165,6 +187,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("openapi-demo listening on http://127.0.0.1:3111");
     println!("OpenAPI JSON: http://127.0.0.1:3111/openapi.json");
     println!("Swagger UI:   http://127.0.0.1:3111/docs");
+    println!("Health:       http://127.0.0.1:3111/healthz");
+    println!("Readiness:    http://127.0.0.1:3111/readyz");
+    println!("Liveness:     http://127.0.0.1:3111/livez");
 
     ingress.run(resources).await
 }

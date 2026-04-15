@@ -7,6 +7,7 @@ rust-version.workspace = true
 ranvier-core = { workspace = true }
 ranvier-runtime = { workspace = true }
 ranvier-http = { workspace = true }
+ranvier-guard = { workspace = true }
 ranvier-openapi = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }

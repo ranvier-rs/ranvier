@@ -3457,6 +3457,7 @@ dependencies = [
  "async-trait",
  "http 1.4.0",
  "ranvier-core",
+ "ranvier-guard",
  "ranvier-http",
  "ranvier-openapi",
  "ranvier-runtime",

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use http::Method;
 use ranvier_core::Schematic;
-use ranvier_http::{FromRequest, HttpIngress, HttpRouteDescriptor, IntoResponse};
+use ranvier_http::{FromRequest, HttpGuardScope, HttpIngress, HttpRouteDescriptor, IntoResponse};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -94,6 +94,8 @@ pub struct OpenApiOperation {
     #[serde(rename = "requestBody", skip_serializing_if = "Option::is_none")]
     pub request_body: Option<OpenApiRequestBody>,
     pub responses: BTreeMap<String, OpenApiResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security: Option<Vec<BTreeMap<String, Vec<String>>>>,
     #[serde(rename = "x-ranvier", skip_serializing_if = "Option::is_none")]
     pub x_ranvier: Option<Value>,
 }
@@ -305,8 +307,11 @@ impl OpenApiGenerator {
 
     /// Add a Bearer token SecurityScheme (`bearerAuth`) to the spec.
     ///
-    /// When enabled, each operation will reference the `bearerAuth` security scheme,
-    /// and the Swagger UI will show a token input.
+    /// When enabled, the document exposes the `bearerAuth` security scheme.
+    ///
+    /// Operations that carry an explicit `AuthGuard` hint in route descriptors
+    /// will reference that scheme automatically. Routes without that hint keep
+    /// `security` unset unless callers patch the document explicitly.
     pub fn with_bearer_auth(mut self) -> Self {
         self.bearer_auth = true;
         self
@@ -337,6 +342,34 @@ impl OpenApiGenerator {
                     .trim_matches('_')
             );
 
+            let guards = route
+                .guard_descriptors()
+                .iter()
+                .map(|guard| {
+                    json!({
+                        "name": guard.name(),
+                        "scope": match guard.scope() {
+                            HttpGuardScope::Global => "global",
+                            HttpGuardScope::Group => "group",
+                            HttpGuardScope::Route => "route",
+                        },
+                        "scope_path": guard.scope_path(),
+                        "security_scheme_hint": guard.security_scheme_hint(),
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            let mut x_ranvier = json!({
+                "route_pattern": route.path_pattern(),
+                "guards": guards,
+            });
+            if let Some(metadata) = self.schematic.as_ref() {
+                x_ranvier["schematic_id"] = json!(metadata.id);
+                x_ranvier["schematic_name"] = json!(metadata.name);
+                x_ranvier["node_count"] = json!(metadata.node_count);
+                x_ranvier["edge_count"] = json!(metadata.edge_count);
+            }
+
             let mut operation = OpenApiOperation {
                 summary: Some(default_summary),
                 operation_id: if operation_id.is_empty() {
@@ -353,15 +386,8 @@ impl OpenApiGenerator {
                         content: None,
                     },
                 )]),
-                x_ranvier: self.schematic.as_ref().map(|metadata| {
-                    json!({
-                        "schematic_id": metadata.id,
-                        "schematic_name": metadata.name,
-                        "node_count": metadata.node_count,
-                        "edge_count": metadata.edge_count,
-                        "route_pattern": route.path_pattern(),
-                    })
-                }),
+                security: None,
+                x_ranvier: Some(x_ranvier),
             };
 
             // Auto-apply body_schema from post_typed / put_typed / patch_typed
@@ -410,6 +436,14 @@ impl OpenApiGenerator {
                             description: desc.to_string(),
                             content: Some(problem_content.clone()),
                         });
+                }
+            }
+
+            if self.bearer_auth {
+                if let Some(security_scheme_name) = route_security_scheme_hint(&route) {
+                    let mut requirement = BTreeMap::new();
+                    requirement.insert(security_scheme_name, Vec::new());
+                    operation.security = Some(vec![requirement]);
                 }
             }
 
@@ -508,6 +542,13 @@ pub fn swagger_ui_html(spec_url: &str, title: &str) -> String {
 
 fn operation_key(method: &Method, path_pattern: &str) -> String {
     format!("{} {}", method.as_str(), path_pattern)
+}
+
+fn route_security_scheme_hint(route: &HttpRouteDescriptor) -> Option<String> {
+    route
+        .guard_descriptors()
+        .iter()
+        .find_map(|guard| guard.security_scheme_hint().map(ToOwned::to_owned))
 }
 
 fn normalize_path(path_pattern: &str) -> (String, Vec<OpenApiParameter>) {
@@ -763,6 +804,85 @@ mod tests {
         assert_eq!(schemes["bearerAuth"]["type"], "http");
         assert_eq!(schemes["bearerAuth"]["scheme"], "bearer");
         assert_eq!(schemes["bearerAuth"]["bearerFormat"], "JWT");
+    }
+
+    #[test]
+    fn auth_guard_routes_get_bearer_security_requirement() {
+        let route = HttpRouteDescriptor::new(Method::GET, "/admin").with_guard_descriptors(vec![
+            ranvier_http::HttpGuardDescriptor::global("AccessLogGuard"),
+            ranvier_http::HttpGuardDescriptor::route("AuthGuard", "/admin")
+                .with_security_scheme_hint("bearerAuth"),
+        ]);
+
+        let doc = OpenApiGenerator::from_descriptors(vec![route])
+            .with_bearer_auth()
+            .build();
+
+        let operation = doc.paths["/admin"].get.as_ref().expect("get operation");
+        let security = operation.security.as_ref().expect("security requirement");
+        assert_eq!(security.len(), 1);
+        assert!(security[0].contains_key("bearerAuth"));
+    }
+
+    #[test]
+    fn public_routes_do_not_get_bearer_security_without_auth_guard() {
+        let route = HttpRouteDescriptor::new(Method::GET, "/public").with_guard_descriptors(vec![
+            ranvier_http::HttpGuardDescriptor::global("AccessLogGuard"),
+        ]);
+
+        let doc = OpenApiGenerator::from_descriptors(vec![route])
+            .with_bearer_auth()
+            .build();
+
+        let operation = doc.paths["/public"].get.as_ref().expect("get operation");
+        assert!(operation.security.is_none());
+    }
+
+    #[test]
+    fn auth_guard_without_scheme_hint_does_not_get_security_requirement() {
+        let route = HttpRouteDescriptor::new(Method::GET, "/api-key").with_guard_descriptors(vec![
+            ranvier_http::HttpGuardDescriptor::route("AuthGuard", "/api-key"),
+        ]);
+
+        let doc = OpenApiGenerator::from_descriptors(vec![route])
+            .with_bearer_auth()
+            .build();
+
+        let operation = doc.paths["/api-key"].get.as_ref().expect("get operation");
+        assert!(operation.security.is_none());
+    }
+
+    #[test]
+    fn x_ranvier_includes_guard_metadata() {
+        let route = HttpRouteDescriptor::new(Method::GET, "/admin").with_guard_descriptors(vec![
+            ranvier_http::HttpGuardDescriptor::global("AccessLogGuard"),
+            ranvier_http::HttpGuardDescriptor::group("AuthGuard", "/admin")
+                .with_security_scheme_hint("bearerAuth"),
+        ]);
+
+        let doc = OpenApiGenerator::from_descriptors(vec![route])
+            .with_schematic(&Schematic::new("openapi-guards"))
+            .build_json();
+
+        let guards = &doc["paths"]["/admin"]["get"]["x-ranvier"]["guards"];
+        assert_eq!(guards.as_array().expect("guards array").len(), 2);
+        assert_eq!(guards[0]["name"], "AccessLogGuard");
+        assert_eq!(guards[1]["scope"], "group");
+        assert_eq!(guards[1]["scope_path"], "/admin");
+        assert_eq!(guards[1]["security_scheme_hint"], "bearerAuth");
+    }
+
+    #[test]
+    fn from_ingress_includes_health_and_readiness_liveness_paths() {
+        let ingress = HttpIngress::<()>::new()
+            .health_endpoint("/healthz")
+            .readiness_liveness("/readyz", "/livez");
+
+        let doc = OpenApiGenerator::from_ingress(&ingress).build();
+
+        assert!(doc.paths.contains_key("/healthz"));
+        assert!(doc.paths.contains_key("/readyz"));
+        assert!(doc.paths.contains_key("/livez"));
     }
 
     // --- M296: body_schema auto-application tests ---
