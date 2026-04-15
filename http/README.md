@@ -52,6 +52,44 @@ Ranvier::http::<()>()
 - [`routing-demo`](../examples/routing-demo/) — Route branching patterns
 - [`routing-params-demo`](../examples/routing-params-demo/) — Route parameter extraction
 - [`static-spa-demo`](../examples/static-spa-demo/) — explicit file-backed static assets + SPA shell
+- [`large_api_demo`](examples/large_api_demo.rs) — grouped-route guard visibility + `route_descriptors()` proof
+
+## Route / Guard Introspection
+
+`route_descriptors()` now exports the effective guard stack for each route in
+execution order. This keeps guard visibility explicit even when routes are
+grouped or additional per-route guards are attached.
+
+```rust,ignore
+let ingress = Ranvier::http::<()>()
+    .guard(AccessLogGuard::<()>::new())
+    .group("/api", |g| {
+        g.guard(RequestIdGuard::<()>::new())
+            .get_json_out("/status", status_circuit)
+    });
+
+for route in ingress.route_descriptors() {
+    println!("{} {}", route.method(), route.path_pattern());
+    for guard in route.guard_descriptors() {
+        println!("  - {} {:?}", guard.name(), guard.scope());
+    }
+}
+```
+
+## When To Use `group()`
+
+Use `group()` when routes share a stable prefix and a shared guard/policy
+context that would otherwise be repeated across many registrations.
+
+Prefer plain route registration when:
+
+- there are only one or two routes under the prefix
+- the routes do not actually share guard semantics
+- nesting would make the effective route/guard surface harder to explain than a
+  flat list
+
+If `route_descriptors()` becomes harder to read after grouping, the grouping is
+probably too deep or too broad for Ranvier's explicitness goals.
 
 ## MSRV
 

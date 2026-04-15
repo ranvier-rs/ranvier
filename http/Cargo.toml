@@ -66,10 +66,5 @@ askama = { version = "0.12", optional = true }
 [dev-dependencies]
 tempfile = "3.14"
 
-# Gate broken examples behind non-existent feature to prevent default compilation
-[[example]]
-name = "large_api_demo"
-required-features = ["_route_group"]
-
 [lints]
 workspace = true

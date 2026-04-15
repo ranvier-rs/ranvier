@@ -23,14 +23,15 @@ use async_trait::async_trait;
 use ranvier_core::bus::Bus;
 use ranvier_core::outcome::Outcome;
 use ranvier_core::transition::Transition;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 
 /// Function that extracts HTTP request data into the Bus.
 pub type BusInjectorFn = Arc<dyn Fn(&http::request::Parts, &mut Bus) + Send + Sync + 'static>;
 
 /// Function that reads Bus data and modifies response headers.
-pub type ResponseExtractorFn =
-    Arc<dyn Fn(&Bus, &mut http::HeaderMap) + Send + Sync + 'static>;
+pub type ResponseExtractorFn = Arc<dyn Fn(&Bus, &mut http::HeaderMap) + Send + Sync + 'static>;
 
 /// Function that transforms the response body (e.g., compression).
 ///
@@ -85,6 +86,11 @@ pub trait GuardExec: Send + Sync {
     ///
     /// Returns `Ok(())` if the request passes, or `Err(GuardRejection)` if rejected.
     async fn exec_guard(&self, bus: &mut Bus) -> Result<(), GuardRejection>;
+
+    /// Human-readable label for visibility/introspection surfaces.
+    fn guard_label(&self) -> String {
+        short_type_name(std::any::type_name::<Self>())
+    }
 }
 
 /// Wrapper that adapts a `Transition<(), ()>` Guard into a [`GuardExec`].
@@ -126,6 +132,10 @@ where
             }
             _ => Ok(()),
         }
+    }
+
+    fn guard_label(&self) -> String {
+        short_type_name(std::any::type_name::<G>())
     }
 }
 
@@ -173,8 +183,57 @@ pub struct PreflightConfig {
 ///     .await
 /// ```
 pub trait GuardIntegration: Send + Sync + 'static {
+    /// Human-readable label used by route/guard introspection surfaces.
+    fn guard_label(&self) -> String {
+        short_type_name(std::any::type_name::<Self>())
+    }
+
     /// Consume self and produce a complete guard registration.
     fn register(self) -> RegisteredGuard;
+}
+
+fn short_type_name(full: &str) -> String {
+    let without_generics = full.split('<').next().unwrap_or(full);
+    without_generics
+        .rsplit("::")
+        .next()
+        .unwrap_or(without_generics)
+        .to_string()
+}
+
+fn guard_label_registry() -> &'static Mutex<HashMap<usize, String>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<usize, String>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn guard_exec_key(exec: &Arc<dyn GuardExec>) -> usize {
+    Arc::as_ptr(exec) as *const () as usize
+}
+
+fn remember_guard_label(exec: &Arc<dyn GuardExec>, label: String) {
+    if let Ok(mut registry) = guard_label_registry().lock() {
+        registry.insert(guard_exec_key(exec), label);
+    }
+}
+
+pub(crate) fn registered_guard_label(exec: &Arc<dyn GuardExec>) -> String {
+    if let Ok(registry) = guard_label_registry().lock() {
+        if let Some(label) = registry.get(&guard_exec_key(exec)) {
+            return label.clone();
+        }
+    }
+    exec.guard_label()
+}
+
+/// Register a guard and record its label for later introspection.
+pub fn register_guard<G>(guard: G) -> RegisteredGuard
+where
+    G: GuardIntegration,
+{
+    let label = guard.guard_label();
+    let registration = guard.register();
+    remember_guard_label(&registration.exec, label);
+    registration
 }
 
 // ---------------------------------------------------------------------------
@@ -238,10 +297,8 @@ where
     T: Send + Sync + 'static,
 {
     fn register(self) -> RegisteredGuard {
-        let exec_guard = ranvier_guard::RateLimitGuard::<()>::new(
-            self.max_requests(),
-            self.window_ms(),
-        );
+        let exec_guard =
+            ranvier_guard::RateLimitGuard::<()>::new(self.max_requests(), self.window_ms());
 
         RegisteredGuard {
             bus_injectors: vec![Arc::new(|parts: &http::request::Parts, bus: &mut Bus| {
@@ -378,8 +435,8 @@ where
         let min_body_size = self.min_body_size();
         let preferred = self.preferred_encodings().to_vec();
 
-        let mut exec_guard = ranvier_guard::CompressionGuard::<()>::new()
-            .with_min_body_size(min_body_size);
+        let mut exec_guard =
+            ranvier_guard::CompressionGuard::<()>::new().with_min_body_size(min_body_size);
         if preferred.first() == Some(&ranvier_guard::CompressionEncoding::Brotli) {
             exec_guard = exec_guard.prefer_brotli();
         }
@@ -413,8 +470,8 @@ where
                 }
                 match config.encoding {
                     ranvier_guard::CompressionEncoding::Gzip => {
-                        use flate2::write::GzEncoder;
                         use flate2::Compression;
+                        use flate2::write::GzEncoder;
                         use std::io::Write;
                         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
                         if encoder.write_all(&body).is_err() {
@@ -523,13 +580,15 @@ where
             .with_policy(self.iam_policy().clone());
 
         RegisteredGuard {
-            bus_injectors: vec![Arc::new(move |parts: &http::request::Parts, bus: &mut Bus| {
-                if let Some(value) = parts.headers.get(header_name) {
-                    if let Ok(s) = value.to_str() {
-                        bus.insert(ranvier_guard::AuthorizationHeader(s.to_string()));
+            bus_injectors: vec![Arc::new(
+                move |parts: &http::request::Parts, bus: &mut Bus| {
+                    if let Some(value) = parts.headers.get(header_name) {
+                        if let Ok(s) = value.to_str() {
+                            bus.insert(ranvier_guard::AuthorizationHeader(s.to_string()));
+                        }
                     }
-                }
-            })],
+                },
+            )],
             response_extractor: Some(Arc::new(|bus: &Bus, headers: &mut http::HeaderMap| {
                 // Set WWW-Authenticate on 401 responses (downstream can check IamIdentity absence)
                 if bus.read::<ranvier_core::iam::IamIdentity>().is_none() {
@@ -619,7 +678,10 @@ where
                 }
             })],
             response_extractor: Some(Arc::new(|bus: &Bus, headers: &mut http::HeaderMap| {
-                if bus.read::<ranvier_guard::IdempotencyCachedResponse>().is_some() {
+                if bus
+                    .read::<ranvier_guard::IdempotencyCachedResponse>()
+                    .is_some()
+                {
                     if let Ok(v) = "true".parse() {
                         headers.insert("idempotency-replayed", v);
                     }
@@ -628,7 +690,10 @@ where
             response_body_transform: Some(Arc::new(move |bus: &Bus, body: bytes::Bytes| {
                 // Cache the response body on cache miss
                 if let Some(key) = bus.read::<ranvier_guard::IdempotencyKey>() {
-                    if bus.read::<ranvier_guard::IdempotencyCachedResponse>().is_none() {
+                    if bus
+                        .read::<ranvier_guard::IdempotencyCachedResponse>()
+                        .is_none()
+                    {
                         cache.insert(key.0.clone(), body.to_vec());
                     }
                 }

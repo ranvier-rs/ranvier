@@ -43,9 +43,12 @@ use tracing::Instrument;
 
 use crate::guard_integration::{
     GuardExec, GuardIntegration, PreflightConfig, RegisteredGuard, ResponseBodyTransformFn,
-    ResponseExtractorFn,
+    ResponseExtractorFn, register_guard, registered_guard_label,
 };
-use crate::response::{HttpResponse, IntoResponse, json_error_response, outcome_to_json_response, outcome_to_response_with_error};
+use crate::response::{
+    HttpResponse, IntoResponse, json_error_response, outcome_to_json_response,
+    outcome_to_response_with_error,
+};
 
 /// The Ranvier Framework entry point.
 ///
@@ -74,7 +77,10 @@ type RouteHandler<R> = Arc<
 #[derive(Clone)]
 struct BoxService(
     Arc<
-        dyn Fn(Request<Incoming>) -> Pin<Box<dyn Future<Output = Result<HttpResponse, Infallible>> + Send>>
+        dyn Fn(
+                Request<Incoming>,
+            )
+                -> Pin<Box<dyn Future<Output = Result<HttpResponse, Infallible>> + Send>>
             + Send
             + Sync,
     >,
@@ -89,7 +95,10 @@ impl BoxService {
         Self(Arc::new(move |req| Box::pin(f(req))))
     }
 
-    fn call(&self, req: Request<Incoming>) -> Pin<Box<dyn Future<Output = Result<HttpResponse, Infallible>> + Send>> {
+    fn call(
+        &self,
+        req: Request<Incoming>,
+    ) -> Pin<Box<dyn Future<Output = Result<HttpResponse, Infallible>> + Send>> {
         (self.0)(req)
     }
 }
@@ -248,11 +257,7 @@ impl StaticShell {
         Self {
             file_path: path.into(),
             policy: StaticAssetPolicy::spa_shell(),
-            excluded_prefixes: vec![
-                "/api".to_string(),
-                "/events".to_string(),
-                "/ws".to_string(),
-            ],
+            excluded_prefixes: vec!["/api".to_string(), "/events".to_string(), "/ws".to_string()],
         }
     }
 
@@ -270,7 +275,8 @@ impl StaticShell {
 
     /// Prevent SPA fallback from claiming paths under the given prefix.
     pub fn exclude_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.excluded_prefixes.push(normalize_route_path(prefix.into()));
+        self.excluded_prefixes
+            .push(normalize_route_path(prefix.into()));
         self
     }
 
@@ -375,9 +381,7 @@ fn request_id_middleware() -> ServiceLayer {
                 req.headers_mut()
                     .insert(REQUEST_ID_HEADER, request_id.clone());
                 let mut response = inner.call(req).await?;
-                response
-                    .headers_mut()
-                    .insert(REQUEST_ID_HEADER, request_id);
+                response.headers_mut().insert(REQUEST_ID_HEADER, request_id);
                 Ok(response)
             }
         })
@@ -394,8 +398,61 @@ pub struct PathParams {
 pub struct HttpRouteDescriptor {
     method: Method,
     path_pattern: String,
+    guards: Vec<HttpGuardDescriptor>,
     /// JSON Schema for the request body (auto-captured from `post_typed` etc.).
     pub body_schema: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HttpGuardScope {
+    Global,
+    Group,
+    Route,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpGuardDescriptor {
+    name: String,
+    scope: HttpGuardScope,
+    scope_path: Option<String>,
+}
+
+impl HttpGuardDescriptor {
+    pub fn global(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            scope: HttpGuardScope::Global,
+            scope_path: None,
+        }
+    }
+
+    pub fn group(name: impl Into<String>, prefix: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            scope: HttpGuardScope::Group,
+            scope_path: Some(prefix.into()),
+        }
+    }
+
+    pub fn route(name: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            scope: HttpGuardScope::Route,
+            scope_path: Some(path.into()),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn scope(&self) -> &HttpGuardScope {
+        &self.scope
+    }
+
+    pub fn scope_path(&self) -> Option<&str> {
+        self.scope_path.as_deref()
+    }
 }
 
 impl HttpRouteDescriptor {
@@ -403,6 +460,7 @@ impl HttpRouteDescriptor {
         Self {
             method,
             path_pattern: path_pattern.into(),
+            guards: Vec::new(),
             body_schema: None,
         }
     }
@@ -413,6 +471,11 @@ impl HttpRouteDescriptor {
 
     pub fn path_pattern(&self) -> &str {
         &self.path_pattern
+    }
+
+    /// Returns the effective guard stack for this route in execution order.
+    pub fn guard_descriptors(&self) -> &[HttpGuardDescriptor] {
+        &self.guards
     }
 
     /// Returns the JSON Schema for the request body, if available.
@@ -814,6 +877,8 @@ struct RouteEntry<R> {
     /// When true, the dispatch layer reads the request body and stores it
     /// in `Parts::extensions` as `BodyBytes` before calling the handler.
     needs_body: bool,
+    /// Effective guard stack for this route in execution order.
+    guard_descriptors: Vec<HttpGuardDescriptor>,
     /// JSON Schema for the request body type (from `post_typed` etc.).
     body_schema: Option<serde_json::Value>,
 }
@@ -1004,6 +1069,8 @@ pub struct HttpIngress<R = ()> {
     policy_registry: Option<ranvier_core::policy::PolicyRegistry>,
     /// Guard executors registered via `guard()`.
     guard_execs: Vec<Arc<dyn GuardExec>>,
+    /// Guard metadata in execution order for the current registration scope.
+    guard_descriptors: Vec<HttpGuardDescriptor>,
     /// Response extractors from guard registrations.
     guard_response_extractors: Vec<ResponseExtractorFn>,
     /// Response body transforms from guard registrations (e.g., compression).
@@ -1039,6 +1106,7 @@ where
             active_intervention: false,
             policy_registry: None,
             guard_execs: Vec::new(),
+            guard_descriptors: Vec::new(),
             guard_response_extractors: Vec::new(),
             guard_body_transforms: Vec::new(),
             preflight_config: None,
@@ -1183,11 +1251,14 @@ where
     ///     .await
     /// ```
     pub fn guard(mut self, guard: impl GuardIntegration) -> Self {
-        let registration = guard.register();
+        let registration = register_guard(guard);
         for injector in registration.bus_injectors {
             self.bus_injectors.push(injector);
         }
+        let guard_label = registered_guard_label(&registration.exec);
         self.guard_execs.push(registration.exec);
+        self.guard_descriptors
+            .push(HttpGuardDescriptor::global(guard_label));
         if let Some(extractor) = registration.response_extractor {
             self.guard_response_extractors.push(extractor);
         }
@@ -1224,7 +1295,9 @@ where
             .routes
             .iter()
             .map(|entry| {
-                let mut desc = HttpRouteDescriptor::new(entry.method.clone(), entry.pattern.raw.clone());
+                let mut desc =
+                    HttpRouteDescriptor::new(entry.method.clone(), entry.pattern.raw.clone());
+                desc.guards = entry.guard_descriptors.clone();
                 desc.body_schema = entry.body_schema.clone();
                 desc
             })
@@ -1284,7 +1357,12 @@ where
         route_prefix: impl Into<String>,
         directory: impl Into<String>,
     ) -> Self {
-        if self.static_assets.legacy_mount_policy.cache_control.is_none() {
+        if self
+            .static_assets
+            .legacy_mount_policy
+            .cache_control
+            .is_none()
+        {
             self.static_assets.legacy_mount_policy.cache_control =
                 Some("public, max-age=3600".to_string());
         }
@@ -1483,6 +1561,7 @@ where
             layers: Arc::new(Vec::new()),
             apply_global_layers: true,
             needs_body: false,
+            guard_descriptors: self.guard_descriptors.clone(),
             body_schema: None,
         });
 
@@ -1600,8 +1679,6 @@ where
         )
     }
 
-
-
     fn route_method_with_error_and_layers<Out, E, H>(
         mut self,
         method: Method,
@@ -1656,7 +1733,8 @@ where
                     }
                     for guard_exec in route_guard_execs.iter() {
                         if let Err(rejection) = guard_exec.exec_guard(&mut bus).await {
-                            let mut response = json_error_response(rejection.status, &rejection.message);
+                            let mut response =
+                                json_error_response(rejection.status, &rejection.message);
                             for extractor in route_response_extractors.iter() {
                                 extractor(&bus, response.headers_mut());
                             }
@@ -1689,7 +1767,9 @@ where
                             }
                             return response;
                         }
-                        match tokio::time::timeout(remaining, circuit.execute((), &res, &mut bus)).await {
+                        match tokio::time::timeout(remaining, circuit.execute((), &res, &mut bus))
+                            .await
+                        {
                             Ok(result) => result,
                             Err(_) => {
                                 let mut response = json_error_response(
@@ -1705,12 +1785,14 @@ where
                     } else {
                         circuit.execute((), &res, &mut bus).await
                     };
-                    let mut response = outcome_to_response_with_error(result, |error| error_handler(error));
+                    let mut response =
+                        outcome_to_response_with_error(result, |error| error_handler(error));
                     for extractor in route_response_extractors.iter() {
                         extractor(&bus, response.headers_mut());
                     }
                     if !route_body_transforms.is_empty() {
-                        response = apply_body_transforms(response, &bus, &route_body_transforms).await;
+                        response =
+                            apply_body_transforms(response, &bus, &route_body_transforms).await;
                     }
                     response
                 }
@@ -1726,6 +1808,7 @@ where
             layers: route_layers,
             apply_global_layers,
             needs_body: false,
+            guard_descriptors: self.guard_descriptors.clone(),
             body_schema: None,
         });
         self
@@ -1743,7 +1826,12 @@ where
         circuit: Axon<T, Out, E, R>,
     ) -> Self
     where
-        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + schemars::JsonSchema + 'static,
+        T: serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + serde::Serialize
+            + schemars::JsonSchema
+            + 'static,
         Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
@@ -1804,7 +1892,8 @@ where
                     }
                     for guard_exec in route_guard_execs.iter() {
                         if let Err(rejection) = guard_exec.exec_guard(&mut bus).await {
-                            let mut response = json_error_response(rejection.status, &rejection.message);
+                            let mut response =
+                                json_error_response(rejection.status, &rejection.message);
                             for extractor in route_response_extractors.iter() {
                                 extractor(&bus, response.headers_mut());
                             }
@@ -1837,7 +1926,12 @@ where
                             }
                             return response;
                         }
-                        match tokio::time::timeout(remaining, circuit.execute(input, &res, &mut bus)).await {
+                        match tokio::time::timeout(
+                            remaining,
+                            circuit.execute(input, &res, &mut bus),
+                        )
+                        .await
+                        {
                             Ok(result) => result,
                             Err(_) => {
                                 let mut response = json_error_response(
@@ -1871,7 +1965,8 @@ where
                         extractor(&bus, response.headers_mut());
                     }
                     if !route_body_transforms.is_empty() {
-                        response = apply_body_transforms(response, &bus, &route_body_transforms).await;
+                        response =
+                            apply_body_transforms(response, &bus, &route_body_transforms).await;
                     }
                     response
                 }
@@ -1887,6 +1982,7 @@ where
             layers: Arc::new(Vec::new()),
             apply_global_layers: true,
             needs_body: true,
+            guard_descriptors: self.guard_descriptors.clone(),
             body_schema,
         });
         self
@@ -1937,13 +2033,14 @@ where
     ///     .post_typed::<CreateOrder, _, _>("/api/orders", order_pipeline());
     /// // order_pipeline() is Axon<CreateOrder, OrderResponse, E, R>
     /// ```
-    pub fn post_typed<T, Out, E>(
-        self,
-        path: impl Into<String>,
-        circuit: Axon<T, Out, E, R>,
-    ) -> Self
+    pub fn post_typed<T, Out, E>(self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
     where
-        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + schemars::JsonSchema + 'static,
+        T: serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + serde::Serialize
+            + schemars::JsonSchema
+            + 'static,
         Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
@@ -1953,13 +2050,14 @@ where
     /// Register a PUT route with type-safe JSON body deserialization.
     ///
     /// See [`post_typed`](Self::post_typed) for details.
-    pub fn put_typed<T, Out, E>(
-        self,
-        path: impl Into<String>,
-        circuit: Axon<T, Out, E, R>,
-    ) -> Self
+    pub fn put_typed<T, Out, E>(self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
     where
-        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + schemars::JsonSchema + 'static,
+        T: serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + serde::Serialize
+            + schemars::JsonSchema
+            + 'static,
         Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
@@ -1975,7 +2073,12 @@ where
         circuit: Axon<T, Out, E, R>,
     ) -> Self
     where
-        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + schemars::JsonSchema + 'static,
+        T: serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + serde::Serialize
+            + schemars::JsonSchema
+            + 'static,
         Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
@@ -2052,7 +2155,8 @@ where
                     }
                     for guard_exec in route_guard_execs.iter() {
                         if let Err(rejection) = guard_exec.exec_guard(&mut bus).await {
-                            let mut response = json_error_response(rejection.status, &rejection.message);
+                            let mut response =
+                                json_error_response(rejection.status, &rejection.message);
                             for extractor in route_response_extractors.iter() {
                                 extractor(&bus, response.headers_mut());
                             }
@@ -2083,7 +2187,12 @@ where
                             }
                             return response;
                         }
-                        match tokio::time::timeout(remaining, circuit.execute(input, &res, &mut bus)).await {
+                        match tokio::time::timeout(
+                            remaining,
+                            circuit.execute(input, &res, &mut bus),
+                        )
+                        .await
+                        {
                             Ok(result) => result,
                             Err(_) => {
                                 let mut response = json_error_response(
@@ -2117,7 +2226,8 @@ where
                         extractor(&bus, response.headers_mut());
                     }
                     if !route_body_transforms.is_empty() {
-                        response = apply_body_transforms(response, &bus, &route_body_transforms).await;
+                        response =
+                            apply_body_transforms(response, &bus, &route_body_transforms).await;
                     }
                     response
                 }
@@ -2133,6 +2243,7 @@ where
             layers: Arc::new(Vec::new()),
             apply_global_layers: true,
             needs_body: true,
+            guard_descriptors: self.guard_descriptors.clone(),
             body_schema: None,
         });
         self
@@ -2150,11 +2261,7 @@ where
     /// // T only needs Deserialize + Serialize — no JsonSchema derive needed
     /// .post_json::<MyRequest, _, _>("/api/internal", pipeline)
     /// ```
-    pub fn post_json<T, Out, E>(
-        self,
-        path: impl Into<String>,
-        circuit: Axon<T, Out, E, R>,
-    ) -> Self
+    pub fn post_json<T, Out, E>(self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
     where
         T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
         Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
@@ -2166,11 +2273,7 @@ where
     /// Register a PUT route with JSON body deserialization — **no `JsonSchema` required**.
     ///
     /// See [`post_json`](Self::post_json) for details.
-    pub fn put_json<T, Out, E>(
-        self,
-        path: impl Into<String>,
-        circuit: Axon<T, Out, E, R>,
-    ) -> Self
+    pub fn put_json<T, Out, E>(self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
     where
         T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
         Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
@@ -2182,11 +2285,7 @@ where
     /// Register a PATCH route with JSON body deserialization — **no `JsonSchema` required**.
     ///
     /// See [`post_json`](Self::post_json) for details.
-    pub fn patch_json<T, Out, E>(
-        self,
-        path: impl Into<String>,
-        circuit: Axon<T, Out, E, R>,
-    ) -> Self
+    pub fn patch_json<T, Out, E>(self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
     where
         T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
         Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
@@ -2277,7 +2376,8 @@ where
                     }
                     for guard_exec in route_guard_execs.iter() {
                         if let Err(rejection) = guard_exec.exec_guard(&mut bus).await {
-                            let mut response = json_error_response(rejection.status, &rejection.message);
+                            let mut response =
+                                json_error_response(rejection.status, &rejection.message);
                             for extractor in route_response_extractors.iter() {
                                 extractor(&bus, response.headers_mut());
                             }
@@ -2308,7 +2408,9 @@ where
                             }
                             return response;
                         }
-                        match tokio::time::timeout(remaining, circuit.execute((), &res, &mut bus)).await {
+                        match tokio::time::timeout(remaining, circuit.execute((), &res, &mut bus))
+                            .await
+                        {
                             Ok(result) => result,
                             Err(_) => {
                                 let mut response = json_error_response(
@@ -2329,7 +2431,8 @@ where
                         extractor(&bus, response.headers_mut());
                     }
                     if !route_body_transforms.is_empty() {
-                        response = apply_body_transforms(response, &bus, &route_body_transforms).await;
+                        response =
+                            apply_body_transforms(response, &bus, &route_body_transforms).await;
                     }
                     response
                 }
@@ -2345,6 +2448,7 @@ where
             layers: Arc::new(Vec::new()),
             apply_global_layers: true,
             needs_body: false,
+            guard_descriptors: self.guard_descriptors.clone(),
             body_schema: None,
         });
         self
@@ -2420,7 +2524,8 @@ where
                     }
                     for guard_exec in route_guard_execs.iter() {
                         if let Err(rejection) = guard_exec.exec_guard(&mut bus).await {
-                            let mut response = json_error_response(rejection.status, &rejection.message);
+                            let mut response =
+                                json_error_response(rejection.status, &rejection.message);
                             for extractor in route_response_extractors.iter() {
                                 extractor(&bus, response.headers_mut());
                             }
@@ -2451,7 +2556,12 @@ where
                             }
                             return response;
                         }
-                        match tokio::time::timeout(remaining, circuit.execute(input, &res, &mut bus)).await {
+                        match tokio::time::timeout(
+                            remaining,
+                            circuit.execute(input, &res, &mut bus),
+                        )
+                        .await
+                        {
                             Ok(result) => result,
                             Err(_) => {
                                 let mut response = json_error_response(
@@ -2472,7 +2582,8 @@ where
                         extractor(&bus, response.headers_mut());
                     }
                     if !route_body_transforms.is_empty() {
-                        response = apply_body_transforms(response, &bus, &route_body_transforms).await;
+                        response =
+                            apply_body_transforms(response, &bus, &route_body_transforms).await;
                     }
                     response
                 }
@@ -2488,6 +2599,7 @@ where
             layers: Arc::new(Vec::new()),
             apply_global_layers: true,
             needs_body: true,
+            guard_descriptors: self.guard_descriptors.clone(),
             body_schema,
         });
         self
@@ -2520,7 +2632,11 @@ where
     /// DELETE route with JSON auto-serialization.
     ///
     /// See [`get_json_out`](Self::get_json_out) for details.
-    pub fn delete_json_out<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    pub fn delete_json_out<Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+    ) -> Self
     where
         Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
@@ -2536,7 +2652,11 @@ where
     /// semantics indicate a state change but no input body is needed.
     ///
     /// See [`get_json_out`](Self::get_json_out) for details.
-    pub fn post_json_out<Out, E>(self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    pub fn post_json_out<Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+    ) -> Self
     where
         Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
@@ -2573,6 +2693,7 @@ where
     pub fn group(self, prefix: &str, f: impl FnOnce(RouteGroup<R>) -> RouteGroup<R>) -> Self {
         let saved_injectors_len = self.bus_injectors.len();
         let saved_execs_len = self.guard_execs.len();
+        let saved_guard_descriptors_len = self.guard_descriptors.len();
         let saved_extractors_len = self.guard_response_extractors.len();
         let saved_transforms_len = self.guard_body_transforms.len();
 
@@ -2586,7 +2707,12 @@ where
 
         ingress.bus_injectors.truncate(saved_injectors_len);
         ingress.guard_execs.truncate(saved_execs_len);
-        ingress.guard_response_extractors.truncate(saved_extractors_len);
+        ingress
+            .guard_descriptors
+            .truncate(saved_guard_descriptors_len);
+        ingress
+            .guard_response_extractors
+            .truncate(saved_extractors_len);
         ingress.guard_body_transforms.truncate(saved_transforms_len);
 
         ingress
@@ -2768,7 +2894,12 @@ where
         circuit: ranvier_runtime::StreamingAxon<T, Item, E, R>,
     ) -> Self
     where
-        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + schemars::JsonSchema + 'static,
+        T: serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + serde::Serialize
+            + schemars::JsonSchema
+            + 'static,
         Item: serde::Serialize + Send + Sync + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
@@ -2940,6 +3071,7 @@ where
             layers: Arc::new(Vec::new()),
             apply_global_layers: true,
             needs_body,
+            guard_descriptors: self.guard_descriptors.clone(),
             body_schema: None,
         });
         self
@@ -2964,15 +3096,20 @@ where
         // Save current guard state lengths
         let saved_injectors = self.bus_injectors.len();
         let saved_execs = self.guard_execs.len();
+        let saved_guard_descriptors = self.guard_descriptors.len();
         let saved_extractors = self.guard_response_extractors.len();
         let saved_transforms = self.guard_body_transforms.len();
+        let route_path: String = path.into();
 
         // Apply per-route guards
         for registration in extra_guards {
             for injector in registration.bus_injectors {
                 self.bus_injectors.push(injector);
             }
+            let guard_label = registered_guard_label(&registration.exec);
             self.guard_execs.push(registration.exec);
+            self.guard_descriptors
+                .push(HttpGuardDescriptor::route(guard_label, route_path.clone()));
             if let Some(extractor) = registration.response_extractor {
                 self.guard_response_extractors.push(extractor);
             }
@@ -2982,11 +3119,12 @@ where
         }
 
         // Register route (clones current guard state into Arc)
-        self = self.route_method(method, path, circuit);
+        self = self.route_method(method, route_path, circuit);
 
         // Restore global guard state
         self.bus_injectors.truncate(saved_injectors);
         self.guard_execs.truncate(saved_execs);
+        self.guard_descriptors.truncate(saved_guard_descriptors);
         self.guard_response_extractors.truncate(saved_extractors);
         self.guard_body_transforms.truncate(saved_transforms);
 
@@ -3142,7 +3280,8 @@ where
                     }
                     for guard_exec in fallback_guard_execs.iter() {
                         if let Err(rejection) = guard_exec.exec_guard(&mut bus).await {
-                            let mut response = json_error_response(rejection.status, &rejection.message);
+                            let mut response =
+                                json_error_response(rejection.status, &rejection.message);
                             for extractor in fallback_response_extractors.iter() {
                                 extractor(&bus, response.headers_mut());
                             }
@@ -3171,7 +3310,8 @@ where
                         extractor(&bus, response.headers_mut());
                     }
                     if !fallback_body_transforms.is_empty() {
-                        response = apply_body_transforms(response, &bus, &fallback_body_transforms).await;
+                        response =
+                            apply_body_transforms(response, &bus, &fallback_body_transforms).await;
                     }
                     response
                 }
@@ -3225,6 +3365,7 @@ where
                 layers: Arc::new(Vec::new()),
                 apply_global_layers: true,
                 needs_body: false,
+                guard_descriptors: self.guard_descriptors.clone(),
                 body_schema: None,
             });
         }
@@ -3254,6 +3395,7 @@ where
                 layers: Arc::new(Vec::new()),
                 apply_global_layers: true,
                 needs_body: false,
+                guard_descriptors: self.guard_descriptors.clone(),
                 body_schema: None,
             });
         }
@@ -3504,8 +3646,8 @@ where
                         .and_then(|v| v.to_str().ok())
                         .unwrap_or("");
                     let is_wildcard = config.allowed_origins.iter().any(|o| o == "*");
-                    let is_allowed = is_wildcard
-                        || config.allowed_origins.iter().any(|o| o == origin);
+                    let is_allowed =
+                        is_wildcard || config.allowed_origins.iter().any(|o| o == origin);
 
                     if is_allowed || origin.is_empty() {
                         let allow_origin = if is_wildcard {
@@ -3557,7 +3699,9 @@ where
                     let (mut parts, body) = req.into_parts();
                     if entry.needs_body {
                         match BodyExt::collect(body).await {
-                            Ok(collected) => { parts.extensions.insert(BodyBytes(collected.to_bytes())); }
+                            Ok(collected) => {
+                                parts.extensions.insert(BodyBytes(collected.to_bytes()));
+                            }
                             Err(_) => {
                                 return Ok(json_error_response(
                                     StatusCode::BAD_REQUEST,
@@ -3614,8 +3758,12 @@ where
                         let (parts, _) = req.into_parts();
                         Ok(fb(parts, &resources).await)
                     } else {
-                        let fallback_service =
-                            build_route_service(fb.clone(), resources.clone(), layers.clone(), false);
+                        let fallback_service = build_route_service(
+                            fb.clone(),
+                            resources.clone(),
+                            layers.clone(),
+                            false,
+                        );
                         fallback_service.call(req).await
                     }
                 } else {
@@ -3662,7 +3810,9 @@ where
             let (mut parts, body) = req.into_parts();
             if needs_body {
                 match BodyExt::collect(body).await {
-                    Ok(collected) => { parts.extensions.insert(BodyBytes(collected.to_bytes())); }
+                    Ok(collected) => {
+                        parts.extensions.insert(BodyBytes(collected.to_bytes()));
+                    }
                     Err(_) => {
                         return Ok(json_error_response(
                             StatusCode::BAD_REQUEST,
@@ -3832,9 +3982,7 @@ async fn serve_static_file(
 
     // Pre-compressed file serving: check for .br / .gz variants
     let (serve_path, content_encoding) = if policy.serve_precompressed {
-        let client_accepts = accept_encoding
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
+        let client_accepts = accept_encoding.and_then(|v| v.to_str().ok()).unwrap_or("");
         let canonical_str = canonical.to_str().unwrap_or("");
 
         if client_accepts.contains("br") {
@@ -3872,13 +4020,9 @@ async fn serve_static_file(
     // Range request support
     if policy.enable_range_requests {
         if let Some(range_val) = range_header {
-            if let Some(response) = handle_range_request(
-                range_val,
-                &content,
-                mime,
-                etag.as_deref(),
-                content_encoding,
-            ) {
+            if let Some(response) =
+                handle_range_request(range_val, &content, mime, etag.as_deref(), content_encoding)
+            {
                 return Ok(response);
             }
         }
@@ -3903,18 +4047,19 @@ async fn serve_static_file(
         }
     }
     if policy.enable_range_requests {
-        response
-            .headers_mut()
-            .insert(http::header::ACCEPT_RANGES, http::HeaderValue::from_static("bytes"));
+        response.headers_mut().insert(
+            http::header::ACCEPT_RANGES,
+            http::HeaderValue::from_static("bytes"),
+        );
     }
 
     // Immutable cache for hashed filenames (e.g., app.a1b2c3d4.js)
     if policy.immutable_cache {
         if let Some(filename) = canonical.file_name().and_then(|n| n.to_str()) {
             if is_hashed_filename(filename) {
-                if let Ok(value) = http::HeaderValue::from_str(
-                    "public, max-age=31536000, immutable",
-                ) {
+                if let Ok(value) =
+                    http::HeaderValue::from_str("public, max-age=31536000, immutable")
+                {
                     response
                         .headers_mut()
                         .insert(http::header::CACHE_CONTROL, value);
@@ -3974,16 +4119,17 @@ fn handle_range_request(
     let mut response = Response::new(Full::new(Bytes::copy_from_slice(slice)));
     *response.status_mut() = StatusCode::PARTIAL_CONTENT;
     if let Ok(v) = http::HeaderValue::from_str(&content_range) {
-        response.headers_mut().insert(http::header::CONTENT_RANGE, v);
-    }
-    if let Ok(v) = http::HeaderValue::from_str(mime) {
         response
             .headers_mut()
-            .insert(http::header::CONTENT_TYPE, v);
+            .insert(http::header::CONTENT_RANGE, v);
     }
-    response
-        .headers_mut()
-        .insert(http::header::ACCEPT_RANGES, http::HeaderValue::from_static("bytes"));
+    if let Ok(v) = http::HeaderValue::from_str(mime) {
+        response.headers_mut().insert(http::header::CONTENT_TYPE, v);
+    }
+    response.headers_mut().insert(
+        http::header::ACCEPT_RANGES,
+        http::HeaderValue::from_static("bytes"),
+    );
     if let Some(etag_val) = etag {
         if let Ok(v) = http::HeaderValue::from_str(etag_val) {
             response.headers_mut().insert(http::header::ETAG, v);
@@ -4005,7 +4151,9 @@ fn range_not_satisfiable(total: usize) -> Response<Full<Bytes>> {
     let mut response = Response::new(Full::new(Bytes::from("Range Not Satisfiable")));
     *response.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
     if let Ok(v) = http::HeaderValue::from_str(&content_range) {
-        response.headers_mut().insert(http::header::CONTENT_RANGE, v);
+        response
+            .headers_mut()
+            .insert(http::header::CONTENT_RANGE, v);
     }
     response
 }
@@ -4209,8 +4357,7 @@ async fn maybe_handle_static_request(
                     ));
                 }
             };
-            let mut response =
-                apply_cache_control(response, shell.policy.cache_control.as_deref());
+            let mut response = apply_cache_control(response, shell.policy.cache_control.as_deref());
             response = maybe_compress_static_response(
                 response,
                 accept_encoding,
@@ -4286,8 +4433,8 @@ fn maybe_compress_static_response(
 
     // Compress with gzip
     let compressed = {
-        use flate2::write::GzEncoder;
         use flate2::Compression;
+        use flate2::write::GzEncoder;
         use std::io::Write;
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         let _ = encoder.write_all(&data);
@@ -4559,11 +4706,15 @@ where
 
     /// Add a guard to all routes in this group.
     pub fn guard(mut self, guard: impl GuardIntegration) -> Self {
-        let registration = guard.register();
+        let registration = register_guard(guard);
         for injector in registration.bus_injectors {
             self.ingress.bus_injectors.push(injector);
         }
+        let guard_label = registered_guard_label(&registration.exec);
         self.ingress.guard_execs.push(registration.exec);
+        self.ingress
+            .guard_descriptors
+            .push(HttpGuardDescriptor::group(guard_label, self.prefix.clone()));
         if let Some(extractor) = registration.response_extractor {
             self.ingress.guard_response_extractors.push(extractor);
         }
@@ -4598,6 +4749,7 @@ where
 
         let saved_injectors_len = ingress.bus_injectors.len();
         let saved_execs_len = ingress.guard_execs.len();
+        let saved_guard_descriptors_len = ingress.guard_descriptors.len();
         let saved_extractors_len = ingress.guard_response_extractors.len();
         let saved_transforms_len = ingress.guard_body_transforms.len();
 
@@ -4611,7 +4763,12 @@ where
 
         ingress.bus_injectors.truncate(saved_injectors_len);
         ingress.guard_execs.truncate(saved_execs_len);
-        ingress.guard_response_extractors.truncate(saved_extractors_len);
+        ingress
+            .guard_descriptors
+            .truncate(saved_guard_descriptors_len);
+        ingress
+            .guard_response_extractors
+            .truncate(saved_extractors_len);
         ingress.guard_body_transforms.truncate(saved_transforms_len);
 
         RouteGroup {
@@ -4624,7 +4781,11 @@ where
     // ── Bodyless routes with JSON auto-serialization ──
 
     /// GET route with JSON response. Path is prefixed with the group prefix.
-    pub fn get_json_out<Out, E>(mut self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    pub fn get_json_out<Out, E>(
+        mut self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+    ) -> Self
     where
         Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
@@ -4635,7 +4796,11 @@ where
     }
 
     /// POST route (bodyless) with JSON response.
-    pub fn post_json_out<Out, E>(mut self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    pub fn post_json_out<Out, E>(
+        mut self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+    ) -> Self
     where
         Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
@@ -4646,7 +4811,11 @@ where
     }
 
     /// DELETE route with JSON response.
-    pub fn delete_json_out<Out, E>(mut self, path: impl Into<String>, circuit: Axon<(), Out, E, R>) -> Self
+    pub fn delete_json_out<Out, E>(
+        mut self,
+        path: impl Into<String>,
+        circuit: Axon<(), Out, E, R>,
+    ) -> Self
     where
         Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
@@ -4659,7 +4828,11 @@ where
     // ── Typed body + JSON auto-serialization ──
 
     /// POST with typed JSON body and JSON response.
-    pub fn post_typed_json_out<T, Out, E>(mut self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
+    pub fn post_typed_json_out<T, Out, E>(
+        mut self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
     where
         T: serde::de::DeserializeOwned + Send + Sync + Serialize + schemars::JsonSchema + 'static,
         Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
@@ -4671,7 +4844,11 @@ where
     }
 
     /// PUT with typed JSON body and JSON response.
-    pub fn put_typed_json_out<T, Out, E>(mut self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
+    pub fn put_typed_json_out<T, Out, E>(
+        mut self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
     where
         T: serde::de::DeserializeOwned + Send + Sync + Serialize + schemars::JsonSchema + 'static,
         Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
@@ -4683,7 +4860,11 @@ where
     }
 
     /// PATCH with typed JSON body and JSON response.
-    pub fn patch_typed_json_out<T, Out, E>(mut self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
+    pub fn patch_typed_json_out<T, Out, E>(
+        mut self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
     where
         T: serde::de::DeserializeOwned + Send + Sync + Serialize + schemars::JsonSchema + 'static,
         Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
@@ -4754,9 +4935,18 @@ where
     // ── Typed body routes (IntoResponse) ──
 
     /// POST with typed JSON body and IntoResponse output.
-    pub fn post_typed<T, Out, E>(mut self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
+    pub fn post_typed<T, Out, E>(
+        mut self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
     where
-        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + schemars::JsonSchema + 'static,
+        T: serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + serde::Serialize
+            + schemars::JsonSchema
+            + 'static,
         Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
@@ -4766,9 +4956,18 @@ where
     }
 
     /// PUT with typed JSON body and IntoResponse output.
-    pub fn put_typed<T, Out, E>(mut self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
+    pub fn put_typed<T, Out, E>(
+        mut self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
     where
-        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + schemars::JsonSchema + 'static,
+        T: serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + serde::Serialize
+            + schemars::JsonSchema
+            + 'static,
         Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
@@ -4778,9 +4977,18 @@ where
     }
 
     /// PATCH with typed JSON body and IntoResponse output.
-    pub fn patch_typed<T, Out, E>(mut self, path: impl Into<String>, circuit: Axon<T, Out, E, R>) -> Self
+    pub fn patch_typed<T, Out, E>(
+        mut self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
     where
-        T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + schemars::JsonSchema + 'static,
+        T: serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + serde::Serialize
+            + schemars::JsonSchema
+            + 'static,
         Out: IntoResponse + Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
@@ -5002,10 +5210,7 @@ mod tests {
             .await
             .expect("echo binary frame")
             .expect("echo binary frame ok");
-        assert_eq!(
-            echo_binary,
-            WsClientMessage::Binary(vec![1, 2, 3, 4])
-        );
+        assert_eq!(echo_binary, WsClientMessage::Binary(vec![1, 2, 3, 4]));
 
         client.close(None).await.expect("close websocket");
 
@@ -5019,10 +5224,7 @@ mod tests {
     #[test]
     fn route_descriptors_export_http_and_health_paths() {
         let ingress = HttpIngress::<()>::new()
-            .get(
-                "/orders/:id",
-                Axon::<(), (), String, ()>::new("OrderById"),
-            )
+            .get("/orders/:id", Axon::<(), (), String, ()>::new("OrderById"))
             .health_endpoint("/healthz")
             .readiness_liveness("/readyz", "/livez");
 
@@ -5266,7 +5468,9 @@ mod tests {
         );
         let app = crate::test_harness::TestApp::new(ingress, ());
         let response = app
-            .send(crate::test_harness::TestRequest::get("/static/../secret.txt"))
+            .send(crate::test_harness::TestRequest::get(
+                "/static/../secret.txt",
+            ))
             .await
             .expect("request should succeed");
 
@@ -5393,8 +5597,8 @@ mod tests {
         let index = temp.path().join("index.html");
         fs::write(&index, "<html><body>shell</body></html>").expect("write index");
 
-        let ingress =
-            Ranvier::http::<()>().serve_spa_shell(StaticShell::file(index.to_string_lossy().to_string()));
+        let ingress = Ranvier::http::<()>()
+            .serve_spa_shell(StaticShell::file(index.to_string_lossy().to_string()));
         let app = crate::test_harness::TestApp::new(ingress, ());
 
         for path in ["/api/users", "/events/live", "/ws/socket"] {
@@ -5410,18 +5614,19 @@ mod tests {
         ws_uri: &str,
         tenant_id: &str,
     ) -> (
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
         http::Response<Option<Vec<u8>>>,
     ) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
 
         loop {
-            let mut request = ws_uri
-                .into_client_request()
-                .expect("ws client request");
-            request
-                .headers_mut()
-                .insert("x-tenant-id", http::HeaderValue::from_str(tenant_id).expect("tenant header"));
+            let mut request = ws_uri.into_client_request().expect("ws client request");
+            request.headers_mut().insert(
+                "x-tenant-id",
+                http::HeaderValue::from_str(tenant_id).expect("tenant header"),
+            );
             match tokio_tungstenite::connect_async(request).await {
                 Ok(pair) => return pair,
                 Err(error) => {
@@ -5462,7 +5667,9 @@ mod tests {
         assert!(asset.header("etag").is_some());
 
         let shell = app
-            .send(crate::test_harness::TestRequest::head("/dashboard/settings"))
+            .send(crate::test_harness::TestRequest::head(
+                "/dashboard/settings",
+            ))
             .await
             .expect("request should succeed");
         assert_eq!(shell.status(), StatusCode::OK);
@@ -5485,7 +5692,9 @@ mod tests {
         let app = crate::test_harness::TestApp::new(ingress, ());
 
         let response = app
-            .send(crate::test_harness::TestRequest::head("/static/missing.txt"))
+            .send(crate::test_harness::TestRequest::head(
+                "/static/missing.txt",
+            ))
             .await
             .expect("request should succeed");
 
@@ -5519,7 +5728,9 @@ mod tests {
         let app = crate::test_harness::TestApp::new(ingress, ());
 
         let asset = app
-            .send(crate::test_harness::TestRequest::get("/static/app.a1b2c3d4.js"))
+            .send(crate::test_harness::TestRequest::get(
+                "/static/app.a1b2c3d4.js",
+            ))
             .await
             .expect("request should succeed");
         assert_eq!(
@@ -5572,7 +5783,9 @@ mod tests {
         let app = crate::test_harness::TestApp::new(ingress, ());
 
         let asset = app
-            .send(crate::test_harness::TestRequest::get("/assets/app.a1b2c3d4.js"))
+            .send(crate::test_harness::TestRequest::get(
+                "/assets/app.a1b2c3d4.js",
+            ))
             .await
             .expect("request should succeed");
         assert_eq!(asset.status(), StatusCode::OK);
@@ -5595,15 +5808,23 @@ mod tests {
     #[tokio::test]
     async fn sveltekit_adapter_static_artifact_smoke() {
         let temp = tempdir().expect("tempdir");
-        let app_dir = temp.path().join("build").join("_app").join("immutable").join("entry");
+        let app_dir = temp
+            .path()
+            .join("build")
+            .join("_app")
+            .join("immutable")
+            .join("entry");
         fs::create_dir_all(&app_dir).expect("create _app entry");
         fs::write(
             temp.path().join("build").join("index.html"),
             "<!doctype html><div id=\"svelte\"></div>",
         )
         .expect("write shell");
-        fs::write(app_dir.join("start.a1b2c3d4.js"), "console.log('sveltekit');")
-            .expect("write js");
+        fs::write(
+            app_dir.join("start.a1b2c3d4.js"),
+            "console.log('sveltekit');",
+        )
+        .expect("write js");
 
         let ingress = Ranvier::http::<()>()
             .serve_assets(
@@ -5901,5 +6122,4 @@ mod tests {
             "bytes"
         );
     }
-
 }

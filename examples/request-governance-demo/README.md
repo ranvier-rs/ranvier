@@ -34,6 +34,17 @@ The request path is intentionally visible:
 4. `GovernanceError` is converted into `ProblemDetail`
 5. route registration uses `get_with_error()` / `post_with_error()` so the HTTP error surface stays explicit
 
+For route/guard visibility audits, inspect the ingress before `run()`:
+
+```rust
+for route in ingress.route_descriptors() {
+    println!("{} {}", route.method(), route.path_pattern());
+    for guard in route.guard_descriptors() {
+        println!("  - {} {:?}", guard.name(), guard.scope());
+    }
+}
+```
+
 This example does **not** expose OpenAPI. Its role is different from `admin-crud-demo`:
 
 - `admin-crud-demo` is the OpenAPI/reference-doc surface

@@ -41,23 +41,25 @@ pub mod http3;
 pub mod test_harness;
 
 pub use bus_ext::{BusHttpExt, json_outcome};
-pub use extract::{CookieJar, DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Header, Json, Path, Query};
-pub use ingress::{
-    HttpIngress, HttpRouteDescriptor, PathParams, QueryParams, Ranvier, RouteGroup,
-    StaticAssetPolicy, StaticAssetSource, StaticShell, WebSocketConnection,
-    WebSocketError, WebSocketEvent, WebSocketSessionContext,
-};
-pub use response::{
-    Html, HttpResponse, IntoProblemDetail, IntoResponse, ProblemDetail, json_error_response,
-    outcome_to_json_problem_response, outcome_to_json_response,
-    outcome_to_problem_response, outcome_to_response, outcome_to_response_with_error,
+pub use extract::{
+    CookieJar, DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Header, Json, Path, Query,
 };
 pub use guard_integration::{
     BusInjectorFn, GuardExec, GuardIntegration, GuardRejection, PreflightConfig, RegisteredGuard,
-    ResponseBodyTransformFn, ResponseExtractorFn,
+    ResponseBodyTransformFn, ResponseExtractorFn, register_guard,
+};
+pub use ingress::{
+    HttpGuardDescriptor, HttpGuardScope, HttpIngress, HttpRouteDescriptor, PathParams, QueryParams,
+    Ranvier, RouteGroup, StaticAssetPolicy, StaticAssetSource, StaticShell, WebSocketConnection,
+    WebSocketError, WebSocketEvent, WebSocketSessionContext,
+};
+pub use pagination::{PageParams, Paginated};
+pub use response::{
+    Html, HttpResponse, IntoProblemDetail, IntoResponse, ProblemDetail, json_error_response,
+    outcome_to_json_problem_response, outcome_to_json_response, outcome_to_problem_response,
+    outcome_to_response, outcome_to_response_with_error,
 };
 pub use service::RanvierService;
-pub use pagination::{PageParams, Paginated};
 pub use sse::{Sse, SseEvent};
 pub use test_harness::{TestApp, TestHarnessError, TestRequest, TestResponse};
 
@@ -83,29 +85,31 @@ pub use test_harness::{TestApp, TestHarnessError, TestRequest, TestResponse};
 #[macro_export]
 macro_rules! guards {
     [$($guard:expr),* $(,)?] => {
-        vec![$( $crate::GuardIntegration::register($guard) ),*]
+        vec![$( $crate::register_guard($guard) ),*]
     };
 }
 
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::bus_ext::{BusHttpExt, json_outcome};
-    pub use crate::extract::{CookieJar, DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Header, Json, Path, Query};
-    pub use crate::ingress::{
-        HttpIngress, HttpRouteDescriptor, PathParams, QueryParams, Ranvier, RouteGroup,
-        StaticAssetPolicy, StaticAssetSource, StaticShell, WebSocketConnection,
-        WebSocketError, WebSocketEvent, WebSocketSessionContext,
-    };
-    pub use crate::response::{
-        Html, HttpResponse, IntoProblemDetail, IntoResponse, ProblemDetail, json_error_response,
-        outcome_to_json_problem_response, outcome_to_json_response,
-        outcome_to_problem_response, outcome_to_response, outcome_to_response_with_error,
+    pub use crate::extract::{
+        CookieJar, DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Header, Json, Path, Query,
     };
     pub use crate::guard_integration::{
         BusInjectorFn, GuardExec, GuardIntegration, GuardRejection, PreflightConfig,
-        RegisteredGuard, ResponseBodyTransformFn, ResponseExtractorFn,
+        RegisteredGuard, ResponseBodyTransformFn, ResponseExtractorFn, register_guard,
+    };
+    pub use crate::ingress::{
+        HttpGuardDescriptor, HttpGuardScope, HttpIngress, HttpRouteDescriptor, PathParams,
+        QueryParams, Ranvier, RouteGroup, StaticAssetPolicy, StaticAssetSource, StaticShell,
+        WebSocketConnection, WebSocketError, WebSocketEvent, WebSocketSessionContext,
     };
     pub use crate::pagination::{PageParams, Paginated};
+    pub use crate::response::{
+        Html, HttpResponse, IntoProblemDetail, IntoResponse, ProblemDetail, json_error_response,
+        outcome_to_json_problem_response, outcome_to_json_response, outcome_to_problem_response,
+        outcome_to_response, outcome_to_response_with_error,
+    };
     pub use crate::service::RanvierService;
     pub use crate::sse::{Sse, SseEvent};
     pub use crate::test_harness::{TestApp, TestHarnessError, TestRequest, TestResponse};
