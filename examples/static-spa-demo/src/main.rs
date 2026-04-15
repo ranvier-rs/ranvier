@@ -8,9 +8,9 @@
 //! ```
 //!
 //! ## Key Concepts
-//! - serve_dir for static assets
-//! - spa_fallback for client-side routing
-//! - compression_layer for efficient delivery
+//! - serve_assets for explicit file-backed static delivery
+//! - serve_spa_shell for explicit SPA shell routing
+//! - StaticAssetPolicy / StaticShell for visible delivery policy
 
 use std::path::PathBuf;
 
@@ -48,9 +48,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ranvier::http::<()>()
         .bind("127.0.0.1:3112")
-        .serve_dir("/static", public_dir.to_string_lossy().to_string())
-        .spa_fallback(index_file.to_string_lossy().to_string())
-        .compression_layer()
+        .serve_assets(
+            "/static",
+            StaticAssetSource::directory(public_dir.to_string_lossy().to_string()),
+            StaticAssetPolicy::public_assets().compression(),
+        )
+        .serve_spa_shell(
+            StaticShell::file(index_file.to_string_lossy().to_string())
+                .cache_control("no-store")
+                .compression(),
+        )
         .get(
             "/api/ping",
             Axon::simple::<String>("ApiPing").then(ApiPing),

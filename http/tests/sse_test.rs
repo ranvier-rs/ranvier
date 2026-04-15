@@ -1,9 +1,6 @@
 use async_trait::async_trait;
-use futures_util::StreamExt;
-use http_body_util::BodyExt;
 use ranvier_core::event::EventSource;
 use ranvier_http::prelude::*;
-use std::convert::Infallible;
 
 struct MockSource {
     items: Vec<String>,

@@ -193,7 +193,7 @@ impl<T: Serialize> IntoResponse for Json<T> {
                 .expect("response builder should be infallible"),
             Err(e) => json_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("JSON serialization failed: {e}"),
+                format!("JSON serialization failed: {e}"),
             ),
         }
     }
@@ -213,7 +213,7 @@ impl<T: Serialize> IntoResponse for (StatusCode, Json<T>) {
                 .expect("response builder should be infallible"),
             Err(e) => json_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("JSON serialization failed: {e}"),
+                format!("JSON serialization failed: {e}"),
             ),
         }
     }
@@ -311,6 +311,7 @@ impl IntoResponse for ProblemDetail {
 ///
 /// Implement this trait on your error types to enable automatic
 /// `Outcome::Fault` → `ProblemDetail` conversion.
+#[allow(clippy::wrong_self_convention)]
 pub trait IntoProblemDetail {
     fn into_problem_detail(&self) -> ProblemDetail;
 }

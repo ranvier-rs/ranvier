@@ -149,27 +149,133 @@ impl<R> Default for HealthConfig<R> {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum StaticAssetSource {
+    /// File-backed directory source.
+    ///
+    /// This is the explicit M382 path for built frontend artifacts. Embedded
+    /// asset packaging remains a follow-up candidate rather than part of the
+    /// current default surface.
+    Directory(String),
+}
+
+impl StaticAssetSource {
+    /// Serve files from a verified directory path on disk.
+    pub fn directory(path: impl Into<String>) -> Self {
+        Self::Directory(path.into())
+    }
+
+    fn as_directory(&self) -> &str {
+        match self {
+            Self::Directory(path) => path,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct StaticAssetPolicy {
+    cache_control: Option<String>,
+    enable_compression: bool,
+    directory_index: Option<String>,
+    immutable_cache: bool,
+    serve_precompressed: bool,
+    enable_range_requests: bool,
+}
+
+impl StaticAssetPolicy {
+    /// Conservative default policy for explicit static asset delivery.
+    pub fn locked_down() -> Self {
+        Self::default()
+    }
+
+    /// Legacy-compatible policy for public file-backed assets.
+    pub fn public_assets() -> Self {
+        Self::locked_down().cache_control("public, max-age=3600")
+    }
+
+    /// Override Cache-Control for responses served under this policy.
+    pub fn cache_control(mut self, cache_control: impl Into<String>) -> Self {
+        self.cache_control = Some(cache_control.into());
+        self
+    }
+
+    /// Set the default index filename for directory requests.
+    pub fn directory_index(mut self, filename: impl Into<String>) -> Self {
+        self.directory_index = Some(filename.into());
+        self
+    }
+
+    /// Apply immutable cache headers to hashed filenames.
+    pub fn immutable_cache(mut self) -> Self {
+        self.immutable_cache = true;
+        self
+    }
+
+    /// Prefer `.br` / `.gz` variants when the client accepts them.
+    pub fn serve_precompressed(mut self) -> Self {
+        self.serve_precompressed = true;
+        self
+    }
+
+    /// Enable HTTP Range request support.
+    pub fn enable_range_requests(mut self) -> Self {
+        self.enable_range_requests = true;
+        self
+    }
+
+    /// Enable gzip response compression for responses under this policy.
+    pub fn compression(mut self) -> Self {
+        self.enable_compression = true;
+        self
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct StaticShell {
+    file_path: String,
+    policy: StaticAssetPolicy,
+}
+
+impl StaticShell {
+    /// Serve the given shell file for unmatched SPA deep links.
+    pub fn file(path: impl Into<String>) -> Self {
+        Self {
+            file_path: path.into(),
+            policy: StaticAssetPolicy::locked_down(),
+        }
+    }
+
+    /// Override Cache-Control for shell responses.
+    pub fn cache_control(mut self, cache_control: impl Into<String>) -> Self {
+        self.policy = self.policy.cache_control(cache_control);
+        self
+    }
+
+    /// Enable gzip compression for shell responses.
+    pub fn compression(mut self) -> Self {
+        self.policy = self.policy.compression();
+        self
+    }
+
+    fn with_policy(mut self, policy: StaticAssetPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+}
+
 #[derive(Clone, Default)]
 struct StaticAssetsConfig {
     mounts: Vec<StaticMount>,
-    spa_fallback: Option<String>,
-    cache_control: Option<String>,
-    enable_compression: bool,
-    /// Default index filename for directory requests (e.g., "index.html").
-    directory_index: Option<String>,
-    /// When true, detect hashed filenames (e.g., `app.a1b2c3.js`) and apply
-    /// `Cache-Control: public, max-age=31536000, immutable`.
-    immutable_cache: bool,
-    /// When true, check for pre-compressed `.br` / `.gz` variants before serving.
-    serve_precompressed: bool,
-    /// When true, support `Range: bytes=X-Y` requests with 206 Partial Content.
-    enable_range_requests: bool,
+    spa_shell: Option<StaticShell>,
+    legacy_mount_policy: StaticAssetPolicy,
+    legacy_shell_policy: StaticAssetPolicy,
 }
 
 #[derive(Clone)]
 struct StaticMount {
     route_prefix: String,
-    directory: String,
+    source: StaticAssetSource,
+    policy: StaticAssetPolicy,
 }
 
 /// TLS configuration for HTTPS serving.
@@ -1105,7 +1211,38 @@ where
 
     // ── Static Assets ────────────────────────────────────────────────────
 
+    /// Mount an explicit static asset source under a path prefix.
+    ///
+    /// Prefer this API over [`serve_dir`](Self::serve_dir) when you want the
+    /// source and policy to be visible in code. The current default surface is
+    /// intentionally file-backed; embedded asset packaging is deferred.
+    pub fn serve_assets(
+        mut self,
+        route_prefix: impl Into<String>,
+        source: StaticAssetSource,
+        policy: StaticAssetPolicy,
+    ) -> Self {
+        self.static_assets.mounts.push(StaticMount {
+            route_prefix: normalize_route_path(route_prefix.into()),
+            source,
+            policy,
+        });
+        self
+    }
+
+    /// Configure the file-backed shell served for unmatched SPA deep links.
+    ///
+    /// Prefer this API over [`spa_fallback`](Self::spa_fallback) when you want
+    /// the shell path and its delivery policy to be explicit.
+    pub fn serve_spa_shell(mut self, shell: StaticShell) -> Self {
+        self.static_assets.spa_shell = Some(shell);
+        self
+    }
+
     /// Mount a static directory under a path prefix.
+    ///
+    /// Compatibility shim over [`serve_assets`](Self::serve_assets) with
+    /// [`StaticAssetSource::directory`] and the legacy public-assets policy.
     ///
     /// Example: `.serve_dir("/static", "./public")`.
     pub fn serve_dir(
@@ -1113,27 +1250,49 @@ where
         route_prefix: impl Into<String>,
         directory: impl Into<String>,
     ) -> Self {
-        self.static_assets.mounts.push(StaticMount {
-            route_prefix: normalize_route_path(route_prefix.into()),
-            directory: directory.into(),
-        });
-        if self.static_assets.cache_control.is_none() {
-            self.static_assets.cache_control = Some("public, max-age=3600".to_string());
+        if self.static_assets.legacy_mount_policy.cache_control.is_none() {
+            let default_cache = "public, max-age=3600".to_string();
+            self.static_assets.legacy_mount_policy.cache_control = Some(default_cache.clone());
+            if self.static_assets.legacy_shell_policy.cache_control.is_none() {
+                self.static_assets.legacy_shell_policy.cache_control = Some(default_cache);
+            }
+            if let Some(shell) = &mut self.static_assets.spa_shell {
+                if shell.policy.cache_control.is_none() {
+                    shell.policy.cache_control =
+                        self.static_assets.legacy_shell_policy.cache_control.clone();
+                }
+            }
         }
-        self
+        let policy = self.static_assets.legacy_mount_policy.clone();
+        self.serve_assets(
+            route_prefix,
+            StaticAssetSource::directory(directory.into()),
+            policy,
+        )
     }
 
     /// Configure SPA fallback file for unmatched GET/HEAD routes.
     ///
+    /// Compatibility shim over [`serve_spa_shell`](Self::serve_spa_shell).
+    ///
     /// Example: `.spa_fallback("./public/index.html")`.
-    pub fn spa_fallback(mut self, file_path: impl Into<String>) -> Self {
-        self.static_assets.spa_fallback = Some(file_path.into());
-        self
+    pub fn spa_fallback(self, file_path: impl Into<String>) -> Self {
+        let shell = StaticShell::file(file_path.into())
+            .with_policy(self.static_assets.legacy_shell_policy.clone());
+        self.serve_spa_shell(shell)
     }
 
     /// Override default Cache-Control for static responses.
     pub fn static_cache_control(mut self, cache_control: impl Into<String>) -> Self {
-        self.static_assets.cache_control = Some(cache_control.into());
+        let cache_control = cache_control.into();
+        self.static_assets.legacy_mount_policy.cache_control = Some(cache_control.clone());
+        self.static_assets.legacy_shell_policy.cache_control = Some(cache_control.clone());
+        for mount in &mut self.static_assets.mounts {
+            mount.policy.cache_control = Some(cache_control.clone());
+        }
+        if let Some(shell) = &mut self.static_assets.spa_shell {
+            shell.policy.cache_control = Some(cache_control);
+        }
         self
     }
 
@@ -1145,7 +1304,11 @@ where
     /// Example: `.directory_index("index.html")` causes `/static/` to serve
     /// `/static/index.html`.
     pub fn directory_index(mut self, filename: impl Into<String>) -> Self {
-        self.static_assets.directory_index = Some(filename.into());
+        let filename = filename.into();
+        self.static_assets.legacy_mount_policy.directory_index = Some(filename.clone());
+        for mount in &mut self.static_assets.mounts {
+            mount.policy.directory_index = Some(filename.clone());
+        }
         self
     }
 
@@ -1154,7 +1317,10 @@ where
     /// Files matching the pattern `name.HASH.ext` (where HASH is 6+ hex chars)
     /// receive `Cache-Control: public, max-age=31536000, immutable`.
     pub fn immutable_cache(mut self) -> Self {
-        self.static_assets.immutable_cache = true;
+        self.static_assets.legacy_mount_policy.immutable_cache = true;
+        for mount in &mut self.static_assets.mounts {
+            mount.policy.immutable_cache = true;
+        }
         self
     }
 
@@ -1164,7 +1330,10 @@ where
     /// variants of requested files, serving them with the appropriate
     /// `Content-Encoding` header. Priority: `.br` > `.gz` > original.
     pub fn serve_precompressed(mut self) -> Self {
-        self.static_assets.serve_precompressed = true;
+        self.static_assets.legacy_mount_policy.serve_precompressed = true;
+        for mount in &mut self.static_assets.mounts {
+            mount.policy.serve_precompressed = true;
+        }
         self
     }
 
@@ -1173,13 +1342,23 @@ where
     /// When enabled, the server responds with `Accept-Ranges: bytes` and
     /// handles `Range: bytes=X-Y` requests with `206 Partial Content`.
     pub fn enable_range_requests(mut self) -> Self {
-        self.static_assets.enable_range_requests = true;
+        self.static_assets.legacy_mount_policy.enable_range_requests = true;
+        for mount in &mut self.static_assets.mounts {
+            mount.policy.enable_range_requests = true;
+        }
         self
     }
 
     /// Enable gzip response compression for static assets.
     pub fn compression_layer(mut self) -> Self {
-        self.static_assets.enable_compression = true;
+        self.static_assets.legacy_mount_policy.enable_compression = true;
+        self.static_assets.legacy_shell_policy.enable_compression = true;
+        for mount in &mut self.static_assets.mounts {
+            mount.policy.enable_compression = true;
+        }
+        if let Some(shell) = &mut self.static_assets.spa_shell {
+            shell.policy.enable_compression = true;
+        }
         self
     }
 
@@ -1588,7 +1767,7 @@ where
                         Err(e) => {
                             return json_error_response(
                                 StatusCode::BAD_REQUEST,
-                                &format!("Invalid request body: {}", e),
+                                format!("Invalid request body: {}", e),
                             );
                         }
                     };
@@ -1836,7 +2015,7 @@ where
                         Err(e) => {
                             return json_error_response(
                                 StatusCode::BAD_REQUEST,
-                                &format!("Invalid request body: {}", e),
+                                format!("Invalid request body: {}", e),
                             );
                         }
                     };
@@ -2204,7 +2383,7 @@ where
                         Err(e) => {
                             return json_error_response(
                                 StatusCode::BAD_REQUEST,
-                                &format!("Invalid request body: {}", e),
+                                format!("Invalid request body: {}", e),
                             );
                         }
                     };
@@ -3556,9 +3735,9 @@ async fn serve_single_file(file_path: &str) -> Result<Response<Full<Bytes>>, std
 
 /// Serve a file from a static directory with path traversal protection.
 async fn serve_static_file(
-    directory: &str,
+    source: &StaticAssetSource,
     file_subpath: &str,
-    config: &StaticAssetsConfig,
+    policy: &StaticAssetPolicy,
     if_none_match: Option<&http::HeaderValue>,
     accept_encoding: Option<&http::HeaderValue>,
     range_header: Option<&http::HeaderValue>,
@@ -3568,7 +3747,7 @@ async fn serve_static_file(
     // Directory index: redirect empty or trailing-slash paths to index file
     let resolved_subpath;
     if subpath.is_empty() || subpath.ends_with('/') {
-        if let Some(ref index) = config.directory_index {
+        if let Some(ref index) = policy.directory_index {
             resolved_subpath = if subpath.is_empty() {
                 index.clone()
             } else {
@@ -3584,6 +3763,7 @@ async fn serve_static_file(
         resolved_subpath = subpath.to_string();
     }
 
+    let directory = source.as_directory();
     let full_path = std::path::Path::new(directory).join(&resolved_subpath);
     // Path traversal protection
     let canonical = tokio::fs::canonicalize(&full_path).await?;
@@ -3619,7 +3799,7 @@ async fn serve_static_file(
     }
 
     // Pre-compressed file serving: check for .br / .gz variants
-    let (serve_path, content_encoding) = if config.serve_precompressed {
+    let (serve_path, content_encoding) = if policy.serve_precompressed {
         let client_accepts = accept_encoding
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
@@ -3658,7 +3838,7 @@ async fn serve_static_file(
     let mime = guess_mime(canonical.to_str().unwrap_or(""));
 
     // Range request support
-    if config.enable_range_requests {
+    if policy.enable_range_requests {
         if let Some(range_val) = range_header {
             if let Some(response) = handle_range_request(
                 range_val,
@@ -3690,14 +3870,14 @@ async fn serve_static_file(
                 .insert(http::header::CONTENT_ENCODING, value);
         }
     }
-    if config.enable_range_requests {
+    if policy.enable_range_requests {
         response
             .headers_mut()
             .insert(http::header::ACCEPT_RANGES, http::HeaderValue::from_static("bytes"));
     }
 
     // Immutable cache for hashed filenames (e.g., app.a1b2c3d4.js)
-    if config.immutable_cache {
+    if policy.immutable_cache {
         if let Some(filename) = canonical.file_name().and_then(|n| n.to_str()) {
             if is_hashed_filename(filename) {
                 if let Ok(value) = http::HeaderValue::from_str(
@@ -3878,9 +4058,9 @@ async fn maybe_handle_static_request(
             return Ok(req);
         };
         let response = match serve_static_file(
-            &mount.directory,
+            &mount.source,
             &stripped_path,
-            static_assets,
+            &mount.policy,
             if_none_match.as_ref(),
             accept_encoding.as_ref(),
             range_header.as_ref(),
@@ -3905,11 +4085,11 @@ async fn maybe_handle_static_request(
                     }));
             }
         };
-        let mut response = apply_cache_control(response, static_assets.cache_control.as_deref());
+        let mut response = apply_cache_control(response, mount.policy.cache_control.as_deref());
         response = maybe_compress_static_response(
             response,
             accept_encoding,
-            static_assets.enable_compression,
+            mount.policy.enable_compression,
         );
         let (parts, body) = response.into_parts();
         return Err(Response::from_parts(
@@ -3918,10 +4098,10 @@ async fn maybe_handle_static_request(
         ));
     }
 
-    if let Some(spa_file) = static_assets.spa_fallback.as_ref() {
+    if let Some(shell) = static_assets.spa_shell.as_ref() {
         if looks_like_spa_request(path) {
             let accept_encoding = req.headers().get(http::header::ACCEPT_ENCODING).cloned();
-            let response = match serve_single_file(spa_file).await {
+            let response = match serve_single_file(&shell.file_path).await {
                 Ok(response) => response,
                 Err(_) => {
                     return Err(Response::builder()
@@ -3941,11 +4121,11 @@ async fn maybe_handle_static_request(
                 }
             };
             let mut response =
-                apply_cache_control(response, static_assets.cache_control.as_deref());
+                apply_cache_control(response, shell.policy.cache_control.as_deref());
             response = maybe_compress_static_response(
                 response,
                 accept_encoding,
-                static_assets.enable_compression,
+                shell.policy.enable_compression,
             );
             let (parts, body) = response.into_parts();
             return Err(Response::from_parts(
@@ -4613,7 +4793,8 @@ mod tests {
     #[test]
     fn compression_layer_registers_builtin_middleware() {
         let ingress = HttpIngress::<()>::new().compression_layer();
-        assert!(ingress.static_assets.enable_compression);
+        assert!(ingress.static_assets.legacy_mount_policy.enable_compression);
+        assert!(ingress.static_assets.legacy_shell_policy.enable_compression);
     }
 
     #[test]
@@ -4729,7 +4910,7 @@ mod tests {
         assert_eq!(echo_text, WsClientMessage::Text("echo:hello".into()));
 
         client
-            .send(WsClientMessage::Binary(vec![1, 2, 3, 4].into()))
+            .send(WsClientMessage::Binary(vec![1, 2, 3, 4]))
             .await
             .expect("send binary");
         let echo_binary = client
@@ -4739,7 +4920,7 @@ mod tests {
             .expect("echo binary frame ok");
         assert_eq!(
             echo_binary,
-            WsClientMessage::Binary(vec![1, 2, 3, 4].into())
+            WsClientMessage::Binary(vec![1, 2, 3, 4])
         );
 
         client.close(None).await.expect("close websocket");
@@ -4906,6 +5087,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn serve_assets_with_explicit_source_and_policy_serves_file() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("public");
+        fs::create_dir_all(&root).expect("create dir");
+        let file = root.join("hello.txt");
+        fs::write(&file, "hello explicit").expect("write file");
+
+        let ingress = Ranvier::http::<()>().serve_assets(
+            "/static",
+            StaticAssetSource::directory(root.to_string_lossy().to_string()),
+            StaticAssetPolicy::public_assets().compression(),
+        );
+        let app = crate::test_harness::TestApp::new(ingress, ());
+        let response = app
+            .send(
+                crate::test_harness::TestRequest::get("/static/hello.txt")
+                    .header("accept-encoding", "gzip"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.header("cache-control").is_some());
+        assert_eq!(
+            response
+                .header("content-encoding")
+                .and_then(|value| value.to_str().ok()),
+            Some("gzip")
+        );
+    }
+
+    #[tokio::test]
     async fn spa_fallback_returns_index_for_unmatched_path() {
         let temp = tempdir().expect("tempdir");
         let index = temp.path().join("index.html");
@@ -4920,6 +5133,78 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.text().expect("utf8").contains("spa"));
+    }
+
+    #[tokio::test]
+    async fn serve_spa_shell_uses_explicit_shell_policy() {
+        let temp = tempdir().expect("tempdir");
+        let index = temp.path().join("index.html");
+        fs::write(&index, "<html><body>shell</body></html>").expect("write index");
+
+        let ingress = Ranvier::http::<()>().serve_spa_shell(
+            StaticShell::file(index.to_string_lossy().to_string())
+                .cache_control("no-store")
+                .compression(),
+        );
+        let app = crate::test_harness::TestApp::new(ingress, ());
+        let response = app
+            .send(
+                crate::test_harness::TestRequest::get("/dashboard/settings")
+                    .header("accept-encoding", "gzip"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .header("cache-control")
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+        assert_eq!(
+            response
+                .header("content-encoding")
+                .and_then(|value| value.to_str().ok()),
+            Some("gzip")
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_serve_dir_and_spa_fallback_share_default_delivery_policy() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("public");
+        fs::create_dir_all(&root).expect("create dir");
+        fs::write(root.join("app.js"), "console.log('ok');").expect("write asset");
+        let index = root.join("index.html");
+        fs::write(&index, "<html><body>legacy-shell</body></html>").expect("write index");
+
+        let ingress = Ranvier::http::<()>()
+            .spa_fallback(index.to_string_lossy().to_string())
+            .serve_dir("/static", root.to_string_lossy().to_string())
+            .compression_layer();
+        let app = crate::test_harness::TestApp::new(ingress, ());
+        let response = app
+            .send(
+                crate::test_harness::TestRequest::get("/dashboard/settings")
+                    .header("accept-encoding", "gzip"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .header("cache-control")
+                .and_then(|value| value.to_str().ok()),
+            Some("public, max-age=3600")
+        );
+        assert_eq!(
+            response
+                .header("content-encoding")
+                .and_then(|value| value.to_str().ok()),
+            Some("gzip")
+        );
     }
 
     #[tokio::test]

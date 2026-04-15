@@ -62,10 +62,10 @@
 </head>
 <body>
   <main class="card">
-    <h1>Ranvier Full-Stack Demo (Embedded Static)</h1>
+    <h1>Ranvier Full-Stack Demo (Same-Process Static)</h1>
     <p>
-      This page is served by <code>HttpIngress.serve_dir()</code> and falls back via
-      <code>spa_fallback()</code>. Click to call <code>POST /api/order</code>.
+      This page is served by <code>HttpIngress.serve_assets()</code> and falls back via
+      <code>serve_spa_shell()</code>. Click to call <code>POST /api/order</code>.
     </p>
     <button id="place-order">Place Order</button>
     <pre id="output">Waiting for request...</pre>
