@@ -9,60 +9,24 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot "release_common.ps1")
+
 function Resolve-CrateSet {
-    param([string]$Key)
-
-    $m119 = @(
-        "ranvier-core",
-        "ranvier-runtime",
-        "ranvier-http",
-        "ranvier-std",
-        "ranvier-macros",
-        "ranvier"
-    )
-    $m131 = @(
-        "ranvier-observe",
-        "ranvier-inspector",
-        "ranvier-runtime",
-        "ranvier-auth",
-        "ranvier-guard",
-        "ranvier-http",
-        "ranvier-openapi",
-        "ranvier"
+    param(
+        [string]$Key,
+        [string]$WorkspaceRoot
     )
 
-    switch ($Key) {
-        "m119" { return $m119 }
-        "m131" { return $m131 }
-        "all" {
-            $ordered = New-Object System.Collections.Generic.List[string]
-            foreach ($name in ($m119 + $m131)) {
-                if (-not $ordered.Contains($name)) {
-                    [void]$ordered.Add($name)
-                }
-            }
-            return @($ordered)
-        }
-        default { throw "Unknown profile: $Key" }
-    }
+    return Resolve-ReleaseCrateSet -ProfileKey $Key -WorkspaceRoot $WorkspaceRoot
 }
 
 function Infer-TargetVersion {
     param(
-        [string]$ProfileKey,
-        [string]$Requested
+        [string]$Requested,
+        [string]$WorkspaceRoot
     )
 
-    if (-not [string]::IsNullOrWhiteSpace($Requested)) {
-        return $Requested.Trim()
-    }
-
-    switch ($ProfileKey) {
-        "m119" { return "0.2.0" }
-        "m131" { return "0.7.0" }
-        "all" { return "0.2.0" }
-        default { return "" }
-    }
+    return Resolve-ReleaseTargetVersion -Requested $Requested -WorkspaceRoot $WorkspaceRoot
 }
 
 function Write-Log {
@@ -76,14 +40,16 @@ function Write-Log {
 }
 
 $profileKey = $Profile.ToLowerInvariant()
-$target = Infer-TargetVersion -ProfileKey $profileKey -Requested $TargetVersion
+$workspaceRoot = Get-ReleaseWorkspaceRoot -ScriptRoot $PSScriptRoot
+$target = Infer-TargetVersion -Requested $TargetVersion -WorkspaceRoot $workspaceRoot
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$EvidenceDir = Resolve-ReleaseEvidenceDir -Requested $EvidenceDir -WorkspaceRoot $workspaceRoot
 
 $crateList = @()
 if ($null -ne $Crates -and $Crates.Count -gt 0) {
     $crateList = @($Crates | Sort-Object -Unique)
 } else {
-    $crateList = @((Resolve-CrateSet -Key $profileKey) | Sort-Object -Unique)
+    $crateList = @((Resolve-CrateSet -Key $profileKey -WorkspaceRoot $workspaceRoot) | Sort-Object -Unique)
 }
 
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null

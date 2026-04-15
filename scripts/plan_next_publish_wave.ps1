@@ -9,6 +9,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot "release_common.ps1")
+
 function Write-Log {
     param(
         [string]$Path,
@@ -21,20 +23,11 @@ function Write-Log {
 
 function Resolve-TargetVersion {
     param(
-        [string]$ProfileKey,
-        [string]$Requested
+        [string]$Requested,
+        [string]$WorkspaceRoot
     )
 
-    if (-not [string]::IsNullOrWhiteSpace($Requested)) {
-        return $Requested.Trim()
-    }
-
-    switch ($ProfileKey) {
-        "m119" { return "0.2.0" }
-        "m131" { return "0.7.0" }
-        "all" { return "0.2.0" }
-        default { return "" }
-    }
+    return Resolve-ReleaseTargetVersion -Requested $Requested -WorkspaceRoot $WorkspaceRoot
 }
 
 function Resolve-InputPath {
@@ -145,10 +138,11 @@ function New-StringSet {
     return New-Object "System.Collections.Generic.HashSet[string]"
 }
 
-$workspaceRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$workspaceRoot = Get-ReleaseWorkspaceRoot -ScriptRoot $PSScriptRoot
 $profileKey = $Profile.ToLowerInvariant()
-$target = Resolve-TargetVersion -ProfileKey $profileKey -Requested $TargetVersion
+$target = Resolve-TargetVersion -Requested $TargetVersion -WorkspaceRoot $workspaceRoot
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$EvidenceDir = Resolve-ReleaseEvidenceDir -Requested $EvidenceDir -WorkspaceRoot $workspaceRoot
 
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
 $evidencePath = Join-Path $EvidenceDir "publish_next_wave_gate_${profileKey}_${target}_${timestamp}.log"

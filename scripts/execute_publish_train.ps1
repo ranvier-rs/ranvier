@@ -20,6 +20,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot "release_common.ps1")
+
 function Write-Log {
     param(
         [string]$Path,
@@ -104,10 +106,11 @@ function Get-LatestFile {
     return $items[0]
 }
 
-$workspaceRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$workspaceRoot = Get-ReleaseWorkspaceRoot -ScriptRoot $PSScriptRoot
 $profileKey = $Profile.ToLowerInvariant()
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $psExe = Resolve-PowerShellExecutable
+$EvidenceDir = Resolve-ReleaseEvidenceDir -Requested $EvidenceDir -WorkspaceRoot $workspaceRoot
 
 if ($StartWave -lt 1) {
     throw "StartWave must be >= 1"

@@ -10,60 +10,24 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot "release_common.ps1")
+
 function Resolve-TrainCrates {
-    param([string]$Key)
-
-    $m119 = @(
-        "ranvier-core",
-        "ranvier-runtime",
-        "ranvier-http",
-        "ranvier-std",
-        "ranvier-macros",
-        "ranvier"
-    )
-    $m131 = @(
-        "ranvier-auth",
-        "ranvier-guard",
-        "ranvier-inspector",
-        "ranvier-observe",
-        "ranvier-runtime",
-        "ranvier-http",
-        "ranvier-openapi",
-        "ranvier"
+    param(
+        [string]$Key,
+        [string]$WorkspaceRoot
     )
 
-    switch ($Key) {
-        "m119" { return $m119 }
-        "m131" { return $m131 }
-        "all" {
-            $ordered = New-Object System.Collections.Generic.List[string]
-            foreach ($name in ($m119 + $m131)) {
-                if (-not $ordered.Contains($name)) {
-                    [void]$ordered.Add($name)
-                }
-            }
-            return @($ordered)
-        }
-        default { throw "Unknown train: $Key" }
-    }
+    return Resolve-ReleaseCrateSet -ProfileKey $Key -WorkspaceRoot $WorkspaceRoot
 }
 
 function Infer-TargetVersion {
     param(
-        [string]$TrainKey,
-        [string]$Requested
+        [string]$Requested,
+        [string]$WorkspaceRoot
     )
 
-    if (-not [string]::IsNullOrWhiteSpace($Requested)) {
-        return $Requested.Trim()
-    }
-
-    switch ($TrainKey) {
-        "m119" { return "0.2.0" }
-        "m131" { return "0.7.0" }
-        "all" { return "0.7.0" }
-        default { throw "TargetVersion is required for train=$TrainKey" }
-    }
+    return Resolve-ReleaseTargetVersion -Requested $Requested -WorkspaceRoot $WorkspaceRoot
 }
 
 function Write-Log {
@@ -87,12 +51,13 @@ function Write-FileUtf8NoBom {
     [System.IO.File]::WriteAllText($Path, $content, $utf8NoBom)
 }
 
-$workspaceRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$workspaceRoot = Get-ReleaseWorkspaceRoot -ScriptRoot $PSScriptRoot
 $trainKey = $Train.ToLowerInvariant()
-$targetVersion = Infer-TargetVersion -TrainKey $trainKey -Requested $TargetVersion
+$targetVersion = Infer-TargetVersion -Requested $TargetVersion -WorkspaceRoot $workspaceRoot
 $bumpWorkspacePackage = -not $NoWorkspacePackageBump
 $includeWorkspaceVersionUsers = -not $NoIncludeWorkspaceVersionUsers
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$EvidenceDir = Resolve-ReleaseEvidenceDir -Requested $EvidenceDir -WorkspaceRoot $workspaceRoot
 
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
 $evidencePath = Join-Path $EvidenceDir "release_version_bump_plan_${trainKey}_${targetVersion}_${timestamp}.log"
@@ -101,7 +66,7 @@ $summaryPath = Join-Path $EvidenceDir "release_version_bump_plan_${trainKey}_${t
 Write-Log "Release version bump planning started (train=$trainKey, target=$targetVersion, apply=$($Apply.IsPresent), workspace_package_bump=$bumpWorkspacePackage, include_workspace_users=$includeWorkspaceVersionUsers)" -Path $evidencePath
 Write-Log "Workspace root: $workspaceRoot" -Path $evidencePath
 
-$trainCrates = @((Resolve-TrainCrates -Key $trainKey) | Sort-Object -Unique)
+$trainCrates = @((Resolve-TrainCrates -Key $trainKey -WorkspaceRoot $workspaceRoot) | Sort-Object -Unique)
 $trainSet = New-Object "System.Collections.Generic.HashSet[string]"
 foreach ($crate in $trainCrates) {
     [void]$trainSet.Add($crate)

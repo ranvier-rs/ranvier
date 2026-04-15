@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.44.0] — 2026-04
+
+### Summary
+
+**Ranvier 0.44.0 — Inspectable HTTP Surface Sprint.**
+Makes HTTP route/guard intent more inspectable, aligns OpenAPI generation with runtime guard metadata, promotes canonical realtime reference examples for WebSocket/SSE operability, and closes the static-asset follow-up by evidence instead of expanding the surface prematurely.
+
+### Added
+- **Route/guard introspection (ranvier-http, M385):** `HttpRouteDescriptor` now carries effective guard metadata in execution order via `HttpGuardDescriptor` / `HttpGuardScope`, including global, group, and per-route scope plus optional security-scheme hints.
+- **Guard-aware OpenAPI metadata (ranvier-openapi, M386):** OpenAPI operations now emit `x-ranvier.guards` metadata and automatically attach `security` requirements only when route descriptors explicitly advertise a supported scheme hint such as `bearerAuth`.
+- **Canonical realtime release smoke (examples + scripts, M387):** Added board-owned realtime smoke coverage using `reference-chat-server` for WebSocket and `streaming-demo` for SSE, with reproducible operability evidence.
+
+### Changed
+- **OpenAPI parity examples (M386):** `openapi-demo` now acts as the primary generator/spec reference, `admin-crud-demo` remains the authenticated docs sanity check, and `request-governance-demo` is documented as the runtime `ProblemDetail` reference rather than an OpenAPI surface.
+- **Realtime reference examples (M387):** `reference-chat-server` request wiring and `streaming-demo` health/readiness/graceful-shutdown surfaces were hardened so the examples match the recommended production boundary patterns.
+- **Static asset boundary decision (M388):** Kept file-backed static delivery as the explicit `ranvier-http` edge surface and deferred richer hybrid mount abstractions because the existing policy set already covers the validated use cases.
+
+### Fixed
+- **OpenAPI auth hinting (M386):** `AuthGuard` no longer implies bearer auth by name alone; OpenAPI security output now follows the guard integration's explicit `security_scheme_hint`.
+- **SSE response extraction (M387):** Successful SSE responses now run guard response extractors, preserving metadata such as request IDs on realtime endpoints.
+
+### Documentation
+- **Milestone closure evidence (M385-M388):** Added completion evidence and updated milestone references for guard visibility, OpenAPI parity, realtime operability, and hybrid/static deferment.
+
+---
+
 ## [0.37.0] — 2026-03
 
 ### Summary

@@ -7,10 +7,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$workspaceRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+. (Join-Path $PSScriptRoot "release_common.ps1")
+
+$workspaceRoot = Get-ReleaseWorkspaceRoot -ScriptRoot $PSScriptRoot
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $allowDirty = -not $NoAllowDirty
 $profileKey = $Profile.ToLowerInvariant()
+$EvidenceDir = Resolve-ReleaseEvidenceDir -Requested $EvidenceDir -WorkspaceRoot $workspaceRoot
 
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
 $evidencePath = Join-Path $EvidenceDir "publish_dry_run_preflight_${profileKey}_${timestamp}.log"
@@ -24,43 +27,12 @@ function Write-Log {
 }
 
 function Resolve-CrateSet {
-    param([string]$Key)
-
-    $m119 = @(
-        "ranvier-core",
-        "ranvier-runtime",
-        "ranvier-http",
-        "ranvier-std",
-        "ranvier-macros",
-        "ranvier"
-    )
-    $m131 = @(
-        "ranvier-observe",
-        "ranvier-inspector",
-        "ranvier-runtime",
-        "ranvier-auth",
-        "ranvier-guard",
-        "ranvier-http",
-        "ranvier-openapi",
-        "ranvier"
+    param(
+        [string]$Key,
+        [string]$WorkspaceRoot
     )
 
-    switch ($Key) {
-        "m119" { return $m119 }
-        "m131" { return $m131 }
-        "all" {
-            $ordered = New-Object System.Collections.Generic.List[string]
-            foreach ($name in ($m119 + $m131)) {
-                if (-not $ordered.Contains($name)) {
-                    $ordered.Add($name)
-                }
-            }
-            return $ordered
-        }
-        default {
-            throw "Unknown profile: $Key"
-        }
-    }
+    return Resolve-ReleaseCrateSet -ProfileKey $Key -WorkspaceRoot $WorkspaceRoot
 }
 
 function Resolve-PublishPlan {
@@ -183,7 +155,8 @@ function Invoke-PublishDryRun {
     $sanitized = $Crate.Replace("-", "_")
     $crateLogPath = Join-Path $EvidenceDir "publish_dry_run_preflight_${sanitized}_${Timestamp}.log"
 
-    $args = @("publish", "-p", $Crate, "--dry-run")
+    $manifestPath = Join-Path $WorkspaceRoot "Cargo.toml"
+    $args = @("publish", "--manifest-path", $manifestPath, "-p", $Crate, "--dry-run")
     if ($AllowDirty) {
         $args += "--allow-dirty"
     }
@@ -219,7 +192,7 @@ function Invoke-PublishDryRun {
     }
 }
 
-$crates = Resolve-CrateSet -Key $profileKey
+$crates = Resolve-CrateSet -Key $profileKey -WorkspaceRoot $workspaceRoot
 Write-Log "Publish dry-run preflight started (profile=$profileKey, allow_dirty=$allowDirty)"
 Write-Log "Workspace root: $workspaceRoot"
 Write-Log "Crates: $($crates -join ', ')"

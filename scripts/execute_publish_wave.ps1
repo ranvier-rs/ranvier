@@ -19,6 +19,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot "release_common.ps1")
+
 function Write-Log {
     param(
         [string]$Path,
@@ -149,14 +151,16 @@ function Invoke-CargoPublish {
         [int]$Attempt,
         [string]$Timestamp,
         [string]$EvidenceRoot,
-        [string]$AggregateLogPath
+        [string]$AggregateLogPath,
+        [string]$WorkspaceRoot
     )
 
     $sanitized = $Crate.Replace("-", "_")
     $attemptSuffix = if ($Attempt -gt 0) { "_attempt$Attempt" } else { "" }
     $crateLogPath = Join-Path $EvidenceRoot "publish_wave_execute_${ProfileKey}_w${WaveIndex}_${sanitized}_${Timestamp}${attemptSuffix}.log"
 
-    $args = @("publish", "-p", $Crate)
+    $manifestPath = Join-Path $WorkspaceRoot "Cargo.toml"
+    $args = @("publish", "--manifest-path", $manifestPath, "-p", $Crate)
     if ($ModeKey -eq "dry-run") {
         $args += "--dry-run"
     }
@@ -196,9 +200,10 @@ function Invoke-CargoPublish {
     }
 }
 
-$workspaceRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$workspaceRoot = Get-ReleaseWorkspaceRoot -ScriptRoot $PSScriptRoot
 $profileKey = $Profile.ToLowerInvariant()
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$EvidenceDir = Resolve-ReleaseEvidenceDir -Requested $EvidenceDir -WorkspaceRoot $workspaceRoot
 
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
 $evidencePath = Join-Path $EvidenceDir "publish_wave_execute_${profileKey}_w${Wave}_${timestamp}.log"
@@ -293,7 +298,7 @@ foreach ($crate in $selectedCrates) {
     $attemptResults = New-Object System.Collections.Generic.List[object]
 
     while ($true) {
-        $attemptResult = Invoke-CargoPublish -Crate $crate -ModeKey $Mode -AllowDirtyFlag:$AllowDirty.IsPresent -ProfileKey $profileKey -WaveIndex $Wave -Attempt $attempt -Timestamp $timestamp -EvidenceRoot $EvidenceDir -AggregateLogPath $evidencePath
+        $attemptResult = Invoke-CargoPublish -Crate $crate -ModeKey $Mode -AllowDirtyFlag:$AllowDirty.IsPresent -ProfileKey $profileKey -WaveIndex $Wave -Attempt $attempt -Timestamp $timestamp -EvidenceRoot $EvidenceDir -AggregateLogPath $evidencePath -WorkspaceRoot $workspaceRoot
         $attemptResults.Add($attemptResult)
 
         if ($attemptResult.success -or $attempt -ge $RetryCount) {

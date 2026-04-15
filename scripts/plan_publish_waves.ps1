@@ -7,6 +7,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot "release_common.ps1")
+
 function Write-Log {
     param(
         [string]$Path,
@@ -137,9 +139,10 @@ function Order-ByReference {
     return ,$ordered.ToArray()
 }
 
-$workspaceRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$workspaceRoot = Get-ReleaseWorkspaceRoot -ScriptRoot $PSScriptRoot
 $profileKey = $Profile.ToLowerInvariant()
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$EvidenceDir = Resolve-ReleaseEvidenceDir -Requested $EvidenceDir -WorkspaceRoot $workspaceRoot
 
 New-Item -ItemType Directory -Force -Path $EvidenceDir | Out-Null
 $evidencePath = Join-Path $EvidenceDir "publish_wave_plan_${profileKey}_${timestamp}.log"
