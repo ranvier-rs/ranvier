@@ -1,20 +1,14 @@
 use crate::auth::{self, TokenStore};
 use ranvier_core::Outcome;
-use ranvier_http::prelude::*;
 use ranvier_macros::transition;
 
 #[transition]
 pub async fn login(
-    _input: (),
+    input: serde_json::Value,
     _res: &(),
     bus: &mut ranvier_core::Bus,
 ) -> Outcome<serde_json::Value, String> {
-    let body = match bus.get_cloned::<Json<serde_json::Value>>() {
-        Ok(json) => json.0,
-        Err(_) => return Outcome::Fault("Missing JSON body".to_string()),
-    };
-
-    let username = body.get("username").and_then(|v| v.as_str()).unwrap_or("");
+    let username = input.get("username").and_then(|v| v.as_str()).unwrap_or("");
 
     if username.is_empty() {
         return Outcome::Fault("username is required".to_string());

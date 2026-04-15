@@ -11,15 +11,9 @@ pub async fn handle_ws(mut ws: WebSocketConnection, _resources: Arc<()>, bus: ra
 
     // Extract token from query string: ?token=tok_xxx
     let token = ws.session().query().and_then(|q| {
-        q.split('&').find_map(|pair| {
-            let mut parts = pair.splitn(2, '=');
-            let key = parts.next()?;
-            let value = parts.next()?;
-            if key == "token" {
-                Some(value.to_string())
-            } else {
-                None
-            }
+        q.split('&').find_map(|pair| match pair.split_once('=') {
+            Some(("token", value)) => Some(value.to_string()),
+            _ => None,
         })
     });
 

@@ -13,6 +13,8 @@
 //!
 //! - `POST /api/chat/stream` — SSE streaming response with PII redaction
 //! - `POST /api/chat`        — Non-streaming JSON response (for comparison)
+//! - `GET /health`           — health endpoint
+//! - `GET /ready` / `GET /live` — readiness/liveness probes
 //!
 //! ## Test
 //!
@@ -28,6 +30,11 @@
 //! curl -X POST http://localhost:3000/api/chat \
 //!   -H "Content-Type: application/json" \
 //!   -d '{"message": "Hello, how are you?"}'
+//!
+//! # Health / readiness
+//! curl http://localhost:3000/health
+//! curl http://localhost:3000/ready
+//! curl http://localhost:3000/live
 //! ```
 
 use async_trait::async_trait;
@@ -196,6 +203,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_env_filter("streaming_demo=info,ranvier_http=info")
         .init();
 
+    let bind_addr =
+        std::env::var("STREAMING_DEMO_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
+
     // Streaming pipeline with macro + map_items PII filter:
     // ChatRequest → ClassifyIntent → synthesize_stream → map_items(redact_pii) → SSE
     let streaming_pipeline = Axon::typed::<ChatRequest, String>("chat-stream")
@@ -208,14 +218,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .then(ClassifyIntent)
         .then(SynthesizeBatch);
 
-    tracing::info!("Starting streaming-demo on http://localhost:3000");
+    tracing::info!(bind_addr = %bind_addr, "Starting streaming-demo");
 
     Ranvier::http()
-        .bind("127.0.0.1:3000")
+        .bind(&bind_addr)
+        .graceful_shutdown(Duration::from_secs(5))
         .guard(CorsGuard::<()>::permissive())
         .guard(AccessLogGuard::<()>::new())
+        .guard(RequestIdGuard::<()>::new())
         .post_sse_typed::<ChatRequest, _, _>("/api/chat/stream", streaming_pipeline)
         .post_typed::<ChatRequest, _, _>("/api/chat", batch_pipeline)
+        .health_endpoint("/health")
+        .readiness_liveness_default()
         .run(())
         .await?;
 

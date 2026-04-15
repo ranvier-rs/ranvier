@@ -29,7 +29,7 @@ mod transitions;
 mod ws;
 
 use ranvier_core::config::RanvierConfig;
-use ranvier_http::Ranvier;
+use ranvier_http::{PathParams, Ranvier};
 use ranvier_runtime::Axon;
 use ws::room_manager::RoomManager;
 
@@ -52,57 +52,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "Starting chat server"
     );
 
-    let login_ts = token_store.clone();
-    let create_ts = token_store.clone();
-    let create_rm = room_manager.clone();
-    let list_rm = room_manager.clone();
-    let history_rm = room_manager.clone();
-    let ws_ts = token_store.clone();
-    let ws_rm = room_manager.clone();
+    let token_store_for_bus = token_store.clone();
+    let room_manager_for_bus = room_manager.clone();
 
     Ranvier::http()
         .config(&config)
         .graceful_shutdown(config.shutdown_timeout())
         .health_endpoint("/health")
         .readiness_liveness_default()
-        .post("/login", Axon::simple::<String>("login").then(login))
+        .bus_injector(move |parts, bus| {
+            bus.insert(token_store_for_bus.clone());
+            bus.insert(room_manager_for_bus.clone());
+
+            if let Some(auth) = parts.headers.get("authorization")
+                && let Ok(value) = auth.to_str()
+            {
+                bus.insert(value.to_string());
+            }
+
+            if let Some(params) = parts.extensions.get::<PathParams>() {
+                bus.insert(params.clone());
+            }
+        })
+        .post_json(
+            "/login",
+            Axon::typed::<serde_json::Value, String>("login").then(login),
+        )
         .get(
             "/rooms",
             Axon::simple::<String>("list_rooms").then(list_rooms),
         )
-        .post(
+        .post_json(
             "/rooms",
-            Axon::simple::<String>("create_room").then(create_room),
+            Axon::typed::<serde_json::Value, String>("create_room").then(create_room),
         )
         .get(
             "/rooms/:id/history",
             Axon::simple::<String>("room_history").then(room_history),
         )
         .ws("/ws", ws::handler::handle_ws)
-        .bus_injector(move |parts, bus| {
-            bus.insert(login_ts.clone());
-
-            // Extract Authorization header for protected routes
-            if let Some(auth) = parts.headers.get("authorization") {
-                if let Ok(value) = auth.to_str() {
-                    bus.insert(value.to_string());
-                }
-            }
-        })
-        .bus_injector(move |_parts, bus| {
-            bus.insert(create_ts.clone());
-            bus.insert(create_rm.clone());
-        })
-        .bus_injector(move |_parts, bus| {
-            bus.insert(list_rm.clone());
-        })
-        .bus_injector(move |_parts, bus| {
-            bus.insert(history_rm.clone());
-        })
-        .bus_injector(move |_parts, bus| {
-            bus.insert(ws_ts.clone());
-            bus.insert(ws_rm.clone());
-        })
         .on_start(|| {
             tracing::info!("Chat server started — connect via WebSocket at /ws?token=<token>");
         })

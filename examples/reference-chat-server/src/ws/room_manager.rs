@@ -104,7 +104,7 @@ impl RoomManager {
     /// Leave a room. Returns member count.
     pub fn leave_room(&self, room_id: &str, user_id: &str, username: &str) -> usize {
         let mut inner = self.inner.lock().unwrap();
-        let count = if let Some(members) = inner.members.get_mut(room_id) {
+        if let Some(members) = inner.members.get_mut(room_id) {
             members.remove(user_id);
             let count = members.len();
             let remaining: Vec<String> = members.iter().cloned().collect();
@@ -122,8 +122,7 @@ impl RoomManager {
             count
         } else {
             0
-        };
-        count
+        }
     }
 
     /// Broadcast a chat message to all members in a room.

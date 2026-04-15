@@ -2987,7 +2987,7 @@ where
                             Err(e) => {
                                 return json_error_response(
                                     StatusCode::BAD_REQUEST,
-                                    &format!("Invalid request body: {}", e),
+                                    format!("Invalid request body: {}", e),
                                 );
                             }
                         }
@@ -3028,7 +3028,7 @@ where
                             if cfg!(debug_assertions) {
                                 return json_error_response(
                                     StatusCode::INTERNAL_SERVER_ERROR,
-                                    &format!("Streaming error: {}", e),
+                                    format!("Streaming error: {}", e),
                                 );
                             } else {
                                 return json_error_response(
@@ -3076,13 +3076,17 @@ where
                     };
 
                     let body = http_body_util::StreamBody::new(frame_stream);
-                    Response::builder()
+                    let mut response = Response::builder()
                         .status(StatusCode::OK)
                         .header(http::header::CONTENT_TYPE, "text/event-stream")
                         .header(http::header::CACHE_CONTROL, "no-cache")
                         .header(http::header::CONNECTION, "keep-alive")
                         .body(http_body_util::BodyExt::boxed(body))
-                        .expect("Valid SSE response")
+                        .expect("Valid SSE response");
+                    for extractor in route_response_extractors.iter() {
+                        extractor(&bus, response.headers_mut());
+                    }
+                    response
                 }
                 .instrument(span)
                 .await

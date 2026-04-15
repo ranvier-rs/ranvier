@@ -1,5 +1,6 @@
 use crate::ws::room_manager::RoomManager;
 use ranvier_core::Outcome;
+use ranvier_http::PathParams;
 use ranvier_macros::transition;
 
 #[transition]
@@ -8,7 +9,11 @@ pub async fn room_history(
     _res: &(),
     bus: &mut ranvier_core::Bus,
 ) -> Outcome<serde_json::Value, String> {
-    let room_id = bus.get_cloned::<String>().unwrap_or_default();
+    let room_id = bus
+        .get_cloned::<PathParams>()
+        .ok()
+        .and_then(|params: PathParams| params.get("id").map(str::to_string))
+        .unwrap_or_default();
     if room_id.is_empty() {
         return Outcome::Fault("room_id path parameter is required".to_string());
     }
