@@ -171,7 +171,7 @@ impl ActiveTraceRegistry {
     fn list_all(&self) -> Vec<TraceRecord> {
         let mut result: Vec<TraceRecord> = self.active.values().cloned().collect();
         result.extend(self.recent.iter().cloned());
-        result.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        result.sort_by_key(|record| std::cmp::Reverse(record.started_at));
         result
     }
 

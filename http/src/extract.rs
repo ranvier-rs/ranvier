@@ -107,6 +107,17 @@ impl<T> Json<T> {
     }
 }
 
+#[cfg(feature = "validation")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedJson<T>(pub T);
+
+#[cfg(feature = "validation")]
+impl<T> ValidatedJson<T> {
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Query<T>(pub T);
 
@@ -269,7 +280,6 @@ impl CookieJar {
 }
 
 #[async_trait]
-#[cfg(not(feature = "validation"))]
 impl<T, B> FromRequest<B> for Json<T>
 where
     T: DeserializeOwned + Send + 'static,
@@ -285,7 +295,7 @@ where
 
 #[async_trait]
 #[cfg(feature = "validation")]
-impl<T, B> FromRequest<B> for Json<T>
+impl<T, B> FromRequest<B> for ValidatedJson<T>
 where
     T: DeserializeOwned + Send + Validate + 'static,
     B: Body<Data = Bytes> + Send + Unpin + 'static,
@@ -296,7 +306,7 @@ where
         let value = parse_json_bytes::<T>(&bytes)?;
 
         validate_payload(&value)?;
-        Ok(Json(value))
+        Ok(ValidatedJson(value))
     }
 }
 
@@ -377,7 +387,7 @@ where
 }
 
 #[cfg(feature = "validation")]
-fn validate_payload<T>(value: &T) -> Result<(), ExtractError>
+pub(crate) fn validate_payload<T>(value: &T) -> Result<(), ExtractError>
 where
     T: Validate,
 {
@@ -387,7 +397,7 @@ where
 }
 
 #[cfg(feature = "validation")]
-fn validation_error_body(errors: &ValidationErrors) -> ValidationErrorBody {
+pub(crate) fn validation_error_body(errors: &ValidationErrors) -> ValidationErrorBody {
     let mut fields = BTreeMap::new();
     collect_validation_errors("", errors, &mut fields);
 
@@ -590,7 +600,7 @@ mod tests {
             .body(body)
             .expect("request build");
 
-        let error = Json::<ValidatedPayload>::from_request(&mut req)
+        let error = ValidatedJson::<ValidatedPayload>::from_request(&mut req)
             .await
             .expect_err("payload should fail validation");
 
@@ -632,7 +642,7 @@ mod tests {
             .body(body)
             .expect("request build");
 
-        let error = Json::<SignupPayload>::from_request(&mut req)
+        let error = ValidatedJson::<SignupPayload>::from_request(&mut req)
             .await
             .expect_err("schema validation should fail");
         assert_eq!(error.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -654,11 +664,28 @@ mod tests {
             .body(body)
             .expect("request build");
 
-        let Json(payload): Json<ValidatedPayload> = Json::from_request(&mut req)
-            .await
-            .expect("validation should pass");
+        let ValidatedJson(payload): ValidatedJson<ValidatedPayload> =
+            ValidatedJson::from_request(&mut req)
+                .await
+                .expect("validation should pass");
         assert_eq!(payload.name, "valid-name");
         assert_eq!(payload.age, 20);
+    }
+
+    #[cfg(feature = "validation")]
+    #[tokio::test]
+    async fn json_from_request_remains_parse_only_with_validation_feature_enabled() {
+        let body = Full::new(Bytes::from_static(br#"{"name":"ab","age":0}"#));
+        let mut req = Request::builder()
+            .uri("/users")
+            .body(body)
+            .expect("request build");
+
+        let Json(payload): Json<ValidatedPayload> = Json::from_request(&mut req)
+            .await
+            .expect("json should parse");
+        assert_eq!(payload.name, "ab");
+        assert_eq!(payload.age, 0);
     }
 
     #[cfg(feature = "validation")]
@@ -670,7 +697,7 @@ mod tests {
             .body(body)
             .expect("request build");
 
-        let error = Json::<ManualValidatedPayload>::from_request(&mut req)
+        let error = ValidatedJson::<ManualValidatedPayload>::from_request(&mut req)
             .await
             .expect_err("manual validation should fail");
         assert_eq!(error.status_code(), StatusCode::UNPROCESSABLE_ENTITY);

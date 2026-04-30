@@ -44,6 +44,8 @@ pub use bus_ext::{BusHttpExt, json_outcome};
 pub use extract::{
     CookieJar, DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Header, Json, Path, Query,
 };
+#[cfg(feature = "validation")]
+pub use extract::{ValidatedJson, ValidationErrorBody};
 pub use guard_integration::{
     BusInjectorFn, GuardExec, GuardIntegration, GuardRejection, PreflightConfig, RegisteredGuard,
     ResponseBodyTransformFn, ResponseExtractorFn, register_guard,
@@ -95,6 +97,8 @@ pub mod prelude {
     pub use crate::extract::{
         CookieJar, DEFAULT_BODY_LIMIT, ExtractError, FromRequest, Header, Json, Path, Query,
     };
+    #[cfg(feature = "validation")]
+    pub use crate::extract::{ValidatedJson, ValidationErrorBody};
     pub use crate::guard_integration::{
         BusInjectorFn, GuardExec, GuardIntegration, GuardRejection, PreflightConfig,
         RegisteredGuard, ResponseBodyTransformFn, ResponseExtractorFn, register_guard,

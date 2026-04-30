@@ -6,9 +6,10 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// Rotation policy for audit log files.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum RotationPolicy {
     /// No rotation (default).
+    #[default]
     None,
     /// Rotate when file exceeds this size in bytes.
     BySize(u64),
@@ -16,12 +17,6 @@ pub enum RotationPolicy {
     ByDate,
     /// Rotate by whichever condition triggers first.
     ByBoth(u64),
-}
-
-impl Default for RotationPolicy {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// A sink that appends structured audit events to a JSON Lines file,

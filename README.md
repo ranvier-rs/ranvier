@@ -8,8 +8,9 @@ extract Schematics for CI diff, and keep every Outcome explicit — no hidden mi
 
 ---
 
-**Latest: v0.44.0** — 12 crates on [crates.io](https://crates.io/crates/ranvier)
+**Current workspace: v0.50.0 candidate** — latest published: v0.44.0, 12 crates on [crates.io](https://crates.io/crates/ranvier)
 
+- **v0.50 candidate**: opt-in DTO validation for typed JSON ingress, `ValidatedJson<T>`, validated route helpers, and OpenAPI/Orval/Zod constraint guidance
 - **v0.44**: route/guard introspection, guard-aware OpenAPI metadata, canonical WS/SSE reference apps, static asset boundary defer-by-evidence
 - **v0.43**: `Bus::get_cloned()`, `BusHttpExt`, `json_outcome()`, `get_json_out`/`post_typed_json_out`, `Json<T>` IntoResponse
 - **v0.42**: `try_outcome!` macro, `Outcome::from_result`/`and_then`/`map_fault`, `CorsGuard::permissive()`, `post_json`

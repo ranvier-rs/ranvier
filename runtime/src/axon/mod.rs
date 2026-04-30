@@ -1359,7 +1359,7 @@ fn cleanup_rotated_files(base_path: &str, keep: usize) -> Result<(), String> {
         })
         .collect::<Vec<_>>();
 
-    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.sort_by_key(|file| std::cmp::Reverse(file.1));
     for (path, _) in files.into_iter().skip(keep) {
         let _ = fs::remove_file(path);
     }

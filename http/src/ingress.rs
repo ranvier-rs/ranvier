@@ -74,6 +74,37 @@ type RouteHandler<R> = Arc<
         + Sync,
 >;
 
+fn parse_json_body<T>(body_bytes: &[u8]) -> Result<T, HttpResponse>
+where
+    T: DeserializeOwned,
+{
+    serde_json::from_slice(body_bytes).map_err(|error| {
+        json_error_response(
+            StatusCode::BAD_REQUEST,
+            format!("Invalid request body: {error}"),
+        )
+    })
+}
+
+fn skip_request_validation<T>(_input: &T) -> Result<(), HttpResponse> {
+    Ok(())
+}
+
+#[cfg(feature = "validation")]
+fn extract_error_to_http_response(error: crate::extract::ExtractError) -> HttpResponse {
+    error
+        .into_http_response()
+        .map(|body| body.map_err(|never| match never {}).boxed())
+}
+
+#[cfg(feature = "validation")]
+fn validate_json_body<T>(input: &T) -> Result<(), HttpResponse>
+where
+    T: validator::Validate,
+{
+    crate::extract::validate_payload(input).map_err(extract_error_to_http_response)
+}
+
 /// Type-erased cloneable HTTP service (replaces tower::util::BoxCloneService).
 #[derive(Clone)]
 struct BoxService(
@@ -2483,20 +2514,23 @@ where
     ///
     /// Combines typed body deserialization (like `route_method_typed`) with
     /// JSON output serialization (like `route_method_json_out`).
-    fn route_method_typed_json_out<T, Out, E>(
+    fn route_method_typed_json_out_with_validation<T, Out, E, V>(
         mut self,
         method: Method,
         path: impl Into<String>,
         circuit: Axon<T, Out, E, R>,
+        validate: V,
     ) -> Self
     where
         T: serde::de::DeserializeOwned + Send + Sync + Serialize + schemars::JsonSchema + 'static,
         Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+        V: Fn(&T) -> Result<(), HttpResponse> + Send + Sync + 'static,
     {
         let body_schema = serde_json::to_value(schemars::schema_for!(T)).ok();
         let path_str: String = path.into();
         let circuit = Arc::new(circuit);
+        let validate = Arc::new(validate);
         let route_bus_injectors = Arc::new(self.bus_injectors.clone());
         let route_guard_execs = Arc::new(self.guard_execs.clone());
         let route_response_extractors = Arc::new(self.guard_response_extractors.clone());
@@ -2508,6 +2542,7 @@ where
 
         let handler: RouteHandler<R> = Arc::new(move |parts: http::request::Parts, res: &R| {
             let circuit = circuit.clone();
+            let validate = validate.clone();
             let route_bus_injectors = route_bus_injectors.clone();
             let route_guard_execs = route_guard_execs.clone();
             let route_response_extractors = route_response_extractors.clone();
@@ -2532,14 +2567,9 @@ where
                         .map(|b| b.0.clone())
                         .unwrap_or_default();
 
-                    let input: T = match serde_json::from_slice(&body_bytes) {
+                    let input: T = match parse_json_body(&body_bytes) {
                         Ok(v) => v,
-                        Err(e) => {
-                            return json_error_response(
-                                StatusCode::BAD_REQUEST,
-                                format!("Invalid request body: {}", e),
-                            );
-                        }
+                        Err(response) => return response,
                     };
 
                     let mut bus = Bus::new();
@@ -2556,6 +2586,13 @@ where
                             }
                             return response;
                         }
+                    }
+                    if let Err(response) = validate(&input) {
+                        let mut response = response;
+                        for extractor in route_response_extractors.iter() {
+                            extractor(&bus, response.headers_mut());
+                        }
+                        return response;
                     }
                     if let Some(cached) = bus.read::<ranvier_guard::IdempotencyCachedResponse>() {
                         let body = Bytes::from(cached.body.clone());
@@ -2628,6 +2665,51 @@ where
             body_schema,
         });
         self
+    }
+
+    fn route_method_typed_json_out<T, Out, E>(
+        self,
+        method: Method,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + Serialize + schemars::JsonSchema + 'static,
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_typed_json_out_with_validation(
+            method,
+            path,
+            circuit,
+            skip_request_validation::<T>,
+        )
+    }
+
+    #[cfg(feature = "validation")]
+    fn route_method_validated_json_out<T, Out, E>(
+        self,
+        method: Method,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + Serialize
+            + schemars::JsonSchema
+            + validator::Validate
+            + 'static,
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_typed_json_out_with_validation(
+            method,
+            path,
+            circuit,
+            validate_json_body::<T>,
+        )
     }
 
     /// GET route with JSON auto-serialization.
@@ -2804,6 +2886,78 @@ where
         E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
         self.route_method_typed_json_out::<T, Out, E>(Method::PATCH, path, circuit)
+    }
+
+    /// POST with validated typed JSON body and JSON auto-serialization.
+    ///
+    /// This is the opt-in validation variant of
+    /// [`post_typed_json_out`](Self::post_typed_json_out). It is available
+    /// when the `validation` feature is enabled and runs `validator::Validate`
+    /// after JSON deserialization and before the Transition executes.
+    #[cfg(feature = "validation")]
+    pub fn post_validated_json_out<T, Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + Serialize
+            + schemars::JsonSchema
+            + validator::Validate
+            + 'static,
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_validated_json_out::<T, Out, E>(Method::POST, path, circuit)
+    }
+
+    /// PUT with validated typed JSON body and JSON auto-serialization.
+    ///
+    /// See [`post_validated_json_out`](Self::post_validated_json_out) for details.
+    #[cfg(feature = "validation")]
+    pub fn put_validated_json_out<T, Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + Serialize
+            + schemars::JsonSchema
+            + validator::Validate
+            + 'static,
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_validated_json_out::<T, Out, E>(Method::PUT, path, circuit)
+    }
+
+    /// PATCH with validated typed JSON body and JSON auto-serialization.
+    ///
+    /// See [`post_validated_json_out`](Self::post_validated_json_out) for details.
+    #[cfg(feature = "validation")]
+    pub fn patch_validated_json_out<T, Out, E>(
+        self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + Serialize
+            + schemars::JsonSchema
+            + validator::Validate
+            + 'static,
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        self.route_method_validated_json_out::<T, Out, E>(Method::PATCH, path, circuit)
     }
 
     pub fn post_with_error<Out, E, H>(
@@ -4912,6 +5066,78 @@ where
     {
         let full = self.prefixed(path);
         self.ingress = self.ingress.patch_typed_json_out(full, circuit);
+        self
+    }
+
+    /// POST with validated typed JSON body and JSON response.
+    ///
+    /// This forwards to [`HttpIngress::post_validated_json_out`] after applying
+    /// the group prefix.
+    #[cfg(feature = "validation")]
+    pub fn post_validated_json_out<T, Out, E>(
+        mut self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + Serialize
+            + schemars::JsonSchema
+            + validator::Validate
+            + 'static,
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.post_validated_json_out(full, circuit);
+        self
+    }
+
+    /// PUT with validated typed JSON body and JSON response.
+    #[cfg(feature = "validation")]
+    pub fn put_validated_json_out<T, Out, E>(
+        mut self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + Serialize
+            + schemars::JsonSchema
+            + validator::Validate
+            + 'static,
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.put_validated_json_out(full, circuit);
+        self
+    }
+
+    /// PATCH with validated typed JSON body and JSON response.
+    #[cfg(feature = "validation")]
+    pub fn patch_validated_json_out<T, Out, E>(
+        mut self,
+        path: impl Into<String>,
+        circuit: Axon<T, Out, E, R>,
+    ) -> Self
+    where
+        T: serde::de::DeserializeOwned
+            + Send
+            + Sync
+            + Serialize
+            + schemars::JsonSchema
+            + validator::Validate
+            + 'static,
+        Out: Send + Sync + Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    {
+        let full = self.prefixed(path);
+        self.ingress = self.ingress.patch_validated_json_out(full, circuit);
         self
     }
 

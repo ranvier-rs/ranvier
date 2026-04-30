@@ -38,6 +38,7 @@ let openapi = OpenApiGenerator::from_ingress(&ingress)
 - HTTP method and normalized path
 - path parameters
 - typed request body schema from `post_typed` / `put_typed` / `patch_typed`
+  and the opt-in validated JSON-out variants
 - health/readiness/liveness routes exported by `HttpIngress`
 - explicit `AuthGuard` hints carried by route descriptors when `with_bearer_auth()` is enabled
 
@@ -54,6 +55,31 @@ Use manual patches such as `summary()`, `json_request_schema()`,
 `json_response_schema()`, `with_bearer_auth()`, and
 `with_problem_detail_errors()` when the runtime surface needs more explicit
 documentation than the ingress descriptors alone can provide.
+
+## DTO Constraints, Orval, and Zod
+
+Validated JSON routes in `ranvier-http` use `validator::Validate` at runtime and
+still expose the same `schemars::JsonSchema` request body metadata through
+`route_descriptors()`. A practical DTO pattern is:
+
+```rust,ignore
+#[derive(serde::Deserialize, serde::Serialize, schemars::JsonSchema, validator::Validate)]
+struct CreateUser {
+    #[validate(length(min = 3, max = 32))]
+    #[schemars(length(min = 3, max = 32), regex(pattern = "^[a-z][a-z0-9_]+$"))]
+    username: String,
+
+    #[validate(email)]
+    #[schemars(email)]
+    email: String,
+}
+```
+
+The generated OpenAPI schema is the contract surface for frontend generators
+such as Orval or Zod. Ranvier does not own those generated frontend artifacts.
+When a validator is custom, cross-field, or otherwise not representable in JSON
+Schema, treat it as server-enforced behavior and document the limit explicitly
+for clients.
 
 ## Examples
 

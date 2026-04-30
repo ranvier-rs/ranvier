@@ -9,16 +9,10 @@ use serde_json::Value;
 use subtle::ConstantTimeEq;
 
 /// Bearer token authentication configuration.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct BearerAuth {
     /// The expected bearer token. If None, bearer auth is disabled.
     pub token: Option<String>,
-}
-
-impl Default for BearerAuth {
-    fn default() -> Self {
-        Self { token: None }
-    }
 }
 
 impl BearerAuth {

@@ -23,6 +23,7 @@ use ranvier_openapi::prelude::*;
 use ranvier_runtime::Axon;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use validator::Validate;
 
 #[derive(Clone)]
 struct GetUser;
@@ -40,6 +41,7 @@ impl Transition<(), CreateUserResponse> for GetUser {
     ) -> Outcome<CreateUserResponse, Self::Error> {
         Outcome::next(CreateUserResponse {
             id: "42".to_string(),
+            username: "demo-user".to_string(),
             email: "user@example.com".to_string(),
         })
     }
@@ -61,6 +63,7 @@ impl Transition<CreateUserRequest, CreateUserResponse> for CreateUser {
     ) -> Outcome<CreateUserResponse, Self::Error> {
         Outcome::next(CreateUserResponse {
             id: "43".to_string(),
+            username: input.username,
             email: input.email,
         })
     }
@@ -102,14 +105,20 @@ impl Transition<(), String> for ServeDocs {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema, Validate)]
 struct CreateUserRequest {
+    #[validate(length(min = 3, max = 32))]
+    #[schemars(length(min = 3, max = 32), regex(pattern = "^[a-z][a-z0-9_]+$"))]
+    username: String,
+    #[validate(email)]
+    #[schemars(email)]
     email: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 struct CreateUserResponse {
     id: String,
+    username: String,
     email: String,
 }
 
@@ -117,6 +126,7 @@ impl IntoResponse for CreateUserResponse {
     fn into_response(self) -> HttpResponse {
         serde_json::json!({
             "id": self.id,
+            "username": self.username,
             "email": self.email,
         })
         .into_response()
@@ -151,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "demo-token".into()
             ])],
         )
-        .post_typed("/users", create_user)
+        .post_validated_json_out("/users", create_user)
         .get("/openapi.json", openapi_route)
         .get("/docs", docs_route)
         .health_endpoint("/healthz")
@@ -175,7 +185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             http::Method::GET,
             "/users/me",
         )
-        // Request body schema auto-captured from post_typed::<CreateUserRequest>()
+        // Request body schema auto-captured from post_validated_json_out::<CreateUserRequest>()
         .json_response_schema_from_into_response::<CreateUserResponse>(http::Method::POST, "/users")
         .build_json();
 

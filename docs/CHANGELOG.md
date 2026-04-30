@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.50.0] — 2026-04 (candidate)
+
+### Summary
+
+**Ranvier 0.50.0 candidate — Request Validation Board.**
+Adds opt-in server-side DTO validation for typed JSON ingress without changing the parse-only `Json<T>` extractor or existing schema-only typed route helpers.
+
+### Added
+- **Validated typed JSON routes (ranvier-http, M389-M392):** Added the `validation` feature, `ValidatedJson<T>`, and `post_validated_json_out` / `put_validated_json_out` / `patch_validated_json_out` helpers for stable 422 field-error responses before transition execution.
+- **Facade feature (ranvier-kit):** Added `validation` as a facade feature that enables `ranvier-http/validation` for application crates using the top-level `ranvier` crate.
+- **OpenAPI demo validation sample:** Updated `openapi-demo` to derive `validator::Validate` and keep schema constraints visible for Orval/Zod consumers.
+
+### Changed
+- **Typed route compatibility:** Kept `post_typed_json_out` and `Json<T>` parse-only even when the validation feature is enabled, so Cargo feature unification does not silently tighten existing routes.
+- **Validation ordering:** Guard execution and response extractors remain before semantic validation, while validated routes return field-level 422 errors before idempotency/cacheable transition execution.
+- **Version metadata:** Bumped the workspace candidate line to 0.50.0 and synchronized example/catalog/status metadata while preserving v0.44.0 as the latest published crates.io baseline.
+
+### Documentation
+- Added runtime validation guidance to `ranvier-http` docs and DTO constraint propagation guidance for OpenAPI, Orval, and Zod in the OpenAPI extension docs.
+- Archived M389-M392 completion evidence with exact validation commands and remaining release/publish boundaries.
+
+---
+
 ## [0.44.0] — 2026-04
 
 ### Summary

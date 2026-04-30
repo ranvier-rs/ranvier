@@ -381,7 +381,7 @@ impl Bus {
     /// ```
     #[inline]
     pub fn get_cloned<T: Any + Send + Sync + Clone + 'static>(&self) -> Result<T, BusAccessError> {
-        self.get::<T>().map(Clone::clone)
+        self.get::<T>().cloned()
     }
 
     /// Set transition-scoped policy. `None` keeps access unrestricted.

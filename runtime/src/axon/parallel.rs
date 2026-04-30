@@ -315,15 +315,11 @@ where
 
                             for (_, _, _, outcome) in results {
                                 match outcome {
-                                    Outcome::Next(val) => {
-                                        if first_success.is_none() {
-                                            first_success = Some(Outcome::Next(val));
-                                        }
+                                    Outcome::Next(val) if first_success.is_none() => {
+                                        first_success = Some(Outcome::Next(val));
                                     }
-                                    Outcome::Fault(e) => {
-                                        if first_fault.is_none() {
-                                            first_fault = Some(Outcome::Fault(e));
-                                        }
+                                    Outcome::Fault(e) if first_fault.is_none() => {
+                                        first_fault = Some(Outcome::Fault(e));
                                     }
                                     _ => {}
                                 }

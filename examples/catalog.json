@@ -1,8 +1,8 @@
 {
   "schema_version": "2.0",
-  "generated_at": "2026-03-22T00:00:00Z",
+  "generated_at": "2026-04-30T00:00:00Z",
   "source": "ranvier-rs/ranvier",
-  "workspace_version": "0.43.0",
+  "workspace_version": "0.50.0",
   "entries": [
     {
       "name": "hello-world",

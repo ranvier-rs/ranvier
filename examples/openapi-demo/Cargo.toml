@@ -6,7 +6,7 @@ rust-version.workspace = true
 [dependencies]
 ranvier-core = { workspace = true }
 ranvier-runtime = { workspace = true }
-ranvier-http = { workspace = true }
+ranvier-http = { workspace = true, features = ["validation"] }
 ranvier-guard = { workspace = true }
 ranvier-openapi = { workspace = true }
 tokio = { workspace = true }
@@ -15,6 +15,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 schemars = { version = "1.2.0", features = ["derive"] }
 http = { workspace = true }
+validator = { version = "0.20", features = ["derive"] }
 
 
 [lints]

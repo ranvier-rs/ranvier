@@ -1,7 +1,7 @@
 # Ranvier Philosophy: Opinionated Core, Flexible Edges
 
-**Version:** 0.43.0
-**Updated:** 2026-04-03
+**Version:** 0.50.0 candidate
+**Updated:** 2026-04-30
 **Applies to:** ranvier-core, ranvier-runtime, ranvier-http
 **Category:** Architecture
 

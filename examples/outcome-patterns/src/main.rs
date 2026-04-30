@@ -295,7 +295,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let config = AppConfig {
         app_name: "Outcome Patterns Demo".into(),
-        version: "0.43.0".into(),
+        version: "0.50.0".into(),
         max_retries: 3,
     };
 
@@ -306,7 +306,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let execute_simple_axon = Axon::simple::<String>("execute-simple").then(ExecuteSimpleDemo);
 
     println!("╔═══════════════════════════════════════════════╗");
-    println!("║  Outcome Patterns Demo — Ranvier v0.42-v0.43  ║");
+    println!("║  Outcome Patterns Demo — Ranvier v0.42+       ║");
     println!("║  http://localhost:3200/api/*                   ║");
     println!("╚═══════════════════════════════════════════════╝");
 

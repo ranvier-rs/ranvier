@@ -45,6 +45,56 @@ Ranvier::http::<()>()
     .await?;
 ```
 
+## Opt-In DTO Validation
+
+Enable the `validation` feature when a typed JSON request should be validated
+before it reaches a `Transition`:
+
+```toml
+[dependencies]
+ranvier-http = { version = "0.44", features = ["validation"] }
+validator = { version = "0.20", features = ["derive"] }
+```
+
+```rust,ignore
+use ranvier_core::prelude::*;
+use ranvier_http::prelude::*;
+use ranvier_runtime::Axon;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use validator::Validate;
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema, Validate)]
+struct CreateUser {
+    #[validate(length(min = 3, max = 32))]
+    #[schemars(length(min = 3, max = 32), regex(pattern = "^[a-z][a-z0-9_]+$"))]
+    username: String,
+
+    #[validate(email)]
+    #[schemars(email)]
+    email: String,
+}
+
+Ranvier::http::<AppState>()
+    .post_validated_json_out("/users", create_user_circuit);
+```
+
+`post_validated_json_out`, `put_validated_json_out`, and
+`patch_validated_json_out` return `422 Unprocessable Entity` with a stable
+field-error JSON body when `validator::Validate` fails. Invalid JSON remains a
+`400 Bad Request`. Existing `post_typed_json_out` routes remain schema-only and
+do not require `Validate`, even when the feature is enabled.
+
+For lower-level extractor code, use `ValidatedJson<T>` when validation should
+run. `Json<T>` remains parse-only so enabling the `validation` feature does not
+break existing extractor users through Cargo feature unification.
+
+Runtime validation and OpenAPI metadata are related but not identical:
+`#[validate(...)]` enforces server behavior, while `#[schemars(...)]` enriches
+the generated schema consumed by OpenAPI, Orval, Zod, or similar tools. Custom
+or cross-field validators may remain server-only when they cannot be expressed
+as JSON Schema constraints.
+
 ## Examples
 
 - [`hello-world`](../examples/hello-world/) — HTTP ingress baseline

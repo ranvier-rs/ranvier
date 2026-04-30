@@ -42,7 +42,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Top-level Ranvier configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct RanvierConfig {
     pub server: ServerConfig,
@@ -81,16 +81,17 @@ pub struct LoggingConfig {
 }
 
 /// Log output format.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {
     Json,
+    #[default]
     Pretty,
     Compact,
 }
 
 /// TLS configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct TlsConfig {
     /// Whether TLS is enabled (default: false).
@@ -139,9 +140,10 @@ pub struct TelemetryConfig {
 }
 
 /// OTLP transport protocol.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum OtlpProtocol {
+    #[default]
     Grpc,
     Http,
 }
@@ -196,19 +198,6 @@ pub struct TelemetryOverride {
 
 // ── Defaults ──
 
-impl Default for RanvierConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            logging: LoggingConfig::default(),
-            tls: TlsConfig::default(),
-            inspector: InspectorConfig::default(),
-            telemetry: TelemetryConfig::default(),
-            profile: HashMap::new(),
-        }
-    }
-}
-
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -225,22 +214,6 @@ impl Default for LoggingConfig {
             format: LogFormat::Pretty,
             level: "info".to_string(),
             module_levels: HashMap::new(),
-        }
-    }
-}
-
-impl Default for LogFormat {
-    fn default() -> Self {
-        Self::Pretty
-    }
-}
-
-impl Default for TlsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            cert_path: String::new(),
-            key_path: String::new(),
         }
     }
 }
@@ -262,12 +235,6 @@ impl Default for TelemetryConfig {
             service_name: "ranvier".to_string(),
             sample_ratio: 1.0,
         }
-    }
-}
-
-impl Default for OtlpProtocol {
-    fn default() -> Self {
-        Self::Grpc
     }
 }
 

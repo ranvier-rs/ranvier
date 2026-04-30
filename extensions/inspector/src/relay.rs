@@ -191,10 +191,7 @@ pub async fn execute_relay(
         }
     }
 
-    let body = response
-        .json::<Value>()
-        .await
-        .unwrap_or_else(|_| Value::Null);
+    let body = response.json::<Value>().await.unwrap_or(Value::Null);
 
     Ok(RelayResponse {
         status,
