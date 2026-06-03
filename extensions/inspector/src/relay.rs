@@ -20,12 +20,18 @@ impl RelayConfig {
         let timeout_ms = std::env::var("RANVIER_INSPECTOR_RELAY_TIMEOUT_MS")
             .ok()
             .and_then(|v| v.parse().ok())
+            .filter(|timeout_ms| *timeout_ms > 0)
             .unwrap_or(30000);
+        let max_concurrent = std::env::var("RANVIER_INSPECTOR_RELAY_MAX_CONCURRENT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|max_concurrent| *max_concurrent > 0)
+            .unwrap_or(10);
 
         Self {
             target_url: target_url.into(),
             timeout_ms,
-            max_concurrent: 10,
+            max_concurrent,
         }
     }
 }
@@ -211,6 +217,17 @@ mod tests {
         let config = RelayConfig::new("http://127.0.0.1:3111");
         assert_eq!(config.target_url, "http://127.0.0.1:3111");
         assert_eq!(config.max_concurrent, 10);
+    }
+
+    #[test]
+    fn relay_state_uses_configured_concurrency_limit() {
+        let state = RelayState::new(RelayConfig {
+            target_url: "http://127.0.0.1:3111".to_string(),
+            timeout_ms: 1_000,
+            max_concurrent: 3,
+        });
+
+        assert_eq!(state.semaphore.available_permits(), 3);
     }
 
     #[test]

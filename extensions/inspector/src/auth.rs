@@ -19,19 +19,19 @@ impl BearerAuth {
     /// Create a new BearerAuth from environment variable `RANVIER_INSPECTOR_TOKEN`.
     pub fn from_env() -> Self {
         Self {
-            token: std::env::var("RANVIER_INSPECTOR_TOKEN").ok(),
+            token: normalize_token(std::env::var("RANVIER_INSPECTOR_TOKEN").ok()),
         }
     }
 
     /// Check if bearer auth is enabled.
     pub fn is_enabled(&self) -> bool {
-        self.token.is_some()
+        self.expected_token().is_some()
     }
 
     /// Validate the Authorization header against the configured token.
     /// Returns Ok(()) if auth passes, Err with status code and error body if not.
     pub fn validate(&self, headers: &HeaderMap) -> Result<(), (StatusCode, axum::Json<Value>)> {
-        let Some(expected) = &self.token else {
+        let Some(expected) = self.expected_token() else {
             return Ok(()); // Auth not enabled
         };
 
@@ -64,4 +64,17 @@ impl BearerAuth {
             })),
         ))
     }
+
+    fn expected_token(&self) -> Option<&str> {
+        self.token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+    }
+}
+
+pub(crate) fn normalize_token(token: Option<String>) -> Option<String> {
+    token
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
 }

@@ -15,11 +15,12 @@ use async_trait::async_trait;
 use axum::{
     Json, Router,
     extract::{
-        Path as AxPath, Query, State,
+        Path as AxPath, Query, Request, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderMap, StatusCode, header},
-    response::IntoResponse,
+    http::{HeaderMap, Method, StatusCode, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::get,
 };
 use ranvier_core::event::DlqReader;
@@ -254,6 +255,13 @@ impl InspectorMode {
             _ => Self::Dev,
         }
     }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Dev => "dev",
+            Self::Prod => "prod",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -434,6 +442,7 @@ pub struct Inspector {
     internal_projection: Arc<Mutex<Option<Value>>>,
     public_projection_path: Option<String>,
     internal_projection_path: Option<String>,
+    mode: InspectorMode,
     surface_policy: SurfacePolicy,
     auth_policy: AuthPolicy,
     redaction_policy: TelemetryRedactionPolicy,
@@ -462,6 +471,7 @@ impl Inspector {
             internal_projection: Arc::new(Mutex::new(Some(internal_projection))),
             public_projection_path: None,
             internal_projection_path: None,
+            mode: InspectorMode::Dev,
             surface_policy: SurfacePolicy::for_mode(InspectorMode::Dev),
             auth_policy: AuthPolicy::default(),
             redaction_policy: TelemetryRedactionPolicy::from_env(),
@@ -563,6 +573,7 @@ impl Inspector {
     /// - `prod`: hide internal/event/quick-view routes and keep public read-only endpoints
     pub fn with_mode_from_env(mut self) -> Self {
         let mode = InspectorMode::from_env();
+        self.mode = mode;
         self.surface_policy = SurfacePolicy::for_mode(mode);
         self
     }
@@ -574,6 +585,7 @@ impl Inspector {
     /// - `prod` / `production`
     pub fn with_mode(mut self, mode: &str) -> Self {
         let parsed = InspectorMode::from_str(mode);
+        self.mode = parsed;
         self.surface_policy = SurfacePolicy::for_mode(parsed);
         self
     }
@@ -613,7 +625,7 @@ impl Inspector {
     /// Configure Bearer token authentication for production deployments.
     pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
         self.bearer_auth = auth::BearerAuth {
-            token: Some(token.into()),
+            token: auth::normalize_token(Some(token.into())),
         };
         self
     }
@@ -666,6 +678,22 @@ impl Inspector {
         self
     }
 
+    fn validate_startup_policy(&self) -> Result<(), std::io::Error> {
+        if self.mode == InspectorMode::Prod
+            && !self.bearer_auth.is_enabled()
+            && !self.allow_unauthenticated
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Inspector prod mode requires RANVIER_INSPECTOR_TOKEN, \
+                 Inspector::with_bearer_token(), or explicit \
+                 Inspector::allow_unauthenticated() acknowledgement",
+            ));
+        }
+
+        Ok(())
+    }
+
     pub async fn serve(self) -> Result<(), std::io::Error> {
         let addr = SocketAddr::from(([0, 0, 0, 0], self.port));
         let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -676,6 +704,13 @@ impl Inspector {
         self,
         listener: tokio::net::TcpListener,
     ) -> Result<(), std::io::Error> {
+        self.validate_startup_policy()?;
+
+        let mode = self.mode;
+        let surface_policy = self.surface_policy;
+        let bearer_auth = self.bearer_auth.clone();
+        let bearer_auth_enabled = bearer_auth.is_enabled();
+
         // Auth policy enforcement: warn in release builds if no bearer token configured
         if !self.bearer_auth.is_enabled() && !self.allow_unauthenticated {
             #[cfg(not(debug_assertions))]
@@ -701,12 +736,15 @@ impl Inspector {
             internal_projection: self.internal_projection.clone(),
             public_projection_path: self.public_projection_path.clone(),
             internal_projection_path: self.internal_projection_path.clone(),
+            mode,
+            surface_policy,
             auth_policy: self.auth_policy,
             redaction_policy: self.redaction_policy.clone(),
             state_inspector: self.state_inspector,
             dlq_reader: self.dlq_reader,
             relay_state: self.relay_state,
             bearer_auth: self.bearer_auth,
+            allow_unauthenticated: self.allow_unauthenticated,
             trace_store: self.trace_store,
             alert_dispatcher: self.alert_dispatcher,
         };
@@ -715,21 +753,21 @@ impl Inspector {
         PAYLOAD_POLICY.get_or_init(|| self.payload_policy);
 
         let mut app = Router::new()
+            .route("/healthz", get(get_healthz))
             .route("/schematic", get(get_schematic))
             .route("/trace/public", get(get_public_projection))
-            .route("/debug/resume/:trace_id", get(debug_resume))
-            .route("/debug/step/:trace_id", get(debug_step))
-            .route("/debug/pause/:trace_id", get(debug_pause))
-            .route("/api/v1/state/:trace_id", get(api_get_state))
-            .route(
-                "/api/v1/state/:trace_id/resume",
-                axum::routing::post(api_post_resume),
-            )
-            .route("/metrics", get(prometheus_metrics_handler))
-            .layer(CorsLayer::permissive());
+            .route("/metrics", get(prometheus_metrics_handler));
 
-        if self.surface_policy.expose_internal {
+        if surface_policy.expose_internal {
             app = app
+                .route("/debug/resume/:trace_id", get(debug_resume))
+                .route("/debug/step/:trace_id", get(debug_step))
+                .route("/debug/pause/:trace_id", get(debug_pause))
+                .route("/api/v1/state/:trace_id", get(api_get_state))
+                .route(
+                    "/api/v1/state/:trace_id/resume",
+                    axum::routing::post(api_post_resume),
+                )
                 .route("/trace/internal", get(get_internal_projection))
                 .route("/inspector/circuits", get(get_inspector_circuits))
                 .route(
@@ -770,23 +808,37 @@ impl Inspector {
                 .route("/api/v1/traces/diff", get(api_get_trace_diff));
         }
 
-        if self.surface_policy.expose_events {
+        if surface_policy.expose_events {
             app = app.route("/events", get(ws_handler));
         }
 
-        if self.surface_policy.expose_quick_view {
+        if surface_policy.expose_quick_view {
             app = app
                 .route("/quick-view", get(get_quick_view_html))
                 .route("/quick-view/app.js", get(get_quick_view_js))
                 .route("/quick-view/styles.css", get(get_quick_view_css));
         }
 
+        let cors_layer = match mode {
+            InspectorMode::Dev => CorsLayer::permissive(),
+            InspectorMode::Prod => CorsLayer::new(),
+        };
+
+        let app = app.layer(cors_layer);
+        let app = if bearer_auth_enabled {
+            app.layer(middleware::from_fn_with_state(
+                bearer_auth,
+                require_bearer_auth,
+            ))
+        } else {
+            app
+        };
         let app = app.with_state(state);
         let addr = listener.local_addr()?;
         tracing::info!("Ranvier Inspector listening on http://{}", addr);
 
         // Spawn periodic metrics broadcast task
-        if self.surface_policy.expose_events {
+        if surface_policy.expose_events {
             let broadcast_interval = std::env::var("RANVIER_INSPECTOR_METRICS_INTERVAL_MS")
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
@@ -823,6 +875,22 @@ impl Inspector {
         }
 
         axum::serve(listener, app).await
+    }
+}
+
+async fn require_bearer_auth(
+    State(bearer_auth): State<auth::BearerAuth>,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Response {
+    if request.method() == Method::OPTIONS {
+        return next.run(request).await;
+    }
+
+    match bearer_auth.validate(&headers) {
+        Ok(()) => next.run(request).await,
+        Err((status, body)) => (status, body).into_response(),
     }
 }
 
@@ -1288,12 +1356,15 @@ struct InspectorState {
     internal_projection: Arc<Mutex<Option<Value>>>,
     public_projection_path: Option<String>,
     internal_projection_path: Option<String>,
+    mode: InspectorMode,
+    surface_policy: SurfacePolicy,
     auth_policy: AuthPolicy,
     redaction_policy: TelemetryRedactionPolicy,
     state_inspector: Option<Arc<dyn StateInspector>>,
     dlq_reader: Option<Arc<dyn DlqReader>>,
     relay_state: Option<relay::RelayState>,
     bearer_auth: auth::BearerAuth,
+    allow_unauthenticated: bool,
     trace_store: Option<Arc<dyn trace_store::TraceStore>>,
     #[allow(dead_code)]
     alert_dispatcher: Option<Arc<alert::AlertDispatcher>>,
@@ -1637,6 +1708,51 @@ impl<'a> tracing::field::Visit for FieldVisitor<'a> {
         self.fields
             .insert(field.name().to_string(), value.to_string());
     }
+}
+
+async fn get_healthz(State(state): State<InspectorState>) -> Json<Value> {
+    let relay_policy = state
+        .relay_state
+        .as_ref()
+        .map(|relay| {
+            serde_json::json!({
+                "enabled": true,
+                "timeout_ms": relay.config.timeout_ms,
+                "max_concurrent": relay.config.max_concurrent
+            })
+        })
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "enabled": false
+            })
+        });
+
+    inspector_envelope(
+        "inspector.health.v1",
+        serde_json::json!({
+            "status": "ok",
+            "mode": state.mode.as_str(),
+            "auth": {
+                "bearer_enabled": state.bearer_auth.is_enabled(),
+                "allow_unauthenticated": state.allow_unauthenticated,
+                "role_header_enforced": state.auth_policy.enforce_headers,
+                "tenant_required_for_internal": state.auth_policy.require_tenant_for_internal
+            },
+            "cors": {
+                "policy": match state.mode {
+                    InspectorMode::Dev => "permissive",
+                    InspectorMode::Prod => "no_permissive_headers"
+                }
+            },
+            "routes": {
+                "public": true,
+                "internal": state.surface_policy.expose_internal,
+                "events": state.surface_policy.expose_events,
+                "quick_view": state.surface_policy.expose_quick_view
+            },
+            "relay": relay_policy
+        }),
+    )
 }
 
 async fn get_schematic(
@@ -2522,7 +2638,9 @@ mod tests {
     #[tokio::test]
     async fn prod_mode_hides_quick_view_and_internal_routes() {
         let (port, listener) = reserve_listener();
-        let inspector = Inspector::new(Schematic::new("prod-test"), port).with_mode("prod");
+        let inspector = Inspector::new(Schematic::new("prod-test"), port)
+            .with_mode("prod")
+            .with_bearer_token("prod-token");
         let handle = tokio::spawn(async move {
             let _ = inspector.serve_with_listener(listener).await;
         });
@@ -2531,26 +2649,43 @@ mod tests {
         let client = reqwest::Client::new();
         let quick = client
             .get(format!("http://127.0.0.1:{port}/quick-view"))
+            .header("Authorization", "Bearer prod-token")
             .send()
             .await
             .expect("quick-view request");
         let internal = client
             .get(format!("http://127.0.0.1:{port}/trace/internal"))
+            .header("Authorization", "Bearer prod-token")
             .send()
             .await
             .expect("internal request");
         let events = client
             .get(format!("http://127.0.0.1:{port}/events"))
+            .header("Authorization", "Bearer prod-token")
             .send()
             .await
             .expect("events request");
         let circuits = client
             .get(format!("http://127.0.0.1:{port}/inspector/circuits"))
+            .header("Authorization", "Bearer prod-token")
             .send()
             .await
             .expect("circuits request");
+        let debug = client
+            .get(format!("http://127.0.0.1:{port}/debug/pause/bootstrap"))
+            .header("Authorization", "Bearer prod-token")
+            .send()
+            .await
+            .expect("debug request");
+        let state = client
+            .get(format!("http://127.0.0.1:{port}/api/v1/state/bootstrap"))
+            .header("Authorization", "Bearer prod-token")
+            .send()
+            .await
+            .expect("state request");
         let public = client
             .get(format!("http://127.0.0.1:{port}/trace/public"))
+            .header("Authorization", "Bearer prod-token")
             .send()
             .await
             .expect("public request");
@@ -2559,7 +2694,162 @@ mod tests {
         assert_eq!(internal.status(), reqwest::StatusCode::NOT_FOUND);
         assert_eq!(events.status(), reqwest::StatusCode::NOT_FOUND);
         assert_eq!(circuits.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(debug.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(state.status(), reqwest::StatusCode::NOT_FOUND);
         assert_eq!(public.status(), reqwest::StatusCode::OK);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn prod_mode_rejects_missing_bearer_token_at_startup() {
+        let (port, listener) = reserve_listener();
+        let inspector = Inspector::new(Schematic::new("prod-missing-auth"), port).with_mode("prod");
+
+        let err = inspector
+            .serve_with_listener(listener)
+            .await
+            .expect_err("prod mode without bearer token should fail before serving");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("prod mode requires"));
+    }
+
+    #[test]
+    fn prod_mode_allows_explicit_unauthenticated_acknowledgement() {
+        let inspector = Inspector::new(Schematic::new("prod-ack"), 0)
+            .with_mode("prod")
+            .allow_unauthenticated();
+
+        assert!(inspector.validate_startup_policy().is_ok());
+    }
+
+    #[test]
+    fn empty_bearer_token_is_treated_as_disabled() {
+        let inspector = Inspector::new(Schematic::new("prod-empty-token"), 0)
+            .with_mode("prod")
+            .with_bearer_token("   ");
+
+        assert!(inspector.validate_startup_policy().is_err());
+    }
+
+    #[tokio::test]
+    async fn bearer_auth_protects_public_schematic_endpoint() {
+        let (port, listener) = reserve_listener();
+        let inspector = Inspector::new(Schematic::new("bearer-public"), port)
+            .with_mode("dev")
+            .with_bearer_token("secret-token-123");
+        let handle = tokio::spawn(async move {
+            let _ = inspector.serve_with_listener(listener).await;
+        });
+        wait_ready(port).await;
+
+        let client = reqwest::Client::new();
+
+        let no_auth = client
+            .get(format!("http://127.0.0.1:{port}/schematic"))
+            .send()
+            .await
+            .expect("schematic without auth");
+        assert_eq!(no_auth.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        let correct_auth = client
+            .get(format!("http://127.0.0.1:{port}/schematic"))
+            .header("Authorization", "Bearer secret-token-123")
+            .send()
+            .await
+            .expect("schematic with correct token");
+        assert_eq!(correct_auth.status(), reqwest::StatusCode::OK);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn dev_mode_keeps_permissive_cors_for_local_tools() {
+        let (port, listener) = reserve_listener();
+        let inspector = Inspector::new(Schematic::new("dev-cors"), port).with_mode("dev");
+        let handle = tokio::spawn(async move {
+            let _ = inspector.serve_with_listener(listener).await;
+        });
+        wait_ready(port).await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://127.0.0.1:{port}/schematic"))
+            .header("Origin", "https://studio.local")
+            .send()
+            .await
+            .expect("dev cors request");
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            response.headers().get("access-control-allow-origin"),
+            Some(&reqwest::header::HeaderValue::from_static("*"))
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn prod_mode_disables_permissive_cors_by_default() {
+        let (port, listener) = reserve_listener();
+        let inspector = Inspector::new(Schematic::new("prod-cors"), port)
+            .with_mode("prod")
+            .with_bearer_token("prod-token");
+        let handle = tokio::spawn(async move {
+            let _ = inspector.serve_with_listener(listener).await;
+        });
+        wait_ready(port).await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://127.0.0.1:{port}/schematic"))
+            .header("Origin", "https://studio.local")
+            .header("Authorization", "Bearer prod-token")
+            .send()
+            .await
+            .expect("prod cors request");
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .is_none()
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn healthz_reports_prod_policy() {
+        let (port, listener) = reserve_listener();
+        let inspector = Inspector::new(Schematic::new("prod-health"), port)
+            .with_mode("prod")
+            .with_bearer_token("prod-token");
+        let handle = tokio::spawn(async move {
+            let _ = inspector.serve_with_listener(listener).await;
+        });
+        wait_ready(port).await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://127.0.0.1:{port}/healthz"))
+            .header("Authorization", "Bearer prod-token")
+            .send()
+            .await
+            .expect("healthz request");
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: Value = response.json().await.expect("healthz json");
+        assert_eq!(body["kind"], "inspector.health.v1");
+        assert_eq!(body["data"]["mode"], "prod");
+        assert_eq!(body["data"]["auth"]["bearer_enabled"], true);
+        assert_eq!(body["data"]["auth"]["allow_unauthenticated"], false);
+        assert_eq!(body["data"]["cors"]["policy"], "no_permissive_headers");
+        assert_eq!(body["data"]["routes"]["internal"], false);
+        assert_eq!(body["data"]["routes"]["events"], false);
+        assert_eq!(body["data"]["routes"]["quick_view"], false);
 
         handle.abort();
     }
