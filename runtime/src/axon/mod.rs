@@ -16,8 +16,8 @@ use crate::persistence::{
     CompensationIdempotencyHandle, CompensationRetryPolicy, CompletionState,
     PersistenceAutoComplete, PersistenceEnvelope, PersistenceHandle, PersistenceTraceId,
 };
+#[cfg(feature = "inspector")]
 use async_trait::async_trait;
-use ranvier_audit::{AuditEvent, AuditSink};
 use ranvier_core::bus::Bus;
 use ranvier_core::cluster::DistributedLock;
 use ranvier_core::event::{DlqPolicy, DlqSink};
@@ -25,10 +25,15 @@ use ranvier_core::outcome::Outcome;
 use ranvier_core::policy::DynamicPolicy;
 use ranvier_core::saga::{SagaPolicy, SagaStack};
 use ranvier_core::schematic::{BusCapabilitySchema, Schematic};
+use ranvier_core::telemetry::AuditLogger;
+#[cfg(feature = "inspector")]
+use ranvier_core::telemetry::InterventionEvent;
 use ranvier_core::timeline::{Timeline, TimelineEvent};
 use ranvier_core::transition::Transition;
 
+#[cfg(feature = "inspector")]
 use serde::{Serialize, de::DeserializeOwned};
+#[cfg(feature = "inspector")]
 use serde_json::Value;
 use std::any::type_name;
 use std::ffi::OsString;
@@ -126,8 +131,8 @@ pub struct Axon<In, Out, E, Res = ()> {
     pub execution_mode: ExecutionMode,
     /// Optional persistence store for state inspection
     pub persistence_store: Option<Arc<dyn crate::persistence::PersistenceStore>>,
-    /// Optional audit sink for tamper-evident logging of interventions
-    pub audit_sink: Option<Arc<dyn AuditSink>>,
+    /// Optional audit logger for durable intervention records.
+    pub audit_sink: Option<Arc<dyn AuditLogger>>,
     /// Optional dead-letter queue sink for storing failed events
     pub dlq_sink: Option<Arc<dyn DlqSink>>,
     /// Policy for handling event failures
@@ -175,6 +180,7 @@ mod builder;
 mod executor;
 mod parallel;
 
+#[cfg(feature = "inspector")]
 #[async_trait]
 impl<In, Out, E, Res> ranvier_inspector::StateInspector for Axon<In, Out, E, Res>
 where
@@ -212,15 +218,15 @@ where
             .map_err(|e| format!("Failed to save intervention: {}", e))?;
 
         if let Some(sink) = self.audit_sink.as_ref() {
-            let event = AuditEvent::new(
-                uuid::Uuid::new_v4().to_string(),
-                "Inspector".to_string(),
-                "ForceResume".to_string(),
-                trace_id.to_string(),
-            )
-            .with_metadata("target_node", target_node);
+            let event = InterventionEvent::ForceResume {
+                workflow_id: trace_id.to_string(),
+                node_id: target_node.to_string(),
+                timestamp: chrono::Utc::now(),
+                operator: "Inspector".to_string(),
+                reason: None,
+            };
 
-            let _ = sink.append(&event).await;
+            let _ = sink.log_intervention(event).await;
         }
 
         tracing::info!(trace_id = %trace_id, target_node = %target_node, "Force resume requested via Inspector");
@@ -272,11 +278,13 @@ fn env_flag_is_true(key: &str) -> bool {
     }
 }
 
+#[cfg(feature = "inspector")]
 fn inspector_enabled_from_env() -> bool {
     let raw = std::env::var("RANVIER_INSPECTOR").ok();
     inspector_enabled_from_value(raw.as_deref())
 }
 
+#[cfg(any(test, feature = "inspector"))]
 fn inspector_enabled_from_value(value: Option<&str>) -> bool {
     match value {
         Some(v) => matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"),
@@ -284,11 +292,13 @@ fn inspector_enabled_from_value(value: Option<&str>) -> bool {
     }
 }
 
+#[cfg(feature = "inspector")]
 fn inspector_dev_mode_from_env() -> bool {
     let raw = std::env::var("RANVIER_MODE").ok();
     inspector_dev_mode_from_value(raw.as_deref())
 }
 
+#[cfg(any(test, feature = "inspector"))]
 fn inspector_dev_mode_from_value(value: Option<&str>) -> bool {
     !matches!(
         value.map(|v| v.to_ascii_lowercase()),
@@ -1413,9 +1423,10 @@ mod tests {
     };
     use anyhow::Result;
     use async_trait::async_trait;
-    use ranvier_audit::{AuditError, AuditEvent, AuditSink};
     use ranvier_core::event::{DlqPolicy, DlqSink};
     use ranvier_core::saga::SagaStack;
+    #[cfg(feature = "inspector")]
+    use ranvier_core::telemetry::{AuditLogger, InterventionEvent};
     use ranvier_core::timeline::{Timeline, TimelineEvent};
     use ranvier_core::{Bus, BusAccessPolicy, BusTypeRef, Outcome, Transition};
     use serde::{Deserialize, Serialize};
@@ -1423,18 +1434,21 @@ mod tests {
     use tokio::sync::Mutex;
     use uuid::Uuid;
 
-    struct MockAuditSink {
-        events: Arc<Mutex<Vec<AuditEvent>>>,
+    #[cfg(feature = "inspector")]
+    struct MockAuditLogger {
+        events: Arc<Mutex<Vec<InterventionEvent>>>,
     }
 
+    #[cfg(feature = "inspector")]
     #[async_trait]
-    impl AuditSink for MockAuditSink {
-        async fn append(&self, event: &AuditEvent) -> Result<(), AuditError> {
-            self.events.lock().await.push(event.clone());
+    impl AuditLogger for MockAuditLogger {
+        async fn log_intervention(&self, event: InterventionEvent) -> Result<(), String> {
+            self.events.lock().await.push(event);
             Ok(())
         }
     }
 
+    #[cfg(feature = "inspector")]
     #[tokio::test]
     async fn execute_logs_audit_events_for_intervention() {
         use ranvier_inspector::StateInspector;
@@ -1442,14 +1456,14 @@ mod tests {
         let trace_id = "test-audit-trace";
         let store_impl = InMemoryPersistenceStore::new();
         let events = Arc::new(Mutex::new(Vec::new()));
-        let sink = MockAuditSink {
+        let logger = MockAuditLogger {
             events: events.clone(),
         };
 
         let axon = Axon::<i32, i32, TestInfallible>::start("AuditTest")
             .then(AddOne)
             .with_persistence_store(store_impl.clone())
-            .with_audit_sink(sink);
+            .with_audit_logger(logger);
 
         let mut bus = Bus::new();
         bus.insert(PersistenceHandle::from_arc(Arc::new(store_impl.clone())));
@@ -1486,10 +1500,14 @@ mod tests {
             2,
             "Should have 2 audit events: ForceResume and ApplyIntervention"
         );
-        assert_eq!(recorded[0].action, "ForceResume");
-        assert_eq!(recorded[0].target, trace_id);
-        assert_eq!(recorded[1].action, "ApplyIntervention");
-        assert_eq!(recorded[1].target, trace_id);
+        assert!(matches!(
+            &recorded[0],
+            InterventionEvent::ForceResume { workflow_id, .. } if workflow_id == trace_id
+        ));
+        assert!(matches!(
+            &recorded[1],
+            InterventionEvent::ApplyIntervention { workflow_id, .. } if workflow_id == trace_id
+        ));
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

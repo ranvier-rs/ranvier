@@ -1,7 +1,7 @@
-use ranvier_audit::AuditEvent;
 use ranvier_core::bus::Bus;
 use ranvier_core::outcome::Outcome;
 use ranvier_core::saga::{SagaPolicy, SagaStack};
+use ranvier_core::telemetry::InterventionEvent;
 use ranvier_core::timeline::{Timeline, TimelineEvent};
 use serde::{Serialize, de::DeserializeOwned};
 use std::panic::AssertUnwindSafe;
@@ -187,16 +187,15 @@ where
 
                     // Log audit event for intervention application
                     if let Some(sink) = self.audit_sink.as_ref() {
-                        let event = AuditEvent::new(
-                            uuid::Uuid::new_v4().to_string(),
-                            "System".to_string(),
-                            "ApplyIntervention".to_string(),
-                            trace_id.to_string(),
-                        )
-                        .with_metadata("target_node", interv.target_node.clone())
-                        .with_metadata("target_step", target_idx);
+                        let event = InterventionEvent::ApplyIntervention {
+                            workflow_id: trace_id.clone(),
+                            node_id: interv.target_node.clone(),
+                            timestamp: chrono::Utc::now(),
+                            operator: "System".to_string(),
+                            reason: Some(format!("target_step={target_idx}")),
+                        };
 
-                        let _ = sink.append(&event).await;
+                        let _ = sink.log_intervention(event).await;
                     }
                 } else {
                     tracing::warn!(

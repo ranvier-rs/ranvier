@@ -9,6 +9,7 @@ pub use transition::{AuditAction, AuditActor, AuditLog};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
+use ranvier_core::telemetry::InterventionEvent;
 use ring::digest;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -441,6 +442,137 @@ impl<S: AuditSink> AuditLogger<S> {
         policy: &RetentionPolicy,
     ) -> Result<Vec<AuditEvent>, AuditError> {
         self.sink.apply_retention(policy).await
+    }
+}
+
+fn audit_event_from_intervention(event: InterventionEvent) -> AuditEvent {
+    match event {
+        InterventionEvent::ForceResume {
+            workflow_id,
+            node_id,
+            timestamp,
+            operator,
+            reason,
+        } => {
+            let mut audit = AuditEvent::new(
+                uuid::Uuid::new_v4().to_string(),
+                operator,
+                "ForceResume".to_string(),
+                workflow_id,
+            )
+            .with_metadata("node_id", node_id);
+            audit.timestamp = timestamp;
+            if let Some(reason) = reason {
+                audit = audit.with_metadata("reason", reason);
+            }
+            audit
+        }
+        InterventionEvent::ForceFail {
+            workflow_id,
+            timestamp,
+            operator,
+            reason,
+        } => {
+            let mut audit = AuditEvent::new(
+                uuid::Uuid::new_v4().to_string(),
+                operator,
+                "ForceFail".to_string(),
+                workflow_id,
+            );
+            audit.timestamp = timestamp;
+            if let Some(reason) = reason {
+                audit = audit.with_metadata("reason", reason);
+            }
+            audit
+        }
+        InterventionEvent::ApplyIntervention {
+            workflow_id,
+            node_id,
+            timestamp,
+            operator,
+            reason,
+        } => {
+            let mut audit = AuditEvent::new(
+                uuid::Uuid::new_v4().to_string(),
+                operator,
+                "ApplyIntervention".to_string(),
+                workflow_id,
+            )
+            .with_metadata("node_id", node_id);
+            audit.timestamp = timestamp;
+            if let Some(reason) = reason {
+                audit = audit.with_metadata("reason", reason);
+            }
+            audit
+        }
+        InterventionEvent::SnapshotMigration {
+            workflow_id,
+            from_version,
+            to_version,
+            timestamp,
+        } => {
+            let mut audit = AuditEvent::new(
+                uuid::Uuid::new_v4().to_string(),
+                "System".to_string(),
+                "SnapshotMigration".to_string(),
+                workflow_id,
+            )
+            .with_metadata("from_version", from_version)
+            .with_metadata("to_version", to_version);
+            audit.timestamp = timestamp;
+            audit
+        }
+    }
+}
+
+async fn append_intervention_event<S>(sink: &S, event: InterventionEvent) -> Result<(), String>
+where
+    S: AuditSink + ?Sized,
+{
+    let audit = audit_event_from_intervention(event);
+    sink.append(&audit).await.map_err(|error| error.to_string())
+}
+
+#[async_trait]
+impl<S> ranvier_core::telemetry::AuditLogger for AuditLogger<S>
+where
+    S: AuditSink + 'static,
+{
+    async fn log_intervention(&self, event: InterventionEvent) -> Result<(), String> {
+        append_intervention_event(self.sink.as_ref(), event).await
+    }
+}
+
+#[async_trait]
+impl ranvier_core::telemetry::AuditLogger for InMemoryAuditSink {
+    async fn log_intervention(&self, event: InterventionEvent) -> Result<(), String> {
+        append_intervention_event(self, event).await
+    }
+}
+
+#[async_trait]
+impl ranvier_core::telemetry::AuditLogger for file_sink::FileAuditSink {
+    async fn log_intervention(&self, event: InterventionEvent) -> Result<(), String> {
+        append_intervention_event(self, event).await
+    }
+}
+
+#[cfg(feature = "merkle")]
+#[async_trait]
+impl<S> ranvier_core::telemetry::AuditLogger for merkle::MerkleAuditSink<S>
+where
+    S: AuditSink + 'static,
+{
+    async fn log_intervention(&self, event: InterventionEvent) -> Result<(), String> {
+        append_intervention_event(self, event).await
+    }
+}
+
+#[cfg(feature = "postgres")]
+#[async_trait]
+impl ranvier_core::telemetry::AuditLogger for postgres::PostgresAuditSink {
+    async fn log_intervention(&self, event: InterventionEvent) -> Result<(), String> {
+        append_intervention_event(self, event).await
     }
 }
 

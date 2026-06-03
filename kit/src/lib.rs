@@ -11,6 +11,8 @@ pub use ranvier_core as core;
 pub use ranvier_guard as guard;
 #[cfg(feature = "http")]
 pub use ranvier_http as http;
+#[cfg(feature = "inspector")]
+pub use ranvier_inspector as inspector;
 pub use ranvier_macros as macros;
 #[cfg(feature = "openapi")]
 pub use ranvier_openapi as openapi;
@@ -29,6 +31,8 @@ pub use ranvier_core::tenant::{IsolationPolicy, TenantExtractor, TenantId, Tenan
 pub use ranvier_core::{Bus, Never, Outcome, Schematic, Transition};
 #[cfg(feature = "http")]
 pub use ranvier_http::{HttpIngress, Ranvier, RanvierService};
+#[cfg(feature = "inspector")]
+pub use ranvier_inspector::{Inspector, StateInspector};
 #[cfg(feature = "openapi")]
 pub use ranvier_openapi::{OpenApiDocument, OpenApiGenerator, swagger_ui_html};
 pub use ranvier_runtime::Axon;
@@ -39,6 +43,8 @@ pub mod prelude {
     pub use ranvier_guard::prelude::*;
     #[cfg(feature = "http")]
     pub use ranvier_http::prelude::*;
+    #[cfg(feature = "inspector")]
+    pub use ranvier_inspector::{Inspector, StateInspector};
     pub use ranvier_macros::ResourceRequirement;
     #[cfg(feature = "openapi")]
     pub use ranvier_openapi::prelude::*;

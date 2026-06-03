@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 [dependencies]
 ranvier-core = { workspace = true }
-ranvier-runtime = { workspace = true }
+ranvier-runtime = { workspace = true, features = ["inspector"] }
 ranvier-inspector = { workspace = true }
 ranvier-macros = { workspace = true }
 async-trait = { workspace = true }

@@ -15,10 +15,11 @@ use std::sync::Arc;
 
 use super::*;
 use super::{
-    bus_capability_schema_from_policy, inspector_dev_mode_from_env, inspector_enabled_from_env,
-    now_ms, run_this_compensated_step, run_this_step, schematic_export_request_from_process,
-    type_name_of,
+    bus_capability_schema_from_policy, now_ms, run_this_compensated_step, run_this_step,
+    schematic_export_request_from_process, type_name_of,
 };
+#[cfg(feature = "inspector")]
+use super::{inspector_dev_mode_from_env, inspector_enabled_from_env};
 
 // ---------------------------------------------------------------------------
 // Block 1: Constructors (identity Axon: In -> In)
@@ -185,13 +186,24 @@ where
         self
     }
 
-    /// Attach an audit sink for tamper-evident logging.
-    pub fn with_audit_sink<S>(mut self, sink: S) -> Self
+    /// Attach an audit logger for tamper-evident intervention records.
+    pub fn with_audit_logger<S>(mut self, logger: S) -> Self
     where
-        S: ranvier_audit::AuditSink + 'static,
+        S: ranvier_core::telemetry::AuditLogger + 'static,
     {
-        self.audit_sink = Some(Arc::new(sink));
+        self.audit_sink = Some(Arc::new(logger));
         self
+    }
+
+    /// Attach an audit logger for tamper-evident intervention records.
+    ///
+    /// This method name is retained for source compatibility. New code should
+    /// prefer [`Self::with_audit_logger`] to make the core-port boundary clear.
+    pub fn with_audit_sink<S>(self, logger: S) -> Self
+    where
+        S: ranvier_core::telemetry::AuditLogger + 'static,
+    {
+        self.with_audit_logger(logger)
     }
 
     /// Set the Dead Letter Queue sink for this Axon.
@@ -1422,6 +1434,7 @@ where
 
     /// Starts the Ranvier Inspector for this Axon on the specified port.
     /// This spawns a background task to serve the Schematic.
+    #[cfg(feature = "inspector")]
     pub fn serve_inspector(self, port: u16) -> Self {
         if !inspector_dev_mode_from_env() {
             tracing::info!("Inspector disabled because RANVIER_MODE is production");

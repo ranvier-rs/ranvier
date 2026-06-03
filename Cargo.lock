@@ -4411,10 +4411,10 @@ version = "0.50.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "criterion",
  "futures-core",
  "futures-util",
- "ranvier-audit",
  "ranvier-core",
  "ranvier-inspector",
  "redis 0.29.5",

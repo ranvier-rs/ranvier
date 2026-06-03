@@ -27,6 +27,32 @@ async fn audit_event_logging_basic() {
 }
 
 #[tokio::test]
+async fn audit_logger_records_core_intervention_events() {
+    let sink = InMemoryAuditSink::new();
+    let logger = AuditLogger::new(sink.clone());
+
+    ranvier_core::telemetry::AuditLogger::log_intervention(
+        &logger,
+        ranvier_core::telemetry::InterventionEvent::ApplyIntervention {
+            workflow_id: "trace-1".to_string(),
+            node_id: "approve-order".to_string(),
+            timestamp: Utc::now(),
+            operator: "System".to_string(),
+            reason: Some("target_step=2".to_string()),
+        },
+    )
+    .await
+    .unwrap();
+
+    let recorded = sink.get_events().await;
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].action, "ApplyIntervention");
+    assert_eq!(recorded[0].target, "trace-1");
+    assert_eq!(recorded[0].metadata["node_id"], "approve-order");
+    assert_eq!(recorded[0].metadata["reason"], "target_step=2");
+}
+
+#[tokio::test]
 async fn audit_chain_links_events_with_hashes() {
     let chain = AuditChain::new();
 

@@ -121,6 +121,14 @@ pub enum InterventionEvent {
         operator: String,
         reason: Option<String>,
     },
+    /// A queued manual intervention was applied during workflow resumption.
+    ApplyIntervention {
+        workflow_id: String,
+        node_id: String,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        operator: String,
+        reason: Option<String>,
+    },
     /// A systematic snapshot migration was applied to a workflow.
     SnapshotMigration {
         workflow_id: String,

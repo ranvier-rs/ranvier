@@ -255,6 +255,7 @@ async fn test_access_log_redaction_in_pipeline() {
 /// produces valid JSON document with cross-referencing components.
 ///
 /// Crosses: openapi × http (HttpRouteDescriptor) × core (types)
+#[cfg(feature = "http")]
 #[test]
 fn test_openapi_security_and_problem_detail_combined() {
     use http::Method;
