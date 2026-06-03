@@ -59,22 +59,3 @@ pub fn validate_jwt(token: &str, secret: &str) -> Result<AuthContext, AuthError>
         roles: token_data.claims.roles,
     })
 }
-
-/// Helper to create a test JWT token (for development/testing).
-#[cfg(test)]
-pub fn create_test_token(user_id: &str, roles: Vec<String>, secret: &str) -> String {
-    use jsonwebtoken::{EncodingKey, Header, encode};
-
-    let claims = Claims {
-        sub: user_id.to_string(),
-        roles,
-        exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
-    };
-
-    encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret.as_bytes()),
-    )
-    .expect("Failed to create test token")
-}
