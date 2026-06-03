@@ -1,6 +1,6 @@
 param(
-    [ValidateSet("m119", "m131", "all")]
-    [string]$Train = "m119",
+    [ValidateSet("all")]
+    [string]$Train = "all",
     [string]$TargetVersion,
     [switch]$Apply,
     [switch]$NoWorkspacePackageBump,

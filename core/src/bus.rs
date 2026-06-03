@@ -664,7 +664,7 @@ mod tests {
     fn test_multiple_types_coexist() {
         let mut bus = Bus::new();
         bus.insert(42i32);
-        bus.insert(3.14f64);
+        bus.insert(2.5f64);
         bus.insert("hello".to_string());
         bus.insert(true);
 
@@ -674,9 +674,9 @@ mod tests {
         assert!(bus.has::<bool>());
 
         assert_eq!(*bus.read::<i32>().unwrap(), 42);
-        assert_eq!(*bus.read::<f64>().unwrap(), 3.14);
+        assert_eq!(*bus.read::<f64>().unwrap(), 2.5);
         assert_eq!(bus.read::<String>().unwrap(), "hello");
-        assert_eq!(*bus.read::<bool>().unwrap(), true);
+        assert!(*bus.read::<bool>().unwrap());
     }
 
     #[test]

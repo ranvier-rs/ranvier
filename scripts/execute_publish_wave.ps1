@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("m119", "m131", "all")]
+    [ValidateSet("all")]
     [string]$Profile = "all",
     [int]$Wave = 1,
     [ValidateSet("dry-run", "publish")]

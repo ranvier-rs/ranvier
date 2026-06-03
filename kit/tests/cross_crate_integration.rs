@@ -5,7 +5,6 @@
 //! boundaries to prove integration integrity.
 
 use async_trait::async_trait;
-use ranvier::prelude::*;
 use ranvier_audit::{AuditChain, AuditEvent, AuditLogger, InMemoryAuditSink};
 use ranvier_compliance::Sensitive;
 use ranvier_core::bus::Bus;
@@ -188,11 +187,8 @@ async fn test_audit_chain_integrity() {
     // Verify events are linked
     let events = chain.events().await;
     assert!(events[0].prev_hash.is_none()); // First event has no predecessor
-    for i in 1..5 {
-        assert!(
-            events[i].prev_hash.is_some(),
-            "Event {i} should have prev_hash"
-        );
+    for (i, event) in events.iter().enumerate().take(5).skip(1) {
+        assert!(event.prev_hash.is_some(), "Event {i} should have prev_hash");
     }
 }
 

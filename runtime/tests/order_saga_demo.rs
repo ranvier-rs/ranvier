@@ -285,7 +285,7 @@ async fn order_saga_encounters_failure_and_compensates_perfectly() {
     }
 
     // 2. Saga compensation occurred in LIFO order
-    let comp_log = compensation_log.lock().unwrap();
+    let comp_log = { compensation_log.lock().unwrap().clone() };
     assert_eq!(
         comp_log.len(),
         2,
@@ -314,7 +314,7 @@ async fn order_saga_encounters_failure_and_compensates_perfectly() {
     );
 
     // 3. Compensation hook was triggered
-    let hooks = hook_log.lock().unwrap();
+    let hooks = { hook_log.lock().unwrap().clone() };
     assert_eq!(hooks.len(), 1, "Compensation hook should fire once");
     assert!(
         hooks[0].contains("order-001"),

@@ -1,13 +1,17 @@
 param(
-    [ValidateSet("m119", "m131", "all")]
+    [ValidateSet("all")]
     [string]$Profile = "all",
     [switch]$NoAllowDirty,
     [switch]$ExecuteNextWaveDryRun,
+    [switch]$SkipLocalChecks,
+    [switch]$SkipClippy,
+    [switch]$LocalChecksOnly,
     [string]$TargetVersion,
     [string]$EvidenceDir = "..\docs\05_dev_plans\evidence"
 )
 
 $ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $false
 
 . (Join-Path $PSScriptRoot "release_common.ps1")
 
@@ -88,7 +92,218 @@ function As-Array {
     return [object[]]@($Value)
 }
 
+function New-GateCheckResult {
+    param(
+        [string]$Name,
+        [string]$Command,
+        [string]$WorkingDirectory,
+        [int]$ExitCode,
+        [bool]$Success,
+        [string[]]$Output,
+        [object]$Details = $null
+    )
+
+    return [ordered]@{
+        name = $Name
+        command = $Command
+        working_directory = $WorkingDirectory
+        exit_code = $ExitCode
+        success = $Success
+        output_tail = @($Output | Select-Object -Last 40 | ForEach-Object { [string]$_ })
+        details = $Details
+    }
+}
+
+function Invoke-GateCommand {
+    param(
+        [string]$Name,
+        [string]$Executable,
+        [string[]]$Arguments,
+        [string]$WorkingDirectory,
+        [string]$LogPath
+    )
+
+    $command = "$Executable $($Arguments -join ' ')"
+    Write-Log -Path $LogPath -Message "running local gate: $Name"
+    Write-Log -Path $LogPath -Message "command: $command"
+    Write-Log -Path $LogPath -Message "working_directory: $WorkingDirectory"
+
+    $previous = Get-Location
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        Set-Location $WorkingDirectory
+        $ErrorActionPreference = "Continue"
+        $output = @(& $Executable @Arguments 2>&1 | ForEach-Object { [string]$_ })
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        Set-Location $previous
+    }
+
+    if ($output.Count -gt 0) {
+        Add-Content -Path $LogPath -Value $output -Encoding utf8
+    }
+    Write-Log -Path $LogPath -Message "$Name exit_code=$exitCode"
+
+    return New-GateCheckResult `
+        -Name $Name `
+        -Command $command `
+        -WorkingDirectory $WorkingDirectory `
+        -ExitCode $exitCode `
+        -Success ($exitCode -eq 0) `
+        -Output $output
+}
+
+function Invoke-SubmoduleStatusGate {
+    param(
+        [string]$RootWorkspace,
+        [string]$LogPath
+    )
+
+    $result = Invoke-GateCommand `
+        -Name "root recursive submodule status" `
+        -Executable "git" `
+        -Arguments @("submodule", "status", "--recursive") `
+        -WorkingDirectory $RootWorkspace `
+        -LogPath $LogPath
+
+    $badEntries = @(
+        $result.output_tail |
+            Where-Object { $_ -match '^[\-\+]' } |
+            ForEach-Object { [string]$_ }
+    )
+
+    if ($badEntries.Count -gt 0) {
+        $result.success = $false
+        $result.details = [ordered]@{
+            bad_entry_count = $badEntries.Count
+            bad_entries = $badEntries
+            note = "Submodule status entries beginning with '-' are uninitialized; '+' means checked out at a different commit than the root gitlink."
+        }
+        Write-Log -Path $LogPath -Message "root recursive submodule status drift detected: $($badEntries.Count) bad entr$(if ($badEntries.Count -eq 1) { 'y' } else { 'ies' })"
+    }
+
+    return $result
+}
+
+function Invoke-VersionDriftGate {
+    param(
+        [string]$RootWorkspace,
+        [string]$RanvierWorkspace,
+        [string]$ProfileKey,
+        [string]$LogPath
+    )
+
+    $errors = New-Object System.Collections.Generic.List[string]
+    $workspaceVersion = Get-WorkspaceReleaseVersion -WorkspaceRoot $RanvierWorkspace
+    $registryPath = Join-Path $RootWorkspace "docs\05_dev_plans\CAPABILITY_REGISTRY.json"
+
+    if (-not (Test-Path $registryPath)) {
+        [void]$errors.Add("missing capability registry: $registryPath")
+    } else {
+        $registry = Get-Content -Path $registryPath -Raw | ConvertFrom-Json
+        if ([string]$registry.version -ne $workspaceVersion) {
+            [void]$errors.Add("registry.version=$($registry.version) does not match workspace.package.version=$workspaceVersion")
+        }
+
+        $ranvierModule = $registry.modules | Where-Object { $_.module -eq "ranvier" } | Select-Object -First 1
+        if ($null -eq $ranvierModule) {
+            [void]$errors.Add("missing ranvier module in capability registry")
+        } else {
+            if ([string]$ranvierModule.versioning.current -ne $workspaceVersion) {
+                [void]$errors.Add("ranvier.versioning.current=$($ranvierModule.versioning.current) does not match workspace.package.version=$workspaceVersion")
+            }
+
+            $publishable = Resolve-ReleaseCrateSet -ProfileKey $ProfileKey -WorkspaceRoot $RanvierWorkspace
+            $publishableSet = New-Object "System.Collections.Generic.HashSet[string]"
+            foreach ($crate in $publishable) {
+                [void]$publishableSet.Add([string]$crate)
+            }
+
+            foreach ($artifact in @($ranvierModule.versioning.artifacts)) {
+                $artifactName = [string]$artifact.name
+                if (-not $publishableSet.Contains($artifactName)) {
+                    continue
+                }
+                if ([string]$artifact.version -ne $workspaceVersion) {
+                    [void]$errors.Add("artifact $artifactName version=$($artifact.version) does not match workspace.package.version=$workspaceVersion")
+                }
+            }
+        }
+    }
+
+    $success = ($errors.Count -eq 0)
+    $details = [ordered]@{
+        workspace_version = $workspaceVersion
+        registry_path = $registryPath
+        errors = @($errors.ToArray())
+    }
+
+    if ($success) {
+        Write-Log -Path $LogPath -Message "version/capability drift gate passed (workspace_version=$workspaceVersion)"
+    } else {
+        foreach ($error in $errors) {
+            Write-Log -Path $LogPath -Message "version/capability drift: $error"
+        }
+    }
+
+    return New-GateCheckResult `
+        -Name "version and capability drift" `
+        -Command "compare ranvier/Cargo.toml workspace.package.version with docs/05_dev_plans/CAPABILITY_REGISTRY.json" `
+        -WorkingDirectory $RootWorkspace `
+        -ExitCode $(if ($success) { 0 } else { 1 }) `
+        -Success $success `
+        -Output @($errors.ToArray()) `
+        -Details $details
+}
+
+function Invoke-LocalReleaseChecks {
+    param(
+        [string]$RootWorkspace,
+        [string]$RanvierWorkspace,
+        [string]$ProfileKey,
+        [string]$LogPath,
+        [bool]$SkipClippy
+    )
+
+    $checks = New-Object System.Collections.Generic.List[object]
+    $checks.Add((Invoke-SubmoduleStatusGate -RootWorkspace $RootWorkspace -LogPath $LogPath))
+    $checks.Add((Invoke-VersionDriftGate -RootWorkspace $RootWorkspace -RanvierWorkspace $RanvierWorkspace -ProfileKey $ProfileKey -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "ranvier cargo check workspace" -Executable "cargo" -Arguments @("check", "--workspace") -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
+
+    if ($SkipClippy) {
+        Write-Log -Path $LogPath -Message "skipping publishable crate clippy gate by request"
+        $checks.Add((New-GateCheckResult -Name "publishable crate clippy" -Command "cargo clippy -p <publishable> --all-targets -- -D warnings" -WorkingDirectory $RanvierWorkspace -ExitCode 0 -Success $true -Output @("skipped by -SkipClippy") -Details @{ skipped = $true }))
+    } else {
+        $publishableCrates = Resolve-ReleaseCrateSet -ProfileKey $ProfileKey -WorkspaceRoot $RanvierWorkspace
+        $clippyArgs = @("clippy")
+        foreach ($crate in $publishableCrates) {
+            $clippyArgs += @("-p", [string]$crate)
+        }
+        $clippyArgs += @("--all-targets", "--", "-D", "warnings")
+        $checks.Add((Invoke-GateCommand -Name "publishable crate clippy" -Executable "cargo" -Arguments $clippyArgs -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
+    }
+
+    $cliRoot = Join-Path $RootWorkspace "cli"
+    $studioServerRoot = Join-Path $RootWorkspace "studio-server"
+    $checks.Add((Invoke-GateCommand -Name "cli cargo check" -Executable "cargo" -Arguments @("check") -WorkingDirectory $cliRoot -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "cli cargo test" -Executable "cargo" -Arguments @("test") -WorkingDirectory $cliRoot -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "studio-server cargo check" -Executable "cargo" -Arguments @("check") -WorkingDirectory $studioServerRoot -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "studio-server cargo test" -Executable "cargo" -Arguments @("test") -WorkingDirectory $studioServerRoot -LogPath $LogPath))
+
+    $failed = @($checks | Where-Object { -not [bool]$_.success })
+    return [ordered]@{
+        enabled = $true
+        total = $checks.Count
+        passed = ($checks.Count - $failed.Count)
+        failed = $failed.Count
+        failed_checks = @($failed | ForEach-Object { [string]$_.name })
+        checks = $checks
+    }
+}
+
 $workspaceRoot = Get-ReleaseWorkspaceRoot -ScriptRoot $PSScriptRoot
+$rootWorkspace = (Resolve-Path (Join-Path $workspaceRoot "..")).Path
 $profileKey = $Profile.ToLowerInvariant()
 $target = Resolve-TargetVersion -Requested $TargetVersion -WorkspaceRoot $workspaceRoot
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -101,7 +316,67 @@ $bundleSummaryPath = Join-Path $EvidenceDir "release_gate_bundle_${profileKey}_$
 
 Write-Log -Path $bundleLogPath -Message "release gate bundle started (profile=$profileKey, no_allow_dirty=$($NoAllowDirty.IsPresent), target=$target)"
 Write-Log -Path $bundleLogPath -Message "workspace root: $workspaceRoot"
+Write-Log -Path $bundleLogPath -Message "root workspace: $rootWorkspace"
 Write-Log -Path $bundleLogPath -Message "powershell executable: $psExe"
+
+$localChecks = [ordered]@{
+    enabled = $false
+    total = 0
+    passed = 0
+    failed = 0
+    failed_checks = @()
+    checks = @()
+}
+
+if ($SkipLocalChecks.IsPresent) {
+    Write-Log -Path $bundleLogPath -Message "local release checks skipped by request"
+} else {
+    $localChecks = Invoke-LocalReleaseChecks -RootWorkspace $rootWorkspace -RanvierWorkspace $workspaceRoot -ProfileKey $profileKey -LogPath $bundleLogPath -SkipClippy:$SkipClippy.IsPresent
+    Write-Log -Path $bundleLogPath -Message "local release checks passed=$($localChecks.passed) failed=$($localChecks.failed)"
+
+    if ([int]$localChecks.failed -gt 0) {
+        $bundleSummary = [ordered]@{
+            timestamp = $timestamp
+            profile = $profileKey
+            target_version = $target
+            no_allow_dirty = $NoAllowDirty.IsPresent
+            local_checks_only = $LocalChecksOnly.IsPresent
+            local_checks = $localChecks
+            preflight = $null
+            wave_plan = $null
+            registry_snapshot = $null
+            next_publish_gate = $null
+            next_publish_execute = $null
+        }
+        $bundleSummary | ConvertTo-Json -Depth 8 | Set-Content -Path $bundleSummaryPath -Encoding utf8
+        Write-Log -Path $bundleLogPath -Message "bundle summary: $bundleSummaryPath"
+        Write-Host "Evidence: $bundleLogPath"
+        Write-Host "Summary:  $bundleSummaryPath"
+        exit 1
+    }
+}
+
+if ($LocalChecksOnly.IsPresent) {
+    $bundleSummary = [ordered]@{
+        timestamp = $timestamp
+        profile = $profileKey
+        target_version = $target
+        no_allow_dirty = $NoAllowDirty.IsPresent
+        local_checks_only = $true
+        local_checks = $localChecks
+        preflight = $null
+        wave_plan = $null
+        registry_snapshot = $null
+        next_publish_gate = $null
+        next_publish_execute = $null
+    }
+    $bundleSummary | ConvertTo-Json -Depth 8 | Set-Content -Path $bundleSummaryPath -Encoding utf8
+    Write-Log -Path $bundleLogPath -Message "local checks only; skipping publish preflight and registry gates"
+    Write-Log -Path $bundleLogPath -Message "bundle summary: $bundleSummaryPath"
+    Write-Host "Evidence: $bundleLogPath"
+    Write-Host "Summary:  $bundleSummaryPath"
+    exit 0
+}
 
 $preflightScript = Join-Path $PSScriptRoot "publish_dry_run_preflight.ps1"
 $waveScript = Join-Path $PSScriptRoot "plan_publish_waves.ps1"
@@ -236,6 +511,8 @@ $bundleSummary = [ordered]@{
     profile = $profileKey
     target_version = $target
     no_allow_dirty = $NoAllowDirty.IsPresent
+    local_checks_only = $LocalChecksOnly.IsPresent
+    local_checks = $localChecks
     preflight = [ordered]@{
         exit_code = $preflightExitCode
         summary_path = $preflightSummaryFile.FullName

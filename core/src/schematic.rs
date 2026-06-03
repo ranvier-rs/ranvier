@@ -596,7 +596,7 @@ mod tests {
         let json = serde_json::to_value(&node).unwrap();
         assert_eq!(json["kind"], "StreamingTransition");
         assert_eq!(json["item_type"], "ChatChunk");
-        assert_eq!(json["terminal"], true);
+        assert_eq!(json["terminal"].as_bool(), Some(true));
     }
 
     #[test]

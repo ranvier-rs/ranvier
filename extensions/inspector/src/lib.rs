@@ -2526,7 +2526,7 @@ mod tests {
         let internal = apply_projection_redaction(src, ProjectionSurface::Internal, &policy);
 
         assert_eq!(public["email"], "[REDACTED]");
-        assert_eq!(public["summary"]["ok"], true);
+        assert_eq!(public["summary"]["ok"].as_bool(), Some(true));
         assert_eq!(internal["email"], "user@example.com");
     }
 
@@ -2844,12 +2844,15 @@ mod tests {
         let body: Value = response.json().await.expect("healthz json");
         assert_eq!(body["kind"], "inspector.health.v1");
         assert_eq!(body["data"]["mode"], "prod");
-        assert_eq!(body["data"]["auth"]["bearer_enabled"], true);
-        assert_eq!(body["data"]["auth"]["allow_unauthenticated"], false);
+        assert_eq!(body["data"]["auth"]["bearer_enabled"].as_bool(), Some(true));
+        assert_eq!(
+            body["data"]["auth"]["allow_unauthenticated"].as_bool(),
+            Some(false)
+        );
         assert_eq!(body["data"]["cors"]["policy"], "no_permissive_headers");
-        assert_eq!(body["data"]["routes"]["internal"], false);
-        assert_eq!(body["data"]["routes"]["events"], false);
-        assert_eq!(body["data"]["routes"]["quick_view"], false);
+        assert_eq!(body["data"]["routes"]["internal"].as_bool(), Some(false));
+        assert_eq!(body["data"]["routes"]["events"].as_bool(), Some(false));
+        assert_eq!(body["data"]["routes"]["quick_view"].as_bool(), Some(false));
 
         handle.abort();
     }

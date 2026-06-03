@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("m119", "m131", "all")]
+    [ValidateSet("all")]
     [string]$Profile = "all",
     [string]$TargetVersion,
     [ValidateSet("dry-run", "publish")]

@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("m119", "m131", "all")]
+    [ValidateSet("all")]
     [string]$Profile = "all",
     [string]$SummaryPath,
     [string]$EvidenceDir = "..\docs\05_dev_plans\evidence"

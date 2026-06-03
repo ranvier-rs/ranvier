@@ -192,7 +192,6 @@ async fn test_migration_migrate_active_node() {
         .then(counter_v11.clone()) // Node index 1
         .then(counter_v11.clone()); // Node index 2
 
-    let node1_v11_id = axon_v11.schematic.nodes[1].id.clone();
     let node2_v11_id = axon_v11.schematic.nodes[2].id.clone();
 
     // Register migration: MigrateActiveNode from v1.0 node1 to v1.1 node2 (skipped node 1)

@@ -98,8 +98,6 @@ function Resolve-ReleaseCrateSet {
     $all = Get-PublishableWorkspaceCrates -WorkspaceRoot $WorkspaceRoot
     switch ($ProfileKey.ToLowerInvariant()) {
         "all" { return $all }
-        "m119" { return $all }
-        "m131" { return $all }
         default { throw "Unknown release profile: $ProfileKey" }
     }
 }
