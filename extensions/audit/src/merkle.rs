@@ -74,7 +74,9 @@ pub fn build_merkle_tree(leaves: &[String]) -> (String, Vec<Vec<String>>) {
     while current.len() > 1 {
         // Pad odd layer
         if current.len() % 2 != 0 {
-            current.push(current.last().unwrap().clone());
+            if let Some(last) = current.last().cloned() {
+                current.push(last);
+            }
         }
         let mut next = Vec::with_capacity(current.len() / 2);
         for pair in current.chunks(2) {
@@ -101,7 +103,9 @@ pub fn generate_proof(index: usize, layers: &[Vec<String>]) -> Option<MerkleProo
         // Pad the layer view for odd lengths
         let mut padded = layer.clone();
         if padded.len() % 2 != 0 {
-            padded.push(padded.last().unwrap().clone());
+            if let Some(last) = padded.last().cloned() {
+                padded.push(last);
+            }
         }
 
         let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
@@ -111,15 +115,16 @@ pub fn generate_proof(index: usize, layers: &[Vec<String>]) -> Option<MerkleProo
             SiblingPosition::Left
         };
 
+        let sibling_hash = padded.get(sibling_idx).cloned()?;
         siblings.push(ProofSibling {
-            hash: padded[sibling_idx].clone(),
+            hash: sibling_hash,
             position,
         });
 
         idx /= 2;
     }
 
-    let root = layers.last().unwrap()[0].clone();
+    let root = layers.last()?.first()?.clone();
 
     Some(MerkleProof {
         leaf_index: index,

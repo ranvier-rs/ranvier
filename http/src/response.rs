@@ -10,22 +10,45 @@ use std::convert::Infallible;
 use crate::extract::Json;
 
 pub type HttpResponse = Response<BoxBody<Bytes, Infallible>>;
+pub type RanvierResponse = HttpResponse;
 
 pub trait IntoResponse {
     fn into_response(self) -> HttpResponse;
 }
 
+pub(crate) fn boxed_body(body: impl Into<Bytes>) -> BoxBody<Bytes, Infallible> {
+    Full::new(body.into())
+        .map_err(|never| match never {})
+        .boxed()
+}
+
+pub(crate) fn build_response(
+    builder: http::response::Builder,
+    body: BoxBody<Bytes, Infallible>,
+) -> HttpResponse {
+    match builder.body(body) {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::error!(error = %error, "HTTP response construction failed");
+            let mut response = Response::new(boxed_body("Internal response construction error"));
+            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            response.headers_mut().insert(
+                CONTENT_TYPE,
+                http::HeaderValue::from_static("text/plain; charset=utf-8"),
+            );
+            response
+        }
+    }
+}
+
 pub fn json_error_response(status: StatusCode, message: impl Into<String>) -> HttpResponse {
     let payload = serde_json::json!({ "error": message.into() });
-    Response::builder()
-        .status(status)
-        .header(CONTENT_TYPE, "application/json")
-        .body(
-            Full::new(Bytes::from(payload.to_string()))
-                .map_err(|never| match never {})
-                .boxed(),
-        )
-        .expect("response builder should be infallible")
+    build_response(
+        Response::builder()
+            .status(status)
+            .header(CONTENT_TYPE, "application/json"),
+        boxed_body(payload.to_string()),
+    )
 }
 
 /// HTML response wrapper.
@@ -42,29 +65,23 @@ pub struct Html(pub String);
 
 impl IntoResponse for Html {
     fn into_response(self) -> HttpResponse {
-        Response::builder()
-            .status(StatusCode::OK)
-            .header(CONTENT_TYPE, "text/html; charset=utf-8")
-            .body(
-                Full::new(Bytes::from(self.0))
-                    .map_err(|never| match never {})
-                    .boxed(),
-            )
-            .expect("response builder should be infallible")
+        build_response(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "text/html; charset=utf-8"),
+            boxed_body(self.0),
+        )
     }
 }
 
 impl IntoResponse for (StatusCode, Html) {
     fn into_response(self) -> HttpResponse {
-        Response::builder()
-            .status(self.0)
-            .header(CONTENT_TYPE, "text/html; charset=utf-8")
-            .body(
-                Full::new(Bytes::from((self.1).0))
-                    .map_err(|never| match never {})
-                    .boxed(),
-            )
-            .expect("response builder should be infallible")
+        build_response(
+            Response::builder()
+                .status(self.0)
+                .header(CONTENT_TYPE, "text/html; charset=utf-8"),
+            boxed_body((self.1).0),
+        )
     }
 }
 
@@ -76,104 +93,87 @@ impl IntoResponse for HttpResponse {
 
 impl IntoResponse for String {
     fn into_response(self) -> HttpResponse {
-        Response::builder()
-            .status(StatusCode::OK)
-            .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(
-                Full::new(Bytes::from(self))
-                    .map_err(|never| match never {})
-                    .boxed(),
-            )
-            .expect("response builder should be infallible")
+        build_response(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "text/plain; charset=utf-8"),
+            boxed_body(self),
+        )
     }
 }
 
 impl IntoResponse for &'static str {
     fn into_response(self) -> HttpResponse {
-        Response::builder()
-            .status(StatusCode::OK)
-            .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(
-                Full::new(Bytes::from(self))
-                    .map_err(|never| match never {})
-                    .boxed(),
-            )
-            .expect("response builder should be infallible")
+        build_response(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "text/plain; charset=utf-8"),
+            boxed_body(self),
+        )
     }
 }
 
 impl IntoResponse for Bytes {
     fn into_response(self) -> HttpResponse {
-        Response::builder()
-            .status(StatusCode::OK)
-            .header(CONTENT_TYPE, "application/octet-stream")
-            .body(Full::new(self).map_err(|never| match never {}).boxed())
-            .expect("response builder should be infallible")
+        build_response(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/octet-stream"),
+            boxed_body(self),
+        )
     }
 }
 
 impl IntoResponse for serde_json::Value {
     fn into_response(self) -> HttpResponse {
-        Response::builder()
-            .status(StatusCode::OK)
-            .header(CONTENT_TYPE, "application/json")
-            .body(
-                Full::new(Bytes::from(self.to_string()))
-                    .map_err(|never| match never {})
-                    .boxed(),
-            )
-            .expect("response builder should be infallible")
+        build_response(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json"),
+            boxed_body(self.to_string()),
+        )
     }
 }
 
 impl IntoResponse for () {
     fn into_response(self) -> HttpResponse {
-        Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .body(
-                Full::new(Bytes::new())
-                    .map_err(|never| match never {})
-                    .boxed(),
-            )
-            .expect("response builder should be infallible")
+        build_response(
+            Response::builder().status(StatusCode::NO_CONTENT),
+            boxed_body(Bytes::new()),
+        )
     }
 }
 
 impl IntoResponse for (StatusCode, String) {
     fn into_response(self) -> HttpResponse {
-        Response::builder()
-            .status(self.0)
-            .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(
-                Full::new(Bytes::from(self.1))
-                    .map_err(|never| match never {})
-                    .boxed(),
-            )
-            .expect("response builder should be infallible")
+        build_response(
+            Response::builder()
+                .status(self.0)
+                .header(CONTENT_TYPE, "text/plain; charset=utf-8"),
+            boxed_body(self.1),
+        )
     }
 }
 
 impl IntoResponse for (StatusCode, &'static str) {
     fn into_response(self) -> HttpResponse {
-        Response::builder()
-            .status(self.0)
-            .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(
-                Full::new(Bytes::from(self.1))
-                    .map_err(|never| match never {})
-                    .boxed(),
-            )
-            .expect("response builder should be infallible")
+        build_response(
+            Response::builder()
+                .status(self.0)
+                .header(CONTENT_TYPE, "text/plain; charset=utf-8"),
+            boxed_body(self.1),
+        )
     }
 }
 
 impl IntoResponse for (StatusCode, Bytes) {
     fn into_response(self) -> HttpResponse {
-        Response::builder()
-            .status(self.0)
-            .header(CONTENT_TYPE, "application/octet-stream")
-            .body(Full::new(self.1).map_err(|never| match never {}).boxed())
-            .expect("response builder should be infallible")
+        build_response(
+            Response::builder()
+                .status(self.0)
+                .header(CONTENT_TYPE, "application/octet-stream"),
+            boxed_body(self.1),
+        )
     }
 }
 
@@ -182,15 +182,12 @@ impl IntoResponse for (StatusCode, Bytes) {
 impl<T: Serialize> IntoResponse for Json<T> {
     fn into_response(self) -> HttpResponse {
         match serde_json::to_vec(&self.0) {
-            Ok(bytes) => Response::builder()
-                .status(StatusCode::OK)
-                .header(CONTENT_TYPE, "application/json")
-                .body(
-                    Full::new(Bytes::from(bytes))
-                        .map_err(|never| match never {})
-                        .boxed(),
-                )
-                .expect("response builder should be infallible"),
+            Ok(bytes) => build_response(
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header(CONTENT_TYPE, "application/json"),
+                boxed_body(bytes),
+            ),
             Err(e) => json_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("JSON serialization failed: {e}"),
@@ -202,15 +199,12 @@ impl<T: Serialize> IntoResponse for Json<T> {
 impl<T: Serialize> IntoResponse for (StatusCode, Json<T>) {
     fn into_response(self) -> HttpResponse {
         match serde_json::to_vec(&(self.1).0) {
-            Ok(bytes) => Response::builder()
-                .status(self.0)
-                .header(CONTENT_TYPE, "application/json")
-                .body(
-                    Full::new(Bytes::from(bytes))
-                        .map_err(|never| match never {})
-                        .boxed(),
-                )
-                .expect("response builder should be infallible"),
+            Ok(bytes) => build_response(
+                Response::builder()
+                    .status(self.0)
+                    .header(CONTENT_TYPE, "application/json"),
+                boxed_body(bytes),
+            ),
             Err(e) => json_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("JSON serialization failed: {e}"),
@@ -299,15 +293,12 @@ impl IntoResponse for ProblemDetail {
     fn into_response(self) -> HttpResponse {
         let status = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         let body = serde_json::to_string(&self).unwrap_or_default();
-        Response::builder()
-            .status(status)
-            .header(CONTENT_TYPE, "application/problem+json")
-            .body(
-                Full::new(Bytes::from(body))
-                    .map_err(|never| match never {})
-                    .boxed(),
-            )
-            .expect("response builder should be infallible")
+        build_response(
+            Response::builder()
+                .status(status)
+                .header(CONTENT_TYPE, "application/problem+json"),
+            boxed_body(body),
+        )
     }
 }
 
@@ -447,15 +438,12 @@ pub struct TemplateResponse<T: askama::Template>(pub T);
 impl<T: askama::Template> IntoResponse for TemplateResponse<T> {
     fn into_response(self) -> HttpResponse {
         match self.0.render() {
-            Ok(html) => Response::builder()
-                .status(StatusCode::OK)
-                .header(CONTENT_TYPE, "text/html; charset=utf-8")
-                .body(
-                    Full::new(Bytes::from(html))
-                        .map_err(|never| match never {})
-                        .boxed(),
-                )
-                .expect("valid HTTP response construction"),
+            Ok(html) => build_response(
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header(CONTENT_TYPE, "text/html; charset=utf-8"),
+                boxed_body(html),
+            ),
             Err(e) => json_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &format!("Template render error: {}", e),

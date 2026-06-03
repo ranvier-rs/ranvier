@@ -1103,26 +1103,51 @@ where
         );
         // 4. Register Saga Compensation if enabled
         {
-            let mut registry = saga_compensation_registry
-                .write()
-                .expect("saga compensation registry lock poisoned");
             let comp_fn = compensation.clone();
             let transition_bus_policy = bus_policy_for_registry.clone();
 
-            let handler: ranvier_core::saga::SagaCompensationFn<E, Res> = Arc::new(
-                move |input_data, res, bus| {
+            let handler: ranvier_core::saga::SagaCompensationFn<E, Res> =
+                Arc::new(move |input_data, res, bus| {
                     let comp = comp_fn.clone();
                     let bus_policy = transition_bus_policy.clone();
                     Box::pin(async move {
-                        let input: Out = serde_json::from_slice(&input_data).expect("saga compensation input deserialization failed — type mismatch between snapshot and compensation handler");
+                        let input: Out = match serde_json::from_slice(&input_data) {
+                            Ok(input) => input,
+                            Err(error) => {
+                                tracing::error!(
+                                    error = %error,
+                                    input_type = %type_name_of::<Out>(),
+                                    "Saga compensation input deserialization failed"
+                                );
+                                return Outcome::emit(
+                                    "saga.compensation.input_deserialization_failed",
+                                    Some(serde_json::json!({
+                                        "error": error.to_string(),
+                                        "input_type": type_name_of::<Out>(),
+                                        "snapshot_bytes": input_data.len()
+                                    })),
+                                );
+                            }
+                        };
                         bus.set_access_policy(comp.label(), bus_policy);
                         let res = comp.run(input, res, bus).await;
                         bus.clear_access_policy();
                         res
                     })
-                },
-            );
-            registry.register(next_node_id.clone(), handler);
+                });
+
+            match saga_compensation_registry.write() {
+                Ok(mut registry) => registry.register(next_node_id.clone(), handler),
+                Err(poisoned) => {
+                    tracing::warn!(
+                        node_id = %next_node_id,
+                        "Saga compensation registry lock was poisoned; recovering registry for handler registration"
+                    );
+                    poisoned
+                        .into_inner()
+                        .register(next_node_id.clone(), handler);
+                }
+            }
         }
 
         Axon {

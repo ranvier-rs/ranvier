@@ -506,11 +506,17 @@ impl OpenApiGenerator {
     }
 
     pub fn build_json(self) -> Value {
-        serde_json::to_value(self.build()).expect("openapi document should serialize")
+        serde_json::to_value(self.build()).unwrap_or_else(|error| {
+            tracing::error!(error = %error, "OpenAPI document serialization failed");
+            json!({ "openapi": "3.1.0", "paths": {} })
+        })
     }
 
     pub fn build_pretty_json(self) -> String {
-        serde_json::to_string_pretty(&self.build()).expect("openapi document should serialize")
+        serde_json::to_string_pretty(&self.build()).unwrap_or_else(|error| {
+            tracing::error!(error = %error, "OpenAPI pretty JSON serialization failed");
+            "{}".to_string()
+        })
     }
 }
 
@@ -589,7 +595,10 @@ fn schema_value<T>() -> Value
 where
     T: JsonSchema,
 {
-    serde_json::to_value(schema_for!(T)).expect("json schema should serialize")
+    serde_json::to_value(schema_for!(T)).unwrap_or_else(|error| {
+        tracing::error!(error = %error, "OpenAPI schema serialization failed");
+        json!({ "type": "object" })
+    })
 }
 
 pub mod prelude {

@@ -47,8 +47,8 @@ use crate::guard_integration::{
     registered_guard_security_scheme_hint,
 };
 use crate::response::{
-    HttpResponse, IntoResponse, json_error_response, outcome_to_json_response,
-    outcome_to_response_with_error,
+    HttpResponse, IntoResponse, boxed_body, build_response, json_error_response,
+    outcome_to_json_response, outcome_to_response_with_error,
 };
 
 /// The Ranvier Framework entry point.
@@ -380,14 +380,10 @@ fn timeout_middleware(timeout: Duration) -> ServiceLayer {
             async move {
                 match tokio::time::timeout(timeout, inner.call(req)).await {
                     Ok(response) => response,
-                    Err(_) => Ok(Response::builder()
-                        .status(StatusCode::REQUEST_TIMEOUT)
-                        .body(
-                            Full::new(Bytes::from("Request Timeout"))
-                                .map_err(|never| match never {})
-                                .boxed(),
-                        )
-                        .expect("valid HTTP response construction")),
+                    Err(_) => Ok(build_response(
+                        Response::builder().status(StatusCode::REQUEST_TIMEOUT),
+                        boxed_body("Request Timeout"),
+                    )),
                 }
             }
         })
@@ -1799,12 +1795,12 @@ where
                     }
                     // Idempotency cache hit → skip circuit
                     if let Some(cached) = bus.read::<ranvier_guard::IdempotencyCachedResponse>() {
-                        let body = Bytes::from(cached.body.clone());
-                        let mut response = Response::builder()
-                            .status(StatusCode::OK)
-                            .header("content-type", "application/json")
-                            .body(Full::new(body).map_err(|n: Infallible| match n {}).boxed())
-                            .unwrap();
+                        let mut response = build_response(
+                            Response::builder()
+                                .status(StatusCode::OK)
+                                .header("content-type", "application/json"),
+                            boxed_body(cached.body.clone()),
+                        );
                         for extractor in route_response_extractors.iter() {
                             extractor(&bus, response.headers_mut());
                         }
@@ -1958,12 +1954,12 @@ where
                     }
                     // Idempotency cache hit → skip circuit
                     if let Some(cached) = bus.read::<ranvier_guard::IdempotencyCachedResponse>() {
-                        let body = Bytes::from(cached.body.clone());
-                        let mut response = Response::builder()
-                            .status(StatusCode::OK)
-                            .header("content-type", "application/json")
-                            .body(Full::new(body).map_err(|n: Infallible| match n {}).boxed())
-                            .unwrap();
+                        let mut response = build_response(
+                            Response::builder()
+                                .status(StatusCode::OK)
+                                .header("content-type", "application/json"),
+                            boxed_body(cached.body.clone()),
+                        );
                         for extractor in route_response_extractors.iter() {
                             extractor(&bus, response.headers_mut());
                         }
@@ -2220,12 +2216,12 @@ where
                         }
                     }
                     if let Some(cached) = bus.read::<ranvier_guard::IdempotencyCachedResponse>() {
-                        let body = Bytes::from(cached.body.clone());
-                        let mut response = Response::builder()
-                            .status(StatusCode::OK)
-                            .header("content-type", "application/json")
-                            .body(Full::new(body).map_err(|n: Infallible| match n {}).boxed())
-                            .unwrap();
+                        let mut response = build_response(
+                            Response::builder()
+                                .status(StatusCode::OK)
+                                .header("content-type", "application/json"),
+                            boxed_body(cached.body.clone()),
+                        );
                         for extractor in route_response_extractors.iter() {
                             extractor(&bus, response.headers_mut());
                         }
@@ -2441,12 +2437,12 @@ where
                         }
                     }
                     if let Some(cached) = bus.read::<ranvier_guard::IdempotencyCachedResponse>() {
-                        let body = Bytes::from(cached.body.clone());
-                        let mut response = Response::builder()
-                            .status(StatusCode::OK)
-                            .header("content-type", "application/json")
-                            .body(Full::new(body).map_err(|n: Infallible| match n {}).boxed())
-                            .unwrap();
+                        let mut response = build_response(
+                            Response::builder()
+                                .status(StatusCode::OK)
+                                .header("content-type", "application/json"),
+                            boxed_body(cached.body.clone()),
+                        );
                         for extractor in route_response_extractors.iter() {
                             extractor(&bus, response.headers_mut());
                         }
@@ -2595,12 +2591,12 @@ where
                         return response;
                     }
                     if let Some(cached) = bus.read::<ranvier_guard::IdempotencyCachedResponse>() {
-                        let body = Bytes::from(cached.body.clone());
-                        let mut response = Response::builder()
-                            .status(StatusCode::OK)
-                            .header("content-type", "application/json")
-                            .body(Full::new(body).map_err(|n: Infallible| match n {}).boxed())
-                            .unwrap();
+                        let mut response = build_response(
+                            Response::builder()
+                                .status(StatusCode::OK)
+                                .header("content-type", "application/json"),
+                            boxed_body(cached.body.clone()),
+                        );
                         for extractor in route_response_extractors.iter() {
                             extractor(&bus, response.headers_mut());
                         }
@@ -3230,13 +3226,14 @@ where
                     };
 
                     let body = http_body_util::StreamBody::new(frame_stream);
-                    let mut response = Response::builder()
-                        .status(StatusCode::OK)
-                        .header(http::header::CONTENT_TYPE, "text/event-stream")
-                        .header(http::header::CACHE_CONTROL, "no-cache")
-                        .header(http::header::CONNECTION, "keep-alive")
-                        .body(http_body_util::BodyExt::boxed(body))
-                        .expect("Valid SSE response");
+                    let mut response = build_response(
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header(http::header::CONTENT_TYPE, "text/event-stream")
+                            .header(http::header::CACHE_CONTROL, "no-cache")
+                            .header(http::header::CONNECTION, "keep-alive"),
+                        http_body_util::BodyExt::boxed(body),
+                    );
                     for extractor in route_response_extractors.iter() {
                         extractor(&bus, response.headers_mut());
                     }
@@ -3486,14 +3483,10 @@ where
                             *response.status_mut() = StatusCode::NOT_FOUND;
                             response
                         }
-                        _ => Response::builder()
-                            .status(StatusCode::NOT_FOUND)
-                            .body(
-                                Full::new(Bytes::from("Not Found"))
-                                    .map_err(|never| match never {})
-                                    .boxed(),
-                            )
-                            .expect("valid HTTP response construction"),
+                        _ => build_response(
+                            Response::builder().status(StatusCode::NOT_FOUND),
+                            boxed_body("Not Found"),
+                        ),
                     };
                     for extractor in fallback_response_extractors.iter() {
                         extractor(&bus, response.headers_mut());
@@ -3536,14 +3529,10 @@ where
         if self.active_intervention {
             let handler: RouteHandler<R> = Arc::new(|_parts, _res| {
                 Box::pin(async move {
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .body(
-                            Full::new(Bytes::from("Intervention accepted"))
-                                .map_err(|never| match never {} as Infallible)
-                                .boxed(),
-                        )
-                        .expect("valid HTTP response construction")
+                    build_response(
+                        Response::builder().status(StatusCode::OK),
+                        boxed_body("Intervention accepted"),
+                    )
                 }) as Pin<Box<dyn Future<Output = HttpResponse> + Send>>
             });
 
@@ -3566,14 +3555,10 @@ where
                     // This is a simplified reload endpoint.
                     // In a real implementation, it would parse JSON from the body.
                     // For now, we provide the infrastructure.
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .body(
-                            Full::new(Bytes::from("Policy registry active"))
-                                .map_err(|never| match never {} as Infallible)
-                                .boxed(),
-                        )
-                        .expect("valid HTTP response construction")
+                    build_response(
+                        Response::builder().status(StatusCode::OK),
+                        boxed_body("Policy registry active"),
+                    )
                 }) as Pin<Box<dyn Future<Output = HttpResponse> + Send>>
             });
 
@@ -3769,14 +3754,10 @@ async fn apply_body_transforms(
         Ok(c) => c.to_bytes(),
         Err(_) => {
             // If body collection fails, return a 500 response
-            return Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(
-                    Full::new(Bytes::from("body collection failed"))
-                        .map_err(|never| match never {})
-                        .boxed(),
-                )
-                .expect("valid response");
+            return build_response(
+                Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR),
+                boxed_body("body collection failed"),
+            );
         }
     };
 
@@ -3844,14 +3825,10 @@ where
                         } else {
                             origin.to_string()
                         };
-                        let mut response = Response::builder()
-                            .status(StatusCode::NO_CONTENT)
-                            .body(
-                                Full::new(Bytes::new())
-                                    .map_err(|never| match never {})
-                                    .boxed(),
-                            )
-                            .expect("valid preflight response");
+                        let mut response = build_response(
+                            Response::builder().status(StatusCode::NO_CONTENT),
+                            boxed_body(Bytes::new()),
+                        );
                         let headers = response.headers_mut();
                         if let Ok(v) = allow_origin.parse() {
                             headers.insert("access-control-allow-origin", v);
@@ -3868,7 +3845,7 @@ where
                         if config.allow_credentials {
                             headers.insert(
                                 "access-control-allow-credentials",
-                                "true".parse().expect("valid header value"),
+                                http::HeaderValue::from_static("true"),
                             );
                         }
                         return Ok(response);
@@ -3956,14 +3933,10 @@ where
                         fallback_service.call(req).await
                     }
                 } else {
-                    Ok(Response::builder()
-                        .status(StatusCode::NOT_FOUND)
-                        .body(
-                            Full::new(Bytes::from("Not Found"))
-                                .map_err(|never| match never {})
-                                .boxed(),
-                        )
-                        .expect("valid HTTP response construction"))
+                    Ok(build_response(
+                        Response::builder().status(StatusCode::NOT_FOUND),
+                        boxed_body("Not Found"),
+                    ))
                 };
 
                 #[cfg(feature = "http3")]
@@ -4693,15 +4666,12 @@ fn health_json_response(
     let body = serde_json::to_vec(&payload)
         .unwrap_or_else(|_| br#"{"status":"error","probe":"health"}"#.to_vec());
 
-    Response::builder()
-        .status(status_code)
-        .header(http::header::CONTENT_TYPE, "application/json")
-        .body(
-            Full::new(Bytes::from(body))
-                .map_err(|never| match never {})
-                .boxed(),
-        )
-        .expect("valid HTTP response construction")
+    build_response(
+        Response::builder()
+            .status(status_code)
+            .header(http::header::CONTENT_TYPE, "application/json"),
+        boxed_body(body),
+    )
 }
 
 async fn shutdown_signal() {

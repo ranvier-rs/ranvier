@@ -470,16 +470,26 @@ impl InMemoryErasureSink {
         }
     }
 
+    fn records(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, Vec<String>>> {
+        match self.records.lock() {
+            Ok(records) => records,
+            Err(poisoned) => {
+                tracing::warn!("InMemoryErasureSink record store lock was poisoned; recovering");
+                poisoned.into_inner()
+            }
+        }
+    }
+
     /// Add records for a subject (for testing purposes).
     pub fn add_records(&self, subject: &str, data: Vec<String>) {
-        let mut records = self.records.lock().unwrap();
+        let mut records = self.records();
         records.insert(subject.to_string(), data);
     }
 }
 
 impl ErasureSink for InMemoryErasureSink {
     fn erase(&self, request: &ErasureRequest) -> ErasureResult {
-        let mut records = self.records.lock().unwrap();
+        let mut records = self.records();
         let count = if let Some(data) = records.remove(&request.subject) {
             data.len()
         } else {

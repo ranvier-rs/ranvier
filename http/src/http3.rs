@@ -8,7 +8,7 @@ use std::sync::Arc;
 use bytes::{Buf, Bytes};
 use h3::server::RequestStream;
 use h3_quinn::quinn::{Endpoint, ServerConfig};
-use http::{Request, Response};
+use http::{Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
 use hyper::service::Service;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -195,10 +195,8 @@ where
         Err(e) => {
             error!("HTTP/3 service error: {}", e);
             // Internal Server Error
-            let res = Response::builder()
-                .status(500)
-                .body(())
-                .expect("valid HTTP response construction");
+            let mut res = Response::new(());
+            *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
             stream.send_response(res).await?;
             stream.finish().await?;
         }

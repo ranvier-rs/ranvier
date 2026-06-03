@@ -1,4 +1,4 @@
-use crate::response::{HttpResponse, IntoResponse};
+use crate::response::{HttpResponse, IntoResponse, build_response};
 use bytes::Bytes;
 use futures_util::stream::Stream;
 
@@ -170,13 +170,14 @@ where
 
         let body = http_body_util::StreamBody::new(infallible_stream);
 
-        http::Response::builder()
-            .status(http::StatusCode::OK)
-            .header(http::header::CONTENT_TYPE, "text/event-stream")
-            .header(http::header::CACHE_CONTROL, "no-cache")
-            .header(http::header::CONNECTION, "keep-alive")
-            .body(http_body_util::BodyExt::boxed(body))
-            .expect("Valid builder")
+        build_response(
+            http::Response::builder()
+                .status(http::StatusCode::OK)
+                .header(http::header::CONTENT_TYPE, "text/event-stream")
+                .header(http::header::CACHE_CONTROL, "no-cache")
+                .header(http::header::CONNECTION, "keep-alive"),
+            http_body_util::BodyExt::boxed(body),
+        )
     }
 }
 

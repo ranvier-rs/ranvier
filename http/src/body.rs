@@ -29,15 +29,13 @@ use std::marker::PhantomData;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use http::Response;
 use http::StatusCode;
-use http_body_util::{BodyExt, Full};
 use ranvier_core::prelude::*;
 use ranvier_core::transition::ResourceRequirement;
 use serde::de::DeserializeOwned;
 
 use crate::extract::HttpRequestBody;
-use crate::response::{IntoResponse, RanvierResponse};
+use crate::response::{IntoResponse, RanvierResponse, boxed_body, build_response};
 
 /// A `Transition` that reads `HttpRequestBody` from the [`Bus`] and deserializes it as JSON.
 ///
@@ -92,10 +90,10 @@ impl IntoResponse for JsonBodyError {
             Self::MissingBody => StatusCode::INTERNAL_SERVER_ERROR,
             Self::ParseError(_) => StatusCode::BAD_REQUEST,
         };
-        Response::builder()
-            .status(status)
-            .body(Full::new(Bytes::from(self.to_string())).map_err(|e| match e {}).boxed())
-            .expect("valid HTTP response construction")
+        build_response(
+            http::Response::builder().status(status),
+            boxed_body(self.to_string()),
+        )
     }
 }
 

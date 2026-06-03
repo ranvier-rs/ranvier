@@ -75,17 +75,18 @@ impl ExtractError {
             let payload = serde_json::to_vec(body).unwrap_or_else(|_| {
                 br#"{"error":"validation_failed","message":"request validation failed"}"#.to_vec()
             });
-            return Response::builder()
-                .status(self.status_code())
-                .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Full::new(Bytes::from(payload)))
-                .expect("validation response builder should be infallible");
+            let mut response = Response::new(Full::new(Bytes::from(payload)));
+            *response.status_mut() = self.status_code();
+            response.headers_mut().insert(
+                http::header::CONTENT_TYPE,
+                http::HeaderValue::from_static("application/json"),
+            );
+            return response;
         }
 
-        Response::builder()
-            .status(self.status_code())
-            .body(Full::new(Bytes::from(self.to_string())))
-            .expect("extract error response builder should be infallible")
+        let mut response = Response::new(Full::new(Bytes::from(self.to_string())));
+        *response.status_mut() = self.status_code();
+        response
     }
 }
 

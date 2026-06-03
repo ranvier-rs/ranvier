@@ -76,6 +76,28 @@ impl Transition<SagaState, SagaState> for FailStep {
     }
 }
 
+#[derive(Clone)]
+struct CorruptLatestSagaSnapshot;
+
+#[async_trait]
+impl Transition<SagaState, SagaState> for CorruptLatestSagaSnapshot {
+    type Error = String;
+    type Resources = ();
+
+    fn label(&self) -> String {
+        "CorruptLatestSagaSnapshot".to_string()
+    }
+
+    async fn run(&self, state: SagaState, _res: &(), bus: &mut Bus) -> Outcome<SagaState, String> {
+        if let Some(stack) = bus.read_mut::<ranvier_core::saga::SagaStack>()
+            && let Some(task) = stack.tasks.last_mut()
+        {
+            task.input_snapshot = b"{ not valid json".to_vec();
+        }
+        Outcome::Next(state)
+    }
+}
+
 #[tokio::test]
 async fn test_saga_automated_rollback_with_state_mapping() {
     let results = Arc::new(Mutex::new(Vec::new()));
@@ -122,4 +144,35 @@ async fn test_saga_automated_rollback_with_state_mapping() {
 
     assert_eq!(final_results[0], "Comp_2:1");
     assert_eq!(final_results[1], "Comp_1:0");
+}
+
+#[tokio::test]
+async fn saga_compensation_snapshot_mismatch_does_not_panic() {
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let axon = Axon::<SagaState, SagaState, String, ()>::new("SagaMismatch")
+        .with_saga_policy(SagaPolicy::Enabled)
+        .then_compensated(
+            SuccStep {
+                id: "safe".to_string(),
+            },
+            CompStep {
+                id: "safe".to_string(),
+                results: results.clone(),
+            },
+        )
+        .then(CorruptLatestSagaSnapshot)
+        .then(FailStep);
+
+    let initial_state = SagaState {
+        cnt: 0,
+        log: vec![],
+    };
+    let mut bus = Bus::new();
+    let outcome = axon.execute(initial_state, &(), &mut bus).await;
+
+    assert!(matches!(outcome, Outcome::Fault(_)));
+    assert!(
+        results.lock().unwrap().is_empty(),
+        "malformed compensation snapshot should emit an event instead of running compensation"
+    );
 }

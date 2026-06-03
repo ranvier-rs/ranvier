@@ -86,7 +86,11 @@ fn validate_table_name(name: &str) -> Result<(), AuditError> {
         )));
     }
     let mut chars = name.chars();
-    let first = chars.next().unwrap();
+    let Some(first) = chars.next() else {
+        return Err(AuditError::InvalidTableName(
+            "table name must not be empty".to_string(),
+        ));
+    };
     if !first.is_ascii_alphabetic() && first != '_' {
         return Err(AuditError::InvalidTableName(format!(
             "must start with ASCII letter or underscore, got '{first}'"

@@ -450,16 +450,34 @@ where
                 tracing::info!(trace_id = %trace_id, node_id = %task.node_id, "Compensating step: {}", task.node_label);
 
                 let handler = {
-                    let registry = self
-                        .saga_compensation_registry
-                        .read()
-                        .expect("saga compensation registry lock poisoned");
-                    registry.get(&task.node_id)
+                    match self.saga_compensation_registry.read() {
+                        Ok(registry) => registry.get(&task.node_id),
+                        Err(poisoned) => {
+                            tracing::warn!(
+                                trace_id = %trace_id,
+                                node_id = %task.node_id,
+                                "Saga compensation registry lock was poisoned; recovering registry for rollback lookup"
+                            );
+                            poisoned.into_inner().get(&task.node_id)
+                        }
+                    }
                 };
                 if let Some(handler) = handler {
                     let res = handler(task.input_snapshot, resources, bus).await;
-                    if let Outcome::Fault(e) = res {
-                        tracing::error!(trace_id = %trace_id, node_id = %task.node_id, "Saga compensation FAILED: {:?}", e);
+                    match res {
+                        Outcome::Fault(e) => {
+                            tracing::error!(trace_id = %trace_id, node_id = %task.node_id, "Saga compensation FAILED: {:?}", e);
+                        }
+                        Outcome::Emit(event_type, payload) => {
+                            tracing::warn!(
+                                trace_id = %trace_id,
+                                node_id = %task.node_id,
+                                event_type = %event_type,
+                                payload = ?payload,
+                                "Saga compensation emitted a non-fatal event"
+                            );
+                        }
+                        _ => {}
                     }
                 } else {
                     tracing::warn!(trace_id = %trace_id, node_id = %task.node_id, "No compensation handler found in registry for saga rollback");

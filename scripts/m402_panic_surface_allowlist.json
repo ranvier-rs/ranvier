@@ -1,0 +1,10 @@
+[
+  {
+    "path": "core/src/bus.rs",
+    "kind": "panic",
+    "contains": "panic!(",
+    "contextContains": "required resource",
+    "classification": "intentional-fail-fast-api",
+    "reason": "Bus::require is the documented fail-fast counterpart to try_require when startup-injected resources are missing."
+  }
+]

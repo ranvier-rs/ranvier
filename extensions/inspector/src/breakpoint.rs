@@ -221,14 +221,26 @@ fn get_store() -> Arc<Mutex<BreakpointStore>> {
         .clone()
 }
 
+fn with_store<R>(op: impl FnOnce(&mut BreakpointStore) -> R) -> R {
+    let store = get_store();
+    match store.lock() {
+        Ok(mut guard) => op(&mut guard),
+        Err(poisoned) => {
+            tracing::warn!("Inspector breakpoint store lock was poisoned; recovering store");
+            let mut guard = poisoned.into_inner();
+            op(&mut guard)
+        }
+    }
+}
+
 /// Add a conditional breakpoint.
 pub fn add_breakpoint(node_id: String, condition: Option<String>) -> ConditionalBreakpoint {
-    get_store().lock().unwrap().add(node_id, condition)
+    with_store(|store| store.add(node_id, condition))
 }
 
 /// Remove a breakpoint by ID.
 pub fn remove_breakpoint(id: &str) -> bool {
-    get_store().lock().unwrap().remove(id)
+    with_store(|store| store.remove(id))
 }
 
 /// Update a breakpoint's enabled state and/or condition.
@@ -237,17 +249,17 @@ pub fn update_breakpoint(
     enabled: Option<bool>,
     condition: Option<Option<String>>,
 ) -> Option<ConditionalBreakpoint> {
-    get_store().lock().unwrap().update(id, enabled, condition)
+    with_store(|store| store.update(id, enabled, condition))
 }
 
 /// List all conditional breakpoints.
 pub fn list_breakpoints() -> Vec<ConditionalBreakpoint> {
-    get_store().lock().unwrap().list()
+    with_store(|store| store.list())
 }
 
 /// Check if any conditional breakpoint should fire for the given node and optional payload.
 pub fn should_pause_conditional(node_id: &str, payload: Option<&serde_json::Value>) -> bool {
-    get_store().lock().unwrap().should_pause(node_id, payload)
+    with_store(|store| store.should_pause(node_id, payload))
 }
 
 #[cfg(test)]
@@ -320,5 +332,22 @@ mod tests {
         let updated = store.update(&bp2.id, Some(false), None).unwrap();
         assert!(!updated.enabled);
         assert!(!store.should_pause("nodeB", Some(&payload)));
+    }
+
+    #[test]
+    fn global_store_recovers_from_poisoned_lock() {
+        let store = get_store();
+        let result = std::panic::catch_unwind(|| {
+            let _guard = store
+                .lock()
+                .expect("lock should be available before poison");
+            panic!("poison breakpoint store");
+        });
+
+        assert!(result.is_err());
+
+        let bp = add_breakpoint("poisoned-node".into(), None);
+        assert!(should_pause_conditional("poisoned-node", None));
+        assert!(remove_breakpoint(&bp.id));
     }
 }

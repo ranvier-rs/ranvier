@@ -1227,18 +1227,31 @@ fn get_debug_registry() -> Arc<Mutex<HashMap<String, DebugControl>>> {
 }
 
 pub fn get_debug_control_for_trace(trace_id: &str) -> Option<DebugControl> {
-    get_debug_registry().lock().unwrap().get(trace_id).cloned()
+    with_debug_registry(|registry| registry.get(trace_id).cloned())
 }
 
 pub fn register_debug_control(trace_id: String, control: DebugControl) {
-    get_debug_registry()
-        .lock()
-        .unwrap()
-        .insert(trace_id, control);
+    with_debug_registry(|registry| {
+        registry.insert(trace_id, control);
+    });
 }
 
 pub fn unregister_debug_control(trace_id: &str) {
-    get_debug_registry().lock().unwrap().remove(trace_id);
+    with_debug_registry(|registry| {
+        registry.remove(trace_id);
+    });
+}
+
+fn with_debug_registry<R>(op: impl FnOnce(&mut HashMap<String, DebugControl>) -> R) -> R {
+    let registry = get_debug_registry();
+    match registry.lock() {
+        Ok(mut guard) => op(&mut guard),
+        Err(poisoned) => {
+            tracing::warn!("Inspector debug registry lock was poisoned; recovering registry");
+            let mut guard = poisoned.into_inner();
+            op(&mut guard)
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1257,6 +1270,16 @@ struct InspectorState {
     trace_store: Option<Arc<dyn trace_store::TraceStore>>,
     #[allow(dead_code)]
     alert_dispatcher: Option<Arc<alert::AlertDispatcher>>,
+}
+
+fn schematic_snapshot(state: &InspectorState) -> Schematic {
+    match state.schematic.lock() {
+        Ok(schematic) => schematic.clone(),
+        Err(poisoned) => {
+            tracing::warn!("Inspector schematic lock was poisoned; recovering schematic snapshot");
+            poisoned.into_inner().clone()
+        }
+    }
 }
 
 pub fn layer() -> InspectorLayer {
@@ -1594,8 +1617,7 @@ async fn get_schematic(
     State(state): State<InspectorState>,
 ) -> Result<Json<Schematic>, (StatusCode, Json<Value>)> {
     ensure_public_access(&headers, &state.auth_policy)?;
-    let schematic = state.schematic.lock().unwrap();
-    Ok(Json(schematic.clone()))
+    Ok(Json(schematic_snapshot(&state)))
 }
 
 async fn get_public_projection(
@@ -1723,7 +1745,7 @@ async fn get_inspector_circuits(
     State(state): State<InspectorState>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     ensure_internal_access(&headers, &state.auth_policy)?;
-    let schematic = state.schematic.lock().unwrap();
+    let schematic = schematic_snapshot(&state);
     let transition_count = schematic
         .nodes
         .iter()
@@ -1761,7 +1783,7 @@ async fn get_inspector_circuit_by_name(
     State(state): State<InspectorState>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     ensure_internal_access(&headers, &state.auth_policy)?;
-    let schematic = state.schematic.lock().unwrap().clone();
+    let schematic = schematic_snapshot(&state);
     if name != schematic.name && name != schematic.id {
         return Err(policy_error(StatusCode::NOT_FOUND, "circuit_not_found"));
     }
@@ -1805,7 +1827,7 @@ async fn get_inspector_bus(
     State(state): State<InspectorState>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     ensure_internal_access(&headers, &state.auth_policy)?;
-    let schematic = state.schematic.lock().unwrap();
+    let schematic = schematic_snapshot(&state);
 
     let mut resource_types = HashSet::new();
     let mut transition_capabilities = Vec::new();
@@ -2009,7 +2031,7 @@ async fn api_get_routes(
     let registered = routes::list_routes();
 
     // Also enrich from schematic node schemas
-    let schematic = state.schematic.lock().unwrap();
+    let schematic = schematic_snapshot(&state);
     let mut route_list: Vec<Value> = registered
         .iter()
         .map(|r| {
@@ -2078,7 +2100,7 @@ async fn api_post_routes_schema(
     }
 
     // Fallback: look in schematic nodes
-    let schematic = state.schematic.lock().unwrap();
+    let schematic = schematic_snapshot(&state);
     for node in &schematic.nodes {
         if let Some(schema) = &node.input_schema {
             return Ok(inspector_envelope(
@@ -2108,7 +2130,7 @@ async fn api_post_routes_sample(
             route.input_schema
         } else {
             // Fallback: look in schematic nodes
-            let schematic = state.schematic.lock().unwrap();
+            let schematic = schematic_snapshot(&state);
             schematic.nodes.iter().find_map(|n| n.input_schema.clone())
         }
     };
