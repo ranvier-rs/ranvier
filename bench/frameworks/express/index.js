@@ -2,11 +2,21 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 
 const SECRET_KEY = "bench-secret-key";
+const HOST = process.env.HOST || "0.0.0.0";
+const PORT_BASE = Number.parseInt(process.env.PORT_BASE || "3000", 10);
+
+if (!Number.isInteger(PORT_BASE) || PORT_BASE < 1 || PORT_BASE > 65532) {
+  throw new Error("PORT_BASE must be an integer between 1 and 65532");
+}
+
+function scenarioPort(offset) {
+  return PORT_BASE + offset;
+}
 
 // Helper to start an app on a specific port
 function startApp(app, port, name) {
-  app.listen(port, "0.0.0.0", () => {
-    console.log(`Starting Express Benchmark Server (Scenario ${name}) on 0.0.0.0:${port}`);
+  app.listen(port, HOST, () => {
+    console.log(`Starting Express Benchmark Server (Scenario ${name}) on ${HOST}:${port}`);
   });
 }
 
@@ -19,7 +29,7 @@ app1.get('/', (req, res) => {
   res.status(200).json({ message: "Hello, World!", status: 200 });
 });
 if (process.env.SCENARIO === "1" || !process.env.SCENARIO) {
-  startApp(app1, 3000, "1: Simple CRUD");
+  startApp(app1, scenarioPort(0), "1: Simple CRUD");
 }
 
 // -------------------------------------------------------------
@@ -54,7 +64,7 @@ app2.get('/protected', verifyToken, (req, res) => {
 });
 
 if (process.env.SCENARIO === "2" || !process.env.SCENARIO) {
-  startApp(app2, 3001, "2: Complex Auth");
+  startApp(app2, scenarioPort(1), "2: Complex Auth");
 }
 
 // -------------------------------------------------------------
@@ -80,7 +90,7 @@ app3.get('/workflow', (req, res) => {
 });
 
 if (process.env.SCENARIO === "3" || !process.env.SCENARIO) {
-  startApp(app3, 3002, "3: Multi-step Workflow");
+  startApp(app3, scenarioPort(2), "3: Multi-step Workflow");
 }
 
 // -------------------------------------------------------------
@@ -98,5 +108,5 @@ app4.get('/concurrency', async (req, res) => {
 });
 
 if (process.env.SCENARIO === "4" || !process.env.SCENARIO) {
-  startApp(app4, 3003, "4: High Concurrency");
+  startApp(app4, scenarioPort(3), "4: High Concurrency");
 }
