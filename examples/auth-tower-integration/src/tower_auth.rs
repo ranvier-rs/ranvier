@@ -87,10 +87,12 @@ where
 /// This is for educational purposes to show how Tower layers work internally.
 /// For production, prefer Option B (`RequireAuthorizationLayer`).
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct AuthLayer {
     pub secret: String,
 }
 
+#[allow(dead_code)]
 impl AuthLayer {
     pub fn new(secret: String) -> Self {
         Self { secret }
@@ -110,6 +112,7 @@ impl<S> Layer<S> for AuthLayer {
 
 /// Authentication service that wraps an inner service.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct AuthService<S> {
     inner: S,
     secret: String,

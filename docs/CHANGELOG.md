@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.51.0] — 2026-06
+
+### Summary
+
+**Ranvier 0.51.0 — Production Readiness Hardening.**
+Publishes the M401-M408 backend productization track: release contract convergence, typed failure semantics, operational policy hardening, truthful release gates, curated example support tiers, runtime boundary cleanup, and reproducible readiness evidence.
+
+### Added
+- **Release gate bundle:** Added a reproducible local release gate that checks recursive submodule state, capability registry version drift, `cargo check --workspace`, publishable crate clippy with `-D warnings`, CLI check/test, and Studio Server check/test.
+- **Panic-surface classification:** Added a production panic-surface gate with an explicit allowlist for narrow impossible-by-construction builder states.
+- **Readiness evidence:** Added production readiness evidence covering runtime, HTTP, audit, CLI, Studio Server, docs/web, and 1.0-entry go/no-go criteria.
+
+### Changed
+- **Version contract:** Promoted the workspace release line to 0.51.0 and aligned local dogfooding consumers with the same Ranvier crate contract.
+- **Runtime boundary:** Kept runtime audit intervention logging behind the core audit logger port so operational audit adapters stay outside the runtime core dependency set.
+- **Example support:** Classified examples into support tiers and updated CLI templates to target the latest published stable Ranvier line by default.
+
+### Fixed
+- **Reference Todo API auth:** CRUD routes now require a verified Bearer token, inject JWT claims through Bus, and fail explicitly when auth context is missing or invalid.
+- **Reference Todo API panic paths:** Replaced official reference app `Mutex::lock().unwrap()` and response serialization `unwrap()` paths with recoverable `Outcome::Fault` errors.
+- **Release metadata drift:** Aligned README, version policy, capability registry, status docs, and web mirrors with the 0.51.0 release line.
+
+---
+
 ## [0.50.0] — 2026-04 (candidate)
 
 ### Summary

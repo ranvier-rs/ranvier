@@ -21,7 +21,10 @@ pub async fn login(
                     token,
                     username: request.username,
                 };
-                Outcome::Next(serde_json::to_value(response).unwrap())
+                match serde_json::to_value(response) {
+                    Ok(value) => Outcome::Next(value),
+                    Err(error) => Outcome::Fault(format!("Response serialization failed: {error}")),
+                }
             }
             Err(e) => Outcome::Fault(format!("Token generation failed: {}", e)),
         }

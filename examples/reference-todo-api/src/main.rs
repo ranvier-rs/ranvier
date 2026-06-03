@@ -30,7 +30,6 @@
 //! - `guard-integration-demo` — Guard pipeline patterns
 
 mod auth;
-mod errors;
 mod models;
 mod transitions;
 
@@ -68,6 +67,8 @@ async fn main() -> Result<()> {
             move |parts: &http::request::Parts, bus: &mut ranvier_core::prelude::Bus| {
                 // Inject shared store into Bus for all routes
                 bus.insert(store.clone());
+                // Verify Bearer tokens at the HTTP boundary and expose Claims in Bus.
+                auth::inject_auth_from_headers(parts, bus);
                 // Inject path params into Bus for :id routes
                 if let Some(params) = parts.extensions.get::<PathParams>() {
                     bus.insert(params.clone());

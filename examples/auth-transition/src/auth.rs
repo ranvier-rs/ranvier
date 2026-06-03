@@ -14,9 +14,6 @@ pub enum AuthError {
     #[error("Missing authorization header")]
     MissingHeader,
 
-    #[error("Invalid token format")]
-    InvalidFormat,
-
     #[error("Invalid token: {0}")]
     InvalidToken(String),
 

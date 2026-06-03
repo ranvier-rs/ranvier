@@ -1,6 +1,6 @@
 # Ranvier Design Principles
 
-**Version:** 0.50.0 candidate
+**Version:** 0.51.0 release
 **Updated:** 2026-04-30
 **Applies to:** ranvier-core, ranvier-runtime, ranvier-http
 **Category:** Architecture
@@ -414,4 +414,4 @@ When adding new design decisions:
 
 ---
 
-*This document is part of Ranvier v0.50.0 candidate. Last updated: 2026-04-30.*
+*This document is part of Ranvier v0.51.0 release. Last updated: 2026-06-04.*

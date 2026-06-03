@@ -32,10 +32,14 @@ Each endpoint is a single-transition Axon circuit. Shared state
 (`Arc<Mutex<Vec<Todo>>>`) is placed on the Bus at startup and
 accessed from within transitions.
 
+`POST /login` issues a JWT. CRUD routes require `Authorization: Bearer <token>`;
+the HTTP boundary verifies the token, stores `Claims` in the Bus, and lets each
+transition fail explicitly when auth context is missing or invalid.
+
 ## Run
 
 ```bash
-cargo run -p reference-todo-api
+JWT_SECRET=your-secret cargo run -p reference-todo-api
 ```
 
 ## When To Use It
@@ -57,4 +61,4 @@ ranvier test .ranvier/collections/todo-crud.json
 | Variable    | Default         | Description       |
 |-------------|-----------------|-------------------|
 | BIND_ADDR   | 0.0.0.0:3000    | Listen address    |
-| JWT_SECRET  | (hardcoded)     | JWT signing key   |
+| JWT_SECRET  | required        | JWT signing key   |

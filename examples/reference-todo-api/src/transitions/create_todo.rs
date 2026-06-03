@@ -1,3 +1,4 @@
+use crate::auth;
 use crate::models::{CreateTodoRequest, Todo};
 use ranvier_core::prelude::*;
 use ranvier_macros::transition;
@@ -13,6 +14,10 @@ pub async fn create_todo(
     _res: &(),
     bus: &mut Bus,
 ) -> Outcome<serde_json::Value, String> {
+    if let Err(error) = auth::require_claims(bus) {
+        return Outcome::Fault(error);
+    }
+
     if request.title.trim().is_empty() {
         return Outcome::Fault("Title cannot be empty".to_string());
     }
@@ -20,10 +25,19 @@ pub async fn create_todo(
     let todo = Todo::new(request.title);
 
     // Store in shared state via Bus (injected by bus_injector)
-    if let Ok(store) = bus.get_cloned::<Arc<Mutex<Vec<Todo>>>>() {
-        let mut todos = store.lock().unwrap();
-        todos.push(todo.clone());
-    }
+    let store = match bus.get_cloned::<Arc<Mutex<Vec<Todo>>>>() {
+        Ok(store) => store,
+        Err(_) => return Outcome::Fault("Todo store unavailable".to_string()),
+    };
 
-    Outcome::Next(serde_json::to_value(todo).unwrap())
+    let mut todos = match store.lock() {
+        Ok(todos) => todos,
+        Err(_) => return Outcome::Fault("Todo store lock poisoned".to_string()),
+    };
+    todos.push(todo.clone());
+
+    match serde_json::to_value(todo) {
+        Ok(value) => Outcome::Next(value),
+        Err(error) => Outcome::Fault(format!("Todo serialization failed: {error}")),
+    }
 }

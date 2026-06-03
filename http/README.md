@@ -52,7 +52,7 @@ before it reaches a `Transition`:
 
 ```toml
 [dependencies]
-ranvier-http = { version = "0.44", features = ["validation"] }
+ranvier-http = { version = "0.51", features = ["validation"] }
 validator = { version = "0.20", features = ["derive"] }
 ```
 

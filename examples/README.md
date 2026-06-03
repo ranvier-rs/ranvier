@@ -1,7 +1,7 @@
 # Ranvier Examples
 
 **Updated:** 2026-06-04
-**Workspace:** v0.50.0 candidate — 12 crates, Hyper 1.0 native (no tower/tower-http)
+**Workspace:** v0.51.0 release — 12 crates, Hyper 1.0 native (no tower/tower-http)
 **Purpose:** Keep examples aligned with the Typed Decision Engine direction:
 1. Axon execution is explicit.
 2. Schematic is analysis data, not an executable graph.

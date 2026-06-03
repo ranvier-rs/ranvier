@@ -10,6 +10,7 @@ pub struct AuthContext {
 
 /// Authentication and authorization errors.
 #[derive(Debug, thiserror::Error)]
+#[allow(dead_code)]
 pub enum AuthError {
     #[error("Missing authorization header")]
     MissingHeader,
