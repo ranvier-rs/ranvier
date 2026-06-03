@@ -6,6 +6,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A completed trace record suitable for persistent storage.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -83,6 +84,17 @@ pub struct InMemoryTraceStore {
     max_count: usize,
     /// TTL in milliseconds. Traces older than this are pruned on save.
     trace_ttl_ms: u64,
+    ttl_pruned: AtomicU64,
+    capacity_evicted: AtomicU64,
+}
+
+/// Runtime retention stats for [`InMemoryTraceStore`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TraceStoreStats {
+    pub current_count: usize,
+    pub max_count: usize,
+    pub ttl_pruned: u64,
+    pub capacity_evicted: u64,
 }
 
 impl InMemoryTraceStore {
@@ -91,6 +103,8 @@ impl InMemoryTraceStore {
             traces: std::sync::Mutex::new(std::collections::VecDeque::new()),
             max_count,
             trace_ttl_ms: 3_600_000, // 1 hour default
+            ttl_pruned: AtomicU64::new(0),
+            capacity_evicted: AtomicU64::new(0),
         }
     }
 
@@ -100,14 +114,17 @@ impl InMemoryTraceStore {
             traces: std::sync::Mutex::new(std::collections::VecDeque::new()),
             max_count,
             trace_ttl_ms: ttl_secs * 1000,
+            ttl_pruned: AtomicU64::new(0),
+            capacity_evicted: AtomicU64::new(0),
         }
     }
 
     /// Prune expired traces from the front of the deque.
-    fn prune_expired(traces: &mut std::collections::VecDeque<StoredTrace>, ttl_ms: u64) {
+    fn prune_expired(traces: &mut std::collections::VecDeque<StoredTrace>, ttl_ms: u64) -> usize {
         if ttl_ms == 0 {
-            return;
+            return 0;
         }
+        let before = traces.len();
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -120,6 +137,18 @@ impl InMemoryTraceStore {
                 break;
             }
         }
+        before - traces.len()
+    }
+
+    /// Current retention and capacity counters.
+    pub fn stats(&self) -> Result<TraceStoreStats, String> {
+        let traces = self.traces.lock().map_err(|e| e.to_string())?;
+        Ok(TraceStoreStats {
+            current_count: traces.len(),
+            max_count: self.max_count,
+            ttl_pruned: self.ttl_pruned.load(Ordering::Relaxed),
+            capacity_evicted: self.capacity_evicted.load(Ordering::Relaxed),
+        })
     }
 }
 
@@ -135,12 +164,22 @@ impl TraceStore for InMemoryTraceStore {
         let mut traces = self.traces.lock().map_err(|e| e.to_string())?;
 
         // Prune expired traces before inserting
-        Self::prune_expired(&mut traces, self.trace_ttl_ms);
+        let ttl_pruned = Self::prune_expired(&mut traces, self.trace_ttl_ms);
+        if ttl_pruned > 0 {
+            self.ttl_pruned
+                .fetch_add(ttl_pruned as u64, Ordering::Relaxed);
+        }
 
         traces.push_back(trace);
         // Trim from the front if over capacity
+        let mut capacity_evicted = 0u64;
         while traces.len() > self.max_count {
             traces.pop_front();
+            capacity_evicted = capacity_evicted.saturating_add(1);
+        }
+        if capacity_evicted > 0 {
+            self.capacity_evicted
+                .fetch_add(capacity_evicted, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -203,16 +242,28 @@ impl TraceStore for InMemoryTraceStore {
         let cutoff = now_ms.saturating_sub(policy.max_age_secs * 1000);
 
         // Prune from front (oldest first) by age
+        let mut ttl_pruned = 0u64;
         while let Some(front) = traces.front() {
             if front.started_at < cutoff {
                 traces.pop_front();
+                ttl_pruned = ttl_pruned.saturating_add(1);
             } else {
                 break;
             }
         }
 
+        let mut capacity_evicted = 0u64;
         while traces.len() > policy.max_count {
             traces.pop_front();
+            capacity_evicted = capacity_evicted.saturating_add(1);
+        }
+
+        if ttl_pruned > 0 {
+            self.ttl_pruned.fetch_add(ttl_pruned, Ordering::Relaxed);
+        }
+        if capacity_evicted > 0 {
+            self.capacity_evicted
+                .fetch_add(capacity_evicted, Ordering::Relaxed);
         }
 
         Ok(before - traces.len())
@@ -249,6 +300,10 @@ mod tests {
 
         let count = store.count().await.unwrap();
         assert_eq!(count, 3, "should keep only max_count traces");
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.current_count, 3);
+        assert_eq!(stats.capacity_evicted, 2);
+        assert_eq!(stats.ttl_pruned, 0);
 
         // Oldest (t-0, t-1) should have been evicted
         assert!(store.get("t-0").await.unwrap().is_none());
@@ -280,6 +335,8 @@ mod tests {
         assert_eq!(store.count().await.unwrap(), 1);
         assert!(store.get("old").await.unwrap().is_none());
         assert!(store.get("new").await.unwrap().is_some());
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.ttl_pruned, 1);
     }
 
     #[tokio::test]
@@ -313,6 +370,8 @@ mod tests {
         let pruned = store.apply_retention(&policy).await.unwrap();
         assert_eq!(pruned, 3);
         assert_eq!(store.count().await.unwrap(), 2);
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.ttl_pruned, 3);
     }
 
     #[tokio::test]

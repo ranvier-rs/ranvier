@@ -149,12 +149,91 @@ fn render_snapshots(snapshots: &[CircuitMetricsSnapshot]) -> String {
     )
     .ok();
     writeln!(out, "# TYPE ranvier_active_traces gauge").ok();
-    let active_count = crate::get_trace_registry()
+    let trace_stats = crate::get_trace_registry()
         .lock()
         .ok()
-        .map(|r| r.active_count())
-        .unwrap_or(0);
-    writeln!(out, "ranvier_active_traces {active_count}").ok();
+        .map(|r| r.stats())
+        .unwrap_or_default();
+    writeln!(out, "ranvier_active_traces {}", trace_stats.active_count).ok();
+
+    writeln!(out).ok();
+    writeln!(
+        out,
+        "# HELP ranvier_trace_registry_recent_traces Number of completed traces retained in memory."
+    )
+    .ok();
+    writeln!(out, "# TYPE ranvier_trace_registry_recent_traces gauge").ok();
+    writeln!(
+        out,
+        "ranvier_trace_registry_recent_traces {}",
+        trace_stats.recent_count
+    )
+    .ok();
+
+    writeln!(out).ok();
+    writeln!(
+        out,
+        "# HELP ranvier_trace_registry_ttl_pruned_total Completed traces pruned by trace registry TTL."
+    )
+    .ok();
+    writeln!(
+        out,
+        "# TYPE ranvier_trace_registry_ttl_pruned_total counter"
+    )
+    .ok();
+    writeln!(
+        out,
+        "ranvier_trace_registry_ttl_pruned_total {}",
+        trace_stats.ttl_pruned
+    )
+    .ok();
+
+    writeln!(out).ok();
+    writeln!(
+        out,
+        "# HELP ranvier_trace_registry_capacity_evicted_total Completed traces evicted because the trace registry reached capacity."
+    )
+    .ok();
+    writeln!(
+        out,
+        "# TYPE ranvier_trace_registry_capacity_evicted_total counter"
+    )
+    .ok();
+    writeln!(
+        out,
+        "ranvier_trace_registry_capacity_evicted_total {}",
+        trace_stats.capacity_evicted
+    )
+    .ok();
+
+    let event_stats = crate::payload::event_buffer_stats();
+    writeln!(out).ok();
+    writeln!(
+        out,
+        "# HELP ranvier_event_buffer_events Number of captured Inspector events retained in memory."
+    )
+    .ok();
+    writeln!(out, "# TYPE ranvier_event_buffer_events gauge").ok();
+    writeln!(
+        out,
+        "ranvier_event_buffer_events {}",
+        event_stats.current_len
+    )
+    .ok();
+
+    writeln!(out).ok();
+    writeln!(
+        out,
+        "# HELP ranvier_event_buffer_dropped_total Captured Inspector events evicted because the event buffer reached capacity."
+    )
+    .ok();
+    writeln!(out, "# TYPE ranvier_event_buffer_dropped_total counter").ok();
+    writeln!(
+        out,
+        "ranvier_event_buffer_dropped_total {}",
+        event_stats.dropped_oldest
+    )
+    .ok();
 
     out
 }
@@ -234,6 +313,11 @@ mod tests {
 
         assert!(output.contains("# HELP ranvier_active_traces"));
         assert!(output.contains("ranvier_active_traces "));
+        assert!(output.contains("# HELP ranvier_trace_registry_recent_traces"));
+        assert!(output.contains("# HELP ranvier_trace_registry_ttl_pruned_total"));
+        assert!(output.contains("# HELP ranvier_trace_registry_capacity_evicted_total"));
+        assert!(output.contains("# HELP ranvier_event_buffer_events"));
+        assert!(output.contains("# HELP ranvier_event_buffer_dropped_total"));
     }
 
     #[test]
@@ -241,6 +325,8 @@ mod tests {
         let output = render_snapshots(&[]);
         assert!(output.contains("# HELP ranvier_node_invocations_total"));
         assert!(output.contains("# HELP ranvier_active_traces"));
+        assert!(output.contains("# HELP ranvier_trace_registry_recent_traces"));
+        assert!(output.contains("# HELP ranvier_event_buffer_events"));
         // No data lines for nodes
         assert!(!output.contains("circuit="));
     }
@@ -322,9 +408,9 @@ mod tests {
         let output = render_snapshots(&[]);
         let help_count = output.lines().filter(|l| l.starts_with("# HELP")).count();
         let type_count = output.lines().filter(|l| l.starts_with("# TYPE")).count();
-        // 6 metric families: invocations, errors, error_rate, throughput, latency, active_traces
-        assert_eq!(help_count, 6);
-        assert_eq!(type_count, 6);
+        // 11 metric families: node metrics plus trace and event retention metrics.
+        assert_eq!(help_count, 11);
+        assert_eq!(type_count, 11);
     }
 
     #[test]

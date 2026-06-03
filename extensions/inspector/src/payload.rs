@@ -45,6 +45,15 @@ pub struct CapturedEvent {
 struct EventRingBuffer {
     events: VecDeque<CapturedEvent>,
     max_size: usize,
+    dropped_oldest: u64,
+}
+
+/// Runtime stats for the captured event ring buffer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct EventBufferStats {
+    pub current_len: usize,
+    pub max_size: usize,
+    pub dropped_oldest: u64,
 }
 
 impl EventRingBuffer {
@@ -52,12 +61,14 @@ impl EventRingBuffer {
         Self {
             events: VecDeque::with_capacity(max_size),
             max_size,
+            dropped_oldest: 0,
         }
     }
 
     fn push(&mut self, event: CapturedEvent) {
         if self.events.len() >= self.max_size {
             self.events.pop_front();
+            self.dropped_oldest = self.dropped_oldest.saturating_add(1);
         }
         self.events.push_back(event);
     }
@@ -91,6 +102,14 @@ impl EventRingBuffer {
             .take(limit)
             .cloned()
             .collect()
+    }
+
+    fn stats(&self) -> EventBufferStats {
+        EventBufferStats {
+            current_len: self.events.len(),
+            max_size: self.max_size,
+            dropped_oldest: self.dropped_oldest,
+        }
     }
 }
 
@@ -131,6 +150,19 @@ pub fn list_events_filtered(
         .unwrap_or_default()
 }
 
+/// Return event ring-buffer capacity and drop counters.
+pub fn event_buffer_stats() -> EventBufferStats {
+    get_event_buffer()
+        .lock()
+        .ok()
+        .map(|buf| buf.stats())
+        .unwrap_or(EventBufferStats {
+            current_len: 0,
+            max_size: 0,
+            dropped_oldest: 0,
+        })
+}
+
 /// Compute a short hash prefix for payload identification without storing data.
 pub fn payload_hash(data: &[u8]) -> String {
     use std::collections::hash_map::DefaultHasher;
@@ -168,6 +200,7 @@ mod tests {
         }
         let events = buf.list(10);
         assert_eq!(events.len(), 3);
+        assert_eq!(buf.stats().dropped_oldest, 2);
         // Newest first
         assert_eq!(events[0].event_type, "event_4");
         assert_eq!(events[1].event_type, "event_3");

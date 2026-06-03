@@ -81,6 +81,17 @@ pub struct ActiveTraceRegistry {
     max_recent: usize,
     /// TTL in milliseconds. Traces older than this are pruned on insertion.
     trace_ttl_ms: u64,
+    ttl_pruned: u64,
+    capacity_evicted: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
+pub struct TraceRegistryStats {
+    pub active_count: usize,
+    pub recent_count: usize,
+    pub max_recent: usize,
+    pub ttl_pruned: u64,
+    pub capacity_evicted: u64,
 }
 
 impl ActiveTraceRegistry {
@@ -90,6 +101,8 @@ impl ActiveTraceRegistry {
             recent: VecDeque::new(),
             max_recent: 10_000,
             trace_ttl_ms: 3_600_000, // 1 hour default
+            ttl_pruned: 0,
+            capacity_evicted: 0,
         }
     }
 
@@ -99,6 +112,8 @@ impl ActiveTraceRegistry {
             recent: VecDeque::new(),
             max_recent,
             trace_ttl_ms,
+            ttl_pruned: 0,
+            capacity_evicted: 0,
         }
     }
 
@@ -148,6 +163,7 @@ impl ActiveTraceRegistry {
                 self.recent.push_back(record);
                 while self.recent.len() > self.max_recent {
                     self.recent.pop_front();
+                    self.capacity_evicted = self.capacity_evicted.saturating_add(1);
                 }
             }
         }
@@ -162,6 +178,7 @@ impl ActiveTraceRegistry {
         while let Some(front) = self.recent.front() {
             if front.started_at < cutoff {
                 self.recent.pop_front();
+                self.ttl_pruned = self.ttl_pruned.saturating_add(1);
             } else {
                 break;
             }
@@ -183,6 +200,16 @@ impl ActiveTraceRegistry {
     /// Number of recently completed traces in the ring buffer.
     pub fn recent_count(&self) -> usize {
         self.recent.len()
+    }
+
+    pub fn stats(&self) -> TraceRegistryStats {
+        TraceRegistryStats {
+            active_count: self.active.len(),
+            recent_count: self.recent.len(),
+            max_recent: self.max_recent,
+            ttl_pruned: self.ttl_pruned,
+            capacity_evicted: self.capacity_evicted,
+        }
     }
 }
 
@@ -2640,12 +2667,16 @@ mod tests {
             registry.recent.push_back(record);
             while registry.recent.len() > registry.max_recent {
                 registry.recent.pop_front();
+                registry.capacity_evicted = registry.capacity_evicted.saturating_add(1);
             }
         }
 
         assert_eq!(registry.recent_count(), 3);
         assert_eq!(registry.recent.front().unwrap().trace_id, "t-2");
         assert_eq!(registry.recent.back().unwrap().trace_id, "t-4");
+        let stats = registry.stats();
+        assert_eq!(stats.capacity_evicted, 2);
+        assert_eq!(stats.ttl_pruned, 0);
     }
 
     #[test]
@@ -2679,6 +2710,7 @@ mod tests {
         registry.prune_expired();
         assert_eq!(registry.recent_count(), 1);
         assert_eq!(registry.recent.front().unwrap().trace_id, "fresh");
+        assert_eq!(registry.stats().ttl_pruned, 1);
     }
 
     #[test]
