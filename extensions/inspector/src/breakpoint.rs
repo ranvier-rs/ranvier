@@ -1,5 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
+
+const DEFAULT_MAX_BREAKPOINTS: usize = 1_000;
 
 /// A conditional breakpoint that pauses execution at a specific node
 /// when an optional condition is met against the payload.
@@ -148,14 +150,31 @@ fn compare_numeric(
 /// Global registry for conditional breakpoints managed by the Inspector.
 struct BreakpointStore {
     breakpoints: HashMap<String, ConditionalBreakpoint>,
+    insertion_order: VecDeque<String>,
     next_id: u64,
+    max_breakpoints: usize,
+    capacity_evicted: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct BreakpointStoreStats {
+    pub current_len: usize,
+    pub max_breakpoints: usize,
+    pub capacity_evicted: u64,
 }
 
 impl BreakpointStore {
     fn new() -> Self {
+        Self::with_limit(DEFAULT_MAX_BREAKPOINTS)
+    }
+
+    fn with_limit(max_breakpoints: usize) -> Self {
         Self {
             breakpoints: HashMap::new(),
+            insertion_order: VecDeque::new(),
             next_id: 1,
+            max_breakpoints,
+            capacity_evicted: 0,
         }
     }
 
@@ -169,11 +188,24 @@ impl BreakpointStore {
             enabled: true,
         };
         self.breakpoints.insert(id, bp.clone());
+        self.insertion_order.push_back(bp.id.clone());
+        while self.breakpoints.len() > self.max_breakpoints {
+            let Some(oldest) = self.insertion_order.pop_front() else {
+                break;
+            };
+            if self.breakpoints.remove(&oldest).is_some() {
+                self.capacity_evicted = self.capacity_evicted.saturating_add(1);
+            }
+        }
         bp
     }
 
     fn remove(&mut self, id: &str) -> bool {
-        self.breakpoints.remove(id).is_some()
+        let removed = self.breakpoints.remove(id).is_some();
+        if removed {
+            self.insertion_order.retain(|stored_id| stored_id != id);
+        }
+        removed
     }
 
     fn update(
@@ -210,6 +242,14 @@ impl BreakpointStore {
                 (Some(_), None) => false, // condition requires payload
             }
         })
+    }
+
+    fn stats(&self) -> BreakpointStoreStats {
+        BreakpointStoreStats {
+            current_len: self.breakpoints.len(),
+            max_breakpoints: self.max_breakpoints,
+            capacity_evicted: self.capacity_evicted,
+        }
     }
 }
 
@@ -255,6 +295,11 @@ pub fn update_breakpoint(
 /// List all conditional breakpoints.
 pub fn list_breakpoints() -> Vec<ConditionalBreakpoint> {
     with_store(|store| store.list())
+}
+
+/// Return capacity and eviction counters for the global breakpoint store.
+pub fn breakpoint_store_stats() -> BreakpointStoreStats {
+    with_store(|store| store.stats())
 }
 
 /// Check if any conditional breakpoint should fire for the given node and optional payload.
@@ -332,6 +377,23 @@ mod tests {
         let updated = store.update(&bp2.id, Some(false), None).unwrap();
         assert!(!updated.enabled);
         assert!(!store.should_pause("nodeB", Some(&payload)));
+    }
+
+    #[test]
+    fn store_evicts_oldest_when_over_capacity() {
+        let mut store = BreakpointStore::with_limit(2);
+        let bp1 = store.add("nodeA".into(), None);
+        let bp2 = store.add("nodeB".into(), None);
+        let bp3 = store.add("nodeC".into(), None);
+
+        assert_eq!(store.list().len(), 2);
+        assert!(!store.breakpoints.contains_key(&bp1.id));
+        assert!(store.breakpoints.contains_key(&bp2.id));
+        assert!(store.breakpoints.contains_key(&bp3.id));
+        let stats = store.stats();
+        assert_eq!(stats.current_len, 2);
+        assert_eq!(stats.max_breakpoints, 2);
+        assert_eq!(stats.capacity_evicted, 1);
     }
 
     #[test]

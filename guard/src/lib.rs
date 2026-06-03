@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
@@ -1504,15 +1505,38 @@ struct IdempotencyCacheEntry {
 pub struct IdempotencyCache {
     inner: Arc<std::sync::Mutex<std::collections::HashMap<String, IdempotencyCacheEntry>>>,
     ttl: std::time::Duration,
+    max_entries: usize,
+    ttl_pruned: Arc<AtomicU64>,
+    capacity_evicted: Arc<AtomicU64>,
+}
+
+/// Capacity and retention counters for [`IdempotencyCache`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdempotencyCacheStats {
+    pub current_entries: usize,
+    pub max_entries: usize,
+    pub ttl_pruned: u64,
+    pub capacity_evicted: u64,
 }
 
 impl IdempotencyCache {
+    pub const DEFAULT_MAX_ENTRIES: usize = 10_000;
+
     /// Create a new cache with the given TTL.
     pub fn new(ttl: std::time::Duration) -> Self {
         Self {
             inner: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             ttl,
+            max_entries: Self::DEFAULT_MAX_ENTRIES,
+            ttl_pruned: Arc::new(AtomicU64::new(0)),
+            capacity_evicted: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Set a maximum number of cached idempotency responses.
+    pub fn with_max_entries(mut self, max_entries: usize) -> Self {
+        self.max_entries = max_entries;
+        self
     }
 
     /// Look up a cached response body by key. Returns `None` if not found or expired.
@@ -1523,7 +1547,9 @@ impl IdempotencyCache {
             if entry.expires_at > now {
                 return Some(entry.body.clone());
             }
-            cache.remove(key);
+            if cache.remove(key).is_some() {
+                self.ttl_pruned.fetch_add(1, Ordering::Relaxed);
+            }
         }
         None
     }
@@ -1539,8 +1565,12 @@ impl IdempotencyCache {
                 .take(5)
                 .map(|(k, _)| k.clone())
                 .collect();
+            let expired_count = expired.len() as u64;
             for k in expired {
                 cache.remove(&k);
+            }
+            if expired_count > 0 {
+                self.ttl_pruned.fetch_add(expired_count, Ordering::Relaxed);
             }
             cache.insert(
                 key,
@@ -1549,6 +1579,22 @@ impl IdempotencyCache {
                     expires_at: now + self.ttl,
                 },
             );
+            let mut evicted = 0u64;
+            while cache.len() > self.max_entries {
+                let Some(key_to_evict) = cache
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.expires_at)
+                    .map(|(key, _)| key.clone())
+                else {
+                    break;
+                };
+                if cache.remove(&key_to_evict).is_some() {
+                    evicted = evicted.saturating_add(1);
+                }
+            }
+            if evicted > 0 {
+                self.capacity_evicted.fetch_add(evicted, Ordering::Relaxed);
+            }
         }
     }
 
@@ -1556,12 +1602,29 @@ impl IdempotencyCache {
     pub fn ttl(&self) -> std::time::Duration {
         self.ttl
     }
+
+    /// Returns the configured maximum entry count.
+    pub fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+
+    /// Returns capacity and retention counters.
+    pub fn stats(&self) -> Option<IdempotencyCacheStats> {
+        let cache = self.inner.lock().ok()?;
+        Some(IdempotencyCacheStats {
+            current_entries: cache.len(),
+            max_entries: self.max_entries,
+            ttl_pruned: self.ttl_pruned.load(Ordering::Relaxed),
+            capacity_evicted: self.capacity_evicted.load(Ordering::Relaxed),
+        })
+    }
 }
 
 impl std::fmt::Debug for IdempotencyCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IdempotencyCache")
             .field("ttl", &self.ttl)
+            .field("max_entries", &self.max_entries)
             .finish()
     }
 }
@@ -1606,9 +1669,20 @@ impl<T> IdempotencyGuard<T> {
         Self::new(std::time::Duration::from_secs(300))
     }
 
+    /// Set a maximum number of cached idempotency responses.
+    pub fn with_max_entries(mut self, max_entries: usize) -> Self {
+        self.cache = self.cache.with_max_entries(max_entries);
+        self
+    }
+
     /// Returns the configured TTL.
     pub fn ttl(&self) -> std::time::Duration {
         self.cache.ttl()
+    }
+
+    /// Returns the configured maximum entry count.
+    pub fn max_entries(&self) -> usize {
+        self.cache.max_entries()
     }
 
     /// Returns a reference to the internal cache.
@@ -1638,6 +1712,7 @@ impl<T> std::fmt::Debug for IdempotencyGuard<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IdempotencyGuard")
             .field("ttl", &self.cache.ttl())
+            .field("max_entries", &self.cache.max_entries())
             .finish()
     }
 }
@@ -1696,10 +1771,10 @@ pub mod prelude {
         AcceptEncoding, AccessLogEntry, AccessLogGuard, AccessLogRequest, AuthGuard, AuthStrategy,
         AuthorizationHeader, ClientIdentity, ClientIp, CompressionConfig, CompressionEncoding,
         CompressionGuard, ContentLength, ContentTypeGuard, CorsConfig, CorsGuard, CorsHeaders,
-        IdempotencyCache, IdempotencyCachedResponse, IdempotencyGuard, IdempotencyKey,
-        IpFilterGuard, RateLimitGuard, RequestContentType, RequestId, RequestIdGuard,
-        RequestOrigin, RequestSizeLimitGuard, SecurityHeaders, SecurityHeadersGuard,
-        SecurityPolicy, TimeoutDeadline, TimeoutGuard,
+        IdempotencyCache, IdempotencyCacheStats, IdempotencyCachedResponse, IdempotencyGuard,
+        IdempotencyKey, IpFilterGuard, RateLimitGuard, RequestContentType, RequestId,
+        RequestIdGuard, RequestOrigin, RequestSizeLimitGuard, SecurityHeaders,
+        SecurityHeadersGuard, SecurityPolicy, TimeoutDeadline, TimeoutGuard,
     };
 
     #[cfg(feature = "advanced")]
@@ -2251,6 +2326,7 @@ mod tests {
         let guard2 = guard1.clone();
         guard1.cache().insert("shared-key".into(), b"data".to_vec());
         assert!(guard2.cache().get("shared-key").is_some());
+        assert_eq!(guard2.max_entries(), IdempotencyCache::DEFAULT_MAX_ENTRIES);
     }
 
     #[tokio::test]
@@ -2265,6 +2341,25 @@ mod tests {
         let result = guard.run("ok".into(), &(), &mut bus).await;
         assert!(matches!(result, Outcome::Next(_)));
         assert!(bus.read::<IdempotencyCachedResponse>().is_none());
+        let stats = guard.cache().stats().expect("stats");
+        assert_eq!(stats.ttl_pruned, 1);
+    }
+
+    #[tokio::test]
+    async fn idempotency_cache_evicts_oldest_when_over_capacity() {
+        let guard = IdempotencyGuard::<String>::ttl_5min().with_max_entries(2);
+        guard.cache().insert("key-1".into(), b"one".to_vec());
+        guard.cache().insert("key-2".into(), b"two".to_vec());
+        guard.cache().insert("key-3".into(), b"three".to_vec());
+
+        assert_eq!(guard.max_entries(), 2);
+        assert!(guard.cache().get("key-1").is_none());
+        assert!(guard.cache().get("key-2").is_some());
+        assert!(guard.cache().get("key-3").is_some());
+        let stats = guard.cache().stats().expect("stats");
+        assert_eq!(stats.current_entries, 2);
+        assert_eq!(stats.max_entries, 2);
+        assert_eq!(stats.capacity_evicted, 1);
     }
 
     // --- CorsGuard additional tests ---
