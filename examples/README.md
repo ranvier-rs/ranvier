@@ -1,6 +1,6 @@
 # Ranvier Examples
 
-**Updated:** 2026-04-30
+**Updated:** 2026-06-04
 **Workspace:** v0.50.0 candidate — 12 crates, Hyper 1.0 native (no tower/tower-http)
 **Purpose:** Keep examples aligned with the Typed Decision Engine direction:
 1. Axon execution is explicit.
@@ -16,102 +16,52 @@
 
 ---
 
-## 1. Example Tiers
+## 1. Example Support Tiers
 
-### Tier A: Canonical (guide-linked)
+`.ranvier-examples-manifest.json` is the source of truth for workspace example
+metadata. Each example entry has:
 
-These are the first examples users should run.
+- `tier`: web publication grouping (`core`, `lab`, or `repo`);
+- `supportTier`: maintenance commitment (`canonical`, `supported`, `lab`, or
+  `archive`);
+- `owner`: the maintainer area responsible for keeping the example aligned.
+
+| Support tier | Count | CI obligation | Documentation obligation |
+|---|---:|---|---|
+| Canonical | 5 | `cargo build` and `cargo test` without external runtime services | First-run guide path and expected output |
+| Supported | 47 | `cargo build`; `cargo test` when `runtimeRequirements` is empty | Manifest metadata plus a clear run path |
+| Lab | 19 | Buildable where practical; excluded from production-support claims | Explicit runtime requirements and caveats |
+| Archive | 4 | Excluded from release gates | Historical/exploratory only |
+
+Canonical examples:
 
 1. `hello-world` — HTTP ingress baseline
 2. `typed-state-tree` — typed state progression baseline
 3. `basic-schematic` — schematic export + runtime baseline
 4. `otel-concept` — minimal OpenTelemetry concept baseline
-5. `outcome-variants-demo` — Outcome 5 variants (Next/Fault/Branch/Jump/Emit) baseline
+5. `outcome-variants-demo` — Outcome variants baseline
 
-### Tier B: Supported (advanced/reference)
-
-These are maintained and useful, but not the first onboarding path.
-
-1. `flat-api-demo`
-2. `routing-demo`
-3. `routing-params-demo`
-4. `session-pattern`
-5. `std-lib-demo`
-6. `static-build-demo`
-7. `static-spa-demo`
-8. `studio-demo`
-9. `websocket-loop`
-10. `websocket-ingress-demo`
-11. `complex-schematic`
-12. `synapse-demo`
-13. `order-processing-demo`
-14. `multitenancy-demo`
-15. `multipart-upload-demo`
-16. `sse-streaming-demo`
-17. `testing-patterns`
-18. `custom-error-types`
-19. `retry-dlq-demo`
-20. `state-persistence-demo`
-21. `persistence-production-demo`
-22. `otel-ops-demo`
-23. `inspector-demo`
-24. `openapi-demo`
-25. `audit-demo`
-26. `compliance-demo`
-27. `macros-demo`
-28. `bus-capability-demo`
-29. `guard-demo`
-30. `auth-jwt-role-demo`
-31. `reference-todo-api`
-32. `reference-ecommerce-order`
-33. `reference-chat-server`
-34. `production-config-demo`
-35. `llm-content-moderation`
-36. `production-operations-demo`
-37. `telemetry-otel-demo`
-38. `auth-transition`
-39. `auth-tower-integration`
-40. `resilience-patterns-demo`
-41. `service-call-demo`
-42. `closure-transition-demo` — v0.34: `then_fn()`, `Axon::typed()`, `post_typed()`
-43. `guard-integration-demo` — v0.35: `GuardIntegration`, per-route `guards![]` macro
-44. `streaming-demo` — v0.37: `StreamingTransition`, `StreamingAxon`, `post_sse_typed()`
-45. `typed-json-api` — v0.43: `get_json_out`, `post_typed_json_out`, `BusHttpExt`, `CorsGuard::permissive()`
-46. `outcome-patterns` — v0.42-v0.43: `try_outcome!`, Outcome combinators, `Bus::get_cloned()`, `json_outcome()`
-47. `saga-compensation` — v0.43: payment saga reference pattern
-48. `cascade-screening` — v0.43: AML/KYC fail-fast screening pattern
-49. `llm-agent-pipeline` — v0.43: multi-step AI agent pipeline pattern
-50. `sensor-decision-loop` — v0.43: IoT normalize/detect/decide pattern
-51. `triage-branching` — v0.43: `Outcome::Branch` routing pattern
-52. `eligibility-rule-chain` — v0.43: rule-chain short-circuit pattern
-53. `admin-crud-demo` — v0.46: bridge example with JWT, SQLite CRUD, pagination/search, OpenAPI
-54. `reference-fullstack-admin` — v0.46: public-only fullstack reference app with Ranvier backend + SvelteKit frontend
-55. `request-governance-demo` — v0.46: auth, policy, audit, DB, and structured error wiring in one service
-
-### Tier C: Ecosystem Integration
-
-External library direct usage — no Ranvier wrapper crate needed.
-
-1. `ecosystem-redis-demo`
-2. `ecosystem-diesel-demo`
-3. `ecosystem-seaorm-demo`
-4. `ecosystem-nats-demo`
-5. `ecosystem-meilisearch-demo`
-6. `graphql-async-graphql-demo`
-7. `grpc-tonic-demo`
-8. `background-jobs-demo`
-9. `distributed-lock-demo`
-10. `db-sqlx-demo`
-11. `typescript-codegen-demo`
-
-### Tier D: Experimental (not authoritative for architecture)
-
-Retained for exploration. May not represent the current recommended direction.
+Archive examples:
 
 1. `experimental/fullstack-demo`
 2. `experimental/replay-demo`
 3. `experimental/state-tree-demo`
 4. `experimental/persistence-recovery-demo`
+
+Reference and governance examples such as `admin-crud-demo`,
+`reference-fullstack-admin`, and `request-governance-demo` are Supported tier
+entries owned in the manifest rather than duplicated as a hand-maintained list.
+
+Supported, lab, and archive assignments are intentionally machine-owned in
+`.ranvier-examples-manifest.json`. The compatibility catalog at
+`examples/catalog.json` keeps the legacy A/B/C/D tier field for CLI and VS Code
+consumers, but also mirrors `support_tier` and `owner`. Use:
+
+```bash
+node scripts/list_manifest_examples.mjs --verify-portfolio --verify-workspace-members
+node scripts/list_manifest_examples.mjs --support-tiers canonical,supported
+node scripts/list_manifest_examples.mjs --support-tiers canonical,supported --runtime none
+```
 
 ---
 
@@ -136,8 +86,9 @@ consolidated or removed (23 → 10 crate consolidation):
 
 ## 3. Alignment Notes
 
-1. When docs and code diverge, prefer Tier A examples first.
-2. Tier D examples should not be used as public API/architecture references until promoted.
+1. When docs and code diverge, prefer Canonical examples first.
+2. Archive examples should not be used as public API or architecture references
+   until promoted.
 3. Promotion criteria:
    - Compiles on workspace baseline
    - Matches current Axon/Schematic boundary language

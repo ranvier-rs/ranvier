@@ -8,577 +8,999 @@
       "name": "hello-world",
       "tier": "A",
       "description": "HTTP ingress baseline",
-      "tags": ["starter", "http"],
+      "tags": [
+        "starter",
+        "http"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "canonical",
+      "owner": "runtime-core"
     },
     {
       "name": "typed-state-tree",
       "tier": "A",
       "description": "Typed state progression baseline",
-      "tags": ["starter", "state"],
+      "tags": [
+        "starter",
+        "state"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "canonical",
+      "owner": "runtime-core"
     },
     {
       "name": "basic-schematic",
       "tier": "A",
       "description": "Schematic export and runtime baseline",
-      "tags": ["starter", "schematic"],
+      "tags": [
+        "starter",
+        "schematic"
+      ],
       "schematic_url": "https://raw.githubusercontent.com/ranvier-rs/ranvier/main/examples/basic-schematic/schematic.json",
-      "has_prebuilt_schematic": true
+      "has_prebuilt_schematic": true,
+      "support_tier": "canonical",
+      "owner": "runtime-core"
     },
     {
       "name": "otel-concept",
       "tier": "A",
       "description": "Minimal OpenTelemetry concept with Traced wrapper",
-      "tags": ["starter", "observability"],
+      "tags": [
+        "starter",
+        "observability"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "canonical",
+      "owner": "observability"
     },
     {
       "name": "outcome-variants-demo",
       "tier": "A",
       "description": "All 5 Outcome variants: Next, Fault, Branch, Jump, Emit",
-      "tags": ["starter", "outcome"],
+      "tags": [
+        "starter",
+        "outcome"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "canonical",
+      "owner": "runtime-core"
     },
     {
       "name": "flat-api-demo",
       "tier": "B",
       "description": "Flat API structure with @transition and @ranvier_router",
-      "tags": ["http", "api"],
+      "tags": [
+        "http",
+        "api"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "http-adapters"
     },
     {
       "name": "routing-demo",
       "tier": "B",
       "description": "Decision tree routing with Outcome::Branch",
-      "tags": ["http", "routing"],
+      "tags": [
+        "http",
+        "routing"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "runtime-core"
     },
     {
       "name": "routing-params-demo",
       "tier": "B",
       "description": "Path, query, and body parameter extraction",
-      "tags": ["http", "routing"],
+      "tags": [
+        "http",
+        "routing"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "http-adapters"
     },
     {
       "name": "session-pattern",
       "tier": "B",
       "description": "Session lifecycle management pattern",
-      "tags": ["session", "state"],
+      "tags": [
+        "session",
+        "state"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "security-ops"
     },
     {
       "name": "std-lib-demo",
       "tier": "B",
       "description": "Standard library: FilterNode, SwitchNode, LogNode",
-      "tags": ["stdlib"],
+      "tags": [
+        "stdlib"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "operations"
     },
     {
       "name": "static-build-demo",
       "tier": "B",
       "description": "Static file serving from configurable directories",
-      "tags": ["http", "static"],
+      "tags": [
+        "http",
+        "static"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "http-adapters"
     },
     {
       "name": "static-spa-demo",
       "tier": "B",
       "description": "Single-page application hosting with fallback routing",
-      "tags": ["http", "spa"],
+      "tags": [
+        "http",
+        "spa"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "http-adapters"
     },
     {
       "name": "studio-demo",
       "tier": "B",
       "description": "Ranvier Studio visual debugger integration",
-      "tags": ["studio", "visualization"],
+      "tags": [
+        "studio",
+        "visualization"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "operations"
     },
     {
       "name": "websocket-loop",
       "tier": "B",
       "description": "Bidirectional WebSocket echo loop",
-      "tags": ["websocket"],
+      "tags": [
+        "websocket"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "http-adapters"
     },
     {
       "name": "websocket-ingress-demo",
       "tier": "B",
       "description": "WebSocket ingress with event-based messaging",
-      "tags": ["websocket", "ingress"],
+      "tags": [
+        "websocket",
+        "ingress"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "http-adapters"
     },
     {
       "name": "complex-schematic",
       "tier": "B",
       "description": "Advanced multi-branch Axon topology",
-      "tags": ["schematic"],
+      "tags": [
+        "schematic"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "runtime-core"
     },
     {
       "name": "synapse-demo",
       "tier": "B",
       "description": "Core Synapse trait for external service calls",
-      "tags": ["synapse", "integration"],
+      "tags": [
+        "synapse",
+        "integration"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "operations"
     },
     {
       "name": "order-processing-demo",
       "tier": "B",
       "description": "Multi-step order processing workflow",
-      "tags": ["workflow", "business-logic"],
+      "tags": [
+        "workflow",
+        "business-logic"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "runtime-core"
     },
     {
       "name": "multitenancy-demo",
       "tier": "B",
       "description": "Tenant isolation with Bus-injected TenantId",
-      "tags": ["multitenancy", "isolation"],
+      "tags": [
+        "multitenancy",
+        "isolation"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "operations"
     },
     {
       "name": "multipart-upload-demo",
       "tier": "B",
       "description": "Multipart file upload handling",
-      "tags": ["http", "upload"],
+      "tags": [
+        "http",
+        "upload"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "http-adapters"
     },
     {
       "name": "sse-streaming-demo",
       "tier": "B",
       "description": "Server-Sent Events real-time streaming",
-      "tags": ["sse", "streaming"],
+      "tags": [
+        "sse",
+        "streaming"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "http-adapters"
     },
     {
       "name": "streaming-demo",
       "tier": "B",
       "description": "StreamingTransition + SSE streaming with StreamingAxon",
-      "tags": ["streaming", "sse", "llm"],
+      "tags": [
+        "streaming",
+        "sse",
+        "llm"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "http-adapters"
     },
     {
       "name": "testing-patterns",
       "tier": "B",
       "description": "Unit and integration testing for Transitions and Axon chains",
-      "tags": ["testing"],
+      "tags": [
+        "testing"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "testing-tooling"
     },
     {
       "name": "custom-error-types",
       "tier": "B",
       "description": "Domain-specific error enums with thiserror",
-      "tags": ["errors", "domain"],
+      "tags": [
+        "errors",
+        "domain"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "runtime-core"
     },
     {
       "name": "retry-dlq-demo",
       "tier": "B",
       "description": "Retry with exponential backoff and dead letter queue",
-      "tags": ["retry", "dlq", "resilience"],
+      "tags": [
+        "retry",
+        "dlq",
+        "resilience"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "runtime-resilience"
     },
     {
       "name": "state-persistence-demo",
       "tier": "B",
       "description": "Durable workflow with fault recovery and checkpointing",
-      "tags": ["persistence", "recovery"],
+      "tags": [
+        "persistence",
+        "recovery"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "runtime-resilience"
     },
     {
       "name": "persistence-production-demo",
       "tier": "B",
       "description": "Production persistence with PostgreSQL and Redis stores",
-      "tags": ["persistence", "production"],
+      "tags": [
+        "persistence",
+        "production"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "data-integrations"
     },
     {
       "name": "otel-ops-demo",
       "tier": "B",
       "description": "Production OpenTelemetry with Jaeger and Prometheus",
-      "tags": ["observability", "operations"],
+      "tags": [
+        "observability",
+        "operations"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "observability"
     },
     {
       "name": "inspector-demo",
       "tier": "B",
       "description": "Runtime observability with metrics, payload capture, and stall detection",
-      "tags": ["inspector", "observability", "metrics"],
+      "tags": [
+        "inspector",
+        "observability",
+        "metrics"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "observability"
     },
     {
       "name": "openapi-demo",
       "tier": "B",
       "description": "OpenAPI/Swagger auto-generation with schemars",
-      "tags": ["openapi", "api"],
+      "tags": [
+        "openapi",
+        "api"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "http-adapters"
     },
     {
       "name": "audit-demo",
       "tier": "B",
       "description": "Tamper-evident audit logging with HMAC-signed file sink",
-      "tags": ["audit", "compliance", "logging"],
+      "tags": [
+        "audit",
+        "compliance",
+        "logging"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "operations"
     },
     {
       "name": "compliance-demo",
       "tier": "B",
       "description": "PII handling with Sensitive<T>, Redact, and PiiDetector",
-      "tags": ["compliance", "pii", "gdpr"],
+      "tags": [
+        "compliance",
+        "pii",
+        "gdpr"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "operations"
     },
     {
       "name": "macros-demo",
       "tier": "B",
       "description": "#[transition] proc macro with bus_allow/bus_deny access control",
-      "tags": ["macros", "transition", "bus"],
+      "tags": [
+        "macros",
+        "transition",
+        "bus"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "runtime-core"
     },
     {
       "name": "bus-capability-demo",
       "tier": "B",
       "description": "Declarative allow/deny Bus access control",
-      "tags": ["bus", "capability"],
+      "tags": [
+        "bus",
+        "capability"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "runtime-core"
     },
     {
       "name": "guard-demo",
       "tier": "B",
       "description": "Guard pipeline with CorsGuard, RateLimitGuard, SecurityHeadersGuard",
-      "tags": ["guard", "middleware"],
+      "tags": [
+        "guard",
+        "middleware"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "security-ops"
     },
     {
       "name": "auth-jwt-role-demo",
       "tier": "B",
       "description": "JWT role-based authentication with IamVerifier",
-      "tags": ["auth", "jwt"],
+      "tags": [
+        "auth",
+        "jwt"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "security-ops"
     },
     {
       "name": "auth-transition",
       "tier": "B",
       "description": "Authentication as a Transition node pattern",
-      "tags": ["auth", "transition"],
+      "tags": [
+        "auth",
+        "transition"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "security-ops"
     },
     {
       "name": "auth-tower-integration",
       "tier": "B",
       "description": "Tower middleware authentication comparison",
-      "tags": ["auth", "tower"],
+      "tags": [
+        "auth",
+        "tower"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "security-ops"
     },
     {
       "name": "production-config-demo",
       "tier": "B",
       "description": "ranvier.toml config, profiles, structured logging, graceful shutdown",
-      "tags": ["config", "production"],
+      "tags": [
+        "config",
+        "production"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "operations"
     },
     {
       "name": "production-operations-demo",
       "tier": "B",
       "description": "Production operations patterns and health checks",
-      "tags": ["operations", "production"],
+      "tags": [
+        "operations",
+        "production"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "operations"
     },
     {
       "name": "telemetry-otel-demo",
       "tier": "B",
       "description": "OTLP auto-export telemetry pipeline",
-      "tags": ["telemetry", "otlp"],
+      "tags": [
+        "telemetry",
+        "otlp"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "observability"
     },
     {
       "name": "resilience-patterns-demo",
       "tier": "B",
       "description": "Timeout, retry, circuit breaker resilience patterns",
-      "tags": ["resilience", "timeout", "retry"],
+      "tags": [
+        "resilience",
+        "timeout",
+        "retry"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "runtime-resilience"
     },
     {
       "name": "service-call-demo",
       "tier": "B",
       "description": "External service calls with reqwest as Transition",
-      "tags": ["http", "service-call"],
+      "tags": [
+        "http",
+        "service-call"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "operations"
     },
     {
       "name": "closure-transition-demo",
       "tier": "B",
       "description": "Closure-based inline transitions with then_fn() and Axon::typed()",
-      "tags": ["transition", "closure", "typed"],
+      "tags": [
+        "transition",
+        "closure",
+        "typed"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "runtime-core"
     },
     {
       "name": "guard-integration-demo",
       "tier": "B",
       "description": "GuardIntegration with 10 Guards, per-route guards![] macro",
-      "tags": ["guard", "integration", "per-route"],
+      "tags": [
+        "guard",
+        "integration",
+        "per-route"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "security-ops"
     },
     {
       "name": "llm-content-moderation",
       "tier": "B",
       "description": "3-stage LLM pipeline: extraction, classification, policy enforcement",
-      "tags": ["llm", "moderation", "pipeline"],
+      "tags": [
+        "llm",
+        "moderation",
+        "pipeline"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "operations"
     },
     {
       "name": "reference-todo-api",
       "tier": "B",
       "description": "Complete CRUD with JWT auth, Bus DI, HTTP routing",
-      "tags": ["reference", "crud", "auth"],
+      "tags": [
+        "reference",
+        "crud",
+        "auth"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "reference-apps"
     },
     {
       "name": "reference-ecommerce-order",
       "tier": "B",
       "description": "Saga pipeline with compensation, audit, multi-tenancy, RFC 7807",
-      "tags": ["reference", "saga", "ecommerce"],
+      "tags": [
+        "reference",
+        "saga",
+        "ecommerce"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "reference-apps"
     },
     {
       "name": "reference-chat-server",
       "tier": "B",
       "description": "Multi-room WebSocket chat with JWT auth and message persistence",
-      "tags": ["reference", "websocket", "chat"],
+      "tags": [
+        "reference",
+        "websocket",
+        "chat"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "reference-apps"
     },
     {
       "name": "ecosystem-redis-demo",
       "tier": "C",
       "description": "Redis session storage and caching integration",
-      "tags": ["ecosystem", "cache"],
+      "tags": [
+        "ecosystem",
+        "cache"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "data-integrations"
     },
     {
       "name": "ecosystem-diesel-demo",
       "tier": "C",
       "description": "Diesel ORM with r2d2 connection pooling",
-      "tags": ["ecosystem", "database"],
+      "tags": [
+        "ecosystem",
+        "database"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "data-integrations"
     },
     {
       "name": "ecosystem-seaorm-demo",
       "tier": "C",
       "description": "SeaORM with migrations and active models",
-      "tags": ["ecosystem", "database"],
+      "tags": [
+        "ecosystem",
+        "database"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "data-integrations"
     },
     {
       "name": "ecosystem-nats-demo",
       "tier": "C",
       "description": "NATS pub/sub messaging integration",
-      "tags": ["ecosystem", "messaging"],
+      "tags": [
+        "ecosystem",
+        "messaging"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "data-integrations"
     },
     {
       "name": "ecosystem-meilisearch-demo",
       "tier": "C",
       "description": "Meilisearch full-text search integration",
-      "tags": ["ecosystem", "search"],
+      "tags": [
+        "ecosystem",
+        "search"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "data-integrations"
     },
     {
       "name": "graphql-async-graphql-demo",
       "tier": "C",
       "description": "async-graphql Schema in Ranvier Transition",
-      "tags": ["graphql", "api"],
+      "tags": [
+        "graphql",
+        "api"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "protocol-adapters"
     },
     {
       "name": "grpc-tonic-demo",
       "tier": "C",
       "description": "tonic gRPC server with Axon pipeline delegation",
-      "tags": ["grpc", "api"],
+      "tags": [
+        "grpc",
+        "api"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "protocol-adapters"
     },
     {
       "name": "background-jobs-demo",
       "tier": "C",
       "description": "Periodic Axon execution with tokio-cron-scheduler",
-      "tags": ["scheduler", "jobs"],
+      "tags": [
+        "scheduler",
+        "jobs"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "operations"
     },
     {
       "name": "distributed-lock-demo",
       "tier": "C",
       "description": "Redis SETNX-based distributed locking",
-      "tags": ["distributed", "lock"],
+      "tags": [
+        "distributed",
+        "lock"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "operations"
     },
     {
       "name": "db-sqlx-demo",
       "tier": "C",
       "description": "SQLx pool injected via Bus with in-memory SQLite",
-      "tags": ["database", "sqlx"],
+      "tags": [
+        "database",
+        "sqlx"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "data-integrations"
     },
     {
       "name": "typescript-codegen-demo",
       "tier": "C",
       "description": "TypeScript type generation from Rust structs via ts-rs",
-      "tags": ["codegen", "typescript"],
+      "tags": [
+        "codegen",
+        "typescript"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "lab",
+      "owner": "operations"
     },
     {
       "name": "typed-json-api",
       "tier": "B",
       "description": "Typed JSON auto-serialization at route boundary (v0.43)",
-      "tags": ["http", "json", "typed", "v0.43"],
+      "tags": [
+        "http",
+        "json",
+        "typed",
+        "v0.43"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "http-adapters"
     },
     {
       "name": "outcome-patterns",
       "tier": "B",
       "description": "Outcome ergonomic APIs: try_outcome!, combinators, get_cloned (v0.42-v0.43)",
-      "tags": ["core", "outcome", "patterns", "v0.43"],
+      "tags": [
+        "core",
+        "outcome",
+        "patterns",
+        "v0.43"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "runtime-core"
     },
     {
       "name": "saga-compensation",
       "tier": "B",
       "description": "Saga compensation pattern: multi-step rollback on failure",
-      "tags": ["pattern", "saga", "compensation"],
+      "tags": [
+        "pattern",
+        "saga",
+        "compensation"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "runtime-core"
     },
     {
       "name": "cascade-screening",
       "tier": "B",
       "description": "Cascade screening pattern: sequential filter pipeline with fail-fast",
-      "tags": ["pattern", "screening", "filter"],
+      "tags": [
+        "pattern",
+        "screening",
+        "filter"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "runtime-core"
     },
     {
       "name": "llm-agent-pipeline",
       "tier": "B",
       "description": "Multi-stage pipeline pattern: classify, select, execute, format",
-      "tags": ["pattern", "pipeline", "ai"],
+      "tags": [
+        "pattern",
+        "pipeline",
+        "ai"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "runtime-core"
     },
     {
       "name": "sensor-decision-loop",
       "tier": "B",
       "description": "Sensor decision loop pattern: threshold evaluation to actuator command",
-      "tags": ["pattern", "iot", "decision"],
+      "tags": [
+        "pattern",
+        "iot",
+        "decision"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "runtime-core"
     },
     {
       "name": "triage-branching",
       "tier": "B",
       "description": "Triage branching pattern: multi-stage classification with Outcome::Branch",
-      "tags": ["pattern", "branching", "triage"],
+      "tags": [
+        "pattern",
+        "branching",
+        "triage"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "runtime-core"
     },
     {
       "name": "eligibility-rule-chain",
       "tier": "B",
       "description": "Rule chain pattern: sequential independent rules with fail-fast",
-      "tags": ["pattern", "rule-chain", "eligibility"],
+      "tags": [
+        "pattern",
+        "rule-chain",
+        "eligibility"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "runtime-core"
+    },
+    {
+      "name": "admin-crud-demo",
+      "tier": "B",
+      "description": "Admin CRUD with JWT, SQLite, pagination, and OpenAPI",
+      "tags": [
+        "admin",
+        "crud",
+        "auth",
+        "openapi"
+      ],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "http-adapters"
+    },
+    {
+      "name": "reference-fullstack-admin",
+      "tier": "B",
+      "description": "Full-stack admin reference app with Ranvier backend and SvelteKit frontend",
+      "tags": [
+        "reference",
+        "fullstack",
+        "admin"
+      ],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "reference-apps"
+    },
+    {
+      "name": "request-governance-demo",
+      "tier": "B",
+      "description": "Request governance with auth, policy, audit, DB, and structured errors",
+      "tags": [
+        "governance",
+        "policy",
+        "audit"
+      ],
+      "schematic_url": null,
+      "has_prebuilt_schematic": false,
+      "support_tier": "supported",
+      "owner": "operations"
     },
     {
       "name": "experimental/fullstack-demo",
       "tier": "D",
       "description": "Full-stack application (experimental)",
-      "tags": ["experimental", "fullstack"],
+      "tags": [
+        "experimental",
+        "fullstack"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "archive",
+      "owner": "reference-apps"
     },
     {
       "name": "experimental/replay-demo",
       "tier": "D",
       "description": "Timeline replay (experimental)",
-      "tags": ["experimental", "replay"],
+      "tags": [
+        "experimental",
+        "replay"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "archive",
+      "owner": "observability"
     },
     {
       "name": "experimental/state-tree-demo",
       "tier": "D",
       "description": "State tree (experimental)",
-      "tags": ["experimental", "state"],
+      "tags": [
+        "experimental",
+        "state"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "archive",
+      "owner": "runtime-core"
     },
     {
       "name": "experimental/persistence-recovery-demo",
       "tier": "D",
       "description": "Persistence recovery (experimental)",
-      "tags": ["experimental", "persistence"],
+      "tags": [
+        "experimental",
+        "persistence"
+      ],
       "schematic_url": null,
-      "has_prebuilt_schematic": false
+      "has_prebuilt_schematic": false,
+      "support_tier": "archive",
+      "owner": "runtime-resilience"
     }
   ]
 }

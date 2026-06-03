@@ -1,7 +1,7 @@
 {
   "$schema": "https://ranvier.dev/schemas/examples-manifest-v1.json",
-  "version": "0.43.0",
-  "generated": "2026-03-25",
+  "version": "0.50.0",
+  "generated": "2026-06-04",
   "description": "Machine-parseable manifest of all Ranvier examples. Used by AI agents, CI pipelines, and documentation tooling.",
   "tiers": {
     "core": "Web Main showcase — independent, essential learning path, no external infra required",
@@ -9,115 +9,1194 @@
     "repo": "Repository-only — internal/experimental, not web-published"
   },
   "categories": [
-    { "id": "core", "label": "Core Concepts" },
-    { "id": "http", "label": "HTTP & Routing" },
-    { "id": "auth", "label": "Auth & Security" },
-    { "id": "data", "label": "Data & Persistence" },
-    { "id": "observe", "label": "Observability" },
-    { "id": "enterprise", "label": "Enterprise" },
-    { "id": "protocol", "label": "Protocol Adapters" },
-    { "id": "testing", "label": "Testing" },
-    { "id": "error-handling", "label": "Error Handling" },
-    { "id": "resilience", "label": "Resilience" },
-    { "id": "reference", "label": "Reference Apps" }
+    {
+      "id": "core",
+      "label": "Core Concepts"
+    },
+    {
+      "id": "http",
+      "label": "HTTP & Routing"
+    },
+    {
+      "id": "auth",
+      "label": "Auth & Security"
+    },
+    {
+      "id": "data",
+      "label": "Data & Persistence"
+    },
+    {
+      "id": "observe",
+      "label": "Observability"
+    },
+    {
+      "id": "enterprise",
+      "label": "Enterprise"
+    },
+    {
+      "id": "protocol",
+      "label": "Protocol Adapters"
+    },
+    {
+      "id": "testing",
+      "label": "Testing"
+    },
+    {
+      "id": "error-handling",
+      "label": "Error Handling"
+    },
+    {
+      "id": "resilience",
+      "label": "Resilience"
+    },
+    {
+      "id": "reference",
+      "label": "Reference Apps"
+    }
   ],
   "learningPaths": [
     {
       "id": "quick-start",
       "title": "Quick Start",
       "difficulty": "beginner",
-      "steps": ["hello-world", "typed-state-tree", "testing-patterns", "custom-error-types", "routing-demo"]
+      "steps": [
+        "hello-world",
+        "typed-state-tree",
+        "testing-patterns",
+        "custom-error-types",
+        "routing-demo"
+      ]
     },
     {
       "id": "http-services",
       "title": "HTTP Services",
       "difficulty": "intermediate",
-      "steps": ["routing-params", "flat-api", "session-pattern", "multipart-upload", "websocket", "sse-streaming", "openapi", "typed-json-api", "reference-todo-api", "admin-crud"]
+      "steps": [
+        "routing-params",
+        "flat-api",
+        "session-pattern",
+        "multipart-upload",
+        "websocket",
+        "sse-streaming",
+        "openapi",
+        "typed-json-api",
+        "reference-todo-api",
+        "admin-crud"
+      ]
     },
     {
       "id": "advanced-patterns",
       "title": "Advanced Patterns",
       "difficulty": "advanced",
-      "steps": ["order-processing", "retry-dlq", "state-persistence", "multitenancy", "resilience-patterns"]
+      "steps": [
+        "order-processing",
+        "retry-dlq",
+        "state-persistence",
+        "multitenancy",
+        "resilience-patterns"
+      ]
     },
     {
       "id": "auth-security",
       "title": "Auth & Security",
       "difficulty": "intermediate",
-      "steps": ["guard-demo", "auth-jwt-role", "guard-integration", "auth-transition"]
+      "steps": [
+        "guard-demo",
+        "auth-jwt-role",
+        "guard-integration",
+        "auth-transition"
+      ]
     }
   ],
   "examples": [
-    { "id": "hello-world", "package": "hello-world", "tier": "core", "difficulty": "beginner", "category": "core", "prerequisites": [], "estimatedMinutes": 5, "runtimeRequirements": [] },
-    { "id": "typed-state-tree", "package": "typed-state-tree", "tier": "core", "difficulty": "beginner", "category": "core", "prerequisites": ["hello-world"], "estimatedMinutes": 10, "runtimeRequirements": [] },
-    { "id": "basic-schematic", "package": "basic-schematic", "tier": "core", "difficulty": "beginner", "category": "core", "prerequisites": ["hello-world"], "estimatedMinutes": 10, "runtimeRequirements": [] },
-    { "id": "routing-demo", "package": "routing-demo", "tier": "core", "difficulty": "intermediate", "category": "core", "prerequisites": ["typed-state-tree"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "order-processing", "package": "order-processing-demo", "tier": "core", "difficulty": "intermediate", "category": "core", "prerequisites": ["routing-demo"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "saga-compensation", "package": "saga-compensation", "tier": "core", "difficulty": "intermediate", "category": "core", "prerequisites": ["basic-schematic", "outcome-variants"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "cascade-screening", "package": "cascade-screening", "tier": "core", "difficulty": "intermediate", "category": "core", "prerequisites": ["basic-schematic", "outcome-variants"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "llm-agent-pipeline", "package": "llm-agent-pipeline", "tier": "core", "difficulty": "intermediate", "category": "core", "prerequisites": ["basic-schematic", "outcome-variants"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "sensor-decision-loop", "package": "sensor-decision-loop", "tier": "core", "difficulty": "intermediate", "category": "core", "prerequisites": ["basic-schematic", "outcome-variants"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "triage-branching", "package": "triage-branching", "tier": "core", "difficulty": "intermediate", "category": "core", "prerequisites": ["basic-schematic", "outcome-variants"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "eligibility-rule-chain", "package": "eligibility-rule-chain", "tier": "core", "difficulty": "intermediate", "category": "core", "prerequisites": ["basic-schematic", "outcome-variants"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "bus-capability", "package": "bus-capability-demo", "tier": "core", "difficulty": "intermediate", "category": "core", "prerequisites": ["typed-state-tree"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "complex-schematic", "package": "complex-schematic", "tier": "lab", "difficulty": "advanced", "category": "core", "prerequisites": ["basic-schematic", "routing-demo"], "estimatedMinutes": 25, "runtimeRequirements": [] },
-    { "id": "outcome-variants", "package": "outcome-variants-demo", "tier": "core", "difficulty": "beginner", "category": "core", "prerequisites": ["hello-world", "typed-state-tree"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "closure-transition", "package": "closure-transition-demo", "tier": "core", "difficulty": "beginner", "category": "core", "prerequisites": ["hello-world"], "estimatedMinutes": 10, "runtimeRequirements": [] },
-    { "id": "routing-params", "package": "routing-params-demo", "tier": "core", "difficulty": "beginner", "category": "http", "prerequisites": ["hello-world"], "estimatedMinutes": 10, "runtimeRequirements": [] },
-    { "id": "flat-api", "package": "flat-api-demo", "tier": "core", "difficulty": "beginner", "category": "http", "prerequisites": ["routing-params"], "estimatedMinutes": 10, "runtimeRequirements": [] },
-    { "id": "session-pattern", "package": "session-pattern", "tier": "core", "difficulty": "intermediate", "category": "auth", "prerequisites": ["flat-api"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "multipart-upload", "package": "multipart-upload-demo", "tier": "core", "difficulty": "intermediate", "category": "http", "prerequisites": ["routing-params"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "websocket", "package": "websocket-ingress-demo", "tier": "core", "difficulty": "intermediate", "category": "http", "prerequisites": ["routing-params"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "websocket-loop", "package": "websocket-loop", "tier": "core", "difficulty": "intermediate", "category": "http", "prerequisites": ["websocket"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "sse-streaming", "package": "sse-streaming-demo", "tier": "core", "difficulty": "intermediate", "category": "http", "prerequisites": ["routing-params"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "openapi", "package": "openapi-demo", "tier": "core", "difficulty": "intermediate", "category": "http", "prerequisites": ["flat-api"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "static-build", "package": "static-build-demo", "tier": "core", "difficulty": "beginner", "category": "http", "prerequisites": [], "estimatedMinutes": 10, "runtimeRequirements": [] },
-    { "id": "static-spa", "package": "static-spa-demo", "tier": "core", "difficulty": "beginner", "category": "http", "prerequisites": ["static-build"], "estimatedMinutes": 10, "runtimeRequirements": [] },
-    { "id": "typed-json-api", "package": "typed-json-api", "tier": "core", "difficulty": "intermediate", "category": "http", "prerequisites": ["flat-api", "routing-params"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "streaming-demo", "package": "streaming-demo", "tier": "lab", "difficulty": "intermediate", "category": "http", "prerequisites": ["sse-streaming"], "estimatedMinutes": 25, "runtimeRequirements": [] },
-    { "id": "guard-demo", "package": "guard-demo", "tier": "core", "difficulty": "intermediate", "category": "auth", "prerequisites": ["hello-world"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "auth-jwt-role", "package": "auth-jwt-role-demo", "tier": "core", "difficulty": "intermediate", "category": "auth", "prerequisites": ["guard-demo"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "guard-integration", "package": "guard-integration-demo", "tier": "core", "difficulty": "intermediate", "category": "auth", "prerequisites": ["guard-demo"], "estimatedMinutes": 25, "runtimeRequirements": [] },
-    { "id": "auth-transition", "package": "auth-transition", "tier": "core", "difficulty": "intermediate", "category": "auth", "prerequisites": ["guard-demo", "auth-jwt-role"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "auth-tower-integration", "package": "auth-tower-integration", "tier": "lab", "difficulty": "intermediate", "category": "auth", "prerequisites": ["auth-transition"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "persistence", "package": "persistence-production-demo", "tier": "core", "difficulty": "intermediate", "category": "data", "prerequisites": ["hello-world"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "ecosystem-redis", "package": "ecosystem-redis-demo", "tier": "core", "difficulty": "intermediate", "category": "data", "prerequisites": ["hello-world"], "estimatedMinutes": 20, "runtimeRequirements": ["redis"] },
-    { "id": "ecosystem-seaorm", "package": "ecosystem-seaorm-demo", "tier": "core", "difficulty": "intermediate", "category": "data", "prerequisites": ["hello-world"], "estimatedMinutes": 25, "runtimeRequirements": [] },
-    { "id": "ecosystem-diesel", "package": "ecosystem-diesel-demo", "tier": "lab", "difficulty": "advanced", "category": "data", "prerequisites": ["hello-world"], "estimatedMinutes": 30, "runtimeRequirements": ["postgresql"] },
-    { "id": "ecosystem-meilisearch", "package": "ecosystem-meilisearch-demo", "tier": "lab", "difficulty": "advanced", "category": "data", "prerequisites": ["hello-world"], "estimatedMinutes": 25, "runtimeRequirements": ["meilisearch"] },
-    { "id": "ecosystem-nats", "package": "ecosystem-nats-demo", "tier": "lab", "difficulty": "advanced", "category": "data", "prerequisites": ["hello-world"], "estimatedMinutes": 25, "runtimeRequirements": ["nats-server"] },
-    { "id": "db-sqlx", "package": "db-sqlx-demo", "tier": "core", "difficulty": "intermediate", "category": "data", "prerequisites": ["hello-world"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "otel-concept", "package": "otel-concept", "tier": "core", "difficulty": "intermediate", "category": "observe", "prerequisites": ["hello-world"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "otel-ops", "package": "otel-ops-demo", "tier": "lab", "difficulty": "advanced", "category": "observe", "prerequisites": ["otel-concept"], "estimatedMinutes": 30, "runtimeRequirements": ["jaeger", "prometheus"] },
-    { "id": "telemetry-otel", "package": "telemetry-otel-demo", "tier": "lab", "difficulty": "intermediate", "category": "observe", "prerequisites": ["otel-concept"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "inspector", "package": "inspector-demo", "tier": "lab", "difficulty": "intermediate", "category": "observe", "prerequisites": ["hello-world"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "synapse", "package": "synapse-demo", "tier": "core", "difficulty": "intermediate", "category": "enterprise", "prerequisites": ["hello-world"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "production-config", "package": "production-config-demo", "tier": "core", "difficulty": "intermediate", "category": "enterprise", "prerequisites": ["hello-world"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "std-lib", "package": "std-lib-demo", "tier": "core", "difficulty": "intermediate", "category": "enterprise", "prerequisites": ["typed-state-tree"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "multitenancy", "package": "multitenancy-demo", "tier": "core", "difficulty": "intermediate", "category": "enterprise", "prerequisites": ["hello-world"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "studio-demo", "package": "studio-demo", "tier": "lab", "difficulty": "advanced", "category": "enterprise", "prerequisites": ["basic-schematic"], "estimatedMinutes": 25, "runtimeRequirements": [] },
-    { "id": "background-jobs", "package": "background-jobs-demo", "tier": "lab", "difficulty": "intermediate", "category": "enterprise", "prerequisites": ["hello-world"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "distributed-lock", "package": "distributed-lock-demo", "tier": "lab", "difficulty": "advanced", "category": "enterprise", "prerequisites": ["hello-world"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "typescript-codegen", "package": "typescript-codegen-demo", "tier": "lab", "difficulty": "intermediate", "category": "enterprise", "prerequisites": ["hello-world"], "estimatedMinutes": 10, "runtimeRequirements": [] },
-    { "id": "production-operations", "package": "production-operations-demo", "tier": "lab", "difficulty": "intermediate", "category": "enterprise", "prerequisites": ["production-config"], "estimatedMinutes": 25, "runtimeRequirements": [] },
-    { "id": "service-call", "package": "service-call-demo", "tier": "core", "difficulty": "intermediate", "category": "enterprise", "prerequisites": ["hello-world"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "llm-content-moderation", "package": "llm-content-moderation", "tier": "core", "difficulty": "intermediate", "category": "enterprise", "prerequisites": ["hello-world", "flat-api"], "estimatedMinutes": 25, "runtimeRequirements": [] },
-    { "id": "audit", "package": "audit-demo", "tier": "lab", "difficulty": "intermediate", "category": "enterprise", "prerequisites": ["hello-world"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "compliance", "package": "compliance-demo", "tier": "lab", "difficulty": "intermediate", "category": "enterprise", "prerequisites": ["hello-world"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "macros", "package": "macros-demo", "tier": "lab", "difficulty": "intermediate", "category": "core", "prerequisites": ["hello-world"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "graphql-async-graphql", "package": "graphql-async-graphql-demo", "tier": "lab", "difficulty": "intermediate", "category": "protocol", "prerequisites": ["hello-world"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "grpc-tonic", "package": "grpc-tonic-demo", "tier": "lab", "difficulty": "advanced", "category": "protocol", "prerequisites": ["hello-world"], "estimatedMinutes": 25, "runtimeRequirements": [] },
-    { "id": "testing-patterns", "package": "testing-patterns", "tier": "core", "difficulty": "beginner", "category": "testing", "prerequisites": ["hello-world"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "custom-error-types", "package": "custom-error-types", "tier": "core", "difficulty": "beginner", "category": "error-handling", "prerequisites": ["hello-world", "testing-patterns"], "estimatedMinutes": 15, "runtimeRequirements": [] },
-    { "id": "outcome-patterns", "package": "outcome-patterns", "tier": "core", "difficulty": "intermediate", "category": "error-handling", "prerequisites": ["custom-error-types"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "retry-dlq", "package": "retry-dlq-demo", "tier": "core", "difficulty": "intermediate", "category": "resilience", "prerequisites": ["custom-error-types"], "estimatedMinutes": 25, "runtimeRequirements": [] },
-    { "id": "state-persistence", "package": "state-persistence-demo", "tier": "core", "difficulty": "intermediate", "category": "resilience", "prerequisites": ["retry-dlq"], "estimatedMinutes": 25, "runtimeRequirements": [] },
-    { "id": "resilience-patterns", "package": "resilience-patterns-demo", "tier": "core", "difficulty": "intermediate", "category": "resilience", "prerequisites": ["retry-dlq"], "estimatedMinutes": 20, "runtimeRequirements": [] },
-    { "id": "reference-todo-api", "package": "reference-todo-api", "tier": "core", "difficulty": "intermediate", "category": "reference", "prerequisites": ["flat-api", "routing-params"], "estimatedMinutes": 30, "runtimeRequirements": [] },
-    { "id": "admin-crud", "package": "admin-crud-demo", "tier": "core", "difficulty": "intermediate", "category": "http", "prerequisites": ["reference-todo-api", "openapi"], "estimatedMinutes": 35, "runtimeRequirements": [] },
-    { "id": "reference-fullstack-admin", "package": "reference-fullstack-admin", "tier": "core", "difficulty": "advanced", "category": "reference", "prerequisites": ["admin-crud", "openapi"], "estimatedMinutes": 40, "runtimeRequirements": ["nodejs"] },
-    { "id": "request-governance-demo", "package": "request-governance-demo", "tier": "core", "difficulty": "advanced", "category": "enterprise", "prerequisites": ["admin-crud"], "estimatedMinutes": 30, "runtimeRequirements": [] },
-    { "id": "reference-ecommerce-order", "package": "reference-ecommerce-order", "tier": "core", "difficulty": "advanced", "category": "reference", "prerequisites": ["order-processing", "audit", "multitenancy"], "estimatedMinutes": 40, "runtimeRequirements": [] },
-    { "id": "reference-chat-server", "package": "reference-chat-server", "tier": "core", "difficulty": "advanced", "category": "reference", "prerequisites": ["websocket", "session-pattern"], "estimatedMinutes": 35, "runtimeRequirements": [] }
-  ]
+    {
+      "id": "hello-world",
+      "package": "hello-world",
+      "tier": "core",
+      "difficulty": "beginner",
+      "category": "core",
+      "prerequisites": [],
+      "estimatedMinutes": 5,
+      "runtimeRequirements": [],
+      "supportTier": "canonical",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "typed-state-tree",
+      "package": "typed-state-tree",
+      "tier": "core",
+      "difficulty": "beginner",
+      "category": "core",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 10,
+      "runtimeRequirements": [],
+      "supportTier": "canonical",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "basic-schematic",
+      "package": "basic-schematic",
+      "tier": "core",
+      "difficulty": "beginner",
+      "category": "core",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 10,
+      "runtimeRequirements": [],
+      "supportTier": "canonical",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "routing-demo",
+      "package": "routing-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "core",
+      "prerequisites": [
+        "typed-state-tree"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "order-processing",
+      "package": "order-processing-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "core",
+      "prerequisites": [
+        "routing-demo"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "saga-compensation",
+      "package": "saga-compensation",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "core",
+      "prerequisites": [
+        "basic-schematic",
+        "outcome-variants"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "cascade-screening",
+      "package": "cascade-screening",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "core",
+      "prerequisites": [
+        "basic-schematic",
+        "outcome-variants"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "llm-agent-pipeline",
+      "package": "llm-agent-pipeline",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "core",
+      "prerequisites": [
+        "basic-schematic",
+        "outcome-variants"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "sensor-decision-loop",
+      "package": "sensor-decision-loop",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "core",
+      "prerequisites": [
+        "basic-schematic",
+        "outcome-variants"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "triage-branching",
+      "package": "triage-branching",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "core",
+      "prerequisites": [
+        "basic-schematic",
+        "outcome-variants"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "eligibility-rule-chain",
+      "package": "eligibility-rule-chain",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "core",
+      "prerequisites": [
+        "basic-schematic",
+        "outcome-variants"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "bus-capability",
+      "package": "bus-capability-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "core",
+      "prerequisites": [
+        "typed-state-tree"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "complex-schematic",
+      "package": "complex-schematic",
+      "tier": "lab",
+      "difficulty": "advanced",
+      "category": "core",
+      "prerequisites": [
+        "basic-schematic",
+        "routing-demo"
+      ],
+      "estimatedMinutes": 25,
+      "runtimeRequirements": [],
+      "supportTier": "lab",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "outcome-variants",
+      "package": "outcome-variants-demo",
+      "tier": "core",
+      "difficulty": "beginner",
+      "category": "core",
+      "prerequisites": [
+        "hello-world",
+        "typed-state-tree"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "canonical",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "closure-transition",
+      "package": "closure-transition-demo",
+      "tier": "core",
+      "difficulty": "beginner",
+      "category": "core",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 10,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "routing-params",
+      "package": "routing-params-demo",
+      "tier": "core",
+      "difficulty": "beginner",
+      "category": "http",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 10,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "http-adapters"
+    },
+    {
+      "id": "flat-api",
+      "package": "flat-api-demo",
+      "tier": "core",
+      "difficulty": "beginner",
+      "category": "http",
+      "prerequisites": [
+        "routing-params"
+      ],
+      "estimatedMinutes": 10,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "http-adapters"
+    },
+    {
+      "id": "session-pattern",
+      "package": "session-pattern",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "auth",
+      "prerequisites": [
+        "flat-api"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "security-ops"
+    },
+    {
+      "id": "multipart-upload",
+      "package": "multipart-upload-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "http",
+      "prerequisites": [
+        "routing-params"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "http-adapters"
+    },
+    {
+      "id": "websocket",
+      "package": "websocket-ingress-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "http",
+      "prerequisites": [
+        "routing-params"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "http-adapters"
+    },
+    {
+      "id": "websocket-loop",
+      "package": "websocket-loop",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "http",
+      "prerequisites": [
+        "websocket"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "http-adapters"
+    },
+    {
+      "id": "sse-streaming",
+      "package": "sse-streaming-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "http",
+      "prerequisites": [
+        "routing-params"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "http-adapters"
+    },
+    {
+      "id": "openapi",
+      "package": "openapi-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "http",
+      "prerequisites": [
+        "flat-api"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "http-adapters"
+    },
+    {
+      "id": "static-build",
+      "package": "static-build-demo",
+      "tier": "core",
+      "difficulty": "beginner",
+      "category": "http",
+      "prerequisites": [],
+      "estimatedMinutes": 10,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "http-adapters"
+    },
+    {
+      "id": "static-spa",
+      "package": "static-spa-demo",
+      "tier": "core",
+      "difficulty": "beginner",
+      "category": "http",
+      "prerequisites": [
+        "static-build"
+      ],
+      "estimatedMinutes": 10,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "http-adapters"
+    },
+    {
+      "id": "typed-json-api",
+      "package": "typed-json-api",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "http",
+      "prerequisites": [
+        "flat-api",
+        "routing-params"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "http-adapters"
+    },
+    {
+      "id": "streaming-demo",
+      "package": "streaming-demo",
+      "tier": "lab",
+      "difficulty": "intermediate",
+      "category": "http",
+      "prerequisites": [
+        "sse-streaming"
+      ],
+      "estimatedMinutes": 25,
+      "runtimeRequirements": [],
+      "supportTier": "lab",
+      "owner": "http-adapters"
+    },
+    {
+      "id": "guard-demo",
+      "package": "guard-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "auth",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "security-ops"
+    },
+    {
+      "id": "auth-jwt-role",
+      "package": "auth-jwt-role-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "auth",
+      "prerequisites": [
+        "guard-demo"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "security-ops"
+    },
+    {
+      "id": "guard-integration",
+      "package": "guard-integration-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "auth",
+      "prerequisites": [
+        "guard-demo"
+      ],
+      "estimatedMinutes": 25,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "security-ops"
+    },
+    {
+      "id": "auth-transition",
+      "package": "auth-transition",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "auth",
+      "prerequisites": [
+        "guard-demo",
+        "auth-jwt-role"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "security-ops"
+    },
+    {
+      "id": "auth-tower-integration",
+      "package": "auth-tower-integration",
+      "tier": "lab",
+      "difficulty": "intermediate",
+      "category": "auth",
+      "prerequisites": [
+        "auth-transition"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "lab",
+      "owner": "security-ops"
+    },
+    {
+      "id": "persistence",
+      "package": "persistence-production-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "data",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "data-integrations"
+    },
+    {
+      "id": "ecosystem-redis",
+      "package": "ecosystem-redis-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "data",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [
+        "redis"
+      ],
+      "supportTier": "supported",
+      "owner": "data-integrations"
+    },
+    {
+      "id": "ecosystem-seaorm",
+      "package": "ecosystem-seaorm-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "data",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 25,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "data-integrations"
+    },
+    {
+      "id": "ecosystem-diesel",
+      "package": "ecosystem-diesel-demo",
+      "tier": "lab",
+      "difficulty": "advanced",
+      "category": "data",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 30,
+      "runtimeRequirements": [
+        "postgresql"
+      ],
+      "supportTier": "lab",
+      "owner": "data-integrations"
+    },
+    {
+      "id": "ecosystem-meilisearch",
+      "package": "ecosystem-meilisearch-demo",
+      "tier": "lab",
+      "difficulty": "advanced",
+      "category": "data",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 25,
+      "runtimeRequirements": [
+        "meilisearch"
+      ],
+      "supportTier": "lab",
+      "owner": "data-integrations"
+    },
+    {
+      "id": "ecosystem-nats",
+      "package": "ecosystem-nats-demo",
+      "tier": "lab",
+      "difficulty": "advanced",
+      "category": "data",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 25,
+      "runtimeRequirements": [
+        "nats-server"
+      ],
+      "supportTier": "lab",
+      "owner": "data-integrations"
+    },
+    {
+      "id": "db-sqlx",
+      "package": "db-sqlx-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "data",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "data-integrations"
+    },
+    {
+      "id": "otel-concept",
+      "package": "otel-concept",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "observe",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "canonical",
+      "owner": "observability"
+    },
+    {
+      "id": "otel-ops",
+      "package": "otel-ops-demo",
+      "tier": "lab",
+      "difficulty": "advanced",
+      "category": "observe",
+      "prerequisites": [
+        "otel-concept"
+      ],
+      "estimatedMinutes": 30,
+      "runtimeRequirements": [
+        "jaeger",
+        "prometheus"
+      ],
+      "supportTier": "lab",
+      "owner": "observability"
+    },
+    {
+      "id": "telemetry-otel",
+      "package": "telemetry-otel-demo",
+      "tier": "lab",
+      "difficulty": "intermediate",
+      "category": "observe",
+      "prerequisites": [
+        "otel-concept"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "lab",
+      "owner": "observability"
+    },
+    {
+      "id": "inspector",
+      "package": "inspector-demo",
+      "tier": "lab",
+      "difficulty": "intermediate",
+      "category": "observe",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "lab",
+      "owner": "observability"
+    },
+    {
+      "id": "synapse",
+      "package": "synapse-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "enterprise",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "operations"
+    },
+    {
+      "id": "production-config",
+      "package": "production-config-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "enterprise",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "operations"
+    },
+    {
+      "id": "std-lib",
+      "package": "std-lib-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "enterprise",
+      "prerequisites": [
+        "typed-state-tree"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "operations"
+    },
+    {
+      "id": "multitenancy",
+      "package": "multitenancy-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "enterprise",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "operations"
+    },
+    {
+      "id": "studio-demo",
+      "package": "studio-demo",
+      "tier": "lab",
+      "difficulty": "advanced",
+      "category": "enterprise",
+      "prerequisites": [
+        "basic-schematic"
+      ],
+      "estimatedMinutes": 25,
+      "runtimeRequirements": [],
+      "supportTier": "lab",
+      "owner": "operations"
+    },
+    {
+      "id": "background-jobs",
+      "package": "background-jobs-demo",
+      "tier": "lab",
+      "difficulty": "intermediate",
+      "category": "enterprise",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "lab",
+      "owner": "operations"
+    },
+    {
+      "id": "distributed-lock",
+      "package": "distributed-lock-demo",
+      "tier": "lab",
+      "difficulty": "advanced",
+      "category": "enterprise",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "lab",
+      "owner": "operations"
+    },
+    {
+      "id": "typescript-codegen",
+      "package": "typescript-codegen-demo",
+      "tier": "lab",
+      "difficulty": "intermediate",
+      "category": "enterprise",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 10,
+      "runtimeRequirements": [],
+      "supportTier": "lab",
+      "owner": "operations"
+    },
+    {
+      "id": "production-operations",
+      "package": "production-operations-demo",
+      "tier": "lab",
+      "difficulty": "intermediate",
+      "category": "enterprise",
+      "prerequisites": [
+        "production-config"
+      ],
+      "estimatedMinutes": 25,
+      "runtimeRequirements": [],
+      "supportTier": "lab",
+      "owner": "operations"
+    },
+    {
+      "id": "service-call",
+      "package": "service-call-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "enterprise",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "operations"
+    },
+    {
+      "id": "llm-content-moderation",
+      "package": "llm-content-moderation",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "enterprise",
+      "prerequisites": [
+        "hello-world",
+        "flat-api"
+      ],
+      "estimatedMinutes": 25,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "operations"
+    },
+    {
+      "id": "audit",
+      "package": "audit-demo",
+      "tier": "lab",
+      "difficulty": "intermediate",
+      "category": "enterprise",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "lab",
+      "owner": "operations"
+    },
+    {
+      "id": "compliance",
+      "package": "compliance-demo",
+      "tier": "lab",
+      "difficulty": "intermediate",
+      "category": "enterprise",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "lab",
+      "owner": "operations"
+    },
+    {
+      "id": "macros",
+      "package": "macros-demo",
+      "tier": "lab",
+      "difficulty": "intermediate",
+      "category": "core",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "lab",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "graphql-async-graphql",
+      "package": "graphql-async-graphql-demo",
+      "tier": "lab",
+      "difficulty": "intermediate",
+      "category": "protocol",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "lab",
+      "owner": "protocol-adapters"
+    },
+    {
+      "id": "grpc-tonic",
+      "package": "grpc-tonic-demo",
+      "tier": "lab",
+      "difficulty": "advanced",
+      "category": "protocol",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 25,
+      "runtimeRequirements": [],
+      "supportTier": "lab",
+      "owner": "protocol-adapters"
+    },
+    {
+      "id": "testing-patterns",
+      "package": "testing-patterns",
+      "tier": "core",
+      "difficulty": "beginner",
+      "category": "testing",
+      "prerequisites": [
+        "hello-world"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "testing-tooling"
+    },
+    {
+      "id": "custom-error-types",
+      "package": "custom-error-types",
+      "tier": "core",
+      "difficulty": "beginner",
+      "category": "error-handling",
+      "prerequisites": [
+        "hello-world",
+        "testing-patterns"
+      ],
+      "estimatedMinutes": 15,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "outcome-patterns",
+      "package": "outcome-patterns",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "error-handling",
+      "prerequisites": [
+        "custom-error-types"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "retry-dlq",
+      "package": "retry-dlq-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "resilience",
+      "prerequisites": [
+        "custom-error-types"
+      ],
+      "estimatedMinutes": 25,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "runtime-resilience"
+    },
+    {
+      "id": "state-persistence",
+      "package": "state-persistence-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "resilience",
+      "prerequisites": [
+        "retry-dlq"
+      ],
+      "estimatedMinutes": 25,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "runtime-resilience"
+    },
+    {
+      "id": "resilience-patterns",
+      "package": "resilience-patterns-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "resilience",
+      "prerequisites": [
+        "retry-dlq"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "runtime-resilience"
+    },
+    {
+      "id": "reference-todo-api",
+      "package": "reference-todo-api",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "reference",
+      "prerequisites": [
+        "flat-api",
+        "routing-params"
+      ],
+      "estimatedMinutes": 30,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "reference-apps"
+    },
+    {
+      "id": "admin-crud",
+      "package": "admin-crud-demo",
+      "tier": "core",
+      "difficulty": "intermediate",
+      "category": "http",
+      "prerequisites": [
+        "reference-todo-api",
+        "openapi"
+      ],
+      "estimatedMinutes": 35,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "http-adapters"
+    },
+    {
+      "id": "reference-fullstack-admin",
+      "package": "reference-fullstack-admin",
+      "tier": "core",
+      "difficulty": "advanced",
+      "category": "reference",
+      "prerequisites": [
+        "admin-crud",
+        "openapi"
+      ],
+      "estimatedMinutes": 40,
+      "runtimeRequirements": [
+        "nodejs"
+      ],
+      "supportTier": "supported",
+      "owner": "reference-apps"
+    },
+    {
+      "id": "request-governance-demo",
+      "package": "request-governance-demo",
+      "tier": "core",
+      "difficulty": "advanced",
+      "category": "enterprise",
+      "prerequisites": [
+        "admin-crud"
+      ],
+      "estimatedMinutes": 30,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "operations"
+    },
+    {
+      "id": "reference-ecommerce-order",
+      "package": "reference-ecommerce-order",
+      "tier": "core",
+      "difficulty": "advanced",
+      "category": "reference",
+      "prerequisites": [
+        "order-processing",
+        "audit",
+        "multitenancy"
+      ],
+      "estimatedMinutes": 40,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "reference-apps"
+    },
+    {
+      "id": "reference-chat-server",
+      "package": "reference-chat-server",
+      "tier": "core",
+      "difficulty": "advanced",
+      "category": "reference",
+      "prerequisites": [
+        "websocket",
+        "session-pattern"
+      ],
+      "estimatedMinutes": 35,
+      "runtimeRequirements": [],
+      "supportTier": "supported",
+      "owner": "reference-apps"
+    },
+    {
+      "id": "experimental-fullstack-demo",
+      "package": "fullstack-demo",
+      "path": "examples/experimental/fullstack-demo",
+      "tier": "repo",
+      "difficulty": "advanced",
+      "category": "reference",
+      "prerequisites": [
+        "reference-fullstack-admin"
+      ],
+      "estimatedMinutes": 40,
+      "runtimeRequirements": [
+        "nodejs"
+      ],
+      "supportTier": "archive",
+      "owner": "reference-apps"
+    },
+    {
+      "id": "experimental-replay-demo",
+      "package": "replay-demo",
+      "path": "examples/experimental/replay-demo",
+      "tier": "repo",
+      "difficulty": "advanced",
+      "category": "observe",
+      "prerequisites": [
+        "basic-schematic"
+      ],
+      "estimatedMinutes": 25,
+      "runtimeRequirements": [],
+      "supportTier": "archive",
+      "owner": "observability"
+    },
+    {
+      "id": "experimental-state-tree-demo",
+      "package": "state-tree-demo",
+      "path": "examples/experimental/state-tree-demo",
+      "tier": "repo",
+      "difficulty": "intermediate",
+      "category": "core",
+      "prerequisites": [
+        "typed-state-tree"
+      ],
+      "estimatedMinutes": 20,
+      "runtimeRequirements": [],
+      "supportTier": "archive",
+      "owner": "runtime-core"
+    },
+    {
+      "id": "experimental-persistence-recovery-demo",
+      "package": "persistence-recovery-demo",
+      "path": "examples/experimental/persistence-recovery-demo",
+      "tier": "repo",
+      "difficulty": "advanced",
+      "category": "resilience",
+      "prerequisites": [
+        "state-persistence"
+      ],
+      "estimatedMinutes": 30,
+      "runtimeRequirements": [],
+      "supportTier": "archive",
+      "owner": "runtime-resilience"
+    }
+  ],
+  "supportTiers": {
+    "canonical": "First-run examples for onboarding and release smoke. Must build and test without external runtime services.",
+    "supported": "Maintained examples and reference apps. Must build in CI; tests run when no external runtime service is required.",
+    "lab": "Advanced or integration-heavy examples. Kept buildable where practical but excluded from production-support claims.",
+    "archive": "Historical or exploratory examples retained only for reference; excluded from public support and release gates."
+  }
 }
