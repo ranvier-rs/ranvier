@@ -469,6 +469,7 @@ pub fn streaming_transition(attr: TokenStream, item: TokenStream) -> TokenStream
 }
 
 /// Extract (Item, Error) from `Result<impl Stream<Item = T> [+ Send], E>`.
+#[cfg(feature = "streaming")]
 fn extract_result_stream_types(
     ty: &Type,
 ) -> Option<(quote::__private::TokenStream, quote::__private::TokenStream)> {
@@ -496,6 +497,7 @@ fn extract_result_stream_types(
 
 /// Extract the `Item` associated type from `impl Stream<Item = T>` or
 /// `Pin<Box<dyn Stream<Item = T> + Send>>`.
+#[cfg(feature = "streaming")]
 fn extract_stream_item_type(ty: &Type) -> Option<quote::__private::TokenStream> {
     match ty {
         // Case 1: impl Stream<Item = T> [+ Send]
@@ -552,6 +554,7 @@ fn extract_stream_item_type(ty: &Type) -> Option<quote::__private::TokenStream> 
 
 /// Given a path like `Stream<Item = T>` or `futures_core::Stream<Item = T>`,
 /// extract the `T` from the `Item` associated type binding.
+#[cfg(feature = "streaming")]
 fn extract_item_from_stream_path(path: &syn::Path) -> Option<quote::__private::TokenStream> {
     let segment = path.segments.last()?;
     if segment.ident != "Stream" {
