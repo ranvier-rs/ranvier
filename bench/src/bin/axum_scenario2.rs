@@ -30,7 +30,7 @@ struct AppState {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let token_secret = "bench-secret-key".to_string();
+    let token_secret = "bench-secret-key-for-hs256-32-bytes".to_string();
 
     if args.len() > 1 && args[1] == "gen-token" {
         let token = generate_bench_token(&token_secret)?;

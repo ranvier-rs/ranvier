@@ -22,7 +22,7 @@ async def root():
 # Scenario 2: Complex Auth Flow
 # Matches axum_scenario2.rs and scenario2_server.rs
 # -------------------------------------------------------------
-SECRET_KEY = "bench-secret-key"
+SECRET_KEY = "bench-secret-key-for-hs256-32-bytes"
 
 async def verify_token(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):

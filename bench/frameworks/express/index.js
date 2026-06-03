@@ -1,7 +1,7 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 
-const SECRET_KEY = "bench-secret-key";
+const SECRET_KEY = "bench-secret-key-for-hs256-32-bytes";
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT_BASE = Number.parseInt(process.env.PORT_BASE || "3000", 10);
 

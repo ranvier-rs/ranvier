@@ -29,7 +29,7 @@ async fn verify_token(_input: (), _res: &(), bus: &mut Bus) -> Outcome<Claims, S
 
     match decode::<Claims>(
         &token,
-        &DecodingKey::from_secret(b"bench-secret-key"),
+        &DecodingKey::from_secret(b"bench-secret-key-for-hs256-32-bytes"),
         &validation,
     ) {
         Ok(data) => {
@@ -57,7 +57,7 @@ async fn final_response(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let token_secret = "bench-secret-key";
+    let token_secret = "bench-secret-key-for-hs256-32-bytes";
 
     if args.len() > 1 && args[1] == "gen-token" {
         let token = generate_bench_token(token_secret)?;

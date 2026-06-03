@@ -1,14 +1,16 @@
 # run_fastapi.ps1
 param (
-    [string]$Scenario = "1"
+    [string]$Scenario = "1",
+    [string]$HostName = "0.0.0.0",
+    [int]$PortBase = 3000
 )
 
 # Start Uvicorn for the specified scenario in the background
 $appName = "app" + $Scenario
-$port = 3000 + ([int]$Scenario - 1)
+$port = $PortBase + ([int]$Scenario - 1)
 
-Write-Host "Starting FastAPI Scenario $Scenario on port $port..."
-Start-Process "uvicorn" -ArgumentList "main:$appName", "--host", "0.0.0.0", "--port", "$port", "--workers", "1", "--log-level", "warning" -NoNewWindow
+Write-Host "Starting FastAPI Scenario $Scenario on $HostName`:$port..."
+Start-Process "uvicorn" -ArgumentList "main:$appName", "--host", "$HostName", "--port", "$port", "--workers", "1", "--log-level", "warning" -NoNewWindow
 
 Start-Sleep -Seconds 2
 

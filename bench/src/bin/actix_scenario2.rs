@@ -32,7 +32,7 @@ async fn protected_handler(req: HttpRequest) -> HttpResponse {
 
     let token_data = match decode::<Claims>(
         token,
-        &DecodingKey::from_secret(b"bench-secret-key"),
+        &DecodingKey::from_secret(b"bench-secret-key-for-hs256-32-bytes"),
         &validation,
     ) {
         Ok(data) => data,
@@ -54,7 +54,7 @@ async fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() > 1 && args[1] == "gen-token" {
-        let token = generate_bench_token("bench-secret-key").unwrap();
+        let token = generate_bench_token("bench-secret-key-for-hs256-32-bytes").unwrap();
         print!("{}", token);
         return Ok(());
     }
