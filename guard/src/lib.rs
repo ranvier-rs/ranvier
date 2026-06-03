@@ -1685,7 +1685,7 @@ pub use advanced_guards::*;
 mod distributed;
 
 #[cfg(feature = "distributed")]
-pub use distributed::DistributedRateLimitGuard;
+pub use distributed::{DistributedRateLimitFailureMode, DistributedRateLimitGuard};
 
 // ---------------------------------------------------------------------------
 // Prelude
@@ -1709,7 +1709,7 @@ pub mod prelude {
     };
 
     #[cfg(feature = "distributed")]
-    pub use crate::distributed::DistributedRateLimitGuard;
+    pub use crate::distributed::{DistributedRateLimitFailureMode, DistributedRateLimitGuard};
 }
 
 // ---------------------------------------------------------------------------

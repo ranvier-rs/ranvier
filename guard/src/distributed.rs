@@ -16,6 +16,21 @@ use tokio::sync::Mutex;
 
 use crate::ClientIdentity;
 
+/// Behavior when the distributed rate-limit backend is unavailable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DistributedRateLimitFailureMode {
+    /// Preserve availability by allowing the request and logging the backend error.
+    FailOpen,
+    /// Preserve the rate-limit guarantee by rejecting the request.
+    FailClosed,
+}
+
+impl Default for DistributedRateLimitFailureMode {
+    fn default() -> Self {
+        Self::FailOpen
+    }
+}
+
 /// Distributed rate limit guard using Redis sliding window.
 ///
 /// Uses a sorted set per client with timestamps as scores.
@@ -42,6 +57,7 @@ pub struct DistributedRateLimitGuard<T> {
     max_requests: u64,
     window_ms: u64,
     key_prefix: String,
+    failure_mode: DistributedRateLimitFailureMode,
     _marker: PhantomData<T>,
 }
 
@@ -64,6 +80,7 @@ impl<T> DistributedRateLimitGuard<T> {
             max_requests,
             window_ms: window.as_millis() as u64,
             key_prefix: "ranvier:ratelimit:".to_string(),
+            failure_mode: DistributedRateLimitFailureMode::default(),
             _marker: PhantomData,
         })
     }
@@ -71,6 +88,17 @@ impl<T> DistributedRateLimitGuard<T> {
     /// Set a custom key prefix for Redis keys (default: "ranvier:ratelimit:").
     pub fn with_key_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.key_prefix = prefix.into();
+        self
+    }
+
+    /// Set behavior when Redis is unavailable.
+    ///
+    /// The default is [`DistributedRateLimitFailureMode::FailOpen`] for
+    /// backwards compatibility. Production services that treat rate limiting as
+    /// a security control should choose
+    /// [`DistributedRateLimitFailureMode::FailClosed`].
+    pub fn with_failure_mode(mut self, failure_mode: DistributedRateLimitFailureMode) -> Self {
+        self.failure_mode = failure_mode;
         self
     }
 
@@ -83,6 +111,36 @@ impl<T> DistributedRateLimitGuard<T> {
     pub fn window_ms(&self) -> u64 {
         self.window_ms
     }
+
+    /// Returns Redis dependency failure behavior.
+    pub fn failure_mode(&self) -> DistributedRateLimitFailureMode {
+        self.failure_mode
+    }
+
+    fn redis_error_outcome(
+        input: T,
+        failure_mode: DistributedRateLimitFailureMode,
+        error: redis::RedisError,
+    ) -> Outcome<T, String> {
+        match failure_mode {
+            DistributedRateLimitFailureMode::FailOpen => {
+                tracing::warn!(
+                    error = %error,
+                    "Distributed rate limit Redis error; failing open"
+                );
+                Outcome::next(input)
+            }
+            DistributedRateLimitFailureMode::FailClosed => {
+                tracing::error!(
+                    error = %error,
+                    "Distributed rate limit Redis error; failing closed"
+                );
+                Outcome::fault(format!(
+                    "Distributed rate limit backend unavailable: {error}"
+                ))
+            }
+        }
+    }
 }
 
 impl<T> Clone for DistributedRateLimitGuard<T> {
@@ -92,6 +150,7 @@ impl<T> Clone for DistributedRateLimitGuard<T> {
             max_requests: self.max_requests,
             window_ms: self.window_ms,
             key_prefix: self.key_prefix.clone(),
+            failure_mode: self.failure_mode,
             _marker: PhantomData,
         }
     }
@@ -103,6 +162,7 @@ impl<T> std::fmt::Debug for DistributedRateLimitGuard<T> {
             .field("max_requests", &self.max_requests)
             .field("window_ms", &self.window_ms)
             .field("key_prefix", &self.key_prefix)
+            .field("failure_mode", &self.failure_mode)
             .finish()
     }
 }
@@ -172,11 +232,7 @@ where
                     ))
                 }
             }
-            Err(e) => {
-                // Redis error — fail open (allow the request) but log warning
-                tracing::warn!(error = %e, "Distributed rate limit Redis error — failing open");
-                Outcome::next(input)
-            }
+            Err(e) => Self::redis_error_outcome(input, self.failure_mode, e),
         }
     }
 }
@@ -184,6 +240,34 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn redis_error() -> redis::RedisError {
+        redis::RedisError::from((redis::ErrorKind::IoError, "simulated Redis backend failure"))
+    }
+
+    #[test]
+    fn redis_error_outcome_fails_open_by_default() {
+        let outcome = DistributedRateLimitGuard::<String>::redis_error_outcome(
+            "ok".to_string(),
+            DistributedRateLimitFailureMode::default(),
+            redis_error(),
+        );
+
+        assert!(matches!(outcome, Outcome::Next(value) if value == "ok"));
+    }
+
+    #[test]
+    fn redis_error_outcome_can_fail_closed() {
+        let outcome = DistributedRateLimitGuard::<String>::redis_error_outcome(
+            "ok".to_string(),
+            DistributedRateLimitFailureMode::FailClosed,
+            redis_error(),
+        );
+
+        assert!(
+            matches!(outcome, Outcome::Fault(message) if message.contains("backend unavailable"))
+        );
+    }
 
     // Integration tests require a running Redis instance.
     // Run with: REDIS_URL=redis://127.0.0.1:6379 cargo test -p ranvier-guard --features distributed
