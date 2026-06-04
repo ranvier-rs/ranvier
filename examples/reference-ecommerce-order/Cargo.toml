@@ -23,7 +23,7 @@ tokio           = { version = "1", features = ["full"] }
 tracing         = "0.1"
 tracing-subscriber = "0.3"
 jsonwebtoken    = "9"
-thiserror       = "1.0"
+thiserror       = "2"
 uuid            = { version = "1.6", features = ["v4"] }
 chrono          = { version = "0.4", features = ["serde"] }
 schemars        = { version = "1", features = ["derive"] }
