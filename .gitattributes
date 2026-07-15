@@ -1,1 +1,4 @@
 examples/typescript-codegen-demo/bindings/*.ts text eol=lf
+.ranvier-api-policy.json text eol=lf
+api-surface-inventory.json text eol=lf
+scripts/*.mjs text eol=lf

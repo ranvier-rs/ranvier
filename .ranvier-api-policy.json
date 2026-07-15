@@ -1,0 +1,183 @@
+{
+  "schema_version": "1.0.0",
+  "product_version": "0.51.0",
+  "tiers": [
+    "Stable Candidate",
+    "Experimental",
+    "Internal/not promised",
+    "Deprecated"
+  ],
+  "owners": {
+    "runtime-core": "Transition, Outcome, Bus, Schematic, and Axon contracts",
+    "http-adapters": "native HTTP and Tower/Axum integration contracts",
+    "developer-tooling": "macros, testing helpers, and facade ergonomics",
+    "security-ops": "guards, audit, Inspector, compliance, and operational extensions"
+  },
+  "crates": {
+    "ranvier-core": {
+      "default_tier": "Experimental",
+      "owner": "runtime-core",
+      "rules": [
+        { "prefix": "ranvier_core::transition::Transition", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::transition::ResourceRequirement", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::outcome::Outcome", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::outcome::BranchId", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::outcome::NodeId", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::bus::Bus", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::bus::BusAccessError", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::bus::BusAccessPolicy", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::bus::BusTypeRef", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::schematic::Schematic", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::schematic::Node", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::schematic::NodeKind", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::schematic::Edge", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::schematic::EdgeType", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::schematic::Position", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::schematic::SourceLocation", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::schematic::BusCapabilitySchema", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::schematic::SCHEMA_VERSION", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::schematic::is_supported_schema_version", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_core::never::Never", "tier": "Stable Candidate" }
+      ],
+      "boundaries": [
+        { "prefix": "ranvier_core::bus", "kind": "runtime-type-erased-resource" },
+        { "prefix": "ranvier_core::outcome::Outcome::Branch", "kind": "schema-described-json-control-payload" },
+        { "prefix": "ranvier_core::outcome::Outcome::Jump", "kind": "schema-described-json-control-payload" },
+        { "prefix": "ranvier_core::outcome::Outcome::Emit", "kind": "schema-described-json-control-payload" }
+      ]
+    },
+    "ranvier-runtime": {
+      "default_tier": "Experimental",
+      "owner": "runtime-core",
+      "rules": [
+        { "prefix": "ranvier_runtime::Axon", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::Transition", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::Outcome", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::Bus", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::Schematic", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::axon::Axon", "match": "exact", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::axon::Axon::new", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::axon::Axon::start", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::axon::Axon::simple", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::axon::Axon::typed", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::axon::Axon::then", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::axon::Axon::then_fn", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::axon::Axon::execute", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::axon::Axon::execute_simple", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::axon::Axon::schematic", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::axon::Axon::into_schematic", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::axon::Axon::export_schematic", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::axon::Axon::with_version", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::axon::Axon::with_input_schema", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_runtime::axon::Axon::with_output_schema", "tier": "Stable Candidate" }
+      ]
+    },
+    "ranvier-http": {
+      "default_tier": "Experimental",
+      "owner": "http-adapters",
+      "rules": [
+        { "prefix": "ranvier_http::Ranvier", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::HttpIngress", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::RanvierService", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::Json", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress", "match": "exact", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress::new", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress::bind", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress::config", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress::get", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress::post", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress::put", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress::delete", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress::patch", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress::post_json", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress::post_typed", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress::route", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress::guard", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress::run", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress::graceful_shutdown", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress::into_raw_service", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::ingress::HttpIngress::route_descriptors", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_http::service::RanvierService", "tier": "Stable Candidate" }
+      ],
+      "boundaries": [
+        { "prefix": "ranvier_http", "kind": "runtime-validated-protocol-boundary" }
+      ]
+    },
+    "ranvier-macros": {
+      "default_tier": "Experimental",
+      "owner": "developer-tooling",
+      "rules": [
+        { "prefix": "ranvier_macros::transition", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_macros::ResourceRequirement", "tier": "Stable Candidate" }
+      ]
+    },
+    "ranvier": {
+      "default_tier": "Experimental",
+      "owner": "developer-tooling",
+      "rules": [
+        { "prefix": "ranvier::Transition", "tier": "Stable Candidate" },
+        { "prefix": "ranvier::Outcome", "tier": "Stable Candidate" },
+        { "prefix": "ranvier::Bus", "tier": "Stable Candidate" },
+        { "prefix": "ranvier::Schematic", "tier": "Stable Candidate" },
+        { "prefix": "ranvier::Axon", "tier": "Stable Candidate" },
+        { "prefix": "ranvier::Ranvier", "tier": "Stable Candidate" },
+        { "prefix": "ranvier::HttpIngress", "tier": "Stable Candidate" },
+        { "prefix": "ranvier::transition", "tier": "Stable Candidate" }
+      ]
+    },
+    "ranvier-test": {
+      "default_tier": "Experimental",
+      "owner": "developer-tooling"
+    },
+    "ranvier-std": {
+      "default_tier": "Experimental",
+      "owner": "developer-tooling"
+    },
+    "ranvier-guard": {
+      "default_tier": "Experimental",
+      "owner": "security-ops"
+    },
+    "ranvier-openapi": {
+      "default_tier": "Experimental",
+      "owner": "http-adapters"
+    },
+    "ranvier-inspector": {
+      "default_tier": "Experimental",
+      "owner": "security-ops"
+    },
+    "ranvier-audit": {
+      "default_tier": "Experimental",
+      "owner": "security-ops"
+    },
+    "ranvier-compliance": {
+      "default_tier": "Experimental",
+      "owner": "security-ops"
+    }
+  },
+  "deprecations": [
+    {
+      "prefix": "ranvier_core::static_gen::StaticNode",
+      "replacement": "ranvier_core::static_gen::StaticAxon",
+      "removal_condition": "No supported example or published consumer uses StaticNode for two consecutive supported minor releases.",
+      "earliest_removal": "0.54.0"
+    },
+    {
+      "prefix": "ranvier_core::static_gen::write_json_file",
+      "replacement": "serde_json plus application-owned filesystem I/O",
+      "removal_condition": "Internal callers are removed and the migration note has shipped for two supported minor releases.",
+      "earliest_removal": "0.54.0"
+    },
+    {
+      "prefix": "ranvier_core::static_gen::read_json_file",
+      "replacement": "serde_json plus application-owned filesystem I/O",
+      "removal_condition": "Internal callers are removed and the migration note has shipped for two supported minor releases.",
+      "earliest_removal": "0.54.0"
+    },
+    {
+      "prefix": "ranvier_compliance::XorEncryption",
+      "replacement": "an application-supplied authenticated-encryption hook such as AES-GCM or ChaCha20Poly1305",
+      "removal_condition": "The xor-demo feature has no supported consumer and security migration guidance is published.",
+      "earliest_removal": "0.53.0"
+    }
+  ]
+}
