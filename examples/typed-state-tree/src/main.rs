@@ -116,10 +116,8 @@ async fn main() -> anyhow::Result<()> {
     println!("--- Case 1: Valid Path ---");
     let input1 = FlowState::RequestReceived("/dashboard".to_string());
     match axon.execute(input1, &(), &mut bus).await {
-        Outcome::Next(final_state) => {
-            if let FlowState::ContentLoaded { data, .. } = final_state {
-                println!("Success! Final Data: {}", data);
-            }
+        Outcome::Next(FlowState::ContentLoaded { data, .. }) => {
+            println!("Success! Final Data: {}", data);
         }
         Outcome::Fault(e) => println!("Error: {}", e),
         _ => {}

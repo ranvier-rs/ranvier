@@ -31,10 +31,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Generate workspace coverage
+      - name: Generate default developer-surface coverage
         run: |
           cargo tarpaulin \
-            --workspace \
             --features streaming \
             --timeout 300 \
             --out xml json \

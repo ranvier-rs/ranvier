@@ -193,12 +193,47 @@ function verifyPortfolio(manifest) {
     ["archive", "excluded"],
   ]);
   const entriesById = new Map();
+  const expectedGatePolicy = new Map([
+    ["developer", { timeoutMinutes: 30, evidenceRetentionDays: 30 }],
+    ["release", { timeoutMinutes: 45, evidenceRetentionDays: 30 }],
+    ["scheduled-lab", { timeoutMinutes: 60, evidenceRetentionDays: 30 }],
+    ["excluded", { timeoutMinutes: 0, evidenceRetentionDays: 0 }],
+  ]);
 
   if (manifest.portfolioPolicy?.maxCanonical !== 5) {
     errors.push("portfolioPolicy.maxCanonical must be 5");
   }
   if (manifest.portfolioPolicy?.maxSupported !== 12) {
     errors.push("portfolioPolicy.maxSupported must be 12");
+  }
+
+  for (const [gate, expected] of expectedGatePolicy) {
+    const policy = manifest.gatePolicy?.[gate];
+    if (!policy || typeof policy !== "object") {
+      errors.push(`missing gatePolicy.${gate}`);
+      continue;
+    }
+    for (const field of ["owner", "trigger"]) {
+      if (typeof policy[field] !== "string" || policy[field].trim() === "") {
+        errors.push(`gatePolicy.${gate}.${field} must be a non-empty string`);
+      }
+    }
+    if (policy.timeoutMinutes !== expected.timeoutMinutes) {
+      errors.push(
+        `gatePolicy.${gate}.timeoutMinutes must be ${expected.timeoutMinutes}`
+      );
+    }
+    if (policy.retry !== "none") {
+      errors.push(`gatePolicy.${gate}.retry must be none`);
+    }
+    if (policy.evidenceRetentionDays !== expected.evidenceRetentionDays) {
+      errors.push(
+        `gatePolicy.${gate}.evidenceRetentionDays must be ${expected.evidenceRetentionDays}`
+      );
+    }
+    if (gate === "release" && policy.nodeMajor !== 24) {
+      errors.push("gatePolicy.release.nodeMajor must be 24");
+    }
   }
 
   for (const tier of validSupportTiers) {

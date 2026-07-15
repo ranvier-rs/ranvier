@@ -31,7 +31,7 @@ metadata. Each example entry has:
 
 | Support tier | Count | CI obligation | Documentation obligation |
 |---|---:|---|---|
-| Canonical | 5 | `cargo build` and `cargo test` without external runtime services | First-run guide path and expected output |
+| Canonical | 5 | Default developer `cargo check`, `cargo test`, and Clippy without external runtime services | First-run guide path and expected output |
 | Supported | 12 | Release gate; tests run when `runtimeRequirements` is empty | Owner, runtime requirements, manual link, and maintenance rationale |
 | Lab | 54 | Scheduled/on-demand lab gate; no routine release promise | Explicit runtime requirements and caveats |
 | Archive | 4 | Excluded from release gates | Historical/exploratory only |
@@ -66,6 +66,16 @@ The portfolio cap is five Canonical and twelve Supported examples. A new
 maintained example must prove a gap, name an owner and gate, provide a manual
 link, and define how it will be retired or replace an existing example.
 
+Routine Cargo commands use workspace `default-members`, which is verified as
+exactly the 12 product crates plus five Canonical examples. Release tags and
+explicit pre-release dispatches run the Supported lane. A weekly or explicit
+Lab lane checks all 54 Lab packages; it does not claim that optional external
+services were exercised. Archive entries cannot be selected by the gate
+runner. Every executable lane enforces its time budget and records its owner,
+duration, fail-fast/no-retry policy, selected packages, and command results as
+a 30-day CI artifact. The Supported Node project is pinned to the workspace's
+Node 24 release baseline.
+
 Supported, lab, and archive assignments are intentionally machine-owned in
 `.ranvier-examples-manifest.json`. The compatibility catalog at
 `examples/catalog.json` keeps the legacy A/B/C/D tier field for CLI and VS Code
@@ -75,6 +85,9 @@ consumers, but also mirrors `support_tier` and `owner`. Use:
 node scripts/list_manifest_examples.mjs --verify-portfolio --verify-workspace-members
 node scripts/list_manifest_examples.mjs --support-tiers canonical,supported
 node scripts/list_manifest_examples.mjs --support-tiers canonical,supported --runtime none
+node scripts/tiered_example_gate.mjs --lane developer --phase check
+node scripts/tiered_example_gate.mjs --lane release --phase all
+node scripts/tiered_example_gate.mjs --lane lab --phase all
 ```
 
 ---

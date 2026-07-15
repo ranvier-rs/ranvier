@@ -10,6 +10,37 @@
     "admission": "A new maintained example must prove a gap in the canonical or supported set, name an owner and CI gate, and define a retirement or replacement rule.",
     "retirement": "Demote duplicate or unowned examples to lab/archive before expanding the maintained set."
   },
+  "gatePolicy": {
+    "developer": {
+      "owner": "runtime-core",
+      "trigger": "Every main push and pull request; also the default local Cargo surface.",
+      "timeoutMinutes": 30,
+      "retry": "none",
+      "evidenceRetentionDays": 30
+    },
+    "release": {
+      "owner": "release-engineering",
+      "trigger": "Release tag or explicit pre-release dispatch.",
+      "timeoutMinutes": 45,
+      "retry": "none",
+      "evidenceRetentionDays": 30,
+      "nodeMajor": 24
+    },
+    "scheduled-lab": {
+      "owner": "example-maintainers",
+      "trigger": "Weekly schedule or explicit maintainer dispatch.",
+      "timeoutMinutes": 60,
+      "retry": "none",
+      "evidenceRetentionDays": 30
+    },
+    "excluded": {
+      "owner": "archive-curator",
+      "trigger": "Never selected by an automated build promise.",
+      "timeoutMinutes": 0,
+      "retry": "none",
+      "evidenceRetentionDays": 0
+    }
+  },
   "tiers": {
     "core": "Web Main showcase — independent, essential learning path, no external infra required",
     "lab": "Advanced patterns — may require external infrastructure (databases, message brokers, etc.)",

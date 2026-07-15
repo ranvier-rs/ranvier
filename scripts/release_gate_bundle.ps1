@@ -442,8 +442,9 @@ function Invoke-LocalReleaseChecks {
 
     $checks.Add((Invoke-SubmoduleStatusGate -RootWorkspace $RootWorkspace -LogPath $LogPath))
     $checks.Add((Invoke-VersionDriftGate -RootWorkspace $RootWorkspace -RanvierWorkspace $RanvierWorkspace -ProfileKey $ProfileKey -LogPath $LogPath))
-    $checks.Add((Invoke-GateCommand -Name "ranvier cargo check workspace locked" -Executable "cargo" -Arguments @("check", "--workspace", "--locked") -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
-    $checks.Add((Invoke-GateCommand -Name "ranvier cargo test workspace locked" -Executable "cargo" -Arguments @("test", "--workspace", "--locked") -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "ranvier developer surface check" -Executable "node" -Arguments @("scripts/tiered_example_gate.mjs", "--lane", "developer", "--phase", "check") -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "ranvier developer surface test" -Executable "node" -Arguments @("scripts/tiered_example_gate.mjs", "--lane", "developer", "--phase", "test") -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "ranvier supported example release gate" -Executable "node" -Arguments @("scripts/tiered_example_gate.mjs", "--lane", "release", "--phase", "all") -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
 
     if ($SkipClippy) {
         Write-Log -Path $LogPath -Message "skipping publishable crate clippy gate by request"

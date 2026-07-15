@@ -92,6 +92,29 @@ members = [
     "examples/eligibility-rule-chain",
 ]
 
+# Routine local and CI commands intentionally cover only product crates plus
+# Canonical examples. Release and Lab examples are selected from the manifest
+# by scripts/tiered_example_gate.mjs.
+default-members = [
+    "core",
+    "runtime",
+    "http",
+    "std",
+    "guard",
+    "macros",
+    "testing",
+    "kit",
+    "extensions/openapi",
+    "extensions/inspector",
+    "extensions/audit",
+    "extensions/compliance",
+    "examples/hello-world",
+    "examples/typed-state-tree",
+    "examples/basic-schematic",
+    "examples/outcome-variants-demo",
+    "examples/otel-concept",
+]
+
 [workspace.package]
 authors = ["CELLAXON Inc."]
 license = "MIT OR Apache-2.0"

@@ -1,0 +1,82 @@
+name: Tiered Example Gates
+
+on:
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: Example validation lane
+        required: true
+        default: release
+        type: choice
+        options:
+          - release
+          - lab
+          - all
+  push:
+    tags:
+      - "v*"
+  schedule:
+    - cron: "17 3 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tiered-examples-${{ github.workflow }}-${{ github.ref }}-${{ inputs.lane || 'scheduled' }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+jobs:
+  release:
+    name: Supported release lane
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' &&
+      (inputs.lane == 'release' || inputs.lane == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: examples/reference-fullstack-admin/frontend/package-lock.json
+      - run: node scripts/list_manifest_examples.mjs --verify-portfolio --verify-workspace-members
+      - run: node scripts/tiered_example_gate.mjs --lane release --phase all
+      - name: Upload release gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-gate-release-${{ github.run_id }}
+          path: target/tier-gate-evidence/release.json
+          if-no-files-found: error
+          retention-days: 30
+
+  lab:
+    name: Scheduled Lab compile lane
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' &&
+      (inputs.lane == 'lab' || inputs.lane == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: node scripts/list_manifest_examples.mjs --verify-portfolio --verify-workspace-members
+      - run: node scripts/tiered_example_gate.mjs --lane lab --phase all
+      - name: Upload Lab gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier-gate-lab-${{ github.run_id }}
+          path: target/tier-gate-evidence/lab.json
+          if-no-files-found: error
+          retention-days: 30
