@@ -9,7 +9,10 @@ pub mod relay;
 pub mod routes;
 pub mod schema;
 pub mod stall;
+mod trace_registry;
 pub mod trace_store;
+
+use trace_registry::TraceRegistryStorage;
 
 use async_trait::async_trait;
 use axum::{
@@ -28,7 +31,7 @@ use ranvier_core::prelude::DebugControl;
 use ranvier_core::schematic::{NodeKind, Schematic};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -77,13 +80,7 @@ pub enum TraceStatus {
 }
 
 pub struct ActiveTraceRegistry {
-    active: HashMap<String, TraceRecord>,
-    recent: VecDeque<TraceRecord>,
-    max_recent: usize,
-    /// TTL in milliseconds. Traces older than this are pruned on insertion.
-    trace_ttl_ms: u64,
-    ttl_pruned: u64,
-    capacity_evicted: u64,
+    storage: TraceRegistryStorage,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
@@ -98,119 +95,40 @@ pub struct TraceRegistryStats {
 impl ActiveTraceRegistry {
     fn new() -> Self {
         Self {
-            active: HashMap::new(),
-            recent: VecDeque::new(),
-            max_recent: 10_000,
-            trace_ttl_ms: 3_600_000, // 1 hour default
-            ttl_pruned: 0,
-            capacity_evicted: 0,
+            storage: TraceRegistryStorage::new(10_000, 3_600_000),
         }
     }
 
     fn with_config(max_recent: usize, trace_ttl_ms: u64) -> Self {
         Self {
-            active: HashMap::new(),
-            recent: VecDeque::new(),
-            max_recent,
-            trace_ttl_ms,
-            ttl_pruned: 0,
-            capacity_evicted: 0,
+            storage: TraceRegistryStorage::new(max_recent, trace_ttl_ms),
         }
     }
 
     fn register(&mut self, circuit: String) {
-        let trace_id = format!(
-            "{}-{}",
-            circuit.replace(' ', "_").to_lowercase(),
-            epoch_ms()
-        );
-        self.active.insert(
-            trace_id.clone(),
-            TraceRecord {
-                trace_id,
-                circuit,
-                status: TraceStatus::Active,
-                started_at: epoch_ms(),
-                finished_at: None,
-                duration_ms: None,
-                outcome_type: None,
-            },
-        );
+        self.storage.register(circuit);
     }
 
     fn complete(&mut self, circuit: &str, outcome_type: Option<String>, duration_ms: Option<u64>) {
-        // Find the active trace for this circuit (most recent)
-        let key = self
-            .active
-            .iter()
-            .filter(|(_, r)| r.circuit == circuit)
-            .max_by_key(|(_, r)| r.started_at)
-            .map(|(k, _)| k.clone());
-
-        if let Some(key) = key {
-            if let Some(mut record) = self.active.remove(&key) {
-                record.finished_at = Some(epoch_ms());
-                record.duration_ms = duration_ms;
-                record.outcome_type = outcome_type.clone();
-                record.status = if outcome_type.as_deref() == Some("Fault") {
-                    TraceStatus::Faulted
-                } else {
-                    TraceStatus::Completed
-                };
-
-                // Prune expired traces before inserting
-                self.prune_expired();
-
-                self.recent.push_back(record);
-                while self.recent.len() > self.max_recent {
-                    self.recent.pop_front();
-                    self.capacity_evicted = self.capacity_evicted.saturating_add(1);
-                }
-            }
-        }
-    }
-
-    /// Remove traces that have exceeded the TTL.
-    fn prune_expired(&mut self) {
-        if self.trace_ttl_ms == 0 {
-            return;
-        }
-        let cutoff = epoch_ms().saturating_sub(self.trace_ttl_ms);
-        while let Some(front) = self.recent.front() {
-            if front.started_at < cutoff {
-                self.recent.pop_front();
-                self.ttl_pruned = self.ttl_pruned.saturating_add(1);
-            } else {
-                break;
-            }
-        }
+        self.storage.complete(circuit, outcome_type, duration_ms);
     }
 
     fn list_all(&self) -> Vec<TraceRecord> {
-        let mut result: Vec<TraceRecord> = self.active.values().cloned().collect();
-        result.extend(self.recent.iter().cloned());
-        result.sort_by_key(|record| std::cmp::Reverse(record.started_at));
-        result
+        self.storage.list_all()
     }
 
     /// Number of currently active (in-flight) traces.
     pub fn active_count(&self) -> usize {
-        self.active.len()
+        self.storage.active_count()
     }
 
     /// Number of recently completed traces in the ring buffer.
     pub fn recent_count(&self) -> usize {
-        self.recent.len()
+        self.storage.recent_count()
     }
 
     pub fn stats(&self) -> TraceRegistryStats {
-        TraceRegistryStats {
-            active_count: self.active.len(),
-            recent_count: self.recent.len(),
-            max_recent: self.max_recent,
-            ttl_pruned: self.ttl_pruned,
-            capacity_evicted: self.capacity_evicted,
-        }
+        self.storage.stats()
     }
 }
 
@@ -2941,76 +2859,6 @@ mod tests {
         assert_eq!(operator_with_tenant.status(), reqwest::StatusCode::OK);
 
         handle.abort();
-    }
-
-    #[test]
-    fn active_trace_registry_ring_buffer_evicts_oldest() {
-        let mut registry = ActiveTraceRegistry::with_config(3, 0);
-
-        for i in 0..5 {
-            let record = TraceRecord {
-                trace_id: format!("t-{i}"),
-                circuit: "Test".to_string(),
-                status: TraceStatus::Completed,
-                started_at: 1000 + i * 100,
-                finished_at: Some(1100 + i * 100),
-                duration_ms: Some(100),
-                outcome_type: Some("Next".to_string()),
-            };
-            registry.recent.push_back(record);
-            while registry.recent.len() > registry.max_recent {
-                registry.recent.pop_front();
-                registry.capacity_evicted = registry.capacity_evicted.saturating_add(1);
-            }
-        }
-
-        assert_eq!(registry.recent_count(), 3);
-        assert_eq!(registry.recent.front().unwrap().trace_id, "t-2");
-        assert_eq!(registry.recent.back().unwrap().trace_id, "t-4");
-        let stats = registry.stats();
-        assert_eq!(stats.capacity_evicted, 2);
-        assert_eq!(stats.ttl_pruned, 0);
-    }
-
-    #[test]
-    fn active_trace_registry_ttl_prunes_expired() {
-        let now = epoch_ms();
-        let mut registry = ActiveTraceRegistry::with_config(100, 1000); // 1 second TTL
-
-        // Insert a trace from 2 seconds ago
-        registry.recent.push_back(TraceRecord {
-            trace_id: "old".to_string(),
-            circuit: "Test".to_string(),
-            status: TraceStatus::Completed,
-            started_at: now.saturating_sub(2000),
-            finished_at: Some(now.saturating_sub(1900)),
-            duration_ms: Some(100),
-            outcome_type: Some("Next".to_string()),
-        });
-
-        // Insert a fresh trace
-        registry.recent.push_back(TraceRecord {
-            trace_id: "fresh".to_string(),
-            circuit: "Test".to_string(),
-            status: TraceStatus::Completed,
-            started_at: now,
-            finished_at: Some(now + 100),
-            duration_ms: Some(100),
-            outcome_type: Some("Next".to_string()),
-        });
-
-        // Prune should remove the old trace
-        registry.prune_expired();
-        assert_eq!(registry.recent_count(), 1);
-        assert_eq!(registry.recent.front().unwrap().trace_id, "fresh");
-        assert_eq!(registry.stats().ttl_pruned, 1);
-    }
-
-    #[test]
-    fn trace_registry_config_defaults() {
-        let config = TraceRegistryConfig::default();
-        assert_eq!(config.max_traces, 10_000);
-        assert_eq!(config.trace_ttl, std::time::Duration::from_secs(3600));
     }
 
     #[tokio::test]
