@@ -1,6 +1,6 @@
 {
   "schema_version": "2.0",
-  "generated_at": "2026-06-04T00:00:00Z",
+  "generated_at": "2026-07-16T00:00:00Z",
   "source": "ranvier-rs/ranvier",
   "workspace_version": "0.51.0",
   "entries": [
@@ -79,7 +79,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "http-adapters"
     },
     {
@@ -92,7 +92,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "runtime-core"
     },
     {
@@ -105,7 +105,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "http-adapters"
     },
     {
@@ -118,7 +118,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "security-ops"
     },
     {
@@ -130,7 +130,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "operations"
     },
     {
@@ -143,7 +143,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "http-adapters"
     },
     {
@@ -156,7 +156,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "http-adapters"
     },
     {
@@ -181,7 +181,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "http-adapters"
     },
     {
@@ -194,7 +194,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "http-adapters"
     },
     {
@@ -219,7 +219,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "operations"
     },
     {
@@ -245,7 +245,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "operations"
     },
     {
@@ -258,7 +258,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "http-adapters"
     },
     {
@@ -271,7 +271,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "http-adapters"
     },
     {
@@ -310,7 +310,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "runtime-core"
     },
     {
@@ -337,7 +337,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "runtime-resilience"
     },
     {
@@ -390,7 +390,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "http-adapters"
     },
     {
@@ -458,7 +458,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "security-ops"
     },
     {
@@ -471,7 +471,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "security-ops"
     },
     {
@@ -484,7 +484,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "security-ops"
     },
     {
@@ -510,7 +510,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "operations"
     },
     {
@@ -550,7 +550,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "runtime-resilience"
     },
     {
@@ -563,7 +563,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "operations"
     },
     {
@@ -577,7 +577,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "runtime-core"
     },
     {
@@ -591,7 +591,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "security-ops"
     },
     {
@@ -605,7 +605,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "operations"
     },
     {
@@ -660,7 +660,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "data-integrations"
     },
     {
@@ -686,7 +686,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "data-integrations"
     },
     {
@@ -777,7 +777,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "data-integrations"
     },
     {
@@ -820,7 +820,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "runtime-core"
     },
     {
@@ -834,7 +834,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "runtime-core"
     },
     {
@@ -848,7 +848,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "runtime-core"
     },
     {
@@ -862,7 +862,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "runtime-core"
     },
     {
@@ -876,7 +876,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "runtime-core"
     },
     {
@@ -890,7 +890,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "runtime-core"
     },
     {
@@ -904,7 +904,7 @@
       ],
       "schematic_url": null,
       "has_prebuilt_schematic": false,
-      "support_tier": "supported",
+      "support_tier": "lab",
       "owner": "runtime-core"
     },
     {

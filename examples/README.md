@@ -1,6 +1,6 @@
 # Ranvier Examples
 
-**Updated:** 2026-06-04
+**Updated:** 2026-07-16
 **Workspace:** v0.51.0 release — 12 crates, Hyper 1.0 native (no tower/tower-http)
 **Purpose:** Keep examples aligned with the Typed Decision Engine direction:
 1. Axon execution is explicit.
@@ -24,13 +24,16 @@ metadata. Each example entry has:
 - `tier`: web publication grouping (`core`, `lab`, or `repo`);
 - `supportTier`: maintenance commitment (`canonical`, `supported`, `lab`, or
   `archive`);
-- `owner`: the maintainer area responsible for keeping the example aligned.
+- `owner`: the maintainer area responsible for keeping the example aligned;
+- `ciGate`: developer, release, scheduled-lab, or excluded cadence;
+- `manualLink`: user-facing instructions required for maintained examples;
+- `supportRationale`: why the example earns ongoing maintenance capacity.
 
 | Support tier | Count | CI obligation | Documentation obligation |
 |---|---:|---|---|
 | Canonical | 5 | `cargo build` and `cargo test` without external runtime services | First-run guide path and expected output |
-| Supported | 47 | `cargo build`; `cargo test` when `runtimeRequirements` is empty | Manifest metadata plus a clear run path |
-| Lab | 19 | Buildable where practical; excluded from production-support claims | Explicit runtime requirements and caveats |
+| Supported | 12 | Release gate; tests run when `runtimeRequirements` is empty | Owner, runtime requirements, manual link, and maintenance rationale |
+| Lab | 54 | Scheduled/on-demand lab gate; no routine release promise | Explicit runtime requirements and caveats |
 | Archive | 4 | Excluded from release gates | Historical/exploratory only |
 
 Canonical examples:
@@ -48,9 +51,20 @@ Archive examples:
 3. `experimental/state-tree-demo`
 4. `experimental/persistence-recovery-demo`
 
-Reference and governance examples such as `admin-crud-demo`,
-`reference-fullstack-admin`, and `request-governance-demo` are Supported tier
-entries owned in the manifest rather than duplicated as a hand-maintained list.
+The twelve Supported examples are the bounded official/bridge/reference set
+plus contract coverage for Bus, typed HTTP, persistence, testing, and
+retry/DLQ. Their exact identities and rationales live in the manifest. Other
+published examples remain discoverable as Lab material without inflating the
+routine release promise.
+
+The higher-cost public surfaces `admin-crud-demo`,
+`reference-fullstack-admin`, and `request-governance-demo` remain Supported;
+their explicit owners and release-gate obligations prevent them from becoming
+unowned showcase promises.
+
+The portfolio cap is five Canonical and twelve Supported examples. A new
+maintained example must prove a gap, name an owner and gate, provide a manual
+link, and define how it will be retired or replace an existing example.
 
 Supported, lab, and archive assignments are intentionally machine-owned in
 `.ranvier-examples-manifest.json`. The compatibility catalog at
@@ -93,3 +107,4 @@ consolidated or removed (23 → 10 crate consolidation):
    - Compiles on workspace baseline
    - Matches current Axon/Schematic boundary language
    - Includes a short run path and expected output
+   - Fits inside the maintained cap or replaces/de-scopes an existing entry

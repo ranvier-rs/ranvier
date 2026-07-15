@@ -186,6 +186,20 @@ function verifyPortfolio(manifest) {
   ]);
   const errors = [];
   const counts = new Map();
+  const expectedCiGate = new Map([
+    ["canonical", "developer"],
+    ["supported", "release"],
+    ["lab", "scheduled-lab"],
+    ["archive", "excluded"],
+  ]);
+  const entriesById = new Map();
+
+  if (manifest.portfolioPolicy?.maxCanonical !== 5) {
+    errors.push("portfolioPolicy.maxCanonical must be 5");
+  }
+  if (manifest.portfolioPolicy?.maxSupported !== 12) {
+    errors.push("portfolioPolicy.maxSupported must be 12");
+  }
 
   for (const tier of validSupportTiers) {
     if (typeof supportTiers[tier] !== "string" || supportTiers[tier].trim() === "") {
@@ -194,6 +208,11 @@ function verifyPortfolio(manifest) {
   }
 
   for (const entry of manifest.examples) {
+    if (entriesById.has(entry.id)) {
+      errors.push(`${entry.id}: duplicate example id`);
+    }
+    entriesById.set(entry.id, entry);
+
     if (!validSupportTiers.has(entry.supportTier)) {
       errors.push(`${entry.id ?? entry.package}: invalid or missing supportTier`);
     } else {
@@ -204,8 +223,48 @@ function verifyPortfolio(manifest) {
       errors.push(`${entry.id ?? entry.package}: missing owner`);
     }
 
+    if (
+      !Array.isArray(entry.runtimeRequirements) ||
+      entry.runtimeRequirements.some(
+        (item) => typeof item !== "string" || item.trim() === ""
+      )
+    ) {
+      errors.push(`${entry.id ?? entry.package}: runtimeRequirements must be an array of non-empty strings`);
+    }
+
+    if (entry.ciGate !== expectedCiGate.get(entry.supportTier)) {
+      errors.push(
+        `${entry.id}: ${entry.supportTier} examples must use ` +
+          `ciGate=${expectedCiGate.get(entry.supportTier)}`
+      );
+    }
+
+    if (["canonical", "supported"].includes(entry.supportTier)) {
+      if (
+        typeof entry.manualLink !== "string" ||
+        !/^https:\/\/ranvier\.dev\/docs\//.test(entry.manualLink)
+      ) {
+        errors.push(`${entry.id}: ${entry.supportTier} examples require a ranvier.dev manualLink`);
+      }
+      if (
+        entry.manualLink?.includes("/docs/examples-interactive#") &&
+        !entry.manualLink.endsWith(`#example-${entry.id}`)
+      ) {
+        errors.push(`${entry.id}: interactive manualLink must use its stable example anchor`);
+      }
+      if (typeof entry.supportRationale !== "string" || entry.supportRationale.trim() === "") {
+        errors.push(`${entry.id}: ${entry.supportTier} examples require supportRationale`);
+      }
+    }
+
     if (entry.supportTier === "canonical" && entry.tier !== "core") {
       errors.push(`${entry.id}: canonical examples must remain in web tier core`);
+    }
+    if (entry.supportTier === "supported" && entry.tier !== "core") {
+      errors.push(`${entry.id}: supported examples must remain in web tier core`);
+    }
+    if (entry.supportTier === "lab" && entry.tier !== "lab") {
+      errors.push(`${entry.id}: lab examples must use web tier lab`);
     }
     if (entry.supportTier === "archive" && entry.tier !== "repo") {
       errors.push(`${entry.id}: archive examples must use web tier repo`);
@@ -225,6 +284,24 @@ function verifyPortfolio(manifest) {
   for (const required of ["canonical", "supported", "lab", "archive"]) {
     if ((counts.get(required) ?? 0) === 0) {
       errors.push(`support tier has no examples: ${required}`);
+    }
+  }
+
+  if ((counts.get("canonical") ?? 0) > 5) {
+    errors.push(`canonical example cap exceeded: ${counts.get("canonical")}/5`);
+  }
+  if ((counts.get("supported") ?? 0) > 12) {
+    errors.push(`supported example cap exceeded: ${counts.get("supported")}/12`);
+  }
+
+  for (const learningPath of manifest.learningPaths ?? []) {
+    for (const step of learningPath.steps ?? []) {
+      const entry = entriesById.get(step);
+      if (!entry) {
+        errors.push(`learning path ${learningPath.id} references missing example ${step}`);
+      } else if (!["canonical", "supported"].includes(entry.supportTier)) {
+        errors.push(`learning path ${learningPath.id} references non-maintained example ${step}`);
+      }
     }
   }
 

@@ -1,12 +1,25 @@
 {
   "$schema": "https://ranvier.dev/schemas/examples-manifest-v1.json",
-  "version": "0.50.0",
-  "generated": "2026-06-04",
+  "version": "0.51.0",
+  "generated": "2026-07-16",
   "description": "Machine-parseable manifest of all Ranvier examples. Used by AI agents, CI pipelines, and documentation tooling.",
+  "portfolioPolicy": {
+    "decisionDate": "2026-07-16",
+    "maxCanonical": 5,
+    "maxSupported": 12,
+    "admission": "A new maintained example must prove a gap in the canonical or supported set, name an owner and CI gate, and define a retirement or replacement rule.",
+    "retirement": "Demote duplicate or unowned examples to lab/archive before expanding the maintained set."
+  },
   "tiers": {
     "core": "Web Main showcase — independent, essential learning path, no external infra required",
     "lab": "Advanced patterns — may require external infrastructure (databases, message brokers, etc.)",
     "repo": "Repository-only — internal/experimental, not web-published"
+  },
+  "supportTiers": {
+    "canonical": "First-run examples for onboarding and release smoke. Must build and test without external runtime services.",
+    "supported": "Maintained examples and reference apps. Must build in CI; tests run when no external runtime service is required.",
+    "lab": "Advanced or integration-heavy examples. Kept buildable where practical but excluded from production-support claims.",
+    "archive": "Historical or exploratory examples retained only for reference; excluded from public support and release gates."
   },
   "categories": [
     {
@@ -62,9 +75,9 @@
       "steps": [
         "hello-world",
         "typed-state-tree",
-        "testing-patterns",
-        "custom-error-types",
-        "routing-demo"
+        "basic-schematic",
+        "outcome-variants",
+        "testing-patterns"
       ]
     },
     {
@@ -72,16 +85,10 @@
       "title": "HTTP Services",
       "difficulty": "intermediate",
       "steps": [
-        "routing-params",
-        "flat-api",
-        "session-pattern",
-        "multipart-upload",
-        "websocket",
-        "sse-streaming",
-        "openapi",
         "typed-json-api",
         "reference-todo-api",
-        "admin-crud"
+        "admin-crud",
+        "reference-chat-server"
       ]
     },
     {
@@ -90,21 +97,19 @@
       "difficulty": "advanced",
       "steps": [
         "order-processing",
+        "bus-capability",
+        "persistence",
         "retry-dlq",
-        "state-persistence",
-        "multitenancy",
-        "resilience-patterns"
+        "reference-ecommerce-order"
       ]
     },
     {
-      "id": "auth-security",
-      "title": "Auth & Security",
-      "difficulty": "intermediate",
+      "id": "governance",
+      "title": "Governance and Full Stack",
+      "difficulty": "advanced",
       "steps": [
-        "guard-demo",
-        "auth-jwt-role",
-        "guard-integration",
-        "auth-transition"
+        "request-governance-demo",
+        "reference-fullstack-admin"
       ]
     }
   ],
@@ -119,7 +124,10 @@
       "estimatedMinutes": 5,
       "runtimeRequirements": [],
       "supportTier": "canonical",
-      "owner": "runtime-core"
+      "owner": "runtime-core",
+      "ciGate": "developer",
+      "manualLink": "https://ranvier.dev/docs/hello-world",
+      "supportRationale": "First-run native HTTP and Axon baseline."
     },
     {
       "id": "typed-state-tree",
@@ -133,7 +141,10 @@
       "estimatedMinutes": 10,
       "runtimeRequirements": [],
       "supportTier": "canonical",
-      "owner": "runtime-core"
+      "owner": "runtime-core",
+      "ciGate": "developer",
+      "manualLink": "https://ranvier.dev/docs/examples-interactive#example-typed-state-tree",
+      "supportRationale": "First-run typed state progression baseline."
     },
     {
       "id": "basic-schematic",
@@ -147,12 +158,15 @@
       "estimatedMinutes": 10,
       "runtimeRequirements": [],
       "supportTier": "canonical",
-      "owner": "runtime-core"
+      "owner": "runtime-core",
+      "ciGate": "developer",
+      "manualLink": "https://ranvier.dev/docs/examples-interactive#example-basic-schematic",
+      "supportRationale": "First-run Schematic export and runtime baseline."
     },
     {
       "id": "routing-demo",
       "package": "routing-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "core",
       "prerequisites": [
@@ -160,8 +174,9 @@
       ],
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "runtime-core"
+      "supportTier": "lab",
+      "owner": "runtime-core",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "order-processing",
@@ -175,12 +190,15 @@
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
       "supportTier": "supported",
-      "owner": "runtime-core"
+      "owner": "runtime-core",
+      "ciGate": "release",
+      "manualLink": "https://ranvier.dev/docs/tutorial-payment-pipeline",
+      "supportRationale": "Official multi-step business decision workflow."
     },
     {
       "id": "saga-compensation",
       "package": "saga-compensation",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "core",
       "prerequisites": [
@@ -189,13 +207,14 @@
       ],
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "runtime-core"
+      "supportTier": "lab",
+      "owner": "runtime-core",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "cascade-screening",
       "package": "cascade-screening",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "core",
       "prerequisites": [
@@ -204,13 +223,14 @@
       ],
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "runtime-core"
+      "supportTier": "lab",
+      "owner": "runtime-core",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "llm-agent-pipeline",
       "package": "llm-agent-pipeline",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "core",
       "prerequisites": [
@@ -219,13 +239,14 @@
       ],
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "runtime-core"
+      "supportTier": "lab",
+      "owner": "runtime-core",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "sensor-decision-loop",
       "package": "sensor-decision-loop",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "core",
       "prerequisites": [
@@ -234,13 +255,14 @@
       ],
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "runtime-core"
+      "supportTier": "lab",
+      "owner": "runtime-core",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "triage-branching",
       "package": "triage-branching",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "core",
       "prerequisites": [
@@ -249,13 +271,14 @@
       ],
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "runtime-core"
+      "supportTier": "lab",
+      "owner": "runtime-core",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "eligibility-rule-chain",
       "package": "eligibility-rule-chain",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "core",
       "prerequisites": [
@@ -264,8 +287,9 @@
       ],
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "runtime-core"
+      "supportTier": "lab",
+      "owner": "runtime-core",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "bus-capability",
@@ -279,7 +303,10 @@
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
       "supportTier": "supported",
-      "owner": "runtime-core"
+      "owner": "runtime-core",
+      "ciGate": "release",
+      "manualLink": "https://ranvier.dev/docs/bus-access-patterns",
+      "supportRationale": "Candidate Bus access-policy and request-context contract."
     },
     {
       "id": "complex-schematic",
@@ -294,7 +321,8 @@
       "estimatedMinutes": 25,
       "runtimeRequirements": [],
       "supportTier": "lab",
-      "owner": "runtime-core"
+      "owner": "runtime-core",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "outcome-variants",
@@ -309,12 +337,15 @@
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
       "supportTier": "canonical",
-      "owner": "runtime-core"
+      "owner": "runtime-core",
+      "ciGate": "developer",
+      "manualLink": "https://ranvier.dev/docs/examples-interactive#example-outcome-variants",
+      "supportRationale": "First-run Outcome control-flow baseline."
     },
     {
       "id": "closure-transition",
       "package": "closure-transition-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "beginner",
       "category": "core",
       "prerequisites": [
@@ -322,13 +353,14 @@
       ],
       "estimatedMinutes": 10,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "runtime-core"
+      "supportTier": "lab",
+      "owner": "runtime-core",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "routing-params",
       "package": "routing-params-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "beginner",
       "category": "http",
       "prerequisites": [
@@ -336,13 +368,14 @@
       ],
       "estimatedMinutes": 10,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "http-adapters"
+      "supportTier": "lab",
+      "owner": "http-adapters",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "flat-api",
       "package": "flat-api-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "beginner",
       "category": "http",
       "prerequisites": [
@@ -350,13 +383,14 @@
       ],
       "estimatedMinutes": 10,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "http-adapters"
+      "supportTier": "lab",
+      "owner": "http-adapters",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "session-pattern",
       "package": "session-pattern",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "auth",
       "prerequisites": [
@@ -364,13 +398,14 @@
       ],
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "security-ops"
+      "supportTier": "lab",
+      "owner": "security-ops",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "multipart-upload",
       "package": "multipart-upload-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "http",
       "prerequisites": [
@@ -378,13 +413,14 @@
       ],
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "http-adapters"
+      "supportTier": "lab",
+      "owner": "http-adapters",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "websocket",
       "package": "websocket-ingress-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "http",
       "prerequisites": [
@@ -392,13 +428,14 @@
       ],
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "http-adapters"
+      "supportTier": "lab",
+      "owner": "http-adapters",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "websocket-loop",
       "package": "websocket-loop",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "http",
       "prerequisites": [
@@ -406,13 +443,14 @@
       ],
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "http-adapters"
+      "supportTier": "lab",
+      "owner": "http-adapters",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "sse-streaming",
       "package": "sse-streaming-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "http",
       "prerequisites": [
@@ -420,13 +458,14 @@
       ],
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "http-adapters"
+      "supportTier": "lab",
+      "owner": "http-adapters",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "openapi",
       "package": "openapi-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "http",
       "prerequisites": [
@@ -434,25 +473,27 @@
       ],
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "http-adapters"
+      "supportTier": "lab",
+      "owner": "http-adapters",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "static-build",
       "package": "static-build-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "beginner",
       "category": "http",
       "prerequisites": [],
       "estimatedMinutes": 10,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "http-adapters"
+      "supportTier": "lab",
+      "owner": "http-adapters",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "static-spa",
       "package": "static-spa-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "beginner",
       "category": "http",
       "prerequisites": [
@@ -460,8 +501,9 @@
       ],
       "estimatedMinutes": 10,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "http-adapters"
+      "supportTier": "lab",
+      "owner": "http-adapters",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "typed-json-api",
@@ -476,7 +518,10 @@
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
       "supportTier": "supported",
-      "owner": "http-adapters"
+      "owner": "http-adapters",
+      "ciGate": "release",
+      "manualLink": "https://ranvier.dev/docs/cookbook-http-ingress",
+      "supportRationale": "Candidate typed JSON native HTTP boundary."
     },
     {
       "id": "streaming-demo",
@@ -490,12 +535,13 @@
       "estimatedMinutes": 25,
       "runtimeRequirements": [],
       "supportTier": "lab",
-      "owner": "http-adapters"
+      "owner": "http-adapters",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "guard-demo",
       "package": "guard-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "auth",
       "prerequisites": [
@@ -503,13 +549,14 @@
       ],
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "security-ops"
+      "supportTier": "lab",
+      "owner": "security-ops",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "auth-jwt-role",
       "package": "auth-jwt-role-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "auth",
       "prerequisites": [
@@ -517,13 +564,14 @@
       ],
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "security-ops"
+      "supportTier": "lab",
+      "owner": "security-ops",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "guard-integration",
       "package": "guard-integration-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "auth",
       "prerequisites": [
@@ -531,13 +579,14 @@
       ],
       "estimatedMinutes": 25,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "security-ops"
+      "supportTier": "lab",
+      "owner": "security-ops",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "auth-transition",
       "package": "auth-transition",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "auth",
       "prerequisites": [
@@ -546,8 +595,9 @@
       ],
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "security-ops"
+      "supportTier": "lab",
+      "owner": "security-ops",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "auth-tower-integration",
@@ -561,7 +611,8 @@
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
       "supportTier": "lab",
-      "owner": "security-ops"
+      "owner": "security-ops",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "persistence",
@@ -575,12 +626,15 @@
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
       "supportTier": "supported",
-      "owner": "data-integrations"
+      "owner": "data-integrations",
+      "ciGate": "release",
+      "manualLink": "https://ranvier.dev/docs/persistence-ops-runbook",
+      "supportRationale": "Maintained production persistence configuration path."
     },
     {
       "id": "ecosystem-redis",
       "package": "ecosystem-redis-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "data",
       "prerequisites": [
@@ -590,13 +644,14 @@
       "runtimeRequirements": [
         "redis"
       ],
-      "supportTier": "supported",
-      "owner": "data-integrations"
+      "supportTier": "lab",
+      "owner": "data-integrations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "ecosystem-seaorm",
       "package": "ecosystem-seaorm-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "data",
       "prerequisites": [
@@ -604,8 +659,9 @@
       ],
       "estimatedMinutes": 25,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "data-integrations"
+      "supportTier": "lab",
+      "owner": "data-integrations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "ecosystem-diesel",
@@ -621,7 +677,8 @@
         "postgresql"
       ],
       "supportTier": "lab",
-      "owner": "data-integrations"
+      "owner": "data-integrations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "ecosystem-meilisearch",
@@ -637,7 +694,8 @@
         "meilisearch"
       ],
       "supportTier": "lab",
-      "owner": "data-integrations"
+      "owner": "data-integrations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "ecosystem-nats",
@@ -653,12 +711,13 @@
         "nats-server"
       ],
       "supportTier": "lab",
-      "owner": "data-integrations"
+      "owner": "data-integrations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "db-sqlx",
       "package": "db-sqlx-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "data",
       "prerequisites": [
@@ -666,8 +725,9 @@
       ],
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "data-integrations"
+      "supportTier": "lab",
+      "owner": "data-integrations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "otel-concept",
@@ -681,7 +741,10 @@
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
       "supportTier": "canonical",
-      "owner": "observability"
+      "owner": "observability",
+      "ciGate": "developer",
+      "manualLink": "https://ranvier.dev/docs/examples-interactive#example-otel-concept",
+      "supportRationale": "First-run observability concept baseline."
     },
     {
       "id": "otel-ops",
@@ -698,7 +761,8 @@
         "prometheus"
       ],
       "supportTier": "lab",
-      "owner": "observability"
+      "owner": "observability",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "telemetry-otel",
@@ -712,7 +776,8 @@
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
       "supportTier": "lab",
-      "owner": "observability"
+      "owner": "observability",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "inspector",
@@ -726,12 +791,13 @@
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
       "supportTier": "lab",
-      "owner": "observability"
+      "owner": "observability",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "synapse",
       "package": "synapse-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "enterprise",
       "prerequisites": [
@@ -739,13 +805,14 @@
       ],
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "operations"
+      "supportTier": "lab",
+      "owner": "operations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "production-config",
       "package": "production-config-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "enterprise",
       "prerequisites": [
@@ -753,13 +820,14 @@
       ],
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "operations"
+      "supportTier": "lab",
+      "owner": "operations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "std-lib",
       "package": "std-lib-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "enterprise",
       "prerequisites": [
@@ -767,13 +835,14 @@
       ],
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "operations"
+      "supportTier": "lab",
+      "owner": "operations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "multitenancy",
       "package": "multitenancy-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "enterprise",
       "prerequisites": [
@@ -781,8 +850,9 @@
       ],
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "operations"
+      "supportTier": "lab",
+      "owner": "operations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "studio-demo",
@@ -796,7 +866,8 @@
       "estimatedMinutes": 25,
       "runtimeRequirements": [],
       "supportTier": "lab",
-      "owner": "operations"
+      "owner": "operations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "background-jobs",
@@ -810,7 +881,8 @@
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
       "supportTier": "lab",
-      "owner": "operations"
+      "owner": "operations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "distributed-lock",
@@ -824,7 +896,8 @@
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
       "supportTier": "lab",
-      "owner": "operations"
+      "owner": "operations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "typescript-codegen",
@@ -838,7 +911,8 @@
       "estimatedMinutes": 10,
       "runtimeRequirements": [],
       "supportTier": "lab",
-      "owner": "operations"
+      "owner": "operations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "production-operations",
@@ -852,12 +926,13 @@
       "estimatedMinutes": 25,
       "runtimeRequirements": [],
       "supportTier": "lab",
-      "owner": "operations"
+      "owner": "operations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "service-call",
       "package": "service-call-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "enterprise",
       "prerequisites": [
@@ -865,13 +940,14 @@
       ],
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "operations"
+      "supportTier": "lab",
+      "owner": "operations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "llm-content-moderation",
       "package": "llm-content-moderation",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "enterprise",
       "prerequisites": [
@@ -880,8 +956,9 @@
       ],
       "estimatedMinutes": 25,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "operations"
+      "supportTier": "lab",
+      "owner": "operations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "audit",
@@ -895,7 +972,8 @@
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
       "supportTier": "lab",
-      "owner": "operations"
+      "owner": "operations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "compliance",
@@ -909,7 +987,8 @@
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
       "supportTier": "lab",
-      "owner": "operations"
+      "owner": "operations",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "macros",
@@ -923,7 +1002,8 @@
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
       "supportTier": "lab",
-      "owner": "runtime-core"
+      "owner": "runtime-core",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "graphql-async-graphql",
@@ -937,7 +1017,8 @@
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
       "supportTier": "lab",
-      "owner": "protocol-adapters"
+      "owner": "protocol-adapters",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "grpc-tonic",
@@ -951,7 +1032,8 @@
       "estimatedMinutes": 25,
       "runtimeRequirements": [],
       "supportTier": "lab",
-      "owner": "protocol-adapters"
+      "owner": "protocol-adapters",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "testing-patterns",
@@ -965,12 +1047,15 @@
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
       "supportTier": "supported",
-      "owner": "testing-tooling"
+      "owner": "testing-tooling",
+      "ciGate": "release",
+      "manualLink": "https://ranvier.dev/docs/examples-interactive#example-testing-patterns",
+      "supportRationale": "Maintained Axon and transition testing contract."
     },
     {
       "id": "custom-error-types",
       "package": "custom-error-types",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "beginner",
       "category": "error-handling",
       "prerequisites": [
@@ -979,13 +1064,14 @@
       ],
       "estimatedMinutes": 15,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "runtime-core"
+      "supportTier": "lab",
+      "owner": "runtime-core",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "outcome-patterns",
       "package": "outcome-patterns",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "error-handling",
       "prerequisites": [
@@ -993,8 +1079,9 @@
       ],
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "runtime-core"
+      "supportTier": "lab",
+      "owner": "runtime-core",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "retry-dlq",
@@ -1008,12 +1095,15 @@
       "estimatedMinutes": 25,
       "runtimeRequirements": [],
       "supportTier": "supported",
-      "owner": "runtime-resilience"
+      "owner": "runtime-resilience",
+      "ciGate": "release",
+      "manualLink": "https://ranvier.dev/docs/examples-interactive#example-retry-dlq",
+      "supportRationale": "Maintained retry and dead-letter failure-path contract."
     },
     {
       "id": "state-persistence",
       "package": "state-persistence-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "resilience",
       "prerequisites": [
@@ -1021,13 +1111,14 @@
       ],
       "estimatedMinutes": 25,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "runtime-resilience"
+      "supportTier": "lab",
+      "owner": "runtime-resilience",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "resilience-patterns",
       "package": "resilience-patterns-demo",
-      "tier": "core",
+      "tier": "lab",
       "difficulty": "intermediate",
       "category": "resilience",
       "prerequisites": [
@@ -1035,8 +1126,9 @@
       ],
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
-      "supportTier": "supported",
-      "owner": "runtime-resilience"
+      "supportTier": "lab",
+      "owner": "runtime-resilience",
+      "ciGate": "scheduled-lab"
     },
     {
       "id": "reference-todo-api",
@@ -1051,7 +1143,10 @@
       "estimatedMinutes": 30,
       "runtimeRequirements": [],
       "supportTier": "supported",
-      "owner": "reference-apps"
+      "owner": "reference-apps",
+      "ciGate": "release",
+      "manualLink": "https://ranvier.dev/docs/tutorial-todo-api",
+      "supportRationale": "Official native HTTP CRUD and authentication workflow."
     },
     {
       "id": "admin-crud",
@@ -1066,7 +1161,10 @@
       "estimatedMinutes": 35,
       "runtimeRequirements": [],
       "supportTier": "supported",
-      "owner": "http-adapters"
+      "owner": "http-adapters",
+      "ciGate": "release",
+      "manualLink": "https://ranvier.dev/docs/samples-ranvier",
+      "supportRationale": "Bridge workflow for CRUD, authentication, and OpenAPI."
     },
     {
       "id": "reference-fullstack-admin",
@@ -1083,7 +1181,10 @@
         "nodejs"
       ],
       "supportTier": "supported",
-      "owner": "reference-apps"
+      "owner": "reference-apps",
+      "ciGate": "release",
+      "manualLink": "https://ranvier.dev/docs/samples-ranvier",
+      "supportRationale": "Maintained backend/frontend reference with an explicit Node.js requirement."
     },
     {
       "id": "request-governance-demo",
@@ -1097,7 +1198,10 @@
       "estimatedMinutes": 30,
       "runtimeRequirements": [],
       "supportTier": "supported",
-      "owner": "operations"
+      "owner": "operations",
+      "ciGate": "release",
+      "manualLink": "https://ranvier.dev/docs/samples-ranvier",
+      "supportRationale": "Governance workflow for Guard, audit, and error semantics."
     },
     {
       "id": "reference-ecommerce-order",
@@ -1113,7 +1217,10 @@
       "estimatedMinutes": 40,
       "runtimeRequirements": [],
       "supportTier": "supported",
-      "owner": "reference-apps"
+      "owner": "reference-apps",
+      "ciGate": "release",
+      "manualLink": "https://ranvier.dev/docs/samples-ranvier",
+      "supportRationale": "Reference Saga compensation and order workflow."
     },
     {
       "id": "reference-chat-server",
@@ -1128,7 +1235,10 @@
       "estimatedMinutes": 35,
       "runtimeRequirements": [],
       "supportTier": "supported",
-      "owner": "reference-apps"
+      "owner": "reference-apps",
+      "ciGate": "release",
+      "manualLink": "https://ranvier.dev/docs/samples-ranvier",
+      "supportRationale": "Reference native HTTP and WebSocket realtime workflow."
     },
     {
       "id": "experimental-fullstack-demo",
@@ -1145,7 +1255,8 @@
         "nodejs"
       ],
       "supportTier": "archive",
-      "owner": "reference-apps"
+      "owner": "reference-apps",
+      "ciGate": "excluded"
     },
     {
       "id": "experimental-replay-demo",
@@ -1160,7 +1271,8 @@
       "estimatedMinutes": 25,
       "runtimeRequirements": [],
       "supportTier": "archive",
-      "owner": "observability"
+      "owner": "observability",
+      "ciGate": "excluded"
     },
     {
       "id": "experimental-state-tree-demo",
@@ -1175,7 +1287,8 @@
       "estimatedMinutes": 20,
       "runtimeRequirements": [],
       "supportTier": "archive",
-      "owner": "runtime-core"
+      "owner": "runtime-core",
+      "ciGate": "excluded"
     },
     {
       "id": "experimental-persistence-recovery-demo",
@@ -1190,13 +1303,8 @@
       "estimatedMinutes": 30,
       "runtimeRequirements": [],
       "supportTier": "archive",
-      "owner": "runtime-resilience"
+      "owner": "runtime-resilience",
+      "ciGate": "excluded"
     }
-  ],
-  "supportTiers": {
-    "canonical": "First-run examples for onboarding and release smoke. Must build and test without external runtime services.",
-    "supported": "Maintained examples and reference apps. Must build in CI; tests run when no external runtime service is required.",
-    "lab": "Advanced or integration-heavy examples. Kept buildable where practical but excluded from production-support claims.",
-    "archive": "Historical or exploratory examples retained only for reference; excluded from public support and release gates."
-  }
+  ]
 }
