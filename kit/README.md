@@ -41,25 +41,26 @@ async fn main() -> anyhow::Result<()> {
 
 ## Features
 
-Default features include the HTTP ingress adapter and std nodes.
+Default features include the HTTP ingress adapter, std nodes, and Guard.
 To slim down dependencies:
 
 ```toml
-ranvier = { version = "0.28.0", default-features = false }
+ranvier = { version = "0.51.0", default-features = false }
 ```
 
 You can enable features explicitly:
 
 ```toml
-ranvier = { version = "0.28.0", features = ["http", "std"] }
+ranvier = { version = "0.51.0", features = ["http", "std"] }
 ```
 
-## Crates (10-crate architecture, v0.28.0)
+## Crates (12 publishable product crates, v0.51.0)
 
 | Tier | Crate | Purpose |
 |------|-------|---------|
 | T0 | `ranvier-core` | Kernel: Transition, Outcome, Bus, Schematic, iam, tenant |
 | T0 | `ranvier-macros` | Proc macros: `#[transition]` attribute |
+| T1 | `ranvier-guard` | Request and decision-boundary policy guards |
 | T1 | `ranvier-audit` | Audit trail persistence |
 | T1 | `ranvier-compliance` | Regulatory compliance checks |
 | T1 | `ranvier-inspector` | Schema registry + relay API |
@@ -67,6 +68,7 @@ ranvier = { version = "0.28.0", features = ["http", "std"] }
 | T2 | `ranvier-runtime` | Async Axon execution engine |
 | T3 | `ranvier-http` | Hyper 1.0 native HTTP ingress adapter |
 | T4 | `ranvier-openapi` | OpenAPI spec generation |
+| T4 | `ranvier-test` | Axon and transition test support |
 | T5 | `ranvier` | Facade crate (this crate) |
 
 13 wrapper crates were removed in v0.28.0. Use external libraries directly
@@ -74,7 +76,13 @@ with Transition-pattern examples.
 
 ## Examples
 
-- [`hello-world`](../examples/hello-world/) — HTTP ingress baseline (uses `ranvier` facade crate)
+- [`hello-world`](../examples/hello-world/) — workspace-native HTTP ingress baseline;
+  external applications use the equivalent `ranvier` facade imports shown above
+
+The facade-only compile contract at `tests/compile/facade-only` verifies that
+`use ranvier::prelude::*` supplies the candidate transition, resource, Axon,
+Outcome, Bus, native HTTP, and raw-service hybrid entry points without direct
+Ranvier subcrate dependencies.
 
 ## MSRV
 

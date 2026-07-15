@@ -1,13 +1,42 @@
 use proc_macro::TokenStream;
+use proc_macro_crate::{FoundCrate, crate_name};
+use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{ToTokens, quote};
 use std::collections::HashSet;
 use syn::{
     DeriveInput, FnArg, GenericArgument, ItemFn, PathArguments, ReturnType, Type, parse_macro_input,
 };
 
+fn external_crate_path(package: &str) -> Option<TokenStream2> {
+    match crate_name(package).ok()? {
+        FoundCrate::Itself => Some(quote!(crate)),
+        FoundCrate::Name(name) => {
+            let ident = syn::Ident::new(&name, Span::call_site());
+            Some(quote!(::#ident))
+        }
+    }
+}
+
+fn core_crate_path() -> syn::Result<TokenStream2> {
+    if let Some(path) = external_crate_path("ranvier-core") {
+        return Ok(path);
+    }
+    if let Some(facade) = external_crate_path("ranvier") {
+        return Ok(quote!(#facade::core));
+    }
+    Err(syn::Error::new(
+        Span::call_site(),
+        "Ranvier macro expansion requires a direct `ranvier-core` dependency or the `ranvier` facade",
+    ))
+}
+
 /// Attribute macro to transform an async function into a `Transition` implementation.
 #[proc_macro_attribute]
 pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let core_path = match core_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.to_compile_error().into(),
+    };
     let mut input_fn = parse_macro_input!(item as ItemFn);
     let original_ident = input_fn.sig.ident.clone();
     let vis = &input_fn.vis;
@@ -151,21 +180,21 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
     let bus_policy_method = if bus_allow_specified || bus_deny_specified {
         let allow_expr = if bus_allow_specified {
             quote! {
-                Some(vec![#(ranvier_core::bus::BusTypeRef::of::<#bus_allow_types>()),*])
+                Some(vec![#(#core_path::bus::BusTypeRef::of::<#bus_allow_types>()),*])
             }
         } else {
             quote! { None }
         };
         let deny_expr = if bus_deny_specified {
             quote! {
-                vec![#(ranvier_core::bus::BusTypeRef::of::<#bus_deny_types>()),*]
+                vec![#(#core_path::bus::BusTypeRef::of::<#bus_deny_types>()),*]
             }
         } else {
             quote! { Vec::new() }
         };
         quote! {
-            fn bus_access_policy(&self) -> Option<ranvier_core::bus::BusAccessPolicy> {
-                Some(ranvier_core::bus::BusAccessPolicy {
+            fn bus_access_policy(&self) -> Option<#core_path::bus::BusAccessPolicy> {
+                Some(#core_path::bus::BusAccessPolicy {
                     allow: #allow_expr,
                     deny: #deny_expr,
                 })
@@ -201,8 +230,8 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[allow(non_camel_case_types)]
         #vis struct #original_ident;
 
-        #[::async_trait::async_trait]
-        impl ranvier_core::transition::Transition<#input_type, #output_type> for #original_ident {
+        #[#core_path::__macro_support::async_trait]
+        impl #core_path::transition::Transition<#input_type, #output_type> for #original_ident {
             type Error = #error_type;
             type Resources = #res_type;
 
@@ -214,8 +243,8 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
                 &self,
                 input: #input_type,
                 resources: &Self::Resources,
-                bus: &mut ranvier_core::bus::Bus,
-            ) -> ranvier_core::outcome::Outcome<#output_type, Self::Error> {
+                bus: &mut #core_path::bus::Bus,
+            ) -> #core_path::outcome::Outcome<#output_type, Self::Error> {
                 #run_body
             }
         }
@@ -643,12 +672,16 @@ fn parse_type_array_expr(expr: &syn::Expr) -> syn::Result<Vec<Type>> {
 /// ```
 #[proc_macro_derive(ResourceRequirement)]
 pub fn derive_resource_requirement(input: TokenStream) -> TokenStream {
+    let core_path = match core_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.to_compile_error().into(),
+    };
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     let expanded = quote! {
-        impl #impl_generics ranvier_core::transition::ResourceRequirement for #name #ty_generics #where_clause {}
+        impl #impl_generics #core_path::transition::ResourceRequirement for #name #ty_generics #where_clause {}
     };
 
     TokenStream::from(expanded)

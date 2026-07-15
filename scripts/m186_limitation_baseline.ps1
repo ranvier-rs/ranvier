@@ -1,20 +1,8 @@
 param(
     [string]$EvidenceDir = "",
-    [ValidateSet("heuristic", "default", "only-explicit")]
-    [string]$SemverFeatureMode = "only-explicit",
-    [string[]]$SemverPackages = @(
-        "ranvier-core",
-        "ranvier-runtime",
-        "ranvier-http",
-        "ranvier-std",
-        "ranvier-macros",
-        "ranvier",
-        "ranvier-auth",
-        "ranvier-guard",
-        "ranvier-openapi",
-        "ranvier-observe",
-        "ranvier-inspector"
-    ),
+    [ValidateSet("all", "heuristic", "default", "only-explicit")]
+    [string]$SemverFeatureMode = "all",
+    [string[]]$SemverPackages = @(),
     [switch]$InstallSemverIfMissing,
     [switch]$FailOnStepFailure,
     [switch]$SkipSchematic,
@@ -107,9 +95,9 @@ try {
     }
 
     if (-not $SkipSemver) {
-        $pkgText = $SemverPackages -join ","
+        $packageText = if ($SemverPackages.Count -gt 0) { " -Packages $($SemverPackages -join ',')" } else { "" }
         $installText = if ($InstallSemverIfMissing) { "-InstallIfMissing" } else { "" }
-        $cmd = "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/m133_semver_checks.ps1 -FeatureMode $SemverFeatureMode -Packages $pkgText $installText -EvidenceDir $EvidenceDir"
+        $cmd = "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/m133_semver_checks.ps1 -FeatureMode $SemverFeatureMode$packageText $installText -EvidenceDir $EvidenceDir"
         $results.Add((Invoke-Step -Name "semver_checks" -Command $cmd -Action {
                     $args = @{
                         FeatureMode = $SemverFeatureMode

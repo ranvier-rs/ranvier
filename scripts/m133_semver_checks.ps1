@@ -1,19 +1,8 @@
 param(
-    [string[]]$Packages = @(
-        "ranvier-core",
-        "ranvier-runtime",
-        "ranvier-http",
-        "ranvier-std",
-        "ranvier-macros",
-        "ranvier",
-        "ranvier-auth",
-        "ranvier-guard",
-        "ranvier-openapi",
-        "ranvier-observe",
-        "ranvier-inspector"
-    ),
-    [ValidateSet("heuristic", "default", "only-explicit")]
-    [string]$FeatureMode = "only-explicit",
+    [string[]]$Packages = @(),
+    [ValidateSet("all", "heuristic", "default", "only-explicit")]
+    [string]$FeatureMode = "all",
+    [string]$BaselineRev = "",
     [string]$EvidenceDir = "..\docs\05_dev_plans\evidence",
     [switch]$InstallIfMissing,
     [int]$MinFreeSpaceGB = 8
@@ -25,6 +14,18 @@ $PSNativeCommandUseErrorActionPreference = $false
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ranvierRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
 Push-Location $ranvierRoot
+
+$candidateBaselinePath = Join-Path $ranvierRoot "api-stable-candidate-baseline.json"
+if (-not (Test-Path $candidateBaselinePath)) {
+    throw "Candidate API baseline is missing: $candidateBaselinePath"
+}
+$candidateBaseline = Get-Content $candidateBaselinePath -Raw | ConvertFrom-Json
+if ($Packages.Count -eq 0) {
+    $Packages = @($candidateBaseline.cargo_semver_packages)
+}
+if ([string]::IsNullOrWhiteSpace($BaselineRev)) {
+    $BaselineRev = $candidateBaseline.baseline_ref
+}
 
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $logPath = Join-Path $EvidenceDir "m133_semver_checks_$timestamp.log"
@@ -60,6 +61,7 @@ function Ensure-SemverTool {
 
 function Resolve-FeatureArgs {
     switch ($FeatureMode) {
+        "all" { return @("--all-features") }
         "default" { return @("--default-features") }
         "only-explicit" { return @("--only-explicit-features") }
         default { return @() }
@@ -88,6 +90,7 @@ try {
     Write-Log "Timestamp: $timestamp"
     Write-Log "Workspace: $(Get-Location)"
     Write-Log "Feature mode: $FeatureMode"
+    Write-Log "Baseline revision: $BaselineRev"
 
     Ensure-SemverTool
     $featureArgs = Resolve-FeatureArgs
@@ -103,7 +106,7 @@ try {
             Write-Log "[blocked_resource] $note"
 
             foreach ($pkg in $Packages) {
-                $args = @("semver-checks", "check-release", "-p", $pkg) + $featureArgs
+                $args = @("semver-checks", "check-release", "-p", $pkg, "--baseline-rev", $BaselineRev) + $featureArgs
                 $rows.Add([ordered]@{
                         package = $pkg
                         command = "cargo $($args -join ' ')"
@@ -135,7 +138,7 @@ try {
         Write-Log ""
         Write-Log "[check-release] $pkg"
 
-        $args = @("semver-checks", "check-release", "-p", $pkg) + $featureArgs
+        $args = @("semver-checks", "check-release", "-p", $pkg, "--baseline-rev", $BaselineRev) + $featureArgs
         Write-Log "[command] cargo $($args -join ' ')"
         $tmpOutput = Join-Path $env:TEMP ("m133_semver_" + $pkg.Replace("-", "_") + "_" + $timestamp + ".log")
         $cmdLine = "cargo $($args -join ' ') > `"$tmpOutput`" 2>&1"

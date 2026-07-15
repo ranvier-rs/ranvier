@@ -12,7 +12,7 @@
     57
   ],
   "input_sha256": {
-    ".ranvier-api-policy.json": "df890fe4d1edb8de3915fd6c0bde7ac2f69d70cac404f31e5a7134a318138785",
+    ".ranvier-api-policy.json": "8e73f9035672610c86f3cbf8fd126eac0e1d6bad7180a15aab942734e0ab11b0",
     "Cargo.toml": "a531854deaeaecfbf805ffb41203bf376ce6ddc7c6052e5976294a46f3ccdcb8",
     "core/Cargo.toml": "d55d5c9b5b71f9061c20a9b29259b2344ce78186ab735a2517dc670b88fc1366",
     "extensions/audit/Cargo.toml": "6e09af66c9c4a531dc07b2ec8ff91254b668df48148f961e13b801f3a04a8cb4",
@@ -22,17 +22,17 @@
     "guard/Cargo.toml": "f2866882ef656b4f567c6b23bb2ddb862fb6f8c0f8719fbc45c943d0c1be56a7",
     "http/Cargo.toml": "a72d7166931583edc9536a19eab97bff3d6fef7bb1254e69cec6a47a42b2474c",
     "kit/Cargo.toml": "92b9e46106a1b13162f9f01d6719a86d54a15177e24862a7c82f984c9b7941ae",
-    "macros/Cargo.toml": "031f61ccb2e97fd7eed88c1f7dca99c7d7d15f64d571ef39b809af66aaf074f9",
+    "macros/Cargo.toml": "c59fb5bcd63fccea466ba5f7400dfa9c9e186455367d86b7c584bdad5492b4da",
     "runtime/Cargo.toml": "22809be5b2488de04f4e4afc3d1d9145267119daf39993ea15033b455092c2ba",
     "std/Cargo.toml": "593d63ae77471e9e7a1af5dcc57f387c89a7347040008c18c038edf3f9deceaf",
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2414,
+  "public_item_count": 2416,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2226,
-    "Stable Candidate": 180
+    "Experimental": 2224,
+    "Stable Candidate": 184
   },
   "crates": [
     {
@@ -52,21 +52,21 @@
         "streaming",
         "validation"
       ],
-      "public_item_count": 35,
+      "public_item_count": 37,
       "counts_by_kind": {
         "enum": 5,
         "function": 1,
         "module": 10,
-        "proc_attribute": 1,
+        "proc_attribute": 3,
         "proc_derive": 2,
         "struct": 12,
         "trait": 4
       },
       "counts_by_stability": {
-        "Experimental": 28,
-        "Stable Candidate": 7
+        "Experimental": 26,
+        "Stable Candidate": 11
       },
-      "facade_reexport_count": 33,
+      "facade_reexport_count": 35,
       "boundary_item_count": 0,
       "items": [
         {
@@ -354,7 +354,7 @@
           "kind": "proc_derive",
           "origin": "facade-reexport",
           "target": "ranvier_macros::ResourceRequirement",
-          "stability": "Experimental",
+          "stability": "Stable Candidate",
           "owner": "developer-tooling",
           "boundary": null,
           "deprecated": false,
@@ -369,6 +369,20 @@
           "origin": "facade-reexport",
           "target": "ranvier_inspector::StateInspector",
           "stability": "Experimental",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier::prelude::transition",
+          "kind": "proc_attribute",
+          "origin": "facade-reexport",
+          "target": "ranvier_macros::transition",
+          "stability": "Stable Candidate",
           "owner": "developer-tooling",
           "boundary": null,
           "deprecated": false,
@@ -410,7 +424,7 @@
           "kind": "proc_derive",
           "origin": "facade-reexport",
           "target": "ranvier_macros::ResourceRequirement",
-          "stability": "Experimental",
+          "stability": "Stable Candidate",
           "owner": "developer-tooling",
           "boundary": null,
           "deprecated": false,
@@ -537,6 +551,20 @@
           "origin": "facade-reexport",
           "target": "ranvier_core::tenant::TenantResolver",
           "stability": "Experimental",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier::transition",
+          "kind": "proc_attribute",
+          "origin": "facade-reexport",
+          "target": "ranvier_macros::transition",
+          "stability": "Stable Candidate",
           "owner": "developer-tooling",
           "boundary": null,
           "deprecated": false,

@@ -1,6 +1,15 @@
 /// Crate version, set at compile time from Cargo.toml.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Implementation support for Ranvier procedural macro expansions.
+///
+/// This module is public only because proc-macro output is compiled in the
+/// consumer crate. It is Experimental and not an application API.
+#[doc(hidden)]
+pub mod __macro_support {
+    pub use async_trait::async_trait;
+}
+
 pub mod bus;
 pub mod cluster;
 pub mod config;

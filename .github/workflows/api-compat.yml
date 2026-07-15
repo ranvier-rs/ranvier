@@ -1,0 +1,49 @@
+name: Candidate API Compatibility
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - '.ranvier-api-policy.json'
+      - 'api-surface-inventory.json'
+      - 'api-stable-candidate-baseline.json'
+      - 'scripts/api_surface_inventory.mjs'
+      - 'scripts/candidate_api_*.mjs'
+      - 'scripts/candidate_compile_contract.mjs'
+      - '.github/workflows/api-compat.yml'
+  push:
+    branches: [main]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - '.ranvier-api-policy.json'
+      - 'api-surface-inventory.json'
+      - 'api-stable-candidate-baseline.json'
+      - 'scripts/api_surface_inventory.mjs'
+      - 'scripts/candidate_api_*.mjs'
+      - 'scripts/candidate_compile_contract.mjs'
+      - '.github/workflows/api-compat.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  candidate-api:
+    name: Candidate API baseline and SemVer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-semver-checks --version 0.48.0 --locked
+      - run: node scripts/api_surface_inventory.mjs --check
+      - run: node scripts/candidate_api_baseline.mjs --check
+      - run: node scripts/candidate_compile_contract.mjs
+      - run: node scripts/candidate_api_semver.mjs

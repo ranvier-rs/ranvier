@@ -4504,6 +4504,7 @@ dependencies = [
 name = "ranvier-macros"
 version = "0.51.0"
 dependencies = [
+ "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
