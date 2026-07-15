@@ -20,7 +20,7 @@
     },
     "release": {
       "owner": "release-engineering",
-      "trigger": "Release tag or explicit pre-release dispatch.",
+      "trigger": "Local release bundle, release tag, or explicit pre-release dispatch.",
       "timeoutMinutes": 45,
       "retry": "none",
       "evidenceRetentionDays": 30,
