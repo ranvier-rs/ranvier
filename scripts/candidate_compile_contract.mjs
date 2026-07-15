@@ -17,5 +17,14 @@ function run(args) {
 }
 
 run(['check', '--manifest-path', 'tests/compile/facade-only/Cargo.toml', '--locked']);
-run(['check', '-p', 'flat-api-demo', '-p', 'bus-capability-demo', '--locked']);
+run([
+  'check',
+  '-p',
+  'typed-state-tree',
+  '-p',
+  'typed-json-api',
+  '-p',
+  'bus-capability-demo',
+  '--locked'
+]);
 console.log('candidate compile contract: pass');

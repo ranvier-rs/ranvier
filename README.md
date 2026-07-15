@@ -69,9 +69,8 @@ See all 71 published examples: [Examples Explorer](https://ranvier.studio/docs/e
 ## Quickstart
 
 ```bash
-cargo add ranvier
-cargo add tokio --features full
-cargo add anyhow
+cargo add ranvier@0.51.0
+cargo add tokio@1 --features macros,rt-multi-thread
 ```
 
 ```rust
@@ -79,26 +78,31 @@ use ranvier::prelude::*;
 
 #[transition]
 async fn greet(_input: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, String> {
-    Outcome::Next("Hello, Ranvier!".to_string())
+    Outcome::next("Hello, Ranvier!".to_string())
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let hello = Axon::<(), (), String>::new("Hello")
-        .then(greet);
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let hello = Axon::<(), (), String>::new("hello").then(greet);
 
     Ranvier::http()
         .bind("127.0.0.1:3000")
         .route("/", hello)
         .run(())
-        .await
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+        .await?;
 
     Ok(())
 }
 ```
 
-Or scaffold with a pattern template:
+Continue with the maintained `typed-state-tree`, `typed-json-api`, and
+`bus-capability-demo` workflows documented in the
+[Quickstart](https://ranvier.studio/docs/quickstart). Then choose either native
+`Ranvier::http()` ingress for a new workflow service or the
+[Axum hybrid](https://ranvier.studio/docs/integration-axum) for an existing
+Axum application.
+
+After that stable path, the CLI can scaffold an optional pattern template:
 
 ```bash
 cargo install ranvier-cli

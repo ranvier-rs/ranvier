@@ -8,3 +8,4 @@ publish = false
 
 [dependencies]
 ranvier = { path = "../../../kit" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
