@@ -25,7 +25,7 @@ This guide compares **two authentication approaches** in Ranvier:
 | **Schematic Visualization** | ✅ Full visibility in `schematic.json` | ❌ Tower layers are opaque |
 | **VSCode Circuit View** | ✅ See entire auth flow | ❌ Only see Ranvier portion |
 | **Bus Propagation** | ✅ AuthContext auto-stored in Bus | ❌ Stored in `request.extensions()` |
-| **Type Safety** | ✅ Compiler ensures dependencies | ⚠️ Runtime extraction from extensions |
+| **Type Boundary** | ✅ Typed transition handoff; Bus presence/policy checked at runtime | ⚠️ Runtime extraction from extensions |
 | **Unit Testing** | ✅ Easy (inject mock Bus) | ⚠️ Harder (need HTTP mocks) |
 | **Integration Testing** | ⚠️ Needs full pipeline setup | ✅ Standard Tower patterns |
 | **Composability** | ✅ Easy to add/remove steps | ⚠️ Tower layer ordering matters |

@@ -18,6 +18,7 @@
       "default_tier": "Experimental",
       "owner": "runtime-core",
       "rules": [
+        { "prefix": "ranvier_core::outcome::Outcome::into_result", "match": "exact", "tier": "Experimental" },
         { "prefix": "ranvier_core::transition::Transition", "tier": "Stable Candidate" },
         { "prefix": "ranvier_core::transition::ResourceRequirement", "tier": "Stable Candidate" },
         { "prefix": "ranvier_core::outcome::Outcome", "tier": "Stable Candidate" },
@@ -41,6 +42,7 @@
       ],
       "boundaries": [
         { "prefix": "ranvier_core::bus", "kind": "runtime-type-erased-resource" },
+        { "prefix": "ranvier_core::outcome::Outcome::into_result", "kind": "lossy-linear-result-adapter" },
         { "prefix": "ranvier_core::outcome::Outcome::Branch", "kind": "schema-described-json-control-payload" },
         { "prefix": "ranvier_core::outcome::Outcome::Jump", "kind": "schema-described-json-control-payload" },
         { "prefix": "ranvier_core::outcome::Outcome::Emit", "kind": "schema-described-json-control-payload" }

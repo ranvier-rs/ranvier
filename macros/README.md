@@ -18,7 +18,7 @@ The generated schema is consumed by the Inspector schema registry (`/api/v1/rout
 
 ## Examples
 
-- [`macros-demo`](../examples/macros-demo/) — #[transition] macro, bus_allow/bus_deny compile-time access control
+- [`macros-demo`](../examples/macros-demo/) — `#[transition]` plus compile-time policy-declaration checks and runtime Bus enforcement
 
 ## MSRV
 

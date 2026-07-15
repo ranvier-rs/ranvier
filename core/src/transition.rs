@@ -15,8 +15,10 @@ use std::fmt::Debug;
 
 /// Resource requirement for a transition.
 ///
-/// This trait is used to mark types that can be injected as resources.
-/// Implementations should usually be a struct representing a bundle of resources.
+/// This trait marks the compile-time-declared resource bundle passed separately
+/// to [`Transition::run`]. Implementations should usually be a struct containing
+/// application dependencies. Adapter-injected request context belongs in the
+/// per-execution [`Bus`], where presence and authorization are runtime checks.
 pub trait ResourceRequirement: Send + Sync + 'static {}
 
 /// Blanket implementation for () if no resources are needed.
@@ -74,7 +76,9 @@ where
     type Error: Send + Sync + Debug + 'static;
 
     /// The type of resources required by this transition.
-    /// This follows the "Hard-Wired Types" principle from the Master Plan.
+    /// This follows the "Hard-Wired Types" principle from the Master Plan and
+    /// is the compile-time dependency boundary. It does not make resources read
+    /// dynamically from `Bus` compile-time-present.
     type Resources: ResourceRequirement;
 
     /// Execute the transition.

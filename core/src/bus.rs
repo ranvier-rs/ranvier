@@ -1,13 +1,19 @@
-//! # Bus: Type-Safe Resource Injection
+//! # Bus: Type-Indexed Runtime Context
 //!
-//! The `Bus` is a typed map that holds **Resources** injected at startup.
+//! The `Bus` is a per-execution map keyed by Rust resource type.
 //!
 //! ## Design Philosophy
 //!
 //! * **It is NOT a global singleton.**
 //! * It is passed explicitly to every transition.
-//! * It holds external handles like DB Pools, Configs, or Event Senders.
-//! * **It does NOT hold request-specific state** (that belongs in the State Node).
+//! * It may hold cloned application handles such as DB pools and configuration.
+//! * A protocol adapter may inject request context such as authentication or a
+//!   tenant ID into a fresh Bus for that execution.
+//! * It must not be shared as mutable context across concurrent requests.
+//!
+//! Generic access (`get::<T>()`) checks the requested Rust type at compile
+//! time, but resource presence and access policy are checked at runtime.
+//! Compile-time transition dependencies belong in `Transition::Resources`.
 //!
 //! ## Protocol Agnosticism
 //!
@@ -142,10 +148,12 @@ impl std::fmt::Display for BusAccessError {
 
 impl std::error::Error for BusAccessError {}
 
-/// Type-safe resource container for dependency injection.
+/// Type-indexed per-execution resource and context container.
 ///
-/// Resources are inserted at startup and accessed via type.
-/// This ensures compile-time safety and explicit dependencies.
+/// The requested `T` is statically typed, while presence and authorization are
+/// runtime properties. Use `Transition::Resources` for compile-time-declared
+/// dependencies and this container for adapter-injected or cross-cutting
+/// execution context.
 pub struct Bus {
     /// Type-indexed resource storage
     resources: AHashMap<std::any::TypeId, Box<dyn Any + Send + Sync>>,
@@ -156,7 +164,10 @@ pub struct Bus {
 }
 
 impl Bus {
-    /// Create a new empty Bus.
+    /// Create a new empty Bus with unrestricted access.
+    ///
+    /// Unrestricted access is retained for compatibility. A transition's
+    /// optional [`BusAccessPolicy`] installs a runtime guard during execution.
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -317,14 +328,16 @@ impl Bus {
         self.insert(resource);
     }
 
-    /// Require a resource from the Bus, panicking with a helpful message if missing.
+    /// Require a resource from the Bus, panicking if it is missing or denied.
     ///
     /// Use this when the resource is expected to always be present (e.g., injected
     /// at startup). For optional resources, use [`try_require`](Bus::try_require).
     ///
     /// # Panics
     ///
-    /// Panics if the resource type `T` has not been inserted into the Bus.
+    /// Panics if the resource type `T` has not been inserted or an active policy
+    /// denies access. Production paths that need to distinguish those cases
+    /// should use [`get`](Bus::get).
     ///
     /// # Example
     ///

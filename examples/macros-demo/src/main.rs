@@ -10,7 +10,7 @@
 //!
 //! ## Key Concepts
 //! - `#[transition]` — derive a `Transition` impl from an async function
-//! - `bus_allow` / `bus_deny` — compile-time Bus access control
+//! - `bus_allow` / `bus_deny` — compile-time declaration checks with runtime Bus enforcement
 //!
 //! ## Before / After Comparison
 //!

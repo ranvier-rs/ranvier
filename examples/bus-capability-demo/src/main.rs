@@ -1,6 +1,6 @@
 //! # Bus Capability Control
 //!
-//! Demonstrates compile-time Bus access control with `bus_allow` and `bus_deny` attributes.
+//! Demonstrates runtime Bus access control declared with `bus_allow` and `bus_deny` attributes.
 //!
 //! ## Run
 //! ```bash
@@ -10,7 +10,8 @@
 //! ## Key Concepts
 //! - `#[transition(bus_allow = [T])]` for type whitelisting
 //! - `#[transition(bus_deny = [T])]` for type blacklisting
-//! - Compile-time type safety for shared state access
+//! - Compile-time validation of the declared type list
+//! - Runtime enforcement for actual shared-state access
 
 use ranvier_core::{Bus, Outcome};
 use ranvier_macros::transition;

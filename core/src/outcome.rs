@@ -8,6 +8,8 @@
 //! * Errors are **alternative paths**, not exceptions
 //! * Branching is **explicit**, not implicit
 //! * Control flow is **visible** in the Schematic
+//! * Linear `Next`/`Fault` values are typed; non-linear control payloads are
+//!   schema-described JSON values validated at their adapter boundary
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -41,7 +43,10 @@ pub type NodeId = Uuid;
 /// ## Serialization
 ///
 /// All variants are serializable to support Schematic JSON export.
-/// Payloads use `serde_json::Value` for type-erased but serializable data.
+/// `Next(T)` and `Fault(E)` retain their Rust types. `Branch`, `Jump`, and
+/// `Emit` intentionally use `serde_json::Value` for cross-boundary control
+/// payloads. Callers that need a domain type must deserialize and validate the
+/// payload at the receiving boundary; the compiler cannot prove that schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Outcome<T, E> {
     /// Proceed to the next node strictly (Linear flow)
@@ -90,9 +95,17 @@ impl<T, E> Outcome<T, E> {
         }
     }
 
-    /// Convert to a Result, treating all non-Next variants as errors.
+    /// Convert a linear outcome to a `Result`.
     ///
-    /// This method is only available when `E: From<anyhow::Error>`.
+    /// `Next` and `Fault` preserve their values. `Branch`, `Jump`, and `Emit`
+    /// become generic early-termination errors and their identifier and payload
+    /// are discarded. This is a compatibility adapter for callers that only
+    /// understand linear success/failure; code that must preserve Ranvier
+    /// control flow should pattern-match on `Outcome` instead.
+    ///
+    /// This method is only available when `E: From<anyhow::Error>`. Its lossy
+    /// error representation is Experimental and is not part of the 1.0 Stable
+    /// Candidate contract.
     pub fn into_result(self) -> Result<T, E>
     where
         E: std::convert::From<anyhow::Error>,
