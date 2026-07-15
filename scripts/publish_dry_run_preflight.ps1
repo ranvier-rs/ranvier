@@ -35,6 +35,45 @@ function Resolve-CrateSet {
     return Resolve-ReleaseCrateSet -ProfileKey $Key -WorkspaceRoot $WorkspaceRoot
 }
 
+function Get-StringSha256 {
+    param([string[]]$Lines)
+
+    $payload = [string]::Join("`n", @($Lines))
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
+function Get-TrackedState {
+    param([string]$RepositoryRoot)
+
+    $status = @(& git -C $RepositoryRoot status --porcelain=v1 --untracked-files=no 2>$null | ForEach-Object { [string]$_ })
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to read tracked status for repository: $RepositoryRoot"
+    }
+
+    $diff = @(& git -C $RepositoryRoot diff --no-ext-diff --binary HEAD -- 2>$null | ForEach-Object { [string]$_ })
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to read tracked diff for repository: $RepositoryRoot"
+    }
+
+    $head = [string](& git -C $RepositoryRoot rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to read HEAD for repository: $RepositoryRoot"
+    }
+
+    return [ordered]@{
+        head = $head.Trim()
+        clean = ($status.Count -eq 0)
+        status = $status
+        tracked_diff_sha256 = Get-StringSha256 -Lines $diff
+    }
+}
+
 function Resolve-PublishPlan {
     param(
         [string[]]$Crates,
@@ -47,7 +86,7 @@ function Resolve-PublishPlan {
     }
 
     $manifestPath = Join-Path $WorkspaceRoot "Cargo.toml"
-    $metadataRaw = & cargo metadata --format-version 1 --no-deps --offline --manifest-path $manifestPath 2>&1
+    $metadataRaw = & cargo metadata --format-version 1 --no-deps --locked --offline --manifest-path $manifestPath 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to resolve cargo metadata for publish plan."
     }
@@ -156,7 +195,7 @@ function Invoke-PublishDryRun {
     $crateLogPath = Join-Path $EvidenceDir "publish_dry_run_preflight_${sanitized}_${Timestamp}.log"
 
     $manifestPath = Join-Path $WorkspaceRoot "Cargo.toml"
-    $args = @("publish", "--manifest-path", $manifestPath, "-p", $Crate, "--dry-run")
+    $args = @("publish", "--manifest-path", $manifestPath, "-p", $Crate, "--dry-run", "--locked")
     if ($AllowDirty) {
         $args += "--allow-dirty"
     }
@@ -193,6 +232,7 @@ function Invoke-PublishDryRun {
 }
 
 $crates = Resolve-CrateSet -Key $profileKey -WorkspaceRoot $workspaceRoot
+$trackedStateBefore = Get-TrackedState -RepositoryRoot $workspaceRoot
 Write-Log "Publish dry-run preflight started (profile=$profileKey, allow_dirty=$allowDirty)"
 Write-Log "Workspace root: $workspaceRoot"
 Write-Log "Crates: $($crates -join ', ')"
@@ -229,15 +269,27 @@ foreach ($crate in @($publishPlan.publish_order)) {
 }
 
 $failed = @($results | Where-Object { -not $_.success })
+$trackedStateAfter = Get-TrackedState -RepositoryRoot $workspaceRoot
+$trackedTreeUnchanged = (
+    [string]$trackedStateBefore.head -eq [string]$trackedStateAfter.head -and
+    [string]$trackedStateBefore.tracked_diff_sha256 -eq [string]$trackedStateAfter.tracked_diff_sha256 -and
+    [string]::Join("`n", @($trackedStateBefore.status)) -eq [string]::Join("`n", @($trackedStateAfter.status))
+)
+$treeFailureCount = if ($trackedTreeUnchanged) { 0 } else { 1 }
 $summary = [ordered]@{
     timestamp = $timestamp
     profile = $profileKey
     allow_dirty = $allowDirty
     workspace_root = "$workspaceRoot"
-    total = $results.Count
-    passed = ($results.Count - $failed.Count)
-    failed = $failed.Count
+    total = ($results.Count + 1)
+    passed = ($results.Count - $failed.Count + $(if ($trackedTreeUnchanged) { 1 } else { 0 }))
+    failed = ($failed.Count + $treeFailureCount)
     failed_crates = @($failed | ForEach-Object { $_.crate })
+    tracked_tree = [ordered]@{
+        unchanged = $trackedTreeUnchanged
+        before = $trackedStateBefore
+        after = $trackedStateAfter
+    }
     suggested_publish_order = @($publishPlan.publish_order)
     dependency_edges = @($publishPlan.dependency_edges)
     out_of_scope_dependency_edges = @($publishPlan.out_of_scope_dependency_edges)
@@ -247,7 +299,11 @@ $summary = [ordered]@{
 $summary | ConvertTo-Json -Depth 8 | Set-Content -Path $summaryPath -Encoding utf8
 Write-Log "Summary JSON: $summaryPath"
 
-if ($failed.Count -gt 0) {
+if (-not $trackedTreeUnchanged) {
+    Write-Log "FAIL: publish dry-run changed tracked Ranvier files"
+}
+
+if ($failed.Count -gt 0 -or -not $trackedTreeUnchanged) {
     Write-Log "Preflight failed for crates: $($summary.failed_crates -join ', ')"
     Write-Host "Evidence: $evidencePath"
     Write-Host "Summary:  $summaryPath"

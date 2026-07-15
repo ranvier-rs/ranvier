@@ -114,6 +114,138 @@ function New-GateCheckResult {
     }
 }
 
+function Get-StringSha256 {
+    param([string[]]$Lines)
+
+    $payload = [string]::Join("`n", @($Lines))
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
+function Get-TrackedRepositoryPaths {
+    param([string]$RootWorkspace)
+
+    $root = (Resolve-Path $RootWorkspace).Path
+    $paths = New-Object System.Collections.Generic.List[string]
+    $paths.Add($root)
+
+    $previous = Get-Location
+    try {
+        Set-Location $root
+        $submoduleRoots = @(& git submodule foreach --recursive --quiet 'git rev-parse --show-toplevel' 2>$null)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        Set-Location $previous
+    }
+
+    if ($exitCode -ne 0) {
+        throw "Failed to enumerate recursive submodule repositories."
+    }
+
+    foreach ($path in $submoduleRoots) {
+        $candidate = [string]$path
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+        $paths.Add((Resolve-Path $candidate).Path)
+    }
+
+    return @($paths | Sort-Object -Unique)
+}
+
+function Get-TrackedTreeSnapshot {
+    param([string]$RootWorkspace)
+
+    $root = (Resolve-Path $RootWorkspace).Path
+    $repositories = New-Object System.Collections.Generic.List[object]
+
+    foreach ($repositoryPath in (Get-TrackedRepositoryPaths -RootWorkspace $root)) {
+        $head = [string](& git -C $repositoryPath rev-parse HEAD 2>$null)
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to read HEAD for repository: $repositoryPath"
+        }
+
+        $status = @(& git -C $repositoryPath status --porcelain=v1 --untracked-files=no 2>$null | ForEach-Object { [string]$_ })
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to read tracked status for repository: $repositoryPath"
+        }
+
+        $diff = @(& git -C $repositoryPath diff --no-ext-diff --binary HEAD -- 2>$null | ForEach-Object { [string]$_ })
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to read tracked diff for repository: $repositoryPath"
+        }
+
+        $relativePath = [System.IO.Path]::GetRelativePath($root, $repositoryPath).Replace('\', '/')
+        if ([string]::IsNullOrWhiteSpace($relativePath)) {
+            $relativePath = "."
+        }
+
+        $repositories.Add([ordered]@{
+            path = $relativePath
+            head = $head.Trim()
+            clean = ($status.Count -eq 0)
+            status = $status
+            tracked_diff_sha256 = Get-StringSha256 -Lines $diff
+        })
+    }
+
+    return @($repositories.ToArray())
+}
+
+function Compare-TrackedTreeSnapshots {
+    param(
+        [object[]]$Before,
+        [object[]]$After
+    )
+
+    $beforeByPath = @{}
+    $afterByPath = @{}
+    foreach ($repository in $Before) {
+        $beforeByPath[[string]$repository.path] = $repository
+    }
+    foreach ($repository in $After) {
+        $afterByPath[[string]$repository.path] = $repository
+    }
+
+    $paths = @($beforeByPath.Keys + $afterByPath.Keys | Sort-Object -Unique)
+    $changes = New-Object System.Collections.Generic.List[object]
+    foreach ($path in $paths) {
+        if (-not $beforeByPath.ContainsKey($path) -or -not $afterByPath.ContainsKey($path)) {
+            $changes.Add([ordered]@{
+                path = $path
+                reason = "repository set changed"
+                before = $beforeByPath[$path]
+                after = $afterByPath[$path]
+            })
+            continue
+        }
+
+        $beforeRepository = $beforeByPath[$path]
+        $afterRepository = $afterByPath[$path]
+        $beforeStatus = [string]::Join("`n", @($beforeRepository.status))
+        $afterStatus = [string]::Join("`n", @($afterRepository.status))
+        if (
+            [string]$beforeRepository.head -ne [string]$afterRepository.head -or
+            [string]$beforeRepository.tracked_diff_sha256 -ne [string]$afterRepository.tracked_diff_sha256 -or
+            $beforeStatus -ne $afterStatus
+        ) {
+            $changes.Add([ordered]@{
+                path = $path
+                reason = "tracked state changed"
+                before = $beforeRepository
+                after = $afterRepository
+            })
+        }
+    }
+
+    return @($changes.ToArray())
+}
+
 function Invoke-GateCommand {
     param(
         [string]$Name,
@@ -263,13 +395,55 @@ function Invoke-LocalReleaseChecks {
         [string]$RanvierWorkspace,
         [string]$ProfileKey,
         [string]$LogPath,
-        [bool]$SkipClippy
+        [bool]$SkipClippy,
+        [bool]$RequireCleanTree
     )
 
     $checks = New-Object System.Collections.Generic.List[object]
+    $treeBefore = Get-TrackedTreeSnapshot -RootWorkspace $RootWorkspace
+    $dirtyBefore = @($treeBefore | Where-Object { -not [bool]$_.clean })
+    $initialTreeSuccess = (-not $RequireCleanTree) -or ($dirtyBefore.Count -eq 0)
+    $initialTreeOutput = @(
+        $dirtyBefore | ForEach-Object {
+            $repository = $_
+            @($repository.status | ForEach-Object { "$($repository.path): $_" })
+        }
+    )
+    $checks.Add((New-GateCheckResult `
+        -Name "tracked tree initial state" `
+        -Command "git status --porcelain=v1 --untracked-files=no (root and recursive submodules)" `
+        -WorkingDirectory $RootWorkspace `
+        -ExitCode $(if ($initialTreeSuccess) { 0 } else { 1 }) `
+        -Success $initialTreeSuccess `
+        -Output $initialTreeOutput `
+        -Details @{
+            require_clean = $RequireCleanTree
+            dirty_repository_count = $dirtyBefore.Count
+            repositories = $treeBefore
+        }))
+
+    if (-not $initialTreeSuccess) {
+        Write-Log -Path $LogPath -Message "tracked tree initial-state gate failed: $($dirtyBefore.Count) dirty repositor$(if ($dirtyBefore.Count -eq 1) { 'y' } else { 'ies' })"
+        return [ordered]@{
+            enabled = $true
+            total = $checks.Count
+            passed = 0
+            failed = 1
+            failed_checks = @("tracked tree initial state")
+            checks = $checks
+            tree_guard = [ordered]@{
+                require_clean = $RequireCleanTree
+                before = $treeBefore
+                after = $treeBefore
+                changed = @()
+            }
+        }
+    }
+
     $checks.Add((Invoke-SubmoduleStatusGate -RootWorkspace $RootWorkspace -LogPath $LogPath))
     $checks.Add((Invoke-VersionDriftGate -RootWorkspace $RootWorkspace -RanvierWorkspace $RanvierWorkspace -ProfileKey $ProfileKey -LogPath $LogPath))
-    $checks.Add((Invoke-GateCommand -Name "ranvier cargo check workspace" -Executable "cargo" -Arguments @("check", "--workspace") -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "ranvier cargo check workspace locked" -Executable "cargo" -Arguments @("check", "--workspace", "--locked") -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "ranvier cargo test workspace locked" -Executable "cargo" -Arguments @("test", "--workspace", "--locked") -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
 
     if ($SkipClippy) {
         Write-Log -Path $LogPath -Message "skipping publishable crate clippy gate by request"
@@ -280,16 +454,37 @@ function Invoke-LocalReleaseChecks {
         foreach ($crate in $publishableCrates) {
             $clippyArgs += @("-p", [string]$crate)
         }
-        $clippyArgs += @("--all-targets", "--", "-D", "warnings")
+        $clippyArgs += @("--all-targets", "--locked", "--", "-D", "warnings")
         $checks.Add((Invoke-GateCommand -Name "publishable crate clippy" -Executable "cargo" -Arguments $clippyArgs -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
     }
 
     $cliRoot = Join-Path $RootWorkspace "cli"
     $studioServerRoot = Join-Path $RootWorkspace "studio-server"
-    $checks.Add((Invoke-GateCommand -Name "cli cargo check" -Executable "cargo" -Arguments @("check") -WorkingDirectory $cliRoot -LogPath $LogPath))
-    $checks.Add((Invoke-GateCommand -Name "cli cargo test" -Executable "cargo" -Arguments @("test") -WorkingDirectory $cliRoot -LogPath $LogPath))
-    $checks.Add((Invoke-GateCommand -Name "studio-server cargo check" -Executable "cargo" -Arguments @("check") -WorkingDirectory $studioServerRoot -LogPath $LogPath))
-    $checks.Add((Invoke-GateCommand -Name "studio-server cargo test" -Executable "cargo" -Arguments @("test") -WorkingDirectory $studioServerRoot -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "cli cargo check locked" -Executable "cargo" -Arguments @("check", "--locked") -WorkingDirectory $cliRoot -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "cli cargo test locked" -Executable "cargo" -Arguments @("test", "--locked") -WorkingDirectory $cliRoot -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "studio-server cargo check locked" -Executable "cargo" -Arguments @("check", "--locked") -WorkingDirectory $studioServerRoot -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "studio-server cargo test locked" -Executable "cargo" -Arguments @("test", "--locked") -WorkingDirectory $studioServerRoot -LogPath $LogPath))
+
+    $treeAfter = Get-TrackedTreeSnapshot -RootWorkspace $RootWorkspace
+    [object[]]$treeChanges = @(Compare-TrackedTreeSnapshots -Before $treeBefore -After $treeAfter)
+    $treeUnchanged = ($treeChanges.Count -eq 0)
+    $checks.Add((New-GateCheckResult `
+        -Name "tracked tree unchanged" `
+        -Command "compare tracked tree snapshot before and after local release gates" `
+        -WorkingDirectory $RootWorkspace `
+        -ExitCode $(if ($treeUnchanged) { 0 } else { 1 }) `
+        -Success $treeUnchanged `
+        -Output @($treeChanges | ForEach-Object { "$($_.path): $($_.reason)" }) `
+        -Details @{
+            changed_repository_count = $treeChanges.Count
+            changes = @($treeChanges)
+        }))
+
+    if ($treeUnchanged) {
+        Write-Log -Path $LogPath -Message "tracked tree unchanged after local release gates"
+    } else {
+        Write-Log -Path $LogPath -Message "tracked tree changed in $($treeChanges.Count) repositor$(if ($treeChanges.Count -eq 1) { 'y' } else { 'ies' })"
+    }
 
     $failed = @($checks | Where-Object { -not [bool]$_.success })
     return [ordered]@{
@@ -299,6 +494,12 @@ function Invoke-LocalReleaseChecks {
         failed = $failed.Count
         failed_checks = @($failed | ForEach-Object { [string]$_.name })
         checks = $checks
+        tree_guard = [ordered]@{
+            require_clean = $RequireCleanTree
+            before = $treeBefore
+            after = $treeAfter
+            changed = @($treeChanges)
+        }
     }
 }
 
@@ -331,7 +532,7 @@ $localChecks = [ordered]@{
 if ($SkipLocalChecks.IsPresent) {
     Write-Log -Path $bundleLogPath -Message "local release checks skipped by request"
 } else {
-    $localChecks = Invoke-LocalReleaseChecks -RootWorkspace $rootWorkspace -RanvierWorkspace $workspaceRoot -ProfileKey $profileKey -LogPath $bundleLogPath -SkipClippy:$SkipClippy.IsPresent
+    $localChecks = Invoke-LocalReleaseChecks -RootWorkspace $rootWorkspace -RanvierWorkspace $workspaceRoot -ProfileKey $profileKey -LogPath $bundleLogPath -SkipClippy:$SkipClippy.IsPresent -RequireCleanTree:$NoAllowDirty.IsPresent
     Write-Log -Path $bundleLogPath -Message "local release checks passed=$($localChecks.passed) failed=$($localChecks.failed)"
 
     if ([int]$localChecks.failed -gt 0) {
