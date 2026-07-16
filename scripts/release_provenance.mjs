@@ -140,6 +140,14 @@ invariant(rustc.startsWith(`rustc ${policy.tools.rust} `), `rustc must be exactl
 invariant(Number(process.versions.node.split('.')[0]) === policy.tools.node_major, `Node must be major ${policy.tools.node_major}`);
 
 const metadata = JSON.parse(run('cargo', ['metadata', '--format-version', '1', '--no-deps', '--locked']).stdout);
+const allFeatureMetadata = JSON.parse(
+  run('cargo', ['metadata', '--format-version', '1', '--all-features', '--locked']).stdout
+);
+const originalExternalPackages = new Set(
+  allFeatureMetadata.packages
+    .filter((pkg) => pkg.source !== null)
+    .map((pkg) => `${pkg.name}|${pkg.version}|${pkg.source}`)
+);
 const workspaceIds = new Set(metadata.workspace_members);
 const publishable = metadata.packages
   .filter((pkg) => workspaceIds.has(pkg.id) && !(Array.isArray(pkg.publish) && pkg.publish.length === 0))
@@ -191,6 +199,30 @@ try {
   writeFileSync(cohortManifestPath, cohortManifest, 'utf8');
   copyFileSync(path.join(workspaceRoot, 'Cargo.lock'), path.join(verificationRoot, 'Cargo.lock'));
 
+  const resolution = run(
+    'cargo',
+    ['metadata', '--format-version', '1', '--all-features', '--offline'],
+    { cwd: verificationRoot }
+  );
+  commands.push(resolution.command);
+  const cohortMetadata = JSON.parse(resolution.stdout);
+  const cohortExternalPackages = cohortMetadata.packages
+    .filter((pkg) => pkg.source !== null)
+    .map((pkg) => `${pkg.name}|${pkg.version}|${pkg.source}`);
+  const externalDrift = cohortExternalPackages.filter((pkg) => !originalExternalPackages.has(pkg));
+  invariant(
+    externalDrift.length === 0,
+    `cohort resolution introduced external dependency drift:\n${externalDrift.join('\n')}`
+  );
+  const cohortInternalPackages = cohortMetadata.packages
+    .filter((pkg) => pkg.source === null)
+    .map((pkg) => pkg.name)
+    .sort();
+  invariant(
+    cohortInternalPackages.join('\n') === policy.provenance.publishable_crates.join('\n'),
+    'cohort internal package set differs from the 12 publishable artifacts'
+  );
+
   const verification = run(
     'cargo',
     ['check', '--workspace', '--all-features', '--locked', '--offline'],
@@ -200,10 +232,12 @@ try {
   cohortVerification = {
     mode: 'extracted-package-cohort',
     publishable_crates: publishable.length,
-    external_dependencies: 'workspace Cargo.lock, offline',
+    external_dependencies: 'offline lock derived from workspace Cargo.lock; no new name/version/source tuple',
+    external_dependency_tuples: cohortExternalPackages.length,
     internal_dependencies: '12 extracted .crate artifacts via local crates.io patch',
     command: verification.command,
-    manifest_sha256: sha256(Buffer.from(cohortManifest))
+    manifest_sha256: sha256(Buffer.from(cohortManifest)),
+    derived_lock_sha256: sha256(readFileSync(path.join(verificationRoot, 'Cargo.lock')))
   };
 } finally {
   rmSync(verificationRoot, { recursive: true, force: true });
