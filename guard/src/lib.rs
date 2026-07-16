@@ -1091,7 +1091,7 @@ where
     ) -> Outcome<T, Self::Error> {
         // Generate a UUID v4 if no RequestId was injected by the HTTP layer
         if bus.read::<RequestId>().is_none() {
-            bus.insert(RequestId(uuid::Uuid::new_v4().to_string()));
+            bus.insert_shared(RequestId(uuid::Uuid::new_v4().to_string()));
         }
 
         // Integrate with tracing: record request_id on current span
@@ -1340,7 +1340,7 @@ where
             return Outcome::fault(format!("403 Forbidden: {}", e));
         }
 
-        bus.insert(identity);
+        bus.insert_shared(identity);
         Outcome::next(input)
     }
 }

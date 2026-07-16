@@ -569,7 +569,7 @@ where
                 // Extract X-Request-Id from request headers if present
                 if let Some(rid) = parts.headers.get("x-request-id") {
                     if let Ok(s) = rid.to_str() {
-                        bus.insert(ranvier_guard::RequestId(s.to_string()));
+                        bus.insert_shared(ranvier_guard::RequestId(s.to_string()));
                     }
                 }
                 // If no header, the Guard Transition will generate a UUID v4

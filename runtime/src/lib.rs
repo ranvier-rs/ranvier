@@ -14,7 +14,7 @@ pub mod testkit;
 
 pub mod prelude {
     pub use crate::axon::{
-        Axon, BoxFuture, ExecutionMode, ParallelStrategy, SchematicExportRequest,
+        Axon, BoxFuture, ExecutionMode, ParallelBusPolicy, ParallelStrategy, SchematicExportRequest,
     };
     pub use crate::cluster::{ClusterManager, LeaderElection, LockBasedElection};
     pub use crate::distributed::{
@@ -53,7 +53,7 @@ pub type TypedAxon<In, Out, Res = ()> = Axon<In, Out, ranvier_core::error::Ranvi
 /// required by `Axon`.
 pub type InfallibleAxon<In, Out, Res = ()> = Axon<In, Out, ranvier_core::Never, Res>;
 
-pub use axon::{Axon, ParallelStrategy, SchematicExportRequest};
+pub use axon::{Axon, ParallelBusPolicy, ParallelStrategy, SchematicExportRequest};
 pub use closure_transition::ClosureTransition;
 pub use cluster::{ClusterManager, LeaderElection, LockBasedElection};
 pub use distributed::{DistributedError, DistributedLock, DistributedStore, Guard, LockOptions};

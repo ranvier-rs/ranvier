@@ -12,7 +12,7 @@
     57
   ],
   "input_sha256": {
-    ".ranvier-api-policy.json": "8e73f9035672610c86f3cbf8fd126eac0e1d6bad7180a15aab942734e0ab11b0",
+    ".ranvier-api-policy.json": "50f402b715f79e6b42707c232ac2175c6618955ff133b8af0e629541c6987241",
     "Cargo.toml": "440d6e7cf11bcb30644ca6f1ead0310cba39690502de16209033caef906bfc7b",
     "core/Cargo.toml": "d55d5c9b5b71f9061c20a9b29259b2344ce78186ab735a2517dc670b88fc1366",
     "extensions/audit/Cargo.toml": "6e09af66c9c4a531dc07b2ec8ff91254b668df48148f961e13b801f3a04a8cb4",
@@ -28,10 +28,10 @@
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2514,
+  "public_item_count": 2523,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2322,
+    "Experimental": 2331,
     "Stable Candidate": 184
   },
   "crates": [
@@ -3292,12 +3292,12 @@
         "default",
         "streaming"
       ],
-      "public_item_count": 666,
+      "public_item_count": 669,
       "counts_by_kind": {
         "assoc_type": 11,
         "constant": 2,
         "enum": 53,
-        "function": 190,
+        "function": 193,
         "macro": 3,
         "module": 23,
         "struct": 95,
@@ -3308,11 +3308,11 @@
       },
       "counts_by_stability": {
         "Deprecated": 6,
-        "Experimental": 530,
+        "Experimental": 533,
         "Stable Candidate": 130
       },
       "facade_reexport_count": 0,
-      "boundary_item_count": 44,
+      "boundary_item_count": 47,
       "items": [
         {
           "path": "ranvier_core",
@@ -3376,6 +3376,20 @@
           "origin": "direct",
           "target": null,
           "stability": "Stable Candidate",
+          "owner": "runtime-core",
+          "boundary": "runtime-type-erased-resource",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/bus.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::bus::Bus::fork_for_parallel",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": "runtime-type-erased-resource",
           "deprecated": false,
@@ -3469,6 +3483,20 @@
           }
         },
         {
+          "path": "ranvier_core::bus::Bus::insert_shared",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": "runtime-type-erased-resource",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/bus.rs"
+          }
+        },
+        {
           "path": "ranvier_core::bus::Bus::is_empty",
           "kind": "function",
           "origin": "direct",
@@ -3516,6 +3544,20 @@
           "origin": "direct",
           "target": null,
           "stability": "Stable Candidate",
+          "owner": "runtime-core",
+          "boundary": "runtime-type-erased-resource",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/bus.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::bus::Bus::provide_shared",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": "runtime-type-erased-resource",
           "deprecated": false,
@@ -28726,19 +28768,19 @@
         "schema",
         "streaming"
       ],
-      "public_item_count": 383,
+      "public_item_count": 389,
       "counts_by_kind": {
-        "enum": 26,
-        "function": 125,
+        "enum": 29,
+        "function": 126,
         "module": 12,
         "struct": 96,
         "struct_field": 67,
         "trait": 18,
         "type_alias": 10,
-        "variant": 29
+        "variant": 31
       },
       "counts_by_stability": {
-        "Experimental": 366,
+        "Experimental": 372,
         "Stable Candidate": 17
       },
       "facade_reexport_count": 0,
@@ -29026,6 +29068,20 @@
         },
         {
           "path": "ranvier_runtime::axon::Axon::parallel",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/axon/parallel.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::axon::Axon::parallel_with_bus_policy",
           "kind": "function",
           "origin": "direct",
           "target": null,
@@ -29601,6 +29657,48 @@
         {
           "path": "ranvier_runtime::axon::ManualJump::target_node",
           "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/axon/mod.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::axon::ParallelBusPolicy",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/axon/mod.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::axon::ParallelBusPolicy::InheritShared",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/axon/mod.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::axon::ParallelBusPolicy::Isolated",
+          "kind": "variant",
           "origin": "direct",
           "target": null,
           "stability": "Experimental",
@@ -30975,6 +31073,20 @@
           "kind": "struct",
           "origin": "reexport",
           "target": "llm::MockLlmConfig",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::ParallelBusPolicy",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "axon::ParallelBusPolicy",
           "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": null,
@@ -32781,6 +32893,20 @@
           "kind": "struct",
           "origin": "reexport",
           "target": "crate::llm::MockLlmConfig",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::prelude::ParallelBusPolicy",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "crate::axon::ParallelBusPolicy",
           "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": null,

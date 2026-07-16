@@ -6,6 +6,7 @@ use ranvier_core::transition::Transition;
 use serde::{Serialize, de::DeserializeOwned};
 use std::panic::Location;
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::persistence::PersistenceHandle;
 
@@ -14,6 +15,22 @@ use super::{
     bus_capability_schema_from_policy, now_ms, outcome_kind_name, outcome_type_name,
     persist_execution_event, persistence_trace_id, type_name_of,
 };
+
+struct ParallelBranchResult<Out, E> {
+    index: usize,
+    node_id: String,
+    label: String,
+    outcome: Outcome<Out, E>,
+    entered_at_ms: u64,
+    exited_at_ms: u64,
+    duration_ms: u64,
+}
+
+type KeyedTimelineEvent = (u64, u8, usize, TimelineEvent);
+
+fn sort_parallel_branch_events(events: &mut [KeyedTimelineEvent]) {
+    events.sort_by_key(|(timestamp, phase, index, _)| (*timestamp, *phase, *index));
+}
 
 impl<In, Out, E, Res> Axon<In, Out, E, Res>
 where
@@ -36,9 +53,10 @@ where
     /// the pipeline. A custom merge can be layered on top via a subsequent
     /// `.then()` step.
     ///
-    /// Each parallel branch receives its own fresh [`Bus`] instance. Resources
-    /// should be injected via the shared `Res` bundle rather than the Bus for
-    /// parallel steps.
+    /// Each parallel branch receives its own fresh [`Bus`] instance. This
+    /// preserves the 0.51.x behavior. Use
+    /// [`parallel_with_bus_policy`](Self::parallel_with_bus_policy) to inherit
+    /// explicitly shared request context.
     ///
     /// ## Schematic
     ///
@@ -61,6 +79,27 @@ where
         self,
         transitions: Vec<Arc<dyn Transition<Out, Out, Resources = Res, Error = E> + Send + Sync>>,
         strategy: ParallelStrategy,
+    ) -> Axon<In, Out, E, Res>
+    where
+        Out: Clone,
+    {
+        self.parallel_with_bus_policy(transitions, strategy, ParallelBusPolicy::Isolated)
+    }
+
+    /// Run parallel branches with an explicit Bus inheritance policy.
+    ///
+    /// [`ParallelBusPolicy::InheritShared`] gives each branch a local Bus
+    /// overlay over values inserted into the parent with
+    /// [`Bus::insert_shared`] or [`Bus::provide_shared`]. Inherited values are
+    /// read-only. Branch-local writes are discarded, and no implicit merge is
+    /// performed. [`ParallelBusPolicy::Isolated`] is equivalent to
+    /// [`parallel`](Self::parallel).
+    #[track_caller]
+    pub fn parallel_with_bus_policy(
+        self,
+        transitions: Vec<Arc<dyn Transition<Out, Out, Resources = Res, Error = E> + Send + Sync>>,
+        strategy: ParallelStrategy,
+        bus_policy: ParallelBusPolicy,
     ) -> Axon<In, Out, E, Res>
     where
         Out: Clone,
@@ -96,9 +135,10 @@ where
             kind: NodeKind::FanOut,
             label: "FanOut".to_string(),
             description: Some(format!(
-                "Parallel split ({} branches, {:?})",
+                "Parallel split ({} branches, {:?}, bus={:?})",
                 transitions.len(),
-                strategy
+                strategy,
+                bus_policy
             )),
             input_type: type_name_of::<Out>(),
             output_type: type_name_of::<Out>(),
@@ -159,7 +199,10 @@ where
             id: fanin_id.clone(),
             kind: NodeKind::FanIn,
             label: "FanIn".to_string(),
-            description: Some(format!("Parallel join ({:?})", strategy)),
+            description: Some(format!(
+                "Parallel join ({:?}, bus={:?})",
+                strategy, bus_policy
+            )),
             input_type: type_name_of::<Out>(),
             output_type: type_name_of::<Out>(),
             resource_type: type_name_of::<Res>(),
@@ -197,6 +240,7 @@ where
                 let fanout_id = fanout_node_id.clone();
                 let fanin_id = fanin_node_id.clone();
                 let branch_ids = branch_ids_for_exec.clone();
+                let bus_policy = bus_policy;
 
                 Box::pin(async move {
                     // Run previous steps
@@ -207,6 +251,7 @@ where
                     };
 
                     // Timeline: FanOut enter
+                    let fanout_started = Instant::now();
                     let fanout_enter_ts = now_ms();
                     if let Some(timeline) = bus.read_mut::<Timeline>() {
                         timeline.push(TimelineEvent::NodeEnter {
@@ -218,7 +263,8 @@ where
 
                     // Build futures for all branches.
                     // Each branch gets its own Bus so they can run concurrently
-                    // without &mut Bus aliasing. Resources are shared via &Res.
+                    // without &mut Bus aliasing. Only the explicit policy can
+                    // add read-only inherited context.
                     let futs: Vec<_> = branches
                         .iter()
                         .enumerate()
@@ -226,50 +272,95 @@ where
                             let branch_state = state.clone();
                             let branch_node_id = branch_ids[i].clone();
                             let trans = trans.clone();
+                            let branch_bus = match bus_policy {
+                                ParallelBusPolicy::Isolated => Bus::new(),
+                                ParallelBusPolicy::InheritShared => bus.fork_for_parallel(),
+                            };
 
                             async move {
-                                let mut branch_bus = Bus::new();
+                                let mut branch_bus = branch_bus;
                                 let label = trans.label();
                                 let bus_policy = trans.bus_access_policy();
 
                                 branch_bus.set_access_policy(label.clone(), bus_policy);
+                                let entered_at_ms = now_ms();
+                                let started = Instant::now();
                                 let result = trans.run(branch_state, res, &mut branch_bus).await;
+                                let duration_ms = started.elapsed().as_millis() as u64;
+                                let exited_at_ms = now_ms().max(entered_at_ms);
                                 branch_bus.clear_access_policy();
 
-                                (i, branch_node_id, label, result)
+                                ParallelBranchResult {
+                                    index: i,
+                                    node_id: branch_node_id,
+                                    label,
+                                    outcome: result,
+                                    entered_at_ms,
+                                    exited_at_ms,
+                                    duration_ms,
+                                }
                             }
                         })
                         .collect();
 
                     // Run all branches concurrently within the current task
-                    let results: Vec<(usize, String, String, Outcome<Out, E>)> =
+                    let results: Vec<ParallelBranchResult<Out, E>> =
                         futures_util::future::join_all(futs).await;
 
-                    // Timeline: record each branch's enter/exit
-                    for (_, branch_node_id, branch_label, outcome) in &results {
-                        if let Some(timeline) = bus.read_mut::<Timeline>() {
-                            let ts = now_ms();
-                            timeline.push(TimelineEvent::NodeEnter {
-                                node_id: branch_node_id.clone(),
-                                node_label: branch_label.clone(),
-                                timestamp: ts,
-                            });
-                            timeline.push(TimelineEvent::NodeExit {
-                                node_id: branch_node_id.clone(),
-                                outcome_type: outcome_type_name(outcome),
-                                duration_ms: 0,
-                                timestamp: ts,
-                            });
+                    // Timeline: branch timestamps are captured inside each
+                    // future, then emitted deterministically. Enter precedes
+                    // exit and declaration index breaks equal timestamp ties.
+                    if let Some(timeline) = bus.read_mut::<Timeline>() {
+                        let mut branch_events = Vec::with_capacity(results.len() * 2);
+                        for result in &results {
+                            branch_events.push((
+                                result.entered_at_ms,
+                                0_u8,
+                                result.index,
+                                TimelineEvent::NodeEnter {
+                                    node_id: result.node_id.clone(),
+                                    node_label: result.label.clone(),
+                                    timestamp: result.entered_at_ms,
+                                },
+                            ));
+                            branch_events.push((
+                                result.exited_at_ms,
+                                1_u8,
+                                result.index,
+                                TimelineEvent::NodeExit {
+                                    node_id: result.node_id.clone(),
+                                    outcome_type: outcome_type_name(&result.outcome),
+                                    duration_ms: result.duration_ms,
+                                    timestamp: result.exited_at_ms,
+                                },
+                            ));
+                        }
+                        sort_parallel_branch_events(&mut branch_events);
+                        for (_, _, _, event) in branch_events {
+                            timeline.push(event);
                         }
                     }
 
                     // Timeline: FanOut exit
                     if let Some(timeline) = bus.read_mut::<Timeline>() {
+                        let fanout_exit_ts = now_ms().max(fanout_enter_ts);
                         timeline.push(TimelineEvent::NodeExit {
                             node_id: fanout_id.clone(),
                             outcome_type: "Next".to_string(),
-                            duration_ms: 0,
-                            timestamp: now_ms(),
+                            duration_ms: fanout_started.elapsed().as_millis() as u64,
+                            timestamp: fanout_exit_ts,
+                        });
+                    }
+
+                    // Timeline: FanIn starts before deterministic strategy
+                    // combination and exits after the result is selected.
+                    let fanin_started = Instant::now();
+                    let fanin_enter_ts = now_ms();
+                    if let Some(timeline) = bus.read_mut::<Timeline>() {
+                        timeline.push(TimelineEvent::NodeEnter {
+                            node_id: fanin_id.clone(),
+                            node_label: "FanIn".to_string(),
+                            timestamp: fanin_enter_ts,
                         });
                     }
 
@@ -279,8 +370,8 @@ where
                             let mut first_fault = None;
                             let mut first_success = None;
 
-                            for (_, _, _, outcome) in results {
-                                match outcome {
+                            for result in results {
+                                match result.outcome {
                                     Outcome::Fault(e) => {
                                         if first_fault.is_none() {
                                             first_fault = Some(Outcome::Fault(e));
@@ -313,8 +404,8 @@ where
                             let mut first_success = None;
                             let mut first_fault = None;
 
-                            for (_, _, _, outcome) in results {
-                                match outcome {
+                            for result in results {
+                                match result.outcome {
                                     Outcome::Next(val) if first_success.is_none() => {
                                         first_success = Some(Outcome::Next(val));
                                     }
@@ -333,19 +424,13 @@ where
                         }
                     };
 
-                    // Timeline: FanIn
-                    let fanin_enter_ts = now_ms();
+                    // Timeline: FanIn exit
                     if let Some(timeline) = bus.read_mut::<Timeline>() {
-                        timeline.push(TimelineEvent::NodeEnter {
-                            node_id: fanin_id.clone(),
-                            node_label: "FanIn".to_string(),
-                            timestamp: fanin_enter_ts,
-                        });
                         timeline.push(TimelineEvent::NodeExit {
                             node_id: fanin_id.clone(),
                             outcome_type: outcome_type_name(&combined),
-                            duration_ms: 0,
-                            timestamp: fanin_enter_ts,
+                            duration_ms: fanin_started.elapsed().as_millis() as u64,
+                            timestamp: now_ms().max(fanin_enter_ts),
                         });
                     }
 
@@ -393,5 +478,80 @@ where
             saga_compensation_registry,
             iam_handle,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KeyedTimelineEvent, sort_parallel_branch_events};
+    use ranvier_core::timeline::TimelineEvent;
+
+    #[test]
+    fn parallel_timeline_ties_order_enter_before_exit_then_by_declaration() {
+        let timestamp = 42;
+        let mut events: Vec<KeyedTimelineEvent> = vec![
+            (
+                timestamp,
+                1,
+                1,
+                TimelineEvent::NodeExit {
+                    node_id: "branch-1".to_string(),
+                    outcome_type: "Next".to_string(),
+                    duration_ms: 0,
+                    timestamp,
+                },
+            ),
+            (
+                timestamp,
+                0,
+                1,
+                TimelineEvent::NodeEnter {
+                    node_id: "branch-1".to_string(),
+                    node_label: "branch-1".to_string(),
+                    timestamp,
+                },
+            ),
+            (
+                timestamp,
+                1,
+                0,
+                TimelineEvent::NodeExit {
+                    node_id: "branch-0".to_string(),
+                    outcome_type: "Next".to_string(),
+                    duration_ms: 0,
+                    timestamp,
+                },
+            ),
+            (
+                timestamp,
+                0,
+                0,
+                TimelineEvent::NodeEnter {
+                    node_id: "branch-0".to_string(),
+                    node_label: "branch-0".to_string(),
+                    timestamp,
+                },
+            ),
+        ];
+
+        sort_parallel_branch_events(&mut events);
+
+        let ordered = events
+            .iter()
+            .map(|(_, _, _, event)| match event {
+                TimelineEvent::NodeEnter { node_id, .. } => ("enter", node_id.as_str()),
+                TimelineEvent::NodeExit { node_id, .. } => ("exit", node_id.as_str()),
+                _ => unreachable!("test contains only branch enter/exit events"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered,
+            vec![
+                ("enter", "branch-0"),
+                ("enter", "branch-1"),
+                ("exit", "branch-0"),
+                ("exit", "branch-1"),
+            ]
+        );
     }
 }

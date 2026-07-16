@@ -71,6 +71,16 @@ pub enum ParallelStrategy {
     AnyCanFail,
 }
 
+/// Bus context policy for parallel branch execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParallelBusPolicy {
+    /// Preserve the 0.51.x behavior: each branch receives an empty Bus.
+    Isolated,
+    /// Inherit only parent entries explicitly marked as shared. Inherited
+    /// entries are read-only and branch-local writes are discarded at FanIn.
+    InheritShared,
+}
+
 /// Type alias for async boxed futures used in Axon execution.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -1412,8 +1422,8 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        Axon, inspector_dev_mode_from_value, inspector_enabled_from_value, sampled_by_bus_id,
-        should_force_export,
+        Axon, ParallelBusPolicy, ParallelStrategy, inspector_dev_mode_from_value,
+        inspector_enabled_from_value, sampled_by_bus_id, should_force_export,
     };
     use crate::persistence::{
         CompensationContext, CompensationHandle, CompensationHook, CompensationIdempotencyHandle,
@@ -1428,9 +1438,10 @@ mod tests {
     #[cfg(feature = "inspector")]
     use ranvier_core::telemetry::{AuditLogger, InterventionEvent};
     use ranvier_core::timeline::{Timeline, TimelineEvent};
-    use ranvier_core::{Bus, BusAccessPolicy, BusTypeRef, Outcome, Transition};
+    use ranvier_core::{Bus, BusAccessError, BusAccessPolicy, BusTypeRef, Outcome, Transition};
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::Mutex;
     use uuid::Uuid;
 
@@ -2823,6 +2834,284 @@ mod tests {
     }
 
     // ── Parallel Step Tests (M231) ───────────────────────────────
+
+    #[derive(Debug)]
+    struct ParallelBranchWrite;
+
+    #[derive(Clone)]
+    struct InheritedContextProbe {
+        seen: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Transition<i32, i32> for InheritedContextProbe {
+        type Error = String;
+        type Resources = ();
+
+        async fn run(
+            &self,
+            state: i32,
+            _resources: &Self::Resources,
+            bus: &mut Bus,
+        ) -> Outcome<i32, Self::Error> {
+            use ranvier_core::iam::{IamIdentity, IamToken};
+            use ranvier_core::tenant::TenantId;
+
+            let identity = match bus.get::<IamIdentity>() {
+                Ok(identity) if identity.subject == "parallel-user" => identity,
+                _ => return Outcome::fault("missing inherited identity".to_string()),
+            };
+            if identity.roles != ["reviewer"] {
+                return Outcome::fault("unexpected inherited role".to_string());
+            }
+            match bus.get::<TenantId>() {
+                Ok(tenant) if tenant.as_str() == "tenant-a" => {}
+                _ => return Outcome::fault("missing inherited tenant".to_string()),
+            }
+            if bus.read::<IamToken>().is_some() {
+                return Outcome::fault("raw token must not be inherited".to_string());
+            }
+            if !matches!(
+                bus.get_mut::<IamIdentity>(),
+                Err(BusAccessError::Unauthorized { .. })
+            ) {
+                return Outcome::fault("inherited identity must be read-only".to_string());
+            }
+
+            bus.insert(ParallelBranchWrite);
+            self.seen.fetch_add(1, Ordering::SeqCst);
+            Outcome::next(state + 1)
+        }
+    }
+
+    #[derive(Clone)]
+    struct IsolatedContextProbe;
+
+    #[async_trait]
+    impl Transition<i32, i32> for IsolatedContextProbe {
+        type Error = String;
+        type Resources = ();
+
+        async fn run(
+            &self,
+            state: i32,
+            _resources: &Self::Resources,
+            bus: &mut Bus,
+        ) -> Outcome<i32, Self::Error> {
+            use ranvier_core::iam::IamIdentity;
+            use ranvier_core::tenant::TenantId;
+
+            if bus.read::<IamIdentity>().is_some() || bus.read::<TenantId>().is_some() {
+                Outcome::fault("legacy parallel unexpectedly inherited context".to_string())
+            } else {
+                Outcome::next(state)
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct InheritedPolicyProbe;
+
+    #[async_trait]
+    impl Transition<i32, i32> for InheritedPolicyProbe {
+        type Error = String;
+        type Resources = ();
+
+        fn bus_access_policy(&self) -> Option<BusAccessPolicy> {
+            use ranvier_core::iam::IamIdentity;
+            Some(BusAccessPolicy::allow_only(vec![BusTypeRef::of::<
+                IamIdentity,
+            >()]))
+        }
+
+        async fn run(
+            &self,
+            state: i32,
+            _resources: &Self::Resources,
+            bus: &mut Bus,
+        ) -> Outcome<i32, Self::Error> {
+            use ranvier_core::iam::IamIdentity;
+            use ranvier_core::tenant::TenantId;
+
+            if bus.get::<IamIdentity>().is_err() {
+                return Outcome::fault("allowed inherited identity missing".to_string());
+            }
+            if !matches!(
+                bus.get::<TenantId>(),
+                Err(BusAccessError::Unauthorized { .. })
+            ) {
+                return Outcome::fault("branch policy did not deny inherited tenant".to_string());
+            }
+            Outcome::next(state)
+        }
+    }
+
+    #[derive(Clone)]
+    struct DelayedParallelBranch {
+        label: &'static str,
+        delay_ms: u64,
+    }
+
+    #[async_trait]
+    impl Transition<i32, i32> for DelayedParallelBranch {
+        type Error = TestInfallible;
+        type Resources = ();
+
+        fn label(&self) -> String {
+            self.label.to_string()
+        }
+
+        async fn run(
+            &self,
+            state: i32,
+            _resources: &Self::Resources,
+            _bus: &mut Bus,
+        ) -> Outcome<i32, Self::Error> {
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            Outcome::next(state)
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_legacy_api_remains_isolated() {
+        use ranvier_core::iam::IamIdentity;
+        use ranvier_core::tenant::TenantId;
+
+        let mut bus = Bus::new();
+        bus.provide_shared(IamIdentity::new("parallel-user"));
+        bus.provide_shared(TenantId::new("tenant-a"));
+        let axon = Axon::<i32, i32, String>::start("ParallelIsolated").parallel(
+            vec![Arc::new(IsolatedContextProbe)],
+            ParallelStrategy::AllMustSucceed,
+        );
+
+        let outcome = axon.execute(5, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Next(5)));
+    }
+
+    #[tokio::test]
+    async fn parallel_inherits_explicit_auth_tenant_context_and_discards_writes() {
+        use ranvier_core::iam::{IamIdentity, IamToken};
+        use ranvier_core::tenant::TenantId;
+
+        let seen = Arc::new(AtomicUsize::new(0));
+        let mut bus = Bus::new();
+        bus.provide_shared(IamIdentity::new("parallel-user").with_role("reviewer"));
+        bus.provide_shared(TenantId::new("tenant-a"));
+        bus.provide(IamToken("raw-secret".to_string()));
+        let axon = Axon::<i32, i32, String>::start("ParallelInherited").parallel_with_bus_policy(
+            vec![
+                Arc::new(InheritedContextProbe {
+                    seen: Arc::clone(&seen),
+                }),
+                Arc::new(InheritedContextProbe {
+                    seen: Arc::clone(&seen),
+                }),
+            ],
+            ParallelStrategy::AllMustSucceed,
+            ParallelBusPolicy::InheritShared,
+        );
+
+        let outcome = axon.execute(5, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Next(6)));
+        assert_eq!(seen.load(Ordering::SeqCst), 2);
+        assert!(bus.read::<ParallelBranchWrite>().is_none());
+        assert_eq!(
+            bus.read::<IamIdentity>()
+                .map(|identity| identity.subject.as_str()),
+            Some("parallel-user")
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_branch_access_policy_applies_to_inherited_context() {
+        use ranvier_core::iam::IamIdentity;
+        use ranvier_core::tenant::TenantId;
+
+        let mut bus = Bus::new();
+        bus.provide_shared(IamIdentity::new("parallel-user"));
+        bus.provide_shared(TenantId::new("tenant-a"));
+        let axon = Axon::<i32, i32, String>::start("ParallelPolicy").parallel_with_bus_policy(
+            vec![Arc::new(InheritedPolicyProbe)],
+            ParallelStrategy::AllMustSucceed,
+            ParallelBusPolicy::InheritShared,
+        );
+
+        let outcome = axon.execute(5, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Next(5)));
+    }
+
+    #[tokio::test]
+    async fn parallel_timeline_uses_branch_node_identity_and_real_durations() {
+        let mut bus = Bus::new();
+        bus.insert(Timeline::new());
+        let axon = Axon::<i32, i32, TestInfallible>::start("ParallelTiming")
+            .parallel_with_bus_policy(
+                vec![
+                    Arc::new(DelayedParallelBranch {
+                        label: "slow-branch",
+                        delay_ms: 40,
+                    }),
+                    Arc::new(DelayedParallelBranch {
+                        label: "fast-branch",
+                        delay_ms: 5,
+                    }),
+                ],
+                ParallelStrategy::AllMustSucceed,
+                ParallelBusPolicy::Isolated,
+            );
+        let slow_id = axon
+            .schematic
+            .nodes
+            .iter()
+            .find(|node| node.label == "slow-branch")
+            .map(|node| node.id.clone())
+            .expect("slow branch schematic node");
+        let fast_id = axon
+            .schematic
+            .nodes
+            .iter()
+            .find(|node| node.label == "fast-branch")
+            .map(|node| node.id.clone())
+            .expect("fast branch schematic node");
+
+        let outcome = axon.execute(5, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Next(5)));
+        let timeline = bus.read::<Timeline>().expect("parallel timeline");
+        let branch_exit = |node_id: &str| {
+            timeline.events.iter().find_map(|event| match event {
+                TimelineEvent::NodeExit {
+                    node_id: current,
+                    duration_ms,
+                    timestamp,
+                    ..
+                } if current == node_id => Some((*duration_ms, *timestamp)),
+                _ => None,
+            })
+        };
+        let branch_enter = |node_id: &str| {
+            timeline.events.iter().find_map(|event| match event {
+                TimelineEvent::NodeEnter {
+                    node_id: current,
+                    timestamp,
+                    ..
+                } if current == node_id => Some(*timestamp),
+                _ => None,
+            })
+        };
+        let (slow_duration, slow_exit) = branch_exit(&slow_id).expect("slow branch exit");
+        let (fast_duration, fast_exit) = branch_exit(&fast_id).expect("fast branch exit");
+        let slow_enter = branch_enter(&slow_id).expect("slow branch enter");
+        let fast_enter = branch_enter(&fast_id).expect("fast branch enter");
+
+        assert!(slow_duration >= 30, "slow duration was {slow_duration}ms");
+        assert!(
+            slow_duration > fast_duration,
+            "slow={slow_duration}ms fast={fast_duration}ms"
+        );
+        assert!(slow_exit >= slow_enter);
+        assert!(fast_exit >= fast_enter);
+    }
 
     #[tokio::test]
     async fn parallel_all_succeed_returns_first_next() {

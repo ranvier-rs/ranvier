@@ -19,6 +19,9 @@
       "owner": "runtime-core",
       "rules": [
         { "prefix": "ranvier_core::outcome::Outcome::into_result", "match": "exact", "tier": "Experimental" },
+        { "prefix": "ranvier_core::bus::Bus::fork_for_parallel", "match": "exact", "tier": "Experimental" },
+        { "prefix": "ranvier_core::bus::Bus::insert_shared", "match": "exact", "tier": "Experimental" },
+        { "prefix": "ranvier_core::bus::Bus::provide_shared", "match": "exact", "tier": "Experimental" },
         { "prefix": "ranvier_core::transition::Transition", "tier": "Stable Candidate" },
         { "prefix": "ranvier_core::transition::ResourceRequirement", "tier": "Stable Candidate" },
         { "prefix": "ranvier_core::outcome::Outcome", "tier": "Stable Candidate" },

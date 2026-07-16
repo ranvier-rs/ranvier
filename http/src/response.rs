@@ -446,7 +446,7 @@ impl<T: askama::Template> IntoResponse for TemplateResponse<T> {
             ),
             Err(e) => json_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("Template render error: {}", e),
+                format!("Template render error: {}", e),
             ),
         }
     }

@@ -57,7 +57,10 @@ impl Timeline {
         self.events.push(event);
     }
 
-    /// Sort events by timestamp
+    /// Sort events by timestamp while preserving insertion order for ties.
+    ///
+    /// Parallel execution uses deterministic phase/declaration ordering before
+    /// insertion, so millisecond timestamp ties remain reproducible here.
     pub fn sort(&mut self) {
         self.events.sort_by_key(|e| match e {
             TimelineEvent::NodeEnter { timestamp, .. } => *timestamp,
@@ -68,5 +71,35 @@ impl Timeline {
             TimelineEvent::DlqExhausted { timestamp, .. } => *timestamp,
             TimelineEvent::NodeTimeout { timestamp, .. } => *timestamp,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Timeline, TimelineEvent};
+
+    #[test]
+    fn sort_preserves_insertion_order_for_equal_timestamps() {
+        let mut timeline = Timeline::new();
+        timeline.push(TimelineEvent::NodePaused {
+            node_id: "first".to_string(),
+            timestamp: 42,
+        });
+        timeline.push(TimelineEvent::NodePaused {
+            node_id: "second".to_string(),
+            timestamp: 42,
+        });
+
+        timeline.sort();
+
+        let ids = timeline
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                TimelineEvent::NodePaused { node_id, .. } => Some(node_id.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["first", "second"]);
     }
 }

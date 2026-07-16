@@ -66,7 +66,7 @@ where
     let certs: Vec<CertificateDer<'static>> = config
         .cert_chain
         .into_iter()
-        .map(|c| CertificateDer::from(c))
+        .map(CertificateDer::from)
         .collect();
 
     let key = PrivateKeyDer::try_from(config.private_key)?;

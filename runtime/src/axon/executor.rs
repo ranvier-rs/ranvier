@@ -96,7 +96,7 @@ where
                                     );
                                 }
                                 // Insert verified identity into Bus for downstream access
-                                bus.insert(identity);
+                                bus.insert_shared(identity);
                             }
                             Err(e) => {
                                 tracing::warn!("IAM token verification failed: {}", e);

@@ -74,7 +74,7 @@ pub enum TenantResolver {
 
 /// Insert a [`TenantId`] into the Bus.
 pub fn inject_tenant_id(bus: &mut crate::bus::Bus, id: TenantId) {
-    bus.insert(id);
+    bus.insert_shared(id);
 }
 
 /// Read the [`TenantId`] from the Bus.

@@ -825,9 +825,9 @@ impl PathParams {
 /// Called automatically by `HttpIngress` before user-provided `bus_injector`.
 fn inject_query_params(parts: &http::request::Parts, bus: &mut ranvier_core::bus::Bus) {
     if let Some(query) = parts.uri.query() {
-        bus.insert(QueryParams::from_query(query));
+        bus.insert_shared(QueryParams::from_query(query));
     } else {
-        bus.insert(QueryParams::default());
+        bus.insert_shared(QueryParams::default());
     }
 }
 

@@ -155,8 +155,13 @@ impl std::error::Error for BusAccessError {}
 /// dependencies and this container for adapter-injected or cross-cutting
 /// execution context.
 pub struct Bus {
-    /// Type-indexed resource storage
+    /// Type-indexed execution-local resource storage.
     resources: AHashMap<std::any::TypeId, Box<dyn Any + Send + Sync>>,
+    /// Explicitly shareable local entries. Parallel forks inherit cloned
+    /// handles to these values as read-only context.
+    shared_resources: AHashMap<std::any::TypeId, Arc<dyn Any + Send + Sync>>,
+    /// Read-only entries inherited from a parent parallel context.
+    inherited_resources: AHashMap<std::any::TypeId, Arc<dyn Any + Send + Sync>>,
     /// Optional unique identifier for this Bus instance
     pub id: Uuid,
     /// Optional transition-scoped access guard (M143 opt-in)
@@ -172,6 +177,8 @@ impl Bus {
     pub fn new() -> Self {
         Self {
             resources: AHashMap::new(),
+            shared_resources: AHashMap::new(),
+            inherited_resources: AHashMap::new(),
             id: Uuid::new_v4(),
             access_guard: None,
         }
@@ -192,7 +199,21 @@ impl Bus {
     #[inline]
     pub fn insert<T: Any + Send + Sync + 'static>(&mut self, resource: T) {
         let type_id = std::any::TypeId::of::<T>();
+        self.shared_resources.remove(&type_id);
         self.resources.insert(type_id, Box::new(resource));
+    }
+
+    /// Insert a value that explicit parallel Bus forks may inherit.
+    ///
+    /// A fork reads the value through a reference-counted, structurally
+    /// read-only handle. Branch-local inserts may shadow it, but branch writes
+    /// are not merged back into this Bus. The value does not need to implement
+    /// `Clone`.
+    #[inline]
+    pub fn insert_shared<T: Any + Send + Sync + 'static>(&mut self, resource: T) {
+        let type_id = TypeId::of::<T>();
+        self.resources.remove(&type_id);
+        self.shared_resources.insert(type_id, Arc::new(resource));
     }
 
     /// Read a resource from the Bus.
@@ -249,12 +270,32 @@ impl Bus {
     pub fn get<T: Any + Send + Sync + 'static>(&self) -> Result<&T, BusAccessError> {
         self.ensure_access::<T>()?;
         let type_id = TypeId::of::<T>();
-        self.resources
-            .get(&type_id)
-            .and_then(|r| r.downcast_ref::<T>())
-            .ok_or(BusAccessError::NotFound {
-                resource: type_name::<T>(),
-            })
+        if let Some(resource) = self.resources.get(&type_id) {
+            return resource
+                .downcast_ref::<T>()
+                .ok_or(BusAccessError::NotFound {
+                    resource: type_name::<T>(),
+                });
+        }
+        if let Some(resource) = self.shared_resources.get(&type_id) {
+            return resource
+                .as_ref()
+                .downcast_ref::<T>()
+                .ok_or(BusAccessError::NotFound {
+                    resource: type_name::<T>(),
+                });
+        }
+        if let Some(resource) = self.inherited_resources.get(&type_id) {
+            return resource
+                .as_ref()
+                .downcast_ref::<T>()
+                .ok_or(BusAccessError::NotFound {
+                    resource: type_name::<T>(),
+                });
+        }
+        Err(BusAccessError::NotFound {
+            resource: type_name::<T>(),
+        })
     }
 
     /// Read a mutable resource with explicit policy/not-found error details.
@@ -262,12 +303,24 @@ impl Bus {
     pub fn get_mut<T: Any + Send + Sync + 'static>(&mut self) -> Result<&mut T, BusAccessError> {
         self.ensure_access::<T>()?;
         let type_id = TypeId::of::<T>();
-        self.resources
-            .get_mut(&type_id)
-            .and_then(|r| r.downcast_mut::<T>())
-            .ok_or(BusAccessError::NotFound {
-                resource: type_name::<T>(),
-            })
+        if let Some(resource) = self.resources.get_mut(&type_id) {
+            return resource
+                .downcast_mut::<T>()
+                .ok_or(BusAccessError::NotFound {
+                    resource: type_name::<T>(),
+                });
+        }
+        if let Some(resource) = self.shared_resources.get_mut(&type_id) {
+            return Arc::get_mut(resource)
+                .and_then(|resource| resource.downcast_mut::<T>())
+                .ok_or_else(Self::aliased_shared_mutation_error::<T>);
+        }
+        if self.inherited_resources.contains_key(&type_id) {
+            return Err(Self::inherited_mutation_error::<T>());
+        }
+        Err(BusAccessError::NotFound {
+            resource: type_name::<T>(),
+        })
     }
 
     /// Check if a resource type exists in the Bus.
@@ -282,6 +335,8 @@ impl Bus {
         }
         let type_id = std::any::TypeId::of::<T>();
         self.resources.contains_key(&type_id)
+            || self.shared_resources.contains_key(&type_id)
+            || self.inherited_resources.contains_key(&type_id)
     }
 
     /// Remove a resource from the Bus.
@@ -295,19 +350,48 @@ impl Bus {
             return None;
         }
         let type_id = std::any::TypeId::of::<T>();
-        self.resources
-            .remove(&type_id)
-            .and_then(|r| r.downcast::<T>().ok().map(|b| *b))
+        if let Some(resource) = self.resources.remove(&type_id) {
+            return resource.downcast::<T>().ok().map(|resource| *resource);
+        }
+        if let Some(resource) = self.shared_resources.remove(&type_id) {
+            return match Arc::downcast::<T>(resource) {
+                Ok(resource) => match Arc::try_unwrap(resource) {
+                    Ok(resource) => Some(resource),
+                    Err(resource) => {
+                        let resource: Arc<dyn Any + Send + Sync> = resource;
+                        self.shared_resources.insert(type_id, resource);
+                        tracing::error!("{}", Self::aliased_shared_mutation_error::<T>());
+                        None
+                    }
+                },
+                Err(resource) => {
+                    self.shared_resources.insert(type_id, resource);
+                    None
+                }
+            };
+        }
+        if self.inherited_resources.contains_key(&type_id) {
+            tracing::error!("{}", Self::inherited_mutation_error::<T>());
+        }
+        None
     }
 
     /// Get the number of resources in the Bus.
     pub fn len(&self) -> usize {
-        self.resources.len()
+        self.resources
+            .keys()
+            .chain(self.shared_resources.keys())
+            .chain(self.inherited_resources.keys())
+            .copied()
+            .collect::<HashSet<_>>()
+            .len()
     }
 
     /// Check if the Bus is empty.
     pub fn is_empty(&self) -> bool {
         self.resources.is_empty()
+            && self.shared_resources.is_empty()
+            && self.inherited_resources.is_empty()
     }
 
     /// Provide a resource to the Bus.
@@ -326,6 +410,37 @@ impl Bus {
     #[inline]
     pub fn provide<T: Any + Send + Sync + 'static>(&mut self, resource: T) {
         self.insert(resource);
+    }
+
+    /// Provide a value that explicit parallel Bus forks may inherit.
+    ///
+    /// This is the dependency-injection alias for
+    /// [`insert_shared`](Bus::insert_shared).
+    #[inline]
+    pub fn provide_shared<T: Any + Send + Sync + 'static>(&mut self, resource: T) {
+        self.insert_shared(resource);
+    }
+
+    /// Create a branch-local Bus overlay for explicit parallel inheritance.
+    ///
+    /// Only entries inserted with [`insert_shared`](Bus::insert_shared) or
+    /// [`provide_shared`](Bus::provide_shared) are inherited. Local branch
+    /// writes are discarded with the returned Bus, inherited entries are
+    /// structurally read-only, and the new Bus receives a distinct id.
+    pub fn fork_for_parallel(&self) -> Self {
+        let mut inherited_resources = self.inherited_resources.clone();
+        inherited_resources.extend(
+            self.shared_resources
+                .iter()
+                .map(|(type_id, resource)| (*type_id, Arc::clone(resource))),
+        );
+        Self {
+            resources: AHashMap::new(),
+            shared_resources: AHashMap::new(),
+            inherited_resources,
+            id: Uuid::new_v4(),
+            access_guard: None,
+        }
     }
 
     /// Require a resource from the Bus, panicking if it is missing or denied.
@@ -444,6 +559,24 @@ impl Bus {
         }
 
         Ok(())
+    }
+
+    fn inherited_mutation_error<T: Any + Send + Sync + 'static>() -> BusAccessError {
+        BusAccessError::Unauthorized {
+            transition: "parallel inherited context is read-only".to_string(),
+            resource: type_name::<T>(),
+            allow: None,
+            deny: vec![type_name::<T>()],
+        }
+    }
+
+    fn aliased_shared_mutation_error<T: Any + Send + Sync + 'static>() -> BusAccessError {
+        BusAccessError::Unauthorized {
+            transition: "shared Bus context is currently inherited by a branch".to_string(),
+            resource: type_name::<T>(),
+            allow: None,
+            deny: vec![type_name::<T>()],
+        }
     }
 }
 
@@ -754,5 +887,91 @@ mod tests {
 
         // remove() should return None instead of panicking
         assert!(bus.remove::<String>().is_none());
+    }
+
+    #[test]
+    fn parallel_fork_inherits_only_explicitly_shared_entries() {
+        let mut parent = Bus::new();
+        parent.provide_shared("request-context".to_string());
+        parent.provide(42_i32);
+
+        let branch = parent.fork_for_parallel();
+
+        assert_ne!(branch.id, parent.id);
+        assert_eq!(
+            branch.read::<String>().map(String::as_str),
+            Some("request-context")
+        );
+        assert!(branch.read::<i32>().is_none());
+        assert_eq!(branch.len(), 1);
+    }
+
+    #[test]
+    fn parallel_fork_inherited_values_are_read_only_and_local_writes_are_overlays() {
+        let mut parent = Bus::new();
+        parent.insert_shared("parent".to_string());
+        let mut branch = parent.fork_for_parallel();
+
+        let error = branch
+            .get_mut::<String>()
+            .expect_err("inherited entry must be read-only");
+        assert!(matches!(error, BusAccessError::Unauthorized { .. }));
+        assert!(branch.remove::<String>().is_none());
+
+        branch.insert("branch".to_string());
+        branch
+            .get_mut::<String>()
+            .expect("local overlay should be mutable")
+            .push_str("-updated");
+        assert_eq!(
+            branch.read::<String>().map(String::as_str),
+            Some("branch-updated")
+        );
+        assert_eq!(
+            branch.remove::<String>(),
+            Some("branch-updated".to_string())
+        );
+        assert_eq!(branch.read::<String>().map(String::as_str), Some("parent"));
+        assert_eq!(parent.read::<String>().map(String::as_str), Some("parent"));
+    }
+
+    #[test]
+    fn shared_parent_mutation_requires_unique_ownership() {
+        let mut parent = Bus::new();
+        parent.insert_shared(41_i32);
+
+        parent
+            .get_mut::<i32>()
+            .map(|value| *value += 1)
+            .expect("unaliased shared entry should be mutable");
+        assert_eq!(parent.read::<i32>(), Some(&42));
+
+        let branch = parent.fork_for_parallel();
+        let error = parent
+            .get_mut::<i32>()
+            .expect_err("aliased shared entry must reject mutation");
+        assert!(matches!(error, BusAccessError::Unauthorized { .. }));
+        assert!(parent.remove::<i32>().is_none());
+        assert_eq!(parent.read::<i32>(), Some(&42));
+
+        drop(branch);
+        assert_eq!(parent.remove::<i32>(), Some(42));
+        assert!(parent.is_empty());
+    }
+
+    #[test]
+    fn nested_parallel_fork_forwards_inherited_and_local_shared_entries() {
+        let mut parent = Bus::new();
+        parent.insert_shared("root".to_string());
+        let mut branch = parent.fork_for_parallel();
+        branch.insert_shared(7_i32);
+        branch.insert(true);
+
+        let nested = branch.fork_for_parallel();
+
+        assert_eq!(nested.read::<String>().map(String::as_str), Some("root"));
+        assert_eq!(nested.read::<i32>(), Some(&7));
+        assert!(nested.read::<bool>().is_none());
+        assert_eq!(nested.len(), 2);
     }
 }
