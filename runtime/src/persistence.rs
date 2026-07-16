@@ -1199,8 +1199,13 @@ mod tests {
         assert_eq!(loaded.resumed_from_step, Some(2));
         assert_eq!(loaded.completion, Some(CompletionState::Compensated));
 
+        let drop_interventions = format!("DROP TABLE IF EXISTS {}", store.interventions_table);
         let drop_events = format!("DROP TABLE IF EXISTS {}", store.events_table);
         let drop_state = format!("DROP TABLE IF EXISTS {}", store.state_table);
+        sqlx::query(&drop_interventions)
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query(&drop_events).execute(&pool).await.unwrap();
         sqlx::query(&drop_state).execute(&pool).await.unwrap();
     }

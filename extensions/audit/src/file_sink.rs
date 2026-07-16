@@ -4,6 +4,7 @@ use ring::hmac;
 use std::path::{Path, PathBuf};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::Mutex;
 
 /// Rotation policy for audit log files.
 #[derive(Debug, Clone, Default)]
@@ -28,6 +29,7 @@ pub struct FileAuditSink {
     path: PathBuf,
     key: hmac::Key,
     rotation: RotationPolicy,
+    operation_lock: Mutex<()>,
 }
 
 impl FileAuditSink {
@@ -46,6 +48,7 @@ impl FileAuditSink {
             path: p,
             key,
             rotation: RotationPolicy::None,
+            operation_lock: Mutex::new(()),
         })
     }
 
@@ -71,7 +74,8 @@ impl FileAuditSink {
     async fn rotate_if_size_exceeded(&self, max_bytes: u64) -> Result<(), AuditError> {
         let metadata = match fs::metadata(&self.path).await {
             Ok(m) => m,
-            Err(_) => return Ok(()), // File doesn't exist yet
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(AuditError::Internal(error.to_string())),
         };
         if metadata.len() >= max_bytes {
             self.rotate_file().await?;
@@ -82,7 +86,8 @@ impl FileAuditSink {
     async fn rotate_if_date_changed(&self) -> Result<(), AuditError> {
         let metadata = match fs::metadata(&self.path).await {
             Ok(m) => m,
-            Err(_) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(AuditError::Internal(error.to_string())),
         };
         let modified = metadata
             .modified()
@@ -128,15 +133,11 @@ impl FileAuditSink {
 
     /// Read all events from the file.
     async fn read_all_events(&self) -> Result<Vec<AuditEvent>, AuditError> {
-        let contents = fs::read_to_string(&self.path).await.unwrap_or_default();
-
-        if contents.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let file = fs::File::open(&self.path)
-            .await
-            .map_err(|e| AuditError::Internal(e.to_string()))?;
+        let file = match fs::File::open(&self.path).await {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(AuditError::Internal(error.to_string())),
+        };
         let reader = BufReader::new(file);
         let mut lines = reader.lines();
         let mut events = Vec::new();
@@ -184,6 +185,7 @@ impl FileAuditSink {
 #[async_trait]
 impl AuditSink for FileAuditSink {
     async fn append(&self, event: &AuditEvent) -> Result<(), AuditError> {
+        let _operation = self.operation_lock.lock().await;
         // Check rotation before writing
         self.maybe_rotate().await?;
 
@@ -212,6 +214,7 @@ impl AuditSink for FileAuditSink {
     }
 
     async fn query(&self, query: &AuditQuery) -> Result<Vec<AuditEvent>, AuditError> {
+        let _operation = self.operation_lock.lock().await;
         let events = self.read_all_events().await?;
         Ok(query.filter(&events).into_iter().cloned().collect())
     }
@@ -220,6 +223,7 @@ impl AuditSink for FileAuditSink {
         &self,
         policy: &RetentionPolicy,
     ) -> Result<Vec<AuditEvent>, AuditError> {
+        let _operation = self.operation_lock.lock().await;
         let events = self.read_all_events().await?;
         let (retained, expired) = policy.apply(&events);
         self.write_all_events(&retained).await?;
@@ -314,6 +318,141 @@ mod tests {
 
         let remaining = sink.read_all_events().await.unwrap();
         assert_eq!(remaining.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn concurrent_append_and_rotation_preserve_valid_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let sink = std::sync::Arc::new(
+            FileAuditSink::new(&path, b"key")
+                .await
+                .unwrap()
+                .with_rotation(RotationPolicy::BySize(400)),
+        );
+
+        let mut tasks = Vec::new();
+        for index in 0..24 {
+            let sink = sink.clone();
+            tasks.push(tokio::spawn(async move {
+                sink.append(&AuditEvent::new(
+                    format!("concurrent-{index}"),
+                    "actor".into(),
+                    "ACTION".into(),
+                    "resource".into(),
+                ))
+                .await
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap().unwrap();
+        }
+
+        let mut ids = std::collections::HashSet::new();
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let contents = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+            for line in contents.lines() {
+                let envelope: serde_json::Value = serde_json::from_str(line).unwrap();
+                ids.insert(envelope["event"]["id"].as_str().unwrap().to_string());
+            }
+        }
+        assert_eq!(ids.len(), 24);
+    }
+
+    #[tokio::test]
+    async fn retention_survives_reopen_and_later_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let sink = FileAuditSink::new(&path, b"key").await.unwrap();
+        for index in 0..5 {
+            sink.append(&AuditEvent::new(
+                format!("before-{index}"),
+                "actor".into(),
+                "ACTION".into(),
+                "resource".into(),
+            ))
+            .await
+            .unwrap();
+        }
+        let expired = sink
+            .apply_retention(&RetentionPolicy::max_count(3))
+            .await
+            .unwrap();
+        assert_eq!(expired.len(), 2);
+        drop(sink);
+
+        let reopened = FileAuditSink::new(&path, b"key").await.unwrap();
+        assert_eq!(reopened.query(&AuditQuery::new()).await.unwrap().len(), 3);
+        reopened
+            .append(&AuditEvent::new(
+                "after-reopen".into(),
+                "actor".into(),
+                "ACTION".into(),
+                "resource".into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(reopened.query(&AuditQuery::new()).await.unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn concurrent_retention_does_not_lose_successful_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let sink = std::sync::Arc::new(FileAuditSink::new(&path, b"key").await.unwrap());
+        for index in 0..20 {
+            sink.append(&AuditEvent::new(
+                format!("existing-{index}"),
+                "actor".into(),
+                "ACTION".into(),
+                "resource".into(),
+            ))
+            .await
+            .unwrap();
+        }
+
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(3));
+        let append_task = {
+            let sink = sink.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                sink.append(&AuditEvent::new(
+                    "concurrent-append".into(),
+                    "actor".into(),
+                    "ACTION".into(),
+                    "resource".into(),
+                ))
+                .await
+            })
+        };
+        let retention_task = {
+            let sink = sink.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                sink.apply_retention(&RetentionPolicy::max_count(10)).await
+            })
+        };
+        barrier.wait().await;
+        append_task.await.unwrap().unwrap();
+        retention_task.await.unwrap().unwrap();
+
+        let events = sink.query(&AuditQuery::new()).await.unwrap();
+        assert!(matches!(events.len(), 10 | 11));
+        assert!(events.iter().any(|event| event.id == "concurrent-append"));
+    }
+
+    #[tokio::test]
+    async fn non_file_read_error_is_not_treated_as_empty_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let sink = FileAuditSink::new(&path, b"key").await.unwrap();
+        tokio::fs::create_dir(&path).await.unwrap();
+
+        let error = sink.query(&AuditQuery::new()).await.unwrap_err();
+        assert!(matches!(error, AuditError::Internal(_)));
+        assert!(tokio::fs::metadata(&path).await.unwrap().is_dir());
     }
 
     // --- Rotation tests ---

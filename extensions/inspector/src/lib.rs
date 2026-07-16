@@ -2403,11 +2403,38 @@ async fn get_quick_view_css() -> impl IntoResponse {
 async fn handle_socket(mut socket: WebSocket) {
     let mut rx = get_sender().subscribe();
 
-    while let Ok(msg) = rx.recv().await {
-        if socket.send(Message::Text(msg)).await.is_err() {
-            break;
+    loop {
+        match receive_broadcast(&mut rx).await {
+            Ok(message) => {
+                if socket.send(Message::Text(message)).await.is_err() {
+                    break;
+                }
+            }
+            Err(BroadcastReceiveEnd::Lagged(skipped)) => {
+                tracing::warn!(
+                    skipped,
+                    "Inspector event subscriber lagged; closing only this connection"
+                );
+                break;
+            }
+            Err(BroadcastReceiveEnd::Closed) => break,
         }
     }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum BroadcastReceiveEnd {
+    Lagged(u64),
+    Closed,
+}
+
+async fn receive_broadcast(
+    receiver: &mut broadcast::Receiver<String>,
+) -> Result<String, BroadcastReceiveEnd> {
+    receiver.recv().await.map_err(|error| match error {
+        broadcast::error::RecvError::Lagged(skipped) => BroadcastReceiveEnd::Lagged(skipped),
+        broadcast::error::RecvError::Closed => BroadcastReceiveEnd::Closed,
+    })
 }
 
 fn env_flag_with_validity(name: &str, default: bool) -> (bool, bool) {
@@ -3575,5 +3602,25 @@ expires_on = "2099-01-02"
         assert_eq!(correct_auth.status(), reqwest::StatusCode::OK);
 
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn lagging_event_subscriber_isolated_from_healthy_subscriber() {
+        let (sender, _receiver) = broadcast::channel(2);
+        let mut lagging = sender.subscribe();
+        let mut healthy = sender.subscribe();
+
+        for message in ["one", "two", "three"] {
+            sender.send(message.to_string()).unwrap();
+            assert_eq!(receive_broadcast(&mut healthy).await.unwrap(), message);
+        }
+
+        assert_eq!(
+            receive_broadcast(&mut lagging).await.unwrap_err(),
+            BroadcastReceiveEnd::Lagged(1)
+        );
+
+        sender.send("four".to_string()).unwrap();
+        assert_eq!(receive_broadcast(&mut healthy).await.unwrap(), "four");
     }
 }

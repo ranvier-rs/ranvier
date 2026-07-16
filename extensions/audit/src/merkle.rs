@@ -73,7 +73,7 @@ pub fn build_merkle_tree(leaves: &[String]) -> (String, Vec<Vec<String>>) {
 
     while current.len() > 1 {
         // Pad odd layer
-        if current.len() % 2 != 0 {
+        if !current.len().is_multiple_of(2) {
             if let Some(last) = current.last().cloned() {
                 current.push(last);
             }
@@ -108,8 +108,12 @@ pub fn generate_proof(index: usize, layers: &[Vec<String>]) -> Option<MerkleProo
             }
         }
 
-        let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
-        let position = if idx % 2 == 0 {
+        let sibling_idx = if idx.is_multiple_of(2) {
+            idx + 1
+        } else {
+            idx - 1
+        };
+        let position = if idx.is_multiple_of(2) {
             SiblingPosition::Right
         } else {
             SiblingPosition::Left
