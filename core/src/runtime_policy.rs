@@ -227,6 +227,15 @@ pub struct StartupPolicyContribution {
     violations: Vec<(StartupPolicyCode, PolicyField)>,
 }
 
+/// Supplies one component's policy using the profile resolved by core.
+///
+/// Implementations must be side-effect free. In particular, this method runs
+/// before listeners, background tasks, dependency connections, migrations, or
+/// durable writes are started.
+pub trait StartupPolicyProvider {
+    fn startup_policy(&self, profile: RuntimeProfile) -> StartupPolicyContribution;
+}
+
 impl StartupPolicyContribution {
     pub fn new(
         component: PolicyComponent,

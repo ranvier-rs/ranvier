@@ -4431,6 +4431,7 @@ dependencies = [
  "ranvier-core",
  "redis 0.29.5",
  "serde",
+ "serde_json",
  "subtle",
  "tokio",
  "tracing",

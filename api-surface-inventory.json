@@ -19,7 +19,7 @@
     "extensions/compliance/Cargo.toml": "f573800e854ed9ceb5c4a8b36e7047d9d6cdaed13e87f80bdf8fe7298a87f5da",
     "extensions/inspector/Cargo.toml": "cd0a6867a31b3f16b309df1babe9a364e844b88ce318b04f5e9888472e1ceb54",
     "extensions/openapi/Cargo.toml": "ea7ef84621076edbf7d28987186e7a799b77fed57744a86059ca350a751c5c6c",
-    "guard/Cargo.toml": "f2866882ef656b4f567c6b23bb2ddb862fb6f8c0f8719fbc45c943d0c1be56a7",
+    "guard/Cargo.toml": "ef7800a506abbb9c6415f5a6f56e25cac68c3065965deb774f7d51b07b593e34",
     "http/Cargo.toml": "a72d7166931583edc9536a19eab97bff3d6fef7bb1254e69cec6a47a42b2474c",
     "kit/Cargo.toml": "92b9e46106a1b13162f9f01d6719a86d54a15177e24862a7c82f984c9b7941ae",
     "macros/Cargo.toml": "c59fb5bcd63fccea466ba5f7400dfa9c9e186455367d86b7c584bdad5492b4da",
@@ -28,10 +28,10 @@
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2481,
+  "public_item_count": 2508,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2289,
+    "Experimental": 2316,
     "Stable Candidate": 184
   },
   "crates": [
@@ -3292,23 +3292,23 @@
         "default",
         "streaming"
       ],
-      "public_item_count": 664,
+      "public_item_count": 666,
       "counts_by_kind": {
         "assoc_type": 11,
         "constant": 2,
         "enum": 53,
-        "function": 189,
+        "function": 190,
         "macro": 3,
         "module": 23,
         "struct": 95,
         "struct_field": 144,
-        "trait": 31,
+        "trait": 32,
         "type_alias": 5,
         "variant": 108
       },
       "counts_by_stability": {
         "Deprecated": 6,
-        "Experimental": 528,
+        "Experimental": 530,
         "Stable Candidate": 130
       },
       "facade_reexport_count": 0,
@@ -9055,6 +9055,34 @@
           }
         },
         {
+          "path": "ranvier_core::runtime_policy::StartupPolicyProvider",
+          "kind": "trait",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyProvider::startup_policy",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
           "path": "ranvier_core::runtime_policy::StartupPolicyReport",
           "kind": "struct",
           "origin": "direct",
@@ -12660,18 +12688,18 @@
         "default",
         "distributed"
       ],
-      "public_item_count": 241,
+      "public_item_count": 266,
       "counts_by_kind": {
         "assoc_const": 1,
         "enum": 8,
-        "function": 81,
+        "function": 100,
         "module": 2,
-        "struct": 89,
+        "struct": 95,
         "struct_field": 49,
         "variant": 11
       },
       "counts_by_stability": {
-        "Experimental": 241
+        "Experimental": 266
       },
       "facade_reexport_count": 0,
       "boundary_item_count": 0,
@@ -14063,6 +14091,104 @@
           }
         },
         {
+          "path": "ranvier_guard::distributed::DistributedRateLimitConfig",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::distributed::DistributedRateLimitConfig::failure_mode",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::distributed::DistributedRateLimitConfig::max_requests",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::distributed::DistributedRateLimitConfig::new",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::distributed::DistributedRateLimitConfig::window_ms",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::distributed::DistributedRateLimitConfig::with_failure_mode",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::distributed::DistributedRateLimitConfig::with_key_prefix",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
           "path": "ranvier_guard::distributed::DistributedRateLimitFailureMode",
           "kind": "enum",
           "origin": "direct",
@@ -14119,7 +14245,35 @@
           }
         },
         {
+          "path": "ranvier_guard::distributed::DistributedRateLimitGuard::connect",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
           "path": "ranvier_guard::distributed::DistributedRateLimitGuard::failure_mode",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::distributed::DistributedRateLimitGuard::failure_mode_explicit",
           "kind": "function",
           "origin": "direct",
           "target": null,
@@ -14148,6 +14302,20 @@
         },
         {
           "path": "ranvier_guard::distributed::DistributedRateLimitGuard::new",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::distributed::DistributedRateLimitGuard::stats",
           "kind": "function",
           "origin": "direct",
           "target": null,
@@ -14203,6 +14371,118 @@
           }
         },
         {
+          "path": "ranvier_guard::distributed::DistributedRateLimitStats",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::distributed::DistributedRateLimitStats::allowed_requests",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::distributed::DistributedRateLimitStats::backend_available",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::distributed::DistributedRateLimitStats::backend_errors",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::distributed::DistributedRateLimitStats::backend_recoveries",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::distributed::DistributedRateLimitStats::bypassed_requests",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::distributed::DistributedRateLimitStats::limited_requests",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/distributed.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::DistributedRateLimitConfig",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "distributed::DistributedRateLimitConfig",
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier_guard::DistributedRateLimitFailureMode",
           "kind": "enum",
           "origin": "reexport",
@@ -14221,6 +14501,20 @@
           "kind": "struct",
           "origin": "reexport",
           "target": "distributed::DistributedRateLimitGuard",
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::DistributedRateLimitStats",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "distributed::DistributedRateLimitStats",
           "stability": "Experimental",
           "owner": "security-ops",
           "boundary": null,
@@ -14973,6 +15267,20 @@
           }
         },
         {
+          "path": "ranvier_guard::prelude::DistributedRateLimitConfig",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "crate::distributed::DistributedRateLimitConfig",
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier_guard::prelude::DistributedRateLimitFailureMode",
           "kind": "enum",
           "origin": "reexport",
@@ -15435,6 +15743,20 @@
           }
         },
         {
+          "path": "ranvier_guard::RateLimitGuard::stats",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier_guard::RateLimitGuard::window_ms",
           "kind": "function",
           "origin": "direct",
@@ -15450,6 +15772,62 @@
         },
         {
           "path": "ranvier_guard::RateLimitGuard::with_bucket_ttl",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::RateLimitStats",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::RateLimitStats::active_buckets",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::RateLimitStats::bucket_ttl_ms",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "guard/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_guard::RateLimitStats::pruned_buckets",
           "kind": "function",
           "origin": "direct",
           "target": null,

@@ -65,10 +65,44 @@ Ranvier::http()
     .await
 ```
 
+### Production rate-limit policy
+
+Legacy constructors retain their 0.51 behavior. The opt-in production path
+validates bounded local retention and an explicit distributed backend failure
+mode before connecting to Redis:
+
+```rust,ignore
+use ranvier_core::config::ResolvedRuntimeConfig;
+use ranvier_core::runtime_policy::RuntimeProfile;
+use ranvier_guard::{
+    DistributedRateLimitConfig, DistributedRateLimitFailureMode,
+    DistributedRateLimitGuard, RateLimitGuard,
+};
+use std::time::Duration;
+
+let resolved = ResolvedRuntimeConfig::load_for(RuntimeProfile::Production)?;
+let local = RateLimitGuard::<String>::new(100, 60_000)
+    .with_bucket_ttl(Duration::from_secs(15 * 60));
+let distributed = DistributedRateLimitConfig::new(
+    std::env::var("REDIS_URL")?,
+    100,
+    Duration::from_secs(60),
+)
+.with_failure_mode(DistributedRateLimitFailureMode::FailClosed);
+
+resolved.validate_startup(&[&local, &distributed])?;
+let distributed = DistributedRateLimitGuard::<String>::connect(distributed).await?;
+```
+
+`RateLimitGuard::stats()` reports active and pruned local buckets.
+`DistributedRateLimitGuard::stats()` reports backend errors/recoveries plus
+allowed, limited, and fail-open bypassed request counts.
+
 ## Features
 
 - `default` — 12 Guards (no extra dependencies)
 - `advanced` — adds 3 Tier 3 Guards (depends on `flate2`)
+- `distributed` — adds Redis-backed rate limiting with explicit failure policy
 
 ## License
 

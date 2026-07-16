@@ -28,6 +28,7 @@ redis = { version = "0.29", features = ["tokio-comp", "aio"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

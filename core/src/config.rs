@@ -39,8 +39,8 @@
 
 use crate::runtime_policy::{
     ComponentPolicyReport, PolicyComponent, PolicyField, PolicyObservation, PolicyValue,
-    RuntimeProfile, RuntimeProfileSource, StartupPolicyCode, StartupPolicyContribution,
-    StartupPolicyError, StartupPolicyReport, StartupPolicyViolation, UnsafeAcknowledgement,
+    RuntimeProfile, RuntimeProfileSource, StartupPolicyCode, StartupPolicyError,
+    StartupPolicyProvider, StartupPolicyReport, StartupPolicyViolation, UnsafeAcknowledgement,
     evaluate_startup_policy, invalid_startup_policy,
 };
 use chrono::{NaiveDate, Utc};
@@ -359,11 +359,12 @@ impl ResolvedRuntimeConfig {
     /// migrations, dependency loops, or durable writes.
     pub fn validate_startup(
         &self,
-        contributions: Vec<StartupPolicyContribution>,
+        providers: &[&dyn StartupPolicyProvider],
     ) -> Result<StartupPolicyReport, StartupPolicyError> {
-        let mut components = Vec::with_capacity(contributions.len() + 1);
+        let mut components = Vec::with_capacity(providers.len() + 1);
         let mut violations = Vec::new();
-        for contribution in contributions {
+        for provider in providers {
+            let contribution = provider.startup_policy(self.profile);
             let (report, current_violations) = contribution.into_report_and_violations();
             components.push(report);
             violations.extend(current_violations);
@@ -1148,6 +1149,15 @@ pub fn init_logging(config: &LoggingConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime_policy::StartupPolicyContribution;
+
+    struct StaticPolicyProvider(StartupPolicyContribution);
+
+    impl StartupPolicyProvider for StaticPolicyProvider {
+        fn startup_policy(&self, _profile: RuntimeProfile) -> StartupPolicyContribution {
+            self.0.clone()
+        }
+    }
 
     #[test]
     fn default_config_values() {
@@ -1565,12 +1575,12 @@ expires_on = "2099-01-02"
             PolicyField::new("inspector_auth_configured"),
         );
 
-        let contribution = StartupPolicyContribution::new(
+        let provider = StaticPolicyProvider(StartupPolicyContribution::new(
             PolicyComponent::new("inspector"),
             vec![],
             vec![(violation.code, violation.field)],
-        );
-        let report = resolved.validate_startup(vec![contribution]).unwrap();
+        ));
+        let report = resolved.validate_startup(&[&provider]).unwrap();
         assert_eq!(
             report.status(),
             crate::runtime_policy::StartupPolicyStatus::AcknowledgedUnsafe
@@ -1605,7 +1615,7 @@ service_name = "sentinel-secret-service"
             &mut environment,
         )
         .unwrap();
-        let report = resolved.validate_startup(vec![]).unwrap();
+        let report = resolved.validate_startup(&[]).unwrap();
         let serialized = serde_json::to_string(&report).unwrap();
         let debug = format!("{resolved:?}");
 

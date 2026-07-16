@@ -13,9 +13,16 @@ fn verify_resolved_profile_contract() -> Result<(), Box<dyn std::error::Error + 
     Ok(())
 }
 
+fn verify_guard_policy_provider_contract(config: &ResolvedRuntimeConfig) {
+    let guard = RateLimitGuard::<String>::new(100, 60_000)
+        .with_bucket_ttl(std::time::Duration::from_secs(15 * 60));
+    let _report = config.validate_startup(&[&guard]);
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     verify_resolved_profile_contract()?;
+    let _provider_contract: fn(&ResolvedRuntimeConfig) = verify_guard_policy_provider_contract;
     let hello = Axon::<(), (), String>::new("hello").then(greet);
 
     Ranvier::http()

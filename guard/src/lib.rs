@@ -31,6 +31,10 @@
 
 use async_trait::async_trait;
 use ranvier_core::iam::{IamIdentity, IamPolicy, enforce_policy};
+use ranvier_core::runtime_policy::{
+    PolicyComponent, PolicyField, PolicyObservation, PolicyValue, RuntimeProfile,
+    StartupPolicyCode, StartupPolicyContribution, StartupPolicyProvider,
+};
 use ranvier_core::{bus::Bus, outcome::Outcome, transition::Transition};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -234,6 +238,28 @@ struct RateBucket {
     last_refill: Instant,
 }
 
+/// Observable retention state for [`RateLimitGuard`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct RateLimitStats {
+    active_buckets: u64,
+    pruned_buckets: u64,
+    bucket_ttl_ms: u64,
+}
+
+impl RateLimitStats {
+    pub const fn active_buckets(self) -> u64 {
+        self.active_buckets
+    }
+
+    pub const fn pruned_buckets(self) -> u64 {
+        self.pruned_buckets
+    }
+
+    pub const fn bucket_ttl_ms(self) -> u64 {
+        self.bucket_ttl_ms
+    }
+}
+
 /// Rate limit guard — enforces per-client request rate limits.
 ///
 /// Reads `ClientIdentity` from the Bus. Uses a token-bucket algorithm.
@@ -246,6 +272,7 @@ pub struct RateLimitGuard<T> {
     buckets: Arc<Mutex<std::collections::HashMap<String, RateBucket>>>,
     /// If > 0, buckets idle longer than this (in ms) are removed on next access.
     bucket_ttl_ms: u64,
+    pruned_buckets: Arc<AtomicU64>,
     _marker: PhantomData<T>,
 }
 
@@ -256,6 +283,7 @@ impl<T> RateLimitGuard<T> {
             window_ms,
             buckets: Arc::new(Mutex::new(std::collections::HashMap::new())),
             bucket_ttl_ms: 0,
+            pruned_buckets: Arc::new(AtomicU64::new(0)),
             _marker: PhantomData,
         }
     }
@@ -265,7 +293,7 @@ impl<T> RateLimitGuard<T> {
     ///
     /// Default: no TTL (buckets persist forever).
     pub fn with_bucket_ttl(mut self, ttl: std::time::Duration) -> Self {
-        self.bucket_ttl_ms = ttl.as_millis() as u64;
+        self.bucket_ttl_ms = duration_millis_saturating(ttl);
         self
     }
 
@@ -283,6 +311,57 @@ impl<T> RateLimitGuard<T> {
     pub fn bucket_ttl_ms(&self) -> u64 {
         self.bucket_ttl_ms
     }
+
+    /// Returns active-bucket and cumulative lazy-pruning metrics.
+    pub async fn stats(&self) -> RateLimitStats {
+        let active_buckets = u64::try_from(self.buckets.lock().await.len()).unwrap_or(u64::MAX);
+        RateLimitStats {
+            active_buckets,
+            pruned_buckets: self.pruned_buckets.load(Ordering::Relaxed),
+            bucket_ttl_ms: self.bucket_ttl_ms,
+        }
+    }
+}
+
+fn duration_millis_saturating(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+impl<T> StartupPolicyProvider for RateLimitGuard<T> {
+    fn startup_policy(&self, profile: RuntimeProfile) -> StartupPolicyContribution {
+        let component = PolicyComponent::new("guard.local_rate_limit");
+        let max_requests = PolicyField::new("max_requests");
+        let window_ms = PolicyField::new("window_ms");
+        let bucket_ttl_ms = PolicyField::new("bucket_ttl_ms");
+        let retention_bounded = PolicyField::new("retention_bounded");
+        let mut violations = Vec::new();
+        if self.max_requests == 0 {
+            violations.push((StartupPolicyCode::ConfigValueInvalid, max_requests));
+        }
+        if self.window_ms == 0 {
+            violations.push((StartupPolicyCode::ConfigValueInvalid, window_ms));
+        }
+        if profile == RuntimeProfile::Production && self.bucket_ttl_ms == 0 {
+            violations.push((
+                StartupPolicyCode::LocalRateLimitUnbounded,
+                retention_bounded,
+            ));
+        }
+
+        StartupPolicyContribution::new(
+            component,
+            vec![
+                PolicyObservation::new(max_requests, PolicyValue::Count(self.max_requests)),
+                PolicyObservation::new(window_ms, PolicyValue::DurationMs(self.window_ms)),
+                PolicyObservation::new(bucket_ttl_ms, PolicyValue::DurationMs(self.bucket_ttl_ms)),
+                PolicyObservation::new(
+                    retention_bounded,
+                    PolicyValue::Bool(self.bucket_ttl_ms > 0),
+                ),
+            ],
+            violations,
+        )
+    }
 }
 
 impl<T> Clone for RateLimitGuard<T> {
@@ -292,6 +371,7 @@ impl<T> Clone for RateLimitGuard<T> {
             window_ms: self.window_ms,
             buckets: self.buckets.clone(),
             bucket_ttl_ms: self.bucket_ttl_ms,
+            pruned_buckets: self.pruned_buckets.clone(),
             _marker: PhantomData,
         }
     }
@@ -332,7 +412,14 @@ where
         // Lazy prune: remove stale buckets that haven't been accessed within the TTL
         if self.bucket_ttl_ms > 0 {
             let ttl = std::time::Duration::from_millis(self.bucket_ttl_ms);
+            let previous_len = buckets.len();
             buckets.retain(|_, b| now.duration_since(b.last_refill) < ttl);
+            let pruned = previous_len.saturating_sub(buckets.len());
+            if pruned > 0 {
+                let pruned = u64::try_from(pruned).unwrap_or(u64::MAX);
+                self.pruned_buckets.fetch_add(pruned, Ordering::Relaxed);
+                tracing::debug!(pruned_buckets = pruned, "Pruned idle rate-limit buckets");
+            }
         }
 
         let rate = self.max_requests as f64 / self.window_ms as f64 * 1000.0;
@@ -1760,7 +1847,10 @@ pub use advanced_guards::*;
 mod distributed;
 
 #[cfg(feature = "distributed")]
-pub use distributed::{DistributedRateLimitFailureMode, DistributedRateLimitGuard};
+pub use distributed::{
+    DistributedRateLimitConfig, DistributedRateLimitFailureMode, DistributedRateLimitGuard,
+    DistributedRateLimitStats,
+};
 
 // ---------------------------------------------------------------------------
 // Prelude
@@ -1784,7 +1874,9 @@ pub mod prelude {
     };
 
     #[cfg(feature = "distributed")]
-    pub use crate::distributed::{DistributedRateLimitFailureMode, DistributedRateLimitGuard};
+    pub use crate::distributed::{
+        DistributedRateLimitConfig, DistributedRateLimitFailureMode, DistributedRateLimitGuard,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -1794,6 +1886,18 @@ pub mod prelude {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn resolved(profile: RuntimeProfile) -> ranvier_core::config::ResolvedRuntimeConfig {
+        let path = std::env::temp_dir().join(format!(
+            "ranvier-guard-policy-{}.toml",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, "").unwrap();
+        let resolved =
+            ranvier_core::config::ResolvedRuntimeConfig::from_file_for(&path, profile).unwrap();
+        std::fs::remove_file(path).unwrap();
+        resolved
+    }
 
     #[tokio::test]
     async fn cors_guard_allows_wildcard() {
@@ -2454,6 +2558,10 @@ mod tests {
         let mut bus2 = Bus::new();
         bus2.insert(ClientIdentity("fresh-user".into()));
         let _ = guard.run("ok".into(), &(), &mut bus2).await;
+        let stats = guard.stats().await;
+        assert_eq!(stats.active_buckets(), 1);
+        assert_eq!(stats.pruned_buckets(), 1);
+        assert_eq!(stats.bucket_ttl_ms(), 50);
 
         // Now "stale-user" bucket should have been pruned.
         // Verify by exhausting "stale-user" budget — if pruned, they get fresh tokens.
@@ -2506,6 +2614,56 @@ mod tests {
         let guard = RateLimitGuard::<String>::new(10, 1000)
             .with_bucket_ttl(std::time::Duration::from_secs(300));
         assert_eq!(guard.bucket_ttl_ms(), 300_000);
+    }
+
+    #[test]
+    fn production_policy_rejects_unbounded_local_retention() {
+        let guard = RateLimitGuard::<String>::new(10, 1_000);
+        let error = resolved(RuntimeProfile::Production)
+            .validate_startup(&[&guard])
+            .unwrap_err();
+
+        assert_eq!(
+            error.report().violation_codes().collect::<Vec<_>>(),
+            vec![StartupPolicyCode::LocalRateLimitUnbounded]
+        );
+        let report = serde_json::to_string(error.report()).unwrap();
+        assert!(report.contains("guard.local_rate_limit"));
+        assert!(report.contains("retention_bounded"));
+    }
+
+    #[test]
+    fn bounded_local_retention_passes_both_profiles() {
+        let guard = RateLimitGuard::<String>::new(10, 1_000)
+            .with_bucket_ttl(std::time::Duration::from_secs(300));
+
+        assert!(
+            resolved(RuntimeProfile::Development)
+                .validate_startup(&[&guard])
+                .is_ok()
+        );
+        assert!(
+            resolved(RuntimeProfile::Production)
+                .validate_startup(&[&guard])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn invalid_local_rate_parameters_fail_in_development() {
+        let guard = RateLimitGuard::<String>::new(0, 0)
+            .with_bucket_ttl(std::time::Duration::from_secs(300));
+        let error = resolved(RuntimeProfile::Development)
+            .validate_startup(&[&guard])
+            .unwrap_err();
+
+        assert_eq!(error.unacknowledged_count(), 2);
+        assert!(
+            error
+                .report()
+                .violation_codes()
+                .all(|code| code == StartupPolicyCode::ConfigValueInvalid)
+        );
     }
 
     // --- TrustedProxies tests ---
