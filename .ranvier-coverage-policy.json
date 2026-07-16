@@ -1,0 +1,99 @@
+{
+  "schema_version": "1.0.0",
+  "engine": {
+    "name": "cargo-llvm-cov",
+    "version": "0.8.7",
+    "toolchain": "stable",
+    "component": "llvm-tools-preview"
+  },
+  "scope": {
+    "packages": [
+      "ranvier",
+      "ranvier-core",
+      "ranvier-runtime",
+      "ranvier-http",
+      "ranvier-std",
+      "ranvier-guard",
+      "ranvier-macros",
+      "ranvier-test",
+      "ranvier-openapi",
+      "ranvier-inspector",
+      "ranvier-audit",
+      "ranvier-compliance"
+    ],
+    "all_features": true,
+    "target_kinds": [
+      "lib",
+      "tests"
+    ],
+    "locked": true,
+    "required_services": [
+      "Redis 7 via REDIS_URL"
+    ],
+    "exclusions": [
+      {
+        "surface": "example binaries",
+        "owner": "tiered example gates",
+        "reason": "Demo entrypoints have support-tier validation and do not define product-code coverage."
+      },
+      {
+        "surface": "benchmark targets",
+        "owner": "M419-RQ10 load and soak evidence",
+        "reason": "Performance targets are not unit or crate-owned integration coverage."
+      },
+      {
+        "surface": "doctests",
+        "owner": "normal crate and documentation gates",
+        "reason": "Cross-platform llvm-cov doctest behavior requires a separate accepted contract."
+      },
+      {
+        "surface": "live PostgreSQL and Redis process interruption",
+        "owner": "M419-RQ8 dependency failure harness",
+        "reason": "Destructive failure and recovery is proved by its bounded Podman fixture."
+      },
+      {
+        "surface": "NATS, Meilisearch, external LLM, and other Lab services",
+        "owner": "scheduled Lab lane",
+        "reason": "Credentialed or external services must not become silently skipped coverage claims."
+      }
+    ]
+  },
+  "baseline": {
+    "observed_on": "2026-07-16",
+    "source_base_commit": "ac0d1d04edf0bd32ae6d80ea1497c2b2bb54f2dc",
+    "source_adjustment": "FileAuditSink flush-before-success correction found by the first Linux coverage run.",
+    "platform": "Linux x86_64, rust:1.95.0-bookworm",
+    "rustc": "1.95.0",
+    "lines": {
+      "count": 27796,
+      "covered": 20301,
+      "percent": 73.03568858828609
+    },
+    "regions": {
+      "count": 42539,
+      "covered": 31839,
+      "percent": 74.84661134488351
+    },
+    "functions": {
+      "count": 3445,
+      "covered": 2553,
+      "percent": 74.10740203193033
+    },
+    "instantiations": {
+      "count": 9685,
+      "covered": 5324,
+      "percent": 54.971605575632424
+    }
+  },
+  "gate": {
+    "blocking_metric": "lines",
+    "minimum_percent": 72.5,
+    "review_budget_percentage_points": 0.53568858828609,
+    "threshold_change_requires": [
+      "new measured baseline",
+      "reason",
+      "owner",
+      "review evidence"
+    ]
+  }
+}

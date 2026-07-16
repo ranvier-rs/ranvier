@@ -1,4 +1,5 @@
 /target
+/coverage
 /debug
 /dist
 **/*.rs.bk

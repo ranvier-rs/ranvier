@@ -209,6 +209,9 @@ impl AuditSink for FileAuditSink {
         file.write_all(line.as_bytes())
             .await
             .map_err(|e| AuditError::AppendFailed(e.to_string()))?;
+        file.flush()
+            .await
+            .map_err(|e| AuditError::AppendFailed(e.to_string()))?;
 
         Ok(())
     }
@@ -504,7 +507,10 @@ mod tests {
         .unwrap();
 
         let current = tokio::fs::read_to_string(&path).await.unwrap();
-        assert!(current.contains("after_rotation"));
+        assert!(
+            current.contains("after_rotation"),
+            "current audit file did not contain the post-rotation event: {current:?}"
+        );
     }
 
     #[tokio::test]
