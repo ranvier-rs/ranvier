@@ -63,7 +63,7 @@ jobs:
         run: node scripts/maintenance_handoff_gate.mjs --self-test --output target/supply-chain/handoff.json
       - name: Upload machine evidence
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: supply-chain-${{ github.run_id }}
           path: target/supply-chain/*.json

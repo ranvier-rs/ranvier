@@ -45,7 +45,7 @@ jobs:
         with:
           subject-path: ranvier-provenance-${{ github.sha }}.tar.gz
       - name: Upload release evidence bundle
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: ranvier-provenance-${{ github.sha }}
           path: ranvier-provenance-${{ github.sha }}.tar.gz
