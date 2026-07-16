@@ -233,6 +233,8 @@ enum AccessRole {
 struct AuthPolicy {
     enforce_headers: bool,
     require_tenant_for_internal: bool,
+    enforce_headers_valid: bool,
+    require_tenant_for_internal_valid: bool,
 }
 
 impl AuthPolicy {
@@ -240,13 +242,21 @@ impl AuthPolicy {
         Self {
             enforce_headers: false,
             require_tenant_for_internal: false,
+            enforce_headers_valid: true,
+            require_tenant_for_internal_valid: true,
         }
     }
 
     fn from_env() -> Self {
+        let (enforce_headers, enforce_headers_valid) =
+            env_flag_with_validity("RANVIER_AUTH_ENFORCE", false);
+        let (require_tenant_for_internal, require_tenant_for_internal_valid) =
+            env_flag_with_validity("RANVIER_AUTH_REQUIRE_TENANT_INTERNAL", false);
         Self {
-            enforce_headers: env_flag("RANVIER_AUTH_ENFORCE", false),
-            require_tenant_for_internal: env_flag("RANVIER_AUTH_REQUIRE_TENANT_INTERNAL", false),
+            enforce_headers,
+            require_tenant_for_internal,
+            enforce_headers_valid,
+            require_tenant_for_internal_valid,
         }
     }
 }
@@ -298,31 +308,46 @@ impl TelemetryRedactionPolicy {
     fn from_env() -> Self {
         let mut policy = Self::default();
 
-        if let Ok(raw_mode) = std::env::var("RANVIER_TELEMETRY_REDACT_MODE") {
-            match RedactionMode::parse(&raw_mode) {
+        match std::env::var("RANVIER_TELEMETRY_REDACT_MODE") {
+            Ok(raw_mode) => match RedactionMode::parse(&raw_mode) {
                 Some(mode) => policy.mode_override = Some(mode),
-                None => {
-                    policy.valid = false;
-                    tracing::warn!(
-                        "Invalid RANVIER_TELEMETRY_REDACT_MODE (expected: off|public|strict)"
-                    );
-                }
-            }
+                None => policy.mark_invalid_mode(),
+            },
+            Err(std::env::VarError::NotPresent) => {}
+            Err(std::env::VarError::NotUnicode(_)) => policy.mark_invalid_mode(),
         }
 
-        if let Ok(extra) = std::env::var("RANVIER_TELEMETRY_REDACT_KEYS") {
-            for key in parse_csv_lower(&extra) {
-                if !policy.sensitive_patterns.contains(&key) {
-                    policy.sensitive_patterns.push(key);
+        match std::env::var("RANVIER_TELEMETRY_REDACT_KEYS") {
+            Ok(extra) => {
+                for key in parse_csv_lower(&extra) {
+                    if !policy.sensitive_patterns.contains(&key) {
+                        policy.sensitive_patterns.push(key);
+                    }
                 }
             }
+            Err(std::env::VarError::NotPresent) => {}
+            Err(std::env::VarError::NotUnicode(_)) => policy.mark_invalid_csv(),
         }
 
-        if let Ok(allow) = std::env::var("RANVIER_TELEMETRY_ALLOW_KEYS") {
-            policy.allow_keys.extend(parse_csv_lower(&allow));
+        match std::env::var("RANVIER_TELEMETRY_ALLOW_KEYS") {
+            Ok(allow) => policy.allow_keys.extend(parse_csv_lower(&allow)),
+            Err(std::env::VarError::NotPresent) => {}
+            Err(std::env::VarError::NotUnicode(_)) => policy.mark_invalid_csv(),
         }
 
         policy
+    }
+
+    fn mark_invalid_mode(&mut self) {
+        self.valid = false;
+        tracing::warn!("Invalid RANVIER_TELEMETRY_REDACT_MODE (expected: off|public|strict)");
+    }
+
+    fn mark_invalid_csv(&mut self) {
+        if self.valid {
+            tracing::warn!("Invalid non-Unicode Inspector telemetry redaction configuration");
+        }
+        self.valid = false;
     }
 
     fn mode_for_surface(&self, surface: ProjectionSurface) -> RedactionMode {
@@ -519,10 +544,13 @@ impl Inspector {
     /// - `dev` (default): expose `/trace/internal`, `/events`, `/quick-view`
     /// - `prod`: hide internal/event/quick-view routes and keep public read-only endpoints
     pub fn with_mode_from_env(mut self) -> Self {
-        let mode = std::env::var("RANVIER_MODE")
-            .ok()
-            .map(|value| LegacyInspectorMode::parse(&value))
-            .unwrap_or(LegacyInspectorMode::Valid(RuntimeProfile::Development));
+        let mode = match std::env::var("RANVIER_MODE") {
+            Ok(value) => LegacyInspectorMode::parse(&value),
+            Err(std::env::VarError::NotPresent) => {
+                LegacyInspectorMode::Valid(RuntimeProfile::Development)
+            }
+            Err(std::env::VarError::NotUnicode(_)) => LegacyInspectorMode::Invalid,
+        };
         self.legacy_mode = Some(mode);
         self.profile = mode.profile_or_development();
         self.surface_policy = SurfacePolicy::for_profile(self.profile);
@@ -574,12 +602,14 @@ impl Inspector {
     /// Toggle role-header enforcement.
     pub fn with_auth_enforcement(mut self, enabled: bool) -> Self {
         self.auth_policy.enforce_headers = enabled;
+        self.auth_policy.enforce_headers_valid = true;
         self
     }
 
     /// Toggle tenant-header requirement for internal endpoints.
     pub fn with_require_tenant_for_internal(mut self, required: bool) -> Self {
         self.auth_policy.require_tenant_for_internal = required;
+        self.auth_policy.require_tenant_for_internal_valid = true;
         self
     }
 
@@ -895,7 +925,9 @@ impl StartupPolicyProvider for Inspector {
         let unauthenticated_legacy_flag = PolicyField::new("unauthenticated_legacy_flag");
         let cors_permissive = PolicyField::new("cors_permissive");
         let role_header_enforced = PolicyField::new("role_header_enforced");
+        let role_header_config_valid = PolicyField::new("role_header_config_valid");
         let tenant_required = PolicyField::new("tenant_required_for_internal");
+        let tenant_config_valid = PolicyField::new("tenant_config_valid");
         let trace_max_count = PolicyField::new("trace_collection_max_count");
         let trace_ttl_ms = PolicyField::new("trace_ttl_ms");
         let event_max_count = PolicyField::new("event_max_count");
@@ -914,6 +946,15 @@ impl StartupPolicyProvider for Inspector {
                 StartupPolicyCode::ConfigValueInvalid,
                 redaction_config_valid,
             ));
+        }
+        if !self.auth_policy.enforce_headers_valid {
+            violations.push((
+                StartupPolicyCode::ConfigValueInvalid,
+                role_header_config_valid,
+            ));
+        }
+        if !self.auth_policy.require_tenant_for_internal_valid {
+            violations.push((StartupPolicyCode::ConfigValueInvalid, tenant_config_valid));
         }
         if self.legacy_mode == Some(LegacyInspectorMode::Invalid) {
             violations.push((StartupPolicyCode::LegacyModeInvalid, legacy_mode));
@@ -1009,8 +1050,16 @@ impl StartupPolicyProvider for Inspector {
                     PolicyValue::Bool(self.auth_policy.enforce_headers),
                 ),
                 PolicyObservation::new(
+                    role_header_config_valid,
+                    PolicyValue::Bool(self.auth_policy.enforce_headers_valid),
+                ),
+                PolicyObservation::new(
                     tenant_required,
                     PolicyValue::Bool(self.auth_policy.require_tenant_for_internal),
+                ),
+                PolicyObservation::new(
+                    tenant_config_valid,
+                    PolicyValue::Bool(self.auth_policy.require_tenant_for_internal_valid),
                 ),
                 PolicyObservation::new(
                     trace_max_count,
@@ -2276,10 +2325,15 @@ async fn handle_socket(mut socket: WebSocket) {
     }
 }
 
-fn env_flag(name: &str, default: bool) -> bool {
+fn env_flag_with_validity(name: &str, default: bool) -> (bool, bool) {
     match std::env::var(name) {
-        Ok(v) => matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"),
-        Err(_) => default,
+        Ok(value) => match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "on" | "yes" => (true, true),
+            "0" | "false" | "off" | "no" => (false, true),
+            _ => (default, false),
+        },
+        Err(std::env::VarError::NotPresent) => (default, true),
+        Err(std::env::VarError::NotUnicode(_)) => (default, false),
     }
 }
 
@@ -2836,6 +2890,27 @@ expires_on = "2099-01-02"
                 .violation_codes()
                 .all(|code| code == StartupPolicyCode::ConfigValueInvalid)
         );
+    }
+
+    #[test]
+    fn malformed_auth_boolean_configuration_fails_in_development() {
+        let runtime = resolved(RuntimeProfile::Development, "");
+        let mut inspector = Inspector::new(Schematic::new("invalid-auth-env"), 9090)
+            .with_runtime_profile(RuntimeProfile::Development);
+        inspector.auth_policy.enforce_headers_valid = false;
+        inspector.auth_policy.require_tenant_for_internal_valid = false;
+        let error = runtime.validate_startup(&[&inspector]).unwrap_err();
+
+        assert_eq!(error.unacknowledged_count(), 2);
+        assert!(
+            error
+                .report()
+                .violation_codes()
+                .all(|code| code == StartupPolicyCode::ConfigValueInvalid)
+        );
+        let serialized = serde_json::to_string(error.report()).unwrap();
+        assert!(serialized.contains("role_header_config_valid"));
+        assert!(serialized.contains("tenant_config_valid"));
     }
 
     #[test]
