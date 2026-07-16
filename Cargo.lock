@@ -4446,14 +4446,18 @@ dependencies = [
  "http 1.4.1",
  "jsonwebtoken",
  "ranvier",
+ "ranvier-audit",
  "ranvier-core",
  "ranvier-http",
+ "ranvier-inspector",
  "ranvier-macros",
  "ranvier-runtime",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]

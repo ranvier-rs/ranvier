@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.0.0",
+  "engine_version": "1.0.0",
+  "fixture": {
+    "package": "ranvier-bench",
+    "binary": "m419_reliability_server",
+    "bind": "127.0.0.1:3160",
+    "decision_path": "/decision",
+    "slow_path": "/slow",
+    "stats_path": "/stats",
+    "request_body": {
+      "subject": "rq10-fixed-subject",
+      "amount": 12500,
+      "risk": 17
+    }
+  },
+  "environment": {
+    "os": "linux",
+    "architecture": "x64",
+    "container_cpus": 2,
+    "container_memory_mib": 2048,
+    "container_pids": 512,
+    "rustc": "1.95.0",
+    "node_major": 24
+  },
+  "phases": [
+    {
+      "name": "warmup",
+      "duration_seconds": 10,
+      "concurrency": 16,
+      "measured": false
+    },
+    {
+      "name": "steady",
+      "duration_seconds": 30,
+      "concurrency": 32,
+      "measured": true,
+      "minimum_successes": 3000,
+      "maximum_error_percent": 0.1,
+      "maximum_p95_ms": 100,
+      "maximum_p99_ms": 250
+    },
+    {
+      "name": "burst",
+      "duration_seconds": 15,
+      "concurrency": 96,
+      "measured": true,
+      "minimum_successes": 3000,
+      "maximum_error_percent": 0.5,
+      "maximum_p95_ms": 250,
+      "maximum_p99_ms": 750
+    },
+    {
+      "name": "soak",
+      "duration_seconds": 300,
+      "concurrency": 32,
+      "measured": true,
+      "minimum_successes": 30000,
+      "maximum_error_percent": 0.1,
+      "maximum_p95_ms": 100,
+      "maximum_p99_ms": 250
+    }
+  ],
+  "request_timeout_ms": 3000,
+  "memory": {
+    "sample_interval_ms": 1000,
+    "maximum_peak_mib": 768,
+    "maximum_final_growth_mib": 64,
+    "maximum_last_quarter_range_mib": 64,
+    "slope_window_seconds": 120,
+    "maximum_slope_mib_per_minute": 8
+  },
+  "retention": {
+    "trace_max_count": 10000,
+    "event_max_count": 500,
+    "metric_max_samples_per_node": 4096,
+    "audit_max_count": 512,
+    "require_eviction": true
+  },
+  "drain": {
+    "signal_delay_ms": 100,
+    "maximum_elapsed_ms": 3000,
+    "expected_status": 503
+  }
+}

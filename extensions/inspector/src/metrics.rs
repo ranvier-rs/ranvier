@@ -1,6 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Maximum samples retained for one node inside the sliding metrics window.
+///
+/// A time window alone does not bound memory when request rate rises. This cap
+/// keeps percentile storage independent from throughput.
+const DEFAULT_METRIC_SAMPLE_CAPACITY: usize = 4_096;
 
 /// A single recorded node execution sample.
 #[derive(Clone, Debug)]
@@ -12,31 +18,54 @@ struct Sample {
 
 /// Sliding-window metrics bucket for a single node.
 struct NodeBucket {
-    samples: Vec<Sample>,
+    samples: VecDeque<Sample>,
     window_ms: u64,
+    max_samples: usize,
+    ttl_evicted: u64,
+    capacity_evicted: u64,
 }
 
 impl NodeBucket {
-    fn new(window_ms: u64) -> Self {
+    fn new(window_ms: u64, max_samples: usize) -> Self {
         Self {
-            samples: Vec::new(),
+            // Grow on demand: the cap bounds peak storage without eagerly
+            // allocating a full bucket for every newly observed node.
+            samples: VecDeque::new(),
             window_ms,
+            max_samples,
+            ttl_evicted: 0,
+            capacity_evicted: 0,
         }
     }
 
     fn record(&mut self, duration_ms: u64, is_error: bool) {
         let now = epoch_ms();
-        self.samples.push(Sample {
+        self.evict(now);
+        if self.max_samples == 0 {
+            self.capacity_evicted = self.capacity_evicted.saturating_add(1);
+            return;
+        }
+        if self.samples.len() >= self.max_samples {
+            self.samples.pop_front();
+            self.capacity_evicted = self.capacity_evicted.saturating_add(1);
+        }
+        self.samples.push_back(Sample {
             timestamp_ms: now,
             duration_ms,
             is_error,
         });
-        self.evict(now);
     }
 
     fn evict(&mut self, now: u64) {
         let cutoff = now.saturating_sub(self.window_ms);
-        self.samples.retain(|s| s.timestamp_ms >= cutoff);
+        while self
+            .samples
+            .front()
+            .is_some_and(|sample| sample.timestamp_ms < cutoff)
+        {
+            self.samples.pop_front();
+            self.ttl_evicted = self.ttl_evicted.saturating_add(1);
+        }
     }
 
     fn snapshot(&mut self) -> NodeMetricsSnapshot {
@@ -78,6 +107,16 @@ impl NodeBucket {
             sample_count: total,
         }
     }
+
+    fn retention_stats(&mut self) -> NodeMetricsRetentionStats {
+        self.evict(epoch_ms());
+        NodeMetricsRetentionStats {
+            current_samples: self.samples.len(),
+            max_samples: self.max_samples,
+            ttl_evicted: self.ttl_evicted,
+            capacity_evicted: self.capacity_evicted,
+        }
+    }
 }
 
 /// Compute percentile from a sorted slice.
@@ -116,6 +155,23 @@ pub struct CircuitMetricsSnapshot {
     pub nodes: HashMap<String, NodeMetricsSnapshot>,
 }
 
+/// Bounded-retention counters for one metrics node.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct NodeMetricsRetentionStats {
+    pub current_samples: usize,
+    pub max_samples: usize,
+    pub ttl_evicted: u64,
+    pub capacity_evicted: u64,
+}
+
+/// Bounded-retention counters for every node in a circuit.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct CircuitMetricsRetentionSnapshot {
+    pub circuit: String,
+    pub window_ms: u64,
+    pub nodes: HashMap<String, NodeMetricsRetentionStats>,
+}
+
 /// Collects per-node execution metrics using a sliding time window.
 ///
 /// Thread-safe: wrapped in Arc<Mutex<>> and shared between InspectorLayer
@@ -127,6 +183,8 @@ pub struct MetricsCollector {
     circuit: String,
     /// sliding window duration in ms (default 60_000)
     window_ms: u64,
+    /// maximum number of samples retained per node
+    max_samples: usize,
 }
 
 impl MetricsCollector {
@@ -135,6 +193,7 @@ impl MetricsCollector {
             buckets: HashMap::new(),
             circuit: circuit.into(),
             window_ms,
+            max_samples: DEFAULT_METRIC_SAMPLE_CAPACITY,
         }
     }
 
@@ -143,7 +202,7 @@ impl MetricsCollector {
         let bucket = self
             .buckets
             .entry(node_id.to_string())
-            .or_insert_with(|| NodeBucket::new(self.window_ms));
+            .or_insert_with(|| NodeBucket::new(self.window_ms, self.max_samples));
         bucket.record(duration_ms, is_error);
     }
 
@@ -155,6 +214,20 @@ impl MetricsCollector {
             .map(|(node_id, bucket)| (node_id.clone(), bucket.snapshot()))
             .collect();
         CircuitMetricsSnapshot {
+            circuit: self.circuit.clone(),
+            window_ms: self.window_ms,
+            nodes,
+        }
+    }
+
+    /// Return current sample counts and cumulative eviction counters.
+    pub fn retention_snapshot(&mut self) -> CircuitMetricsRetentionSnapshot {
+        let nodes = self
+            .buckets
+            .iter_mut()
+            .map(|(node_id, bucket)| (node_id.clone(), bucket.retention_stats()))
+            .collect();
+        CircuitMetricsRetentionSnapshot {
             circuit: self.circuit.clone(),
             window_ms: self.window_ms,
             nodes,
@@ -204,6 +277,15 @@ pub fn snapshot_all() -> Vec<CircuitMetricsSnapshot> {
         .ok()
         .map(|mut registry| registry.iter_mut().map(|(_, c)| c.snapshot()).collect())
         .unwrap_or_default()
+}
+
+/// Get bounded-retention counters for a specific circuit.
+pub fn retention_snapshot_circuit(circuit: &str) -> Option<CircuitMetricsRetentionSnapshot> {
+    get_metrics_registry().lock().ok().and_then(|mut registry| {
+        registry
+            .get_mut(circuit)
+            .map(MetricsCollector::retention_snapshot)
+    })
 }
 
 #[cfg(test)]
@@ -270,5 +352,33 @@ mod tests {
         assert!((snap.nodes["fast"].latency_p50 - 5.0).abs() < f64::EPSILON);
         assert!((snap.nodes["slow"].latency_p50 - 500.0).abs() < f64::EPSILON);
         assert_eq!(snap.nodes["failing"].error_count, 1);
+    }
+
+    #[test]
+    fn node_bucket_evicts_oldest_at_capacity() {
+        let mut bucket = NodeBucket::new(u64::MAX, 3);
+        for duration_ms in 1..=5 {
+            bucket.record(duration_ms, false);
+        }
+
+        let snapshot = bucket.snapshot();
+        let retention = bucket.retention_stats();
+        assert_eq!(snapshot.sample_count, 3);
+        assert_eq!(snapshot.latency_p50, 4.0);
+        assert_eq!(retention.current_samples, 3);
+        assert_eq!(retention.max_samples, 3);
+        assert_eq!(retention.capacity_evicted, 2);
+        assert_eq!(retention.ttl_evicted, 0);
+    }
+
+    #[test]
+    fn zero_capacity_drops_samples_without_allocation() {
+        let mut bucket = NodeBucket::new(u64::MAX, 0);
+        bucket.record(42, false);
+
+        assert_eq!(bucket.snapshot().sample_count, 0);
+        let retention = bucket.retention_stats();
+        assert_eq!(retention.current_samples, 0);
+        assert_eq!(retention.capacity_evicted, 1);
     }
 }

@@ -111,12 +111,12 @@ impl ActiveTraceRegistry {
         }
     }
 
-    fn register(&mut self, circuit: String) {
-        self.storage.register(circuit);
+    fn register(&mut self, circuit: String) -> Option<String> {
+        self.storage.register(circuit)
     }
 
-    fn complete(&mut self, circuit: &str, outcome_type: Option<String>, duration_ms: Option<u64>) {
-        self.storage.complete(circuit, outcome_type, duration_ms);
+    fn complete(&mut self, trace_id: &str, outcome_type: Option<String>, duration_ms: Option<u64>) {
+        self.storage.complete(trace_id, outcome_type, duration_ms);
     }
 
     fn list_all(&self) -> Vec<TraceRecord> {
@@ -1717,6 +1717,7 @@ struct SpanData {
     outcome_target: Option<String>,
     entered_at: Option<Instant>,
     duration_ms: Option<u64>,
+    trace_id: Option<String>,
 }
 
 impl SpanData {
@@ -1729,6 +1730,7 @@ impl SpanData {
             outcome_target: v.outcome_target,
             entered_at: None,
             duration_ms: None,
+            trace_id: None,
         }
     }
 
@@ -1816,8 +1818,14 @@ where
             if name == "Node" || name == "Circuit" || name == "NodeRetry" {
                 let mut extractor = SpanFieldExtractor::new();
                 attrs.record(&mut extractor);
-                span.extensions_mut()
-                    .insert(SpanData::from_visitor(extractor));
+                let mut data = SpanData::from_visitor(extractor);
+                if name == "Circuit"
+                    && let Some(circuit) = data.circuit.clone()
+                    && let Ok(mut registry) = get_trace_registry().lock()
+                {
+                    data.trace_id = registry.register(circuit);
+                }
+                span.extensions_mut().insert(data);
             }
         }
     }
@@ -1830,6 +1838,13 @@ where
                 values.record(&mut extractor);
                 if let Some(data) = span.extensions_mut().get_mut::<SpanData>() {
                     data.update_from_visitor(extractor);
+                    if name == "Circuit"
+                        && data.trace_id.is_none()
+                        && let Some(circuit) = data.circuit.clone()
+                        && let Ok(mut registry) = get_trace_registry().lock()
+                    {
+                        data.trace_id = registry.register(circuit);
+                    }
                 }
             }
         }
@@ -1903,12 +1918,6 @@ where
                                 node_id.clone(),
                                 circuit_name,
                             );
-                        }
-                    } else if name == "Circuit" {
-                        if let Some(circuit) = &data.circuit {
-                            if let Ok(mut registry) = get_trace_registry().lock() {
-                                registry.register(circuit.clone());
-                            }
                         }
                     }
                 }
@@ -1995,9 +2004,13 @@ where
                     let _ = get_sender().send(msg);
 
                     // Complete trace in registry
-                    if let Some(circuit) = &data.circuit {
+                    if let Some(trace_id) = &data.trace_id {
                         if let Ok(mut registry) = get_trace_registry().lock() {
-                            registry.complete(circuit, data.outcome_kind.clone(), data.duration_ms);
+                            registry.complete(
+                                trace_id,
+                                data.outcome_kind.clone(),
+                                data.duration_ms,
+                            );
                         }
                     }
 

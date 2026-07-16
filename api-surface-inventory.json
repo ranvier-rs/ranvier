@@ -28,10 +28,10 @@
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2593,
+  "public_item_count": 2604,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2401,
+    "Experimental": 2412,
     "Stable Candidate": 184
   },
   "crates": [
@@ -24389,19 +24389,19 @@
       "default_stability": "Experimental",
       "owner": "security-ops",
       "features": [],
-      "public_item_count": 285,
+      "public_item_count": 296,
       "counts_by_kind": {
         "constant": 1,
         "enum": 3,
-        "function": 100,
+        "function": 102,
         "module": 13,
-        "struct": 37,
-        "struct_field": 118,
+        "struct": 39,
+        "struct_field": 125,
         "trait": 3,
         "variant": 10
       },
       "counts_by_stability": {
-        "Experimental": 285
+        "Experimental": 296
       },
       "facade_reexport_count": 0,
       "boundary_item_count": 0,
@@ -25891,6 +25891,62 @@
           }
         },
         {
+          "path": "ranvier_inspector::metrics::CircuitMetricsRetentionSnapshot",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/metrics.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::metrics::CircuitMetricsRetentionSnapshot::circuit",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/metrics.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::metrics::CircuitMetricsRetentionSnapshot::nodes",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/metrics.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::metrics::CircuitMetricsRetentionSnapshot::window_ms",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/metrics.rs"
+          }
+        },
+        {
           "path": "ranvier_inspector::metrics::CircuitMetricsSnapshot",
           "kind": "struct",
           "origin": "direct",
@@ -26003,8 +26059,92 @@
           }
         },
         {
+          "path": "ranvier_inspector::metrics::MetricsCollector::retention_snapshot",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/metrics.rs"
+          }
+        },
+        {
           "path": "ranvier_inspector::metrics::MetricsCollector::snapshot",
           "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/metrics.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::metrics::NodeMetricsRetentionStats",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/metrics.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::metrics::NodeMetricsRetentionStats::capacity_evicted",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/metrics.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::metrics::NodeMetricsRetentionStats::current_samples",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/metrics.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::metrics::NodeMetricsRetentionStats::max_samples",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/metrics.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::metrics::NodeMetricsRetentionStats::ttl_evicted",
+          "kind": "struct_field",
           "origin": "direct",
           "target": null,
           "stability": "Experimental",
@@ -26144,6 +26284,20 @@
         },
         {
           "path": "ranvier_inspector::metrics::record_global_node_exit",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/metrics.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::metrics::retention_snapshot_circuit",
           "kind": "function",
           "origin": "direct",
           "target": null,

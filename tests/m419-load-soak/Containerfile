@@ -1,0 +1,11 @@
+FROM node:24-bookworm AS node
+
+FROM rust:1.95.0-bookworm
+
+COPY --from=node /usr/local/ /usr/local/
+
+WORKDIR /workspace
+
+ENV CARGO_INCREMENTAL=0
+
+CMD ["node", "/workspace/scripts/m419_load_soak_gate.mjs", "--full", "--output", "/evidence"]

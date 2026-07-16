@@ -7,6 +7,7 @@ pub(super) struct TraceRegistryStorage {
     recent: VecDeque<TraceRecord>,
     max_recent: usize,
     trace_ttl_ms: u64,
+    next_expiry_at_ms: Option<u64>,
     ttl_pruned: u64,
     capacity_evicted: u64,
 }
@@ -18,15 +19,16 @@ impl TraceRegistryStorage {
             recent: VecDeque::new(),
             max_recent,
             trace_ttl_ms,
+            next_expiry_at_ms: None,
             ttl_pruned: 0,
             capacity_evicted: 0,
         }
     }
 
-    pub(super) fn register(&mut self, circuit: String) {
+    pub(super) fn register(&mut self, circuit: String) -> Option<String> {
         self.prune_expired();
         if self.max_recent == 0 {
-            return;
+            return None;
         }
         while self.active.len() >= self.max_recent {
             let oldest = self
@@ -45,50 +47,52 @@ impl TraceRegistryStorage {
             circuit.replace(' ', "_").to_lowercase(),
             uuid::Uuid::new_v4()
         );
+        let started_at = epoch_ms();
+        if self.trace_ttl_ms > 0 {
+            let expires_at = started_at
+                .saturating_add(self.trace_ttl_ms)
+                .saturating_add(1);
+            self.next_expiry_at_ms = Some(
+                self.next_expiry_at_ms
+                    .map_or(expires_at, |current| current.min(expires_at)),
+            );
+        }
         self.active.insert(
             trace_id.clone(),
             TraceRecord {
-                trace_id,
+                trace_id: trace_id.clone(),
                 circuit,
                 status: TraceStatus::Active,
-                started_at: epoch_ms(),
+                started_at,
                 finished_at: None,
                 duration_ms: None,
                 outcome_type: None,
             },
         );
+        Some(trace_id)
     }
 
     pub(super) fn complete(
         &mut self,
-        circuit: &str,
+        trace_id: &str,
         outcome_type: Option<String>,
         duration_ms: Option<u64>,
     ) {
         self.prune_expired();
-        let key = self
-            .active
-            .iter()
-            .filter(|(_, record)| record.circuit == circuit)
-            .max_by_key(|(_, record)| record.started_at)
-            .map(|(key, _)| key.clone());
+        if let Some(mut record) = self.active.remove(trace_id) {
+            record.finished_at = Some(epoch_ms());
+            record.duration_ms = duration_ms;
+            record.outcome_type = outcome_type.clone();
+            record.status = if outcome_type.as_deref() == Some("Fault") {
+                TraceStatus::Faulted
+            } else {
+                TraceStatus::Completed
+            };
 
-        if let Some(key) = key {
-            if let Some(mut record) = self.active.remove(&key) {
-                record.finished_at = Some(epoch_ms());
-                record.duration_ms = duration_ms;
-                record.outcome_type = outcome_type.clone();
-                record.status = if outcome_type.as_deref() == Some("Fault") {
-                    TraceStatus::Faulted
-                } else {
-                    TraceStatus::Completed
-                };
-
-                self.recent.push_back(record);
-                while self.recent.len() > self.max_recent {
-                    self.recent.pop_front();
-                    self.capacity_evicted = self.capacity_evicted.saturating_add(1);
-                }
+            self.recent.push_back(record);
+            while self.recent.len() > self.max_recent {
+                self.recent.pop_front();
+                self.capacity_evicted = self.capacity_evicted.saturating_add(1);
             }
         }
     }
@@ -97,7 +101,18 @@ impl TraceRegistryStorage {
         if self.trace_ttl_ms == 0 {
             return;
         }
-        let cutoff = epoch_ms().saturating_sub(self.trace_ttl_ms);
+        let now = epoch_ms();
+        // Avoid scanning either collection until the earliest known record can
+        // actually expire. The cached deadline may be conservatively stale
+        // after capacity eviction, which causes at most one extra scan rather
+        // than a scan on every trace.
+        if self
+            .next_expiry_at_ms
+            .is_some_and(|next_expiry| now < next_expiry)
+        {
+            return;
+        }
+        let cutoff = now.saturating_sub(self.trace_ttl_ms);
         let active_before = self.active.len();
         self.active.retain(|_, record| record.started_at >= cutoff);
         let pruned_active =
@@ -108,6 +123,17 @@ impl TraceRegistryStorage {
         let pruned_recent =
             u64::try_from(recent_before.saturating_sub(self.recent.len())).unwrap_or(u64::MAX);
         self.ttl_pruned = self.ttl_pruned.saturating_add(pruned_recent);
+        self.next_expiry_at_ms = self
+            .active
+            .values()
+            .chain(self.recent.iter())
+            .map(|record| {
+                record
+                    .started_at
+                    .saturating_add(self.trace_ttl_ms)
+                    .saturating_add(1)
+            })
+            .min();
     }
 
     pub(super) fn list_all(&self) -> Vec<TraceRecord> {
@@ -176,9 +202,9 @@ mod tests {
     #[test]
     fn active_registry_is_capacity_bounded() {
         let mut registry = TraceRegistryStorage::new(2, 60_000);
-        registry.register("one".to_string());
-        registry.register("two".to_string());
-        registry.register("three".to_string());
+        let _ = registry.register("one".to_string());
+        let _ = registry.register("two".to_string());
+        let _ = registry.register("three".to_string());
 
         assert_eq!(registry.active_count(), 2);
         assert_eq!(registry.stats().capacity_evicted, 1);
@@ -187,12 +213,13 @@ mod tests {
     #[test]
     fn active_registry_prunes_expired_entries() {
         let mut registry = TraceRegistryStorage::new(10, 1_000);
-        registry.register("expired".to_string());
+        let _ = registry.register("expired".to_string());
         for record in registry.active.values_mut() {
             record.started_at = epoch_ms().saturating_sub(2_000);
         }
+        registry.next_expiry_at_ms = None;
 
-        registry.register("fresh".to_string());
+        let _ = registry.register("fresh".to_string());
 
         assert_eq!(registry.active_count(), 1);
         assert_eq!(registry.stats().ttl_pruned, 1);
@@ -270,5 +297,56 @@ mod tests {
         assert_eq!(registry.stats().max_recent, 7);
         assert_eq!(registry.stats().active_count, 0);
         assert_eq!(registry.stats().recent_count, 0);
+    }
+
+    #[test]
+    fn concurrent_completions_are_correlated_by_trace_id() {
+        let mut registry = TraceRegistryStorage::new(10, 60_000);
+        let first = registry
+            .register("same-circuit".to_string())
+            .expect("first trace id");
+        let second = registry
+            .register("same-circuit".to_string())
+            .expect("second trace id");
+
+        registry.complete(&first, Some("Fault".to_string()), Some(7));
+        assert_eq!(registry.active_count(), 1);
+        assert!(registry.active.contains_key(&second));
+        assert_eq!(
+            registry
+                .recent
+                .back()
+                .map(|record| record.trace_id.as_str()),
+            Some(first.as_str())
+        );
+        assert_eq!(
+            registry.recent.back().map(|record| &record.status),
+            Some(&TraceStatus::Faulted)
+        );
+
+        registry.complete(&second, Some("Next".to_string()), Some(3));
+        assert_eq!(registry.active_count(), 0);
+        assert_eq!(registry.recent_count(), 2);
+    }
+
+    #[test]
+    fn cached_expiry_skips_scan_until_a_record_can_expire() {
+        let mut registry = TraceRegistryStorage::new(10, 60_000);
+        let trace_id = registry
+            .register("bounded-scan".to_string())
+            .expect("trace id");
+        let cached_expiry = registry.next_expiry_at_ms;
+        if let Some(record) = registry.active.get_mut(&trace_id) {
+            record.started_at = epoch_ms().saturating_sub(61_000);
+        }
+
+        registry.prune_expired();
+        assert_eq!(registry.active_count(), 1);
+        assert_eq!(registry.next_expiry_at_ms, cached_expiry);
+
+        registry.next_expiry_at_ms = None;
+        registry.prune_expired();
+        assert_eq!(registry.active_count(), 0);
+        assert_eq!(registry.stats().ttl_pruned, 1);
     }
 }

@@ -15,14 +15,18 @@ ranvier-core = { workspace = true }
 ranvier-runtime = { workspace = true }
 ranvier-macros = { workspace = true }
 ranvier-http = { workspace = true }
+ranvier-inspector = { workspace = true }
+ranvier-audit = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true }
 criterion = { version = "0.5", features = ["async_tokio"] }
 jsonwebtoken = "9"
 async-trait = "0.1"
 anyhow = { workspace = true }
 http = { workspace = true }
+tracing-subscriber = { workspace = true }
 axum = "0.8"
 actix-web = "4"
 actix-rt = "2"
