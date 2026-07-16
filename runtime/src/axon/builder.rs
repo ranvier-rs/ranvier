@@ -1463,6 +1463,43 @@ where
         self
     }
 
+    /// Validate and start Inspector from core's resolved runtime profile.
+    ///
+    /// Validation completes before the background task is spawned. Development
+    /// callers should pass loopback. Production callers must select the bind
+    /// address explicitly and configure authentication or a typed temporary
+    /// acknowledgement in `ResolvedRuntimeConfig`.
+    #[cfg(feature = "inspector")]
+    pub fn serve_inspector_with_runtime(
+        self,
+        bind_address: std::net::IpAddr,
+        runtime: &ranvier_core::config::ResolvedRuntimeConfig,
+    ) -> Result<Self, ranvier_core::runtime_policy::StartupPolicyError> {
+        if !runtime.config().inspector.enabled {
+            return Ok(self);
+        }
+
+        let schematic = self.schematic.clone();
+        let axon_inspector = Arc::new(self.clone());
+        let inspector =
+            ranvier_inspector::Inspector::new(schematic, runtime.config().inspector.port)
+                .with_projection_files_from_env()
+                .with_runtime_profile(runtime.profile())
+                .with_bind_address(bind_address)
+                .with_auth_policy_from_env()
+                .with_redaction_policy_from_env()
+                .with_bearer_token_from_env()
+                .with_state_inspector(axon_inspector);
+        let validated = inspector.validate(runtime)?;
+
+        tokio::spawn(async move {
+            if let Err(error) = validated.serve().await {
+                tracing::error!(error_kind = ?error.kind(), "Inspector server failed");
+            }
+        });
+        Ok(self)
+    }
+
     /// Get a reference to the Schematic (structural view).
     pub fn schematic(&self) -> &Schematic {
         &self.schematic

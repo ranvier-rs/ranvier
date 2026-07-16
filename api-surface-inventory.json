@@ -28,10 +28,10 @@
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2508,
+  "public_item_count": 2514,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2316,
+    "Experimental": 2322,
     "Stable Candidate": 184
   },
   "crates": [
@@ -23619,19 +23619,19 @@
       "default_stability": "Experimental",
       "owner": "security-ops",
       "features": [],
-      "public_item_count": 277,
+      "public_item_count": 282,
       "counts_by_kind": {
         "constant": 1,
         "enum": 3,
-        "function": 93,
+        "function": 97,
         "module": 13,
-        "struct": 36,
+        "struct": 37,
         "struct_field": 118,
         "trait": 3,
         "variant": 10
       },
       "counts_by_stability": {
-        "Experimental": 277
+        "Experimental": 282
       },
       "facade_reexport_count": 0,
       "boundary_item_count": 0,
@@ -24337,6 +24337,20 @@
           }
         },
         {
+          "path": "ranvier_inspector::Inspector::validate",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier_inspector::Inspector::with_alert_dispatcher",
           "kind": "function",
           "origin": "direct",
@@ -24394,6 +24408,20 @@
         },
         {
           "path": "ranvier_inspector::Inspector::with_bearer_token_from_env",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::Inspector::with_bind_address",
           "kind": "function",
           "origin": "direct",
           "target": null,
@@ -24548,6 +24576,20 @@
         },
         {
           "path": "ranvier_inspector::Inspector::with_routes",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::Inspector::with_runtime_profile",
           "kind": "function",
           "origin": "direct",
           "target": null,
@@ -27513,6 +27555,34 @@
           "source": {
             "file": "extensions/inspector/src/lib.rs"
           }
+        },
+        {
+          "path": "ranvier_inspector::ValidatedInspector",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::ValidatedInspector::serve",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/lib.rs"
+          }
         }
       ]
     },
@@ -28656,10 +28726,10 @@
         "schema",
         "streaming"
       ],
-      "public_item_count": 382,
+      "public_item_count": 383,
       "counts_by_kind": {
         "enum": 26,
-        "function": 124,
+        "function": 125,
         "module": 12,
         "struct": 96,
         "struct_field": 67,
@@ -28668,7 +28738,7 @@
         "variant": 29
       },
       "counts_by_stability": {
-        "Experimental": 365,
+        "Experimental": 366,
         "Stable Candidate": 17
       },
       "facade_reexport_count": 0,
@@ -29054,6 +29124,20 @@
         },
         {
           "path": "ranvier_runtime::axon::Axon::serve_inspector",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/axon/builder.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::axon::Axon::serve_inspector_with_runtime",
           "kind": "function",
           "origin": "direct",
           "target": null,

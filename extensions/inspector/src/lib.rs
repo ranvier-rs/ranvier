@@ -26,14 +26,19 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use ranvier_core::config::ResolvedRuntimeConfig;
 use ranvier_core::event::DlqReader;
 use ranvier_core::prelude::DebugControl;
+use ranvier_core::runtime_policy::{
+    PolicyComponent, PolicyField, PolicyObservation, PolicyValue, RuntimeProfile,
+    StartupPolicyCode, StartupPolicyContribution, StartupPolicyError, StartupPolicyProvider,
+};
 use ranvier_core::schematic::{NodeKind, Schematic};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -140,45 +145,56 @@ pub fn get_trace_registry() -> Arc<Mutex<ActiveTraceRegistry>> {
 
 /// Initialize the trace registry with custom configuration.
 /// Must be called before `get_trace_registry()` for config to take effect.
-fn init_trace_registry(config: &TraceRegistryConfig) {
-    let _ = TRACE_REGISTRY.get_or_init(|| {
+fn init_trace_registry(config: &TraceRegistryConfig) -> Result<(), std::io::Error> {
+    let max_traces = config.max_traces;
+    let trace_ttl_ms = duration_millis_saturating(config.trace_ttl);
+    let registry = TRACE_REGISTRY.get_or_init(|| {
         Arc::new(Mutex::new(ActiveTraceRegistry::with_config(
-            config.max_traces,
-            config.trace_ttl.as_millis() as u64,
+            max_traces,
+            trace_ttl_ms,
         )))
     });
+    let configured = registry
+        .lock()
+        .map(|registry| registry.storage.has_config(max_traces, trace_ttl_ms))
+        .unwrap_or(false);
+    if configured {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "Inspector trace registry was initialized with a different retention policy",
+        ))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum InspectorMode {
-    Dev,
-    Prod,
+enum LegacyInspectorMode {
+    Valid(RuntimeProfile),
+    Invalid,
 }
 
-impl InspectorMode {
-    fn from_env() -> Self {
-        match std::env::var("RANVIER_MODE")
-            .unwrap_or_else(|_| "dev".to_string())
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "prod" | "production" => Self::Prod,
-            _ => Self::Dev,
-        }
-    }
-
-    fn from_str(mode: &str) -> Self {
+impl LegacyInspectorMode {
+    fn parse(mode: &str) -> Self {
         match mode.to_ascii_lowercase().as_str() {
-            "prod" | "production" => Self::Prod,
-            _ => Self::Dev,
+            "dev" | "development" => Self::Valid(RuntimeProfile::Development),
+            "prod" | "production" => Self::Valid(RuntimeProfile::Production),
+            _ => Self::Invalid,
         }
     }
 
-    fn as_str(self) -> &'static str {
+    fn profile_or_development(self) -> RuntimeProfile {
         match self {
-            Self::Dev => "dev",
-            Self::Prod => "prod",
+            Self::Valid(profile) => profile,
+            Self::Invalid => RuntimeProfile::Development,
         }
+    }
+}
+
+fn profile_label(profile: RuntimeProfile) -> &'static str {
+    match profile {
+        RuntimeProfile::Development => "dev",
+        RuntimeProfile::Production => "prod",
     }
 }
 
@@ -190,14 +206,14 @@ struct SurfacePolicy {
 }
 
 impl SurfacePolicy {
-    fn for_mode(mode: InspectorMode) -> Self {
-        match mode {
-            InspectorMode::Dev => Self {
+    fn for_profile(profile: RuntimeProfile) -> Self {
+        match profile {
+            RuntimeProfile::Development => Self {
                 expose_internal: true,
                 expose_events: true,
                 expose_quick_view: true,
             },
-            InspectorMode::Prod => Self {
+            RuntimeProfile::Production => Self {
                 expose_internal: false,
                 expose_events: false,
                 expose_quick_view: false,
@@ -264,6 +280,7 @@ struct TelemetryRedactionPolicy {
     mode_override: Option<RedactionMode>,
     sensitive_patterns: Vec<String>,
     allow_keys: HashSet<String>,
+    valid: bool,
 }
 
 impl Default for TelemetryRedactionPolicy {
@@ -272,6 +289,7 @@ impl Default for TelemetryRedactionPolicy {
             mode_override: None,
             sensitive_patterns: default_sensitive_patterns(),
             allow_keys: HashSet::new(),
+            valid: true,
         }
     }
 }
@@ -283,10 +301,12 @@ impl TelemetryRedactionPolicy {
         if let Ok(raw_mode) = std::env::var("RANVIER_TELEMETRY_REDACT_MODE") {
             match RedactionMode::parse(&raw_mode) {
                 Some(mode) => policy.mode_override = Some(mode),
-                None => tracing::warn!(
-                    "Invalid RANVIER_TELEMETRY_REDACT_MODE='{}' (expected: off|public|strict)",
-                    raw_mode
-                ),
+                None => {
+                    policy.valid = false;
+                    tracing::warn!(
+                        "Invalid RANVIER_TELEMETRY_REDACT_MODE (expected: off|public|strict)"
+                    );
+                }
             }
         }
 
@@ -334,7 +354,7 @@ fn get_sender() -> &'static broadcast::Sender<String> {
 /// Configuration for the in-memory trace registry ring buffer.
 #[derive(Clone, Debug)]
 pub struct TraceRegistryConfig {
-    /// Maximum number of recent traces to keep in the ring buffer.
+    /// Maximum number of traces retained in each active/recent collection.
     /// Default: 10,000.
     pub max_traces: usize,
     /// Time-to-live for traces in the ring buffer.
@@ -355,18 +375,21 @@ impl Default for TraceRegistryConfig {
 /// Start the Inspector Server.
 pub struct Inspector {
     port: u16,
+    bind_address: Option<IpAddr>,
     schematic: Arc<Mutex<Schematic>>,
     public_projection: Arc<Mutex<Option<Value>>>,
     internal_projection: Arc<Mutex<Option<Value>>>,
     public_projection_path: Option<String>,
     internal_projection_path: Option<String>,
-    mode: InspectorMode,
+    profile: RuntimeProfile,
+    legacy_mode: Option<LegacyInspectorMode>,
     surface_policy: SurfacePolicy,
     auth_policy: AuthPolicy,
     redaction_policy: TelemetryRedactionPolicy,
     state_inspector: Option<Arc<dyn StateInspector>>,
     dlq_reader: Option<Arc<dyn DlqReader>>,
     payload_policy: payload::PayloadCapturePolicy,
+    payload_policy_valid: bool,
     relay_state: Option<relay::RelayState>,
     bearer_auth: auth::BearerAuth,
     allow_unauthenticated: bool,
@@ -382,20 +405,25 @@ impl Inspector {
         let public_projection = default_public_projection(&schematic);
         let internal_projection = default_internal_projection(&schematic);
 
+        let (payload_policy, payload_policy_valid) =
+            payload::PayloadCapturePolicy::from_env_with_validity();
         Self {
             port,
+            bind_address: None,
             schematic: Arc::new(Mutex::new(schematic)),
             public_projection: Arc::new(Mutex::new(Some(public_projection))),
             internal_projection: Arc::new(Mutex::new(Some(internal_projection))),
             public_projection_path: None,
             internal_projection_path: None,
-            mode: InspectorMode::Dev,
-            surface_policy: SurfacePolicy::for_mode(InspectorMode::Dev),
+            profile: RuntimeProfile::Development,
+            legacy_mode: None,
+            surface_policy: SurfacePolicy::for_profile(RuntimeProfile::Development),
             auth_policy: AuthPolicy::default(),
             redaction_policy: TelemetryRedactionPolicy::from_env(),
             state_inspector: None,
             dlq_reader: None,
-            payload_policy: payload::PayloadCapturePolicy::from_env(),
+            payload_policy,
+            payload_policy_valid,
             relay_state: None,
             bearer_auth: auth::BearerAuth::default(),
             allow_unauthenticated: false,
@@ -434,6 +462,7 @@ impl Inspector {
 
     pub fn with_payload_capture(mut self, policy: payload::PayloadCapturePolicy) -> Self {
         self.payload_policy = policy;
+        self.payload_policy_valid = true;
         self
     }
 
@@ -490,9 +519,13 @@ impl Inspector {
     /// - `dev` (default): expose `/trace/internal`, `/events`, `/quick-view`
     /// - `prod`: hide internal/event/quick-view routes and keep public read-only endpoints
     pub fn with_mode_from_env(mut self) -> Self {
-        let mode = InspectorMode::from_env();
-        self.mode = mode;
-        self.surface_policy = SurfacePolicy::for_mode(mode);
+        let mode = std::env::var("RANVIER_MODE")
+            .ok()
+            .map(|value| LegacyInspectorMode::parse(&value))
+            .unwrap_or(LegacyInspectorMode::Valid(RuntimeProfile::Development));
+        self.legacy_mode = Some(mode);
+        self.profile = mode.profile_or_development();
+        self.surface_policy = SurfacePolicy::for_profile(self.profile);
         self
     }
 
@@ -502,9 +535,30 @@ impl Inspector {
     /// - `dev` (default)
     /// - `prod` / `production`
     pub fn with_mode(mut self, mode: &str) -> Self {
-        let parsed = InspectorMode::from_str(mode);
-        self.mode = parsed;
-        self.surface_policy = SurfacePolicy::for_mode(parsed);
+        let parsed = LegacyInspectorMode::parse(mode);
+        self.legacy_mode = Some(parsed);
+        self.profile = parsed.profile_or_development();
+        self.surface_policy = SurfacePolicy::for_profile(self.profile);
+        self
+    }
+
+    /// Bind Inspector behavior to the runtime profile resolved by core.
+    ///
+    /// Use this with [`Self::validate`] for the production-aware path. Legacy
+    /// `with_mode` helpers remain available during the compatibility window.
+    pub fn with_runtime_profile(mut self, profile: RuntimeProfile) -> Self {
+        self.profile = profile;
+        self.surface_policy = SurfacePolicy::for_profile(profile);
+        self
+    }
+
+    /// Select the Inspector listener address explicitly.
+    ///
+    /// The validated Development path falls back to loopback when omitted.
+    /// Production policy reports an omitted address as unsafe even though its
+    /// fallback is also loopback-safe.
+    pub fn with_bind_address(mut self, address: IpAddr) -> Self {
+        self.bind_address = Some(address);
         self
     }
 
@@ -575,7 +629,8 @@ impl Inspector {
 
     /// Configure the in-memory trace registry ring buffer.
     ///
-    /// Controls the maximum number of recent traces kept and their TTL.
+    /// Controls the maximum number of active and recent traces kept in each
+    /// collection and their TTL.
     /// Default: max_traces=10,000, trace_ttl=1h.
     ///
     /// ```rust,ignore
@@ -596,8 +651,8 @@ impl Inspector {
         self
     }
 
-    fn validate_startup_policy(&self) -> Result<(), std::io::Error> {
-        if self.mode == InspectorMode::Prod
+    fn validate_legacy_startup_policy(&self) -> Result<(), std::io::Error> {
+        if self.profile == RuntimeProfile::Production
             && !self.bearer_auth.is_enabled()
             && !self.allow_unauthenticated
         {
@@ -612,19 +667,58 @@ impl Inspector {
         Ok(())
     }
 
+    /// Validate the production-aware Inspector policy before any listener or
+    /// background task is started.
+    pub fn validate(
+        self,
+        runtime: &ResolvedRuntimeConfig,
+    ) -> Result<ValidatedInspector, StartupPolicyError> {
+        runtime.validate_startup(&[&self])?;
+        Ok(ValidatedInspector { inspector: self })
+    }
+
+    fn prepare_runtime_state(&self) -> Result<(), std::io::Error> {
+        init_trace_registry(&self.trace_registry_config)?;
+        let payload_policy = PAYLOAD_POLICY.get_or_init(|| self.payload_policy);
+        if *payload_policy != self.payload_policy {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "Inspector payload policy was initialized with a different value",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validated_bind_address(&self) -> IpAddr {
+        self.bind_address.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
+    }
+
     pub async fn serve(self) -> Result<(), std::io::Error> {
-        let addr = SocketAddr::from(([0, 0, 0, 0], self.port));
+        self.validate_legacy_startup_policy()?;
+        self.prepare_runtime_state()?;
+        let addr = SocketAddr::new(
+            self.bind_address
+                .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
+            self.port,
+        );
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        self.serve_with_listener(listener).await
+        self.serve_with_listener_inner(listener).await
     }
 
     pub async fn serve_with_listener(
         self,
         listener: tokio::net::TcpListener,
     ) -> Result<(), std::io::Error> {
-        self.validate_startup_policy()?;
+        self.validate_legacy_startup_policy()?;
+        self.prepare_runtime_state()?;
+        self.serve_with_listener_inner(listener).await
+    }
 
-        let mode = self.mode;
+    async fn serve_with_listener_inner(
+        self,
+        listener: tokio::net::TcpListener,
+    ) -> Result<(), std::io::Error> {
+        let profile = self.profile;
         let surface_policy = self.surface_policy;
         let bearer_auth = self.bearer_auth.clone();
         let bearer_auth_enabled = bearer_auth.is_enabled();
@@ -645,16 +739,13 @@ impl Inspector {
             );
         }
 
-        // Initialize trace registry with configured limits
-        init_trace_registry(&self.trace_registry_config);
-
         let state = InspectorState {
             schematic: self.schematic.clone(),
             public_projection: self.public_projection.clone(),
             internal_projection: self.internal_projection.clone(),
             public_projection_path: self.public_projection_path.clone(),
             internal_projection_path: self.internal_projection_path.clone(),
-            mode,
+            profile,
             surface_policy,
             auth_policy: self.auth_policy,
             redaction_policy: self.redaction_policy.clone(),
@@ -666,9 +757,6 @@ impl Inspector {
             trace_store: self.trace_store,
             alert_dispatcher: self.alert_dispatcher,
         };
-
-        // Store payload capture policy in a global for the tracing Layer to access
-        PAYLOAD_POLICY.get_or_init(|| self.payload_policy);
 
         let mut app = Router::new()
             .route("/healthz", get(get_healthz))
@@ -737,9 +825,9 @@ impl Inspector {
                 .route("/quick-view/styles.css", get(get_quick_view_css));
         }
 
-        let cors_layer = match mode {
-            InspectorMode::Dev => CorsLayer::permissive(),
-            InspectorMode::Prod => CorsLayer::new(),
+        let cors_layer = match profile {
+            RuntimeProfile::Development => CorsLayer::permissive(),
+            RuntimeProfile::Production => CorsLayer::new(),
         };
 
         let app = app.layer(cors_layer);
@@ -793,6 +881,190 @@ impl Inspector {
         }
 
         axum::serve(listener, app).await
+    }
+}
+
+impl StartupPolicyProvider for Inspector {
+    fn startup_policy(&self, profile: RuntimeProfile) -> StartupPolicyContribution {
+        let component = PolicyComponent::new("inspector");
+        let runtime_profile = PolicyField::new("runtime_profile");
+        let legacy_mode = PolicyField::new("legacy_mode");
+        let bind_explicit = PolicyField::new("bind_explicit");
+        let bind_scope = PolicyField::new("bind_scope");
+        let bearer_enabled = PolicyField::new("bearer_enabled");
+        let unauthenticated_legacy_flag = PolicyField::new("unauthenticated_legacy_flag");
+        let cors_permissive = PolicyField::new("cors_permissive");
+        let role_header_enforced = PolicyField::new("role_header_enforced");
+        let tenant_required = PolicyField::new("tenant_required_for_internal");
+        let trace_max_count = PolicyField::new("trace_collection_max_count");
+        let trace_ttl_ms = PolicyField::new("trace_ttl_ms");
+        let event_max_count = PolicyField::new("event_max_count");
+        let event_ttl_ms = PolicyField::new("event_ttl_ms");
+        let payload_capture = PolicyField::new("payload_capture");
+        let payload_capture_valid = PolicyField::new("payload_capture_valid");
+        let public_redaction = PolicyField::new("public_redaction");
+        let redaction_config_valid = PolicyField::new("redaction_config_valid");
+        let mut violations = Vec::new();
+
+        if !self.payload_policy_valid {
+            violations.push((StartupPolicyCode::ConfigValueInvalid, payload_capture_valid));
+        }
+        if !self.redaction_policy.valid {
+            violations.push((
+                StartupPolicyCode::ConfigValueInvalid,
+                redaction_config_valid,
+            ));
+        }
+        if self.legacy_mode == Some(LegacyInspectorMode::Invalid) {
+            violations.push((StartupPolicyCode::LegacyModeInvalid, legacy_mode));
+        }
+        if self.profile != profile
+            || matches!(
+                self.legacy_mode,
+                Some(LegacyInspectorMode::Valid(legacy_profile)) if legacy_profile != profile
+            )
+        {
+            violations.push((StartupPolicyCode::LegacyModeConflict, runtime_profile));
+        }
+
+        let is_cors_permissive = self.profile == RuntimeProfile::Development;
+        let public_redaction_mode = self
+            .redaction_policy
+            .mode_for_surface(ProjectionSurface::Public);
+        let trace_ttl_value = duration_millis_saturating(self.trace_registry_config.trace_ttl);
+        if profile == RuntimeProfile::Production {
+            if !self.bearer_auth.is_enabled() {
+                violations.push((StartupPolicyCode::InspectorAuthMissing, bearer_enabled));
+            }
+            if self.bind_address.is_none() {
+                violations.push((StartupPolicyCode::InspectorBindImplicit, bind_explicit));
+            }
+            if is_cors_permissive {
+                violations.push((StartupPolicyCode::InspectorCorsPermissive, cors_permissive));
+            }
+            if self.trace_registry_config.max_traces == 0 {
+                violations.push((
+                    StartupPolicyCode::InspectorRetentionUnbounded,
+                    trace_max_count,
+                ));
+            }
+            if trace_ttl_value == 0 {
+                violations.push((StartupPolicyCode::InspectorRetentionUnbounded, trace_ttl_ms));
+            }
+            if public_redaction_mode == RedactionMode::Off {
+                violations.push((StartupPolicyCode::ConfigValueInvalid, public_redaction));
+            }
+        }
+
+        let bind_scope_value = match self.bind_address {
+            None => "loopback_default",
+            Some(address) if address.is_loopback() => "loopback",
+            Some(address) if address.is_unspecified() => "wildcard",
+            Some(_) => "specified",
+        };
+        let payload_capture_value = match self.payload_policy {
+            payload::PayloadCapturePolicy::Off => "off",
+            payload::PayloadCapturePolicy::Hash => "hash",
+            payload::PayloadCapturePolicy::Full => "full",
+        };
+        let public_redaction_value = match public_redaction_mode {
+            RedactionMode::Off => "off",
+            RedactionMode::Public => "public",
+            RedactionMode::Strict => "strict",
+        };
+
+        StartupPolicyContribution::new(
+            component,
+            vec![
+                PolicyObservation::new(runtime_profile, PolicyValue::Label(self.profile.as_str())),
+                PolicyObservation::new(
+                    legacy_mode,
+                    PolicyValue::Label(match self.legacy_mode {
+                        None => "not_configured",
+                        Some(LegacyInspectorMode::Valid(RuntimeProfile::Development)) => {
+                            "development"
+                        }
+                        Some(LegacyInspectorMode::Valid(RuntimeProfile::Production)) => {
+                            "production"
+                        }
+                        Some(LegacyInspectorMode::Invalid) => "invalid",
+                    }),
+                ),
+                PolicyObservation::new(
+                    bind_explicit,
+                    PolicyValue::Bool(self.bind_address.is_some()),
+                ),
+                PolicyObservation::new(bind_scope, PolicyValue::Label(bind_scope_value)),
+                PolicyObservation::new(
+                    bearer_enabled,
+                    PolicyValue::Bool(self.bearer_auth.is_enabled()),
+                ),
+                PolicyObservation::new(
+                    unauthenticated_legacy_flag,
+                    PolicyValue::Bool(self.allow_unauthenticated),
+                ),
+                PolicyObservation::new(cors_permissive, PolicyValue::Bool(is_cors_permissive)),
+                PolicyObservation::new(
+                    role_header_enforced,
+                    PolicyValue::Bool(self.auth_policy.enforce_headers),
+                ),
+                PolicyObservation::new(
+                    tenant_required,
+                    PolicyValue::Bool(self.auth_policy.require_tenant_for_internal),
+                ),
+                PolicyObservation::new(
+                    trace_max_count,
+                    PolicyValue::Count(
+                        u64::try_from(self.trace_registry_config.max_traces).unwrap_or(u64::MAX),
+                    ),
+                ),
+                PolicyObservation::new(trace_ttl_ms, PolicyValue::DurationMs(trace_ttl_value)),
+                PolicyObservation::new(
+                    event_max_count,
+                    PolicyValue::Count(
+                        u64::try_from(payload::DEFAULT_EVENT_BUFFER_SIZE).unwrap_or(u64::MAX),
+                    ),
+                ),
+                PolicyObservation::new(
+                    event_ttl_ms,
+                    PolicyValue::DurationMs(payload::DEFAULT_EVENT_TTL_MS),
+                ),
+                PolicyObservation::new(payload_capture, PolicyValue::Label(payload_capture_value)),
+                PolicyObservation::new(
+                    payload_capture_valid,
+                    PolicyValue::Bool(self.payload_policy_valid),
+                ),
+                PolicyObservation::new(
+                    public_redaction,
+                    PolicyValue::Label(public_redaction_value),
+                ),
+                PolicyObservation::new(
+                    redaction_config_valid,
+                    PolicyValue::Bool(self.redaction_policy.valid),
+                ),
+            ],
+            violations,
+        )
+    }
+}
+
+fn duration_millis_saturating(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// An Inspector whose effective policy was accepted by core before startup.
+#[must_use = "call serve() to start the validated Inspector"]
+pub struct ValidatedInspector {
+    inspector: Inspector,
+}
+
+impl ValidatedInspector {
+    /// Initialize bounded in-memory state and bind only after policy validation.
+    pub async fn serve(self) -> Result<(), std::io::Error> {
+        self.inspector.prepare_runtime_state()?;
+        let addr = SocketAddr::new(self.inspector.validated_bind_address(), self.inspector.port);
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        self.inspector.serve_with_listener_inner(listener).await
     }
 }
 
@@ -1274,7 +1546,7 @@ struct InspectorState {
     internal_projection: Arc<Mutex<Option<Value>>>,
     public_projection_path: Option<String>,
     internal_projection_path: Option<String>,
-    mode: InspectorMode,
+    profile: RuntimeProfile,
     surface_policy: SurfacePolicy,
     auth_policy: AuthPolicy,
     redaction_policy: TelemetryRedactionPolicy,
@@ -1649,7 +1921,7 @@ async fn get_healthz(State(state): State<InspectorState>) -> Json<Value> {
         "inspector.health.v1",
         serde_json::json!({
             "status": "ok",
-            "mode": state.mode.as_str(),
+            "mode": profile_label(state.profile),
             "auth": {
                 "bearer_enabled": state.bearer_auth.is_enabled(),
                 "allow_unauthenticated": state.allow_unauthenticated,
@@ -1657,9 +1929,9 @@ async fn get_healthz(State(state): State<InspectorState>) -> Json<Value> {
                 "tenant_required_for_internal": state.auth_policy.require_tenant_for_internal
             },
             "cors": {
-                "policy": match state.mode {
-                    InspectorMode::Dev => "permissive",
-                    InspectorMode::Prod => "no_permissive_headers"
+                "policy": match state.profile {
+                    RuntimeProfile::Development => "permissive",
+                    RuntimeProfile::Production => "no_permissive_headers"
                 }
             },
             "routes": {
@@ -2223,9 +2495,8 @@ async fn api_post_relay(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     ensure_internal_access(&headers, &state.auth_policy)?;
 
-    // Guard: dev mode only
-    let mode = InspectorMode::from_env();
-    if mode != InspectorMode::Dev {
+    // Defense in depth: the relay route is also omitted from Production.
+    if state.profile != RuntimeProfile::Development {
         return Err(policy_error(
             StatusCode::FORBIDDEN,
             "relay_only_in_dev_mode",
@@ -2430,6 +2701,174 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         panic!("inspector server did not become ready");
+    }
+
+    fn resolved(profile: RuntimeProfile, document: &str) -> ResolvedRuntimeConfig {
+        let path = std::env::temp_dir().join(format!(
+            "ranvier-inspector-policy-{}.toml",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, document).unwrap();
+        let resolved = ResolvedRuntimeConfig::from_file_for(&path, profile).unwrap();
+        std::fs::remove_file(path).unwrap();
+        resolved
+    }
+
+    #[test]
+    fn production_policy_aggregates_profile_bind_auth_and_cors_violations() {
+        let runtime = resolved(RuntimeProfile::Production, "");
+        let inspector = Inspector::new(Schematic::new("unsafe-production"), 9090)
+            .with_mode("dev")
+            .allow_unauthenticated();
+        let error = runtime.validate_startup(&[&inspector]).unwrap_err();
+        let codes = error.report().violation_codes().collect::<Vec<_>>();
+
+        assert!(codes.contains(&StartupPolicyCode::LegacyModeConflict));
+        assert!(codes.contains(&StartupPolicyCode::InspectorAuthMissing));
+        assert!(codes.contains(&StartupPolicyCode::InspectorBindImplicit));
+        assert!(codes.contains(&StartupPolicyCode::InspectorCorsPermissive));
+    }
+
+    #[test]
+    fn typed_production_policy_passes_with_explicit_safe_configuration() {
+        let runtime = resolved(RuntimeProfile::Production, "");
+        let inspector = Inspector::new(Schematic::new("safe-production"), 9090)
+            .with_runtime_profile(RuntimeProfile::Production)
+            .with_bind_address(IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .with_bearer_token("sentinel-secret-token");
+
+        assert!(runtime.validate_startup(&[&inspector]).is_ok());
+    }
+
+    #[test]
+    fn legacy_mode_invalid_and_conflict_are_not_silently_development() {
+        let development = resolved(RuntimeProfile::Development, "");
+        let invalid = Inspector::new(Schematic::new("invalid-mode"), 9090).with_mode("staging");
+        let invalid_error = development.validate_startup(&[&invalid]).unwrap_err();
+        assert_eq!(
+            invalid_error.report().violation_codes().collect::<Vec<_>>(),
+            vec![StartupPolicyCode::LegacyModeInvalid]
+        );
+
+        let production = resolved(RuntimeProfile::Production, "");
+        let conflict = Inspector::new(Schematic::new("conflicting-mode"), 9090)
+            .with_mode("dev")
+            .with_bind_address(IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .with_bearer_token("token");
+        let conflict_error = production.validate_startup(&[&conflict]).unwrap_err();
+        assert!(
+            conflict_error
+                .report()
+                .violation_codes()
+                .any(|code| code == StartupPolicyCode::LegacyModeConflict)
+        );
+    }
+
+    #[test]
+    fn legacy_unauthenticated_flag_requires_typed_production_acknowledgement() {
+        let runtime = resolved(RuntimeProfile::Production, "");
+        let inspector = Inspector::new(Schematic::new("legacy-ack"), 9090)
+            .with_runtime_profile(RuntimeProfile::Production)
+            .with_bind_address(IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .allow_unauthenticated();
+        assert!(runtime.validate_startup(&[&inspector]).is_err());
+
+        let acknowledged = resolved(
+            RuntimeProfile::Production,
+            r#"
+[[runtime.unsafe_acknowledgements]]
+policy_code = "INSPECTOR_AUTH_MISSING"
+id = "INC-INSPECTOR-1"
+owner = "release-owner"
+rationale = "sentinel-private-rationale"
+review_on = "2099-01-01"
+expires_on = "2099-01-02"
+"#,
+        );
+        let report = acknowledged.validate_startup(&[&inspector]).unwrap();
+        assert_eq!(
+            report.status(),
+            ranvier_core::runtime_policy::StartupPolicyStatus::AcknowledgedUnsafe
+        );
+        let serialized = serde_json::to_string(&report).unwrap();
+        assert!(serialized.contains("INC-INSPECTOR-1"));
+        assert!(!serialized.contains("sentinel-private-rationale"));
+    }
+
+    #[test]
+    fn production_policy_rejects_unbounded_retention_and_disabled_redaction() {
+        let runtime = resolved(RuntimeProfile::Production, "");
+        let mut inspector = Inspector::new(Schematic::new("unsafe-retention"), 9090)
+            .with_runtime_profile(RuntimeProfile::Production)
+            .with_bind_address(IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .with_bearer_token("token")
+            .with_trace_registry_config(TraceRegistryConfig {
+                max_traces: 0,
+                trace_ttl: Duration::ZERO,
+            });
+        inspector.redaction_policy.mode_override = Some(RedactionMode::Off);
+        let error = runtime.validate_startup(&[&inspector]).unwrap_err();
+        let codes = error.report().violation_codes().collect::<Vec<_>>();
+
+        assert_eq!(
+            codes
+                .iter()
+                .filter(|code| **code == StartupPolicyCode::InspectorRetentionUnbounded)
+                .count(),
+            2
+        );
+        assert!(codes.contains(&StartupPolicyCode::ConfigValueInvalid));
+    }
+
+    #[test]
+    fn malformed_payload_and_redaction_configuration_fail_in_development() {
+        let runtime = resolved(RuntimeProfile::Development, "");
+        let mut inspector = Inspector::new(Schematic::new("invalid-policy-env"), 9090)
+            .with_runtime_profile(RuntimeProfile::Development);
+        inspector.payload_policy_valid = false;
+        inspector.redaction_policy.valid = false;
+        let error = runtime.validate_startup(&[&inspector]).unwrap_err();
+
+        assert_eq!(error.unacknowledged_count(), 2);
+        assert!(
+            error
+                .report()
+                .violation_codes()
+                .all(|code| code == StartupPolicyCode::ConfigValueInvalid)
+        );
+    }
+
+    #[test]
+    fn production_policy_report_and_debug_surfaces_do_not_leak_values() {
+        let runtime = resolved(RuntimeProfile::Production, "");
+        let inspector = Inspector::new(Schematic::new("sentinel-schematic"), 9090)
+            .with_runtime_profile(RuntimeProfile::Production)
+            .with_bind_address(IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .with_bearer_token("sentinel-secret-token")
+            .with_public_projection(serde_json::json!({
+                "payload": "sentinel-captured-payload"
+            }));
+        let report = runtime.validate_startup(&[&inspector]).unwrap();
+        let serialized = serde_json::to_string(&report).unwrap();
+
+        assert!(!serialized.contains("sentinel-secret-token"));
+        assert!(!serialized.contains("sentinel-captured-payload"));
+        assert!(serialized.contains("event_ttl_ms"));
+        assert!(serialized.contains("public_redaction"));
+    }
+
+    #[test]
+    fn validated_development_defaults_to_loopback() {
+        let runtime = resolved(RuntimeProfile::Development, "");
+        let validated = Inspector::new(Schematic::new("loopback-development"), 0)
+            .with_runtime_profile(RuntimeProfile::Development)
+            .validate(&runtime)
+            .unwrap();
+
+        assert_eq!(
+            validated.inspector.validated_bind_address(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST)
+        );
     }
 
     #[test]
@@ -2639,7 +3078,7 @@ mod tests {
             .with_mode("prod")
             .allow_unauthenticated();
 
-        assert!(inspector.validate_startup_policy().is_ok());
+        assert!(inspector.validate_legacy_startup_policy().is_ok());
     }
 
     #[test]
@@ -2648,7 +3087,7 @@ mod tests {
             .with_mode("prod")
             .with_bearer_token("   ");
 
-        assert!(inspector.validate_startup_policy().is_err());
+        assert!(inspector.validate_legacy_startup_policy().is_err());
     }
 
     #[tokio::test]
@@ -2735,6 +3174,36 @@ mod tests {
                 .get("access-control-allow-origin")
                 .is_none()
         );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn production_public_projection_redacts_payload_and_token_values() {
+        let (port, listener) = reserve_listener();
+        let inspector = Inspector::new(Schematic::new("prod-redaction"), port)
+            .with_mode("prod")
+            .with_bearer_token("sentinel-auth-token")
+            .with_public_projection(serde_json::json!({
+                "token": "sentinel-captured-payload",
+                "summary": { "ok": true }
+            }));
+        let handle = tokio::spawn(async move {
+            let _ = inspector.serve_with_listener(listener).await;
+        });
+        wait_ready(port).await;
+
+        let response = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{port}/trace/public"))
+            .header("Authorization", "Bearer sentinel-auth-token")
+            .send()
+            .await
+            .expect("public projection request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body = response.text().await.expect("public projection body");
+        assert!(!body.contains("sentinel-auth-token"));
+        assert!(!body.contains("sentinel-captured-payload"));
+        assert!(body.contains("[REDACTED]"));
 
         handle.abort();
     }

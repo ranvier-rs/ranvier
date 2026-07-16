@@ -8,7 +8,7 @@ Built-in Inspector REST + WebSocket server for runtime observability and debuggi
 - **Schema Registry**: `/api/v1/routes` enumerates registered Axon routes. `/api/v1/routes/schema` returns JSON Schema for input/output types. `/api/v1/routes/sample` generates sample payloads via server-side faker.
 - **Request Relay**: `/api/v1/relay` proxies requests through Inspector to any registered route, capturing full circuit trace (timing, transitions, outcomes). Configure with `with_relay_target()` on the Inspector builder.
 - **Per-Node Metrics**: Sliding-window ring buffer collecting throughput, latency percentiles (p50/p95/p99), and error rate per node. Broadcast via REST and WebSocket.
-- **Payload Capture & DLQ**: Configurable capture policy (off / hash / full) via `RANVIER_INSPECTOR_CAPTURE_PAYLOADS`. Dead letter queue inspection and management.
+- **Bounded Event Metadata & DLQ**: The event ring stores bounded, one-hour metadata records and DLQ inspection data. The `off` / `hash` / `full` payload policy surface remains Experimental; raw payload capture is not activated by the current tracing layer.
 - **Conditional Breakpoints**: JSON path `field op value` evaluator with CRUD API for setting breakpoints on specific node conditions.
 - **Stall Detection**: Threshold-based detection for nodes exceeding configured duration (`RANVIER_INSPECTOR_STALL_THRESHOLD_MS`, default 30000ms).
 - **Auth Enforcement**: Bearer token authentication plus optional role/tenant header checks (`RANVIER_AUTH_ENFORCE`, `RANVIER_AUTH_REQUIRE_TENANT_INTERNAL`).
@@ -30,12 +30,18 @@ Built-in Inspector REST + WebSocket server for runtime observability and debuggi
 ## Usage
 
 ```rust
+use ranvier_core::config::ResolvedRuntimeConfig;
+use ranvier_core::runtime_policy::RuntimeProfile;
 use ranvier_core::schematic::Schematic;
 use ranvier_inspector::Inspector;
+use std::net::{IpAddr, Ipv4Addr};
 
+let runtime = ResolvedRuntimeConfig::load_for(RuntimeProfile::Production)?;
 let inspector = Inspector::new(Schematic::new("checkout"), 9090)
-    .with_mode_from_env()
-    .with_bearer_token_from_env();
+    .with_runtime_profile(runtime.profile())
+    .with_bind_address(IpAddr::V4(Ipv4Addr::LOCALHOST))
+    .with_bearer_token_from_env()
+    .validate(&runtime)?;
 
 inspector.serve().await?;
 ```
@@ -44,13 +50,19 @@ The relay target points to the application server. Requests sent to `/api/v1/rel
 
 ## Production Policy
 
-- `RANVIER_MODE=dev` exposes public, internal, event, quick-view, debug/state, and relay routes for local tooling.
-- `RANVIER_MODE=prod` exposes public read-only routes and `/metrics`; internal, event, quick-view, debug/state, and relay routes are hidden.
-- In `prod`, Inspector refuses to start without `RANVIER_INSPECTOR_TOKEN`, `Inspector::with_bearer_token(...)`, or an explicit `Inspector::allow_unauthenticated()` acknowledgement.
+- The production-aware path consumes core's exact `development` / `production` profile. Development defaults to loopback; Production requires an explicit bind address.
+- Production exposes public read-only routes and `/metrics`; internal, event, quick-view, debug/state, and relay routes are hidden.
+- Production requires a bearer token. `Inspector::allow_unauthenticated()` remains a legacy compatibility flag and is not a typed acknowledgement; only an applicable, reviewed, expiring core acknowledgement can authorize the validated path.
 - When a bearer token is configured, every Inspector route requires `Authorization: Bearer <token>`.
 - Empty bearer tokens are treated as disabled.
-- Dev mode keeps permissive CORS for local browser tools; prod mode does not add permissive CORS headers by default.
+- Development keeps permissive CORS for local browser tools; Production does not add permissive CORS headers.
+- Active and completed trace collections each have non-zero count/TTL bounds; event metadata has a 500-record, one-hour bound.
 - Relay requests are dev/internal only and are bounded by `RANVIER_INSPECTOR_RELAY_TIMEOUT_MS` and `RANVIER_INSPECTOR_RELAY_MAX_CONCURRENT`.
+
+`with_mode[_from_env]` and direct `serve()` retain the 0.51.x compatibility
+path during the migration window. New deployments should use the validated
+path above so invalid/conflicting legacy modes and unsafe policy are aggregated
+before listener bind or background-task creation.
 
 ## Examples
 
