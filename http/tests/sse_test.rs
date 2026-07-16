@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use ranvier_core::event::EventSource;
+use ranvier_core::{CancellationReason, CancellationToken};
 use ranvier_http::prelude::*;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 struct MockSource {
     items: Vec<String>,
@@ -51,4 +54,44 @@ async fn test_sse_into_response() {
         .unwrap();
     let data2: bytes::Bytes = frame2.into_data().unwrap();
     assert_eq!(String::from_utf8_lossy(&data2), "data: two\n\n");
+}
+
+struct PendingSource {
+    dropped: Arc<AtomicBool>,
+}
+
+impl Drop for PendingSource {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl EventSource<String> for PendingSource {
+    async fn next_event(&mut self) -> Option<String> {
+        std::future::pending::<Option<String>>().await
+    }
+}
+
+#[tokio::test]
+async fn cancellable_event_source_drops_blocked_producer() {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let token = CancellationToken::new();
+    let mut stream = Box::pin(ranvier_http::sse::from_event_source_cancellable(
+        PendingSource {
+            dropped: dropped.clone(),
+        },
+        |message| SseEvent::default().data(message),
+        token.clone(),
+    ));
+
+    assert!(token.cancel(CancellationReason::OperatorShutdown));
+    assert!(futures_util::StreamExt::next(&mut stream).await.is_none());
+    for _ in 0..20 {
+        if dropped.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(dropped.load(Ordering::SeqCst));
 }

@@ -11,6 +11,7 @@ pub mod __macro_support {
 }
 
 pub mod bus;
+pub mod cancellation;
 pub mod cluster;
 pub mod config;
 pub mod debug;
@@ -47,6 +48,7 @@ pub use static_gen::{
 // Prelude module for convenient imports
 pub mod prelude {
     pub use crate::bus::{Bus, BusAccessError, BusAccessPolicy, BusTypeRef};
+    pub use crate::cancellation::{CancellationContext, CancellationReason, CancellationToken};
     pub use crate::config::{
         ConfigError, InspectorConfig, LogFormat, LoggingConfig, OtlpProtocol, RanvierConfig,
         ResolvedConfigError, ResolvedRuntimeConfig, ServerConfig, TelemetryConfig, TlsConfig,
@@ -78,6 +80,7 @@ pub mod prelude {
 // pub mod service; // Moved to ranvier-http
 
 pub use bus::{Bus, BusAccessError, BusAccessPolicy, BusTypeRef};
+pub use cancellation::{CancellationContext, CancellationReason, CancellationToken};
 pub use cluster::{ClusterBus, ClusterError, DistributedLock};
 pub use never::Never;
 pub use outcome::Outcome;

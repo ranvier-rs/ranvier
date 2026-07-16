@@ -24,7 +24,9 @@ use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use ranvier_core::event::{EventSink, EventSource};
 use ranvier_core::prelude::*;
-use ranvier_runtime::Axon;
+#[cfg(feature = "streaming")]
+use ranvier_runtime::CancellableStreamingError;
+use ranvier_runtime::{Axon, ExecutionTerminal};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sha1::{Digest, Sha1};
@@ -73,6 +75,130 @@ type RouteHandler<R> = Arc<
         + Send
         + Sync,
 >;
+
+#[derive(Clone)]
+struct RequestCancellationToken(CancellationToken);
+
+#[derive(Clone)]
+struct RequestTaskOwner(ManagedTaskRegistry);
+
+#[derive(Clone, Default)]
+struct ManagedTaskRegistry {
+    tasks: Arc<Mutex<tokio::task::JoinSet<()>>>,
+}
+
+/// Result of draining HTTP adapter-owned SSE/WebSocket tasks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpTaskDrainReport {
+    /// Tasks that exceeded the drain deadline and were explicitly aborted.
+    pub forced_aborts: usize,
+}
+
+impl ManagedTaskRegistry {
+    async fn spawn<F>(&self, future: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.tasks.lock().await.spawn(future);
+    }
+
+    async fn drain_until(&self, deadline: tokio::time::Instant) -> HttpTaskDrainReport {
+        let mut tasks = self.tasks.lock().await;
+        loop {
+            if tasks.is_empty() {
+                return HttpTaskDrainReport { forced_aborts: 0 };
+            }
+            match tokio::time::timeout_at(deadline, tasks.join_next()).await {
+                Ok(Some(Ok(()))) => {}
+                Ok(Some(Err(error))) => {
+                    tracing::warn!(error = %error, "HTTP child task join failed");
+                }
+                Ok(None) => return HttpTaskDrainReport { forced_aborts: 0 },
+                Err(_) => {
+                    let forced_aborts = tasks.len();
+                    tasks.abort_all();
+                    while let Some(result) = tasks.join_next().await {
+                        if let Err(error) = result
+                            && !error.is_cancelled()
+                        {
+                            tracing::warn!(error = %error, "HTTP child task abort join failed");
+                        }
+                    }
+                    return HttpTaskDrainReport { forced_aborts };
+                }
+            }
+        }
+    }
+}
+
+fn install_request_cancellation(parts: &http::request::Parts, bus: &mut Bus) {
+    if let Some(token) = parts.extensions.get::<RequestCancellationToken>() {
+        bus.set_cancellation_token(token.0.clone());
+    }
+}
+
+fn request_task_owner(parts: &http::request::Parts) -> Option<ManagedTaskRegistry> {
+    parts
+        .extensions
+        .get::<RequestTaskOwner>()
+        .map(|owner| owner.0.clone())
+}
+
+async fn execute_http_axon<In, Out, E, R>(
+    circuit: &Axon<In, Out, E, R>,
+    input: In,
+    resources: &R,
+    bus: &mut Bus,
+) -> Result<Outcome<Out, E>, HttpResponse>
+where
+    In: Send + Sync + Serialize + DeserializeOwned + 'static,
+    Out: Send + Sync + Serialize + DeserializeOwned + 'static,
+    E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
+    R: ranvier_core::transition::ResourceRequirement,
+{
+    let request_token = bus.cancellation_token().cloned().unwrap_or_default();
+    let execution_token = match bus.read::<ranvier_guard::TimeoutDeadline>() {
+        Some(deadline) => {
+            let remaining = deadline.remaining();
+            if remaining.is_zero() {
+                request_token.child_with_deadline(Duration::ZERO)
+            } else {
+                request_token.child_with_deadline(remaining)
+            }
+        }
+        None => request_token,
+    };
+
+    match circuit
+        .execute_cancellable(input, resources, bus, execution_token)
+        .await
+    {
+        ExecutionTerminal::Outcome(outcome) => Ok(outcome),
+        ExecutionTerminal::Cancelled(context) => Err(cancellation_http_response(&context)),
+    }
+}
+
+fn cancellation_http_response(context: &CancellationContext) -> HttpResponse {
+    let (status, message) = match context.reason {
+        CancellationReason::DeadlineExceeded => (
+            StatusCode::REQUEST_TIMEOUT,
+            "Request timeout: pipeline deadline exceeded",
+        ),
+        CancellationReason::OperatorShutdown => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Server shutdown interrupted request execution",
+        ),
+        CancellationReason::ClientDisconnected => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Request client disconnected",
+        ),
+        CancellationReason::Explicit => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Request execution cancelled",
+        ),
+    };
+    json_error_response(status, message)
+}
 
 fn parse_json_body<T>(body_bytes: &[u8]) -> Result<T, HttpResponse>
 where
@@ -375,15 +501,25 @@ struct HealthCheckReport {
 
 fn timeout_middleware(timeout: Duration) -> ServiceLayer {
     Arc::new(move |inner: BoxHttpService| {
-        BoxService::new(move |req: Request<Incoming>| {
+        BoxService::new(move |mut req: Request<Incoming>| {
             let inner = inner.clone();
             async move {
-                match tokio::time::timeout(timeout, inner.call(req)).await {
-                    Ok(response) => response,
-                    Err(_) => Ok(build_response(
-                        Response::builder().status(StatusCode::REQUEST_TIMEOUT),
-                        boxed_body("Request Timeout"),
-                    )),
+                if let Some(parent) = req.extensions().get::<RequestCancellationToken>().cloned() {
+                    let deadline = parent.0.child_with_deadline(timeout);
+                    req.extensions_mut()
+                        .insert(RequestCancellationToken(deadline));
+                    inner.call(req).await
+                } else {
+                    // A service assembled outside the Ranvier dispatcher has
+                    // no execution token to cooperate with. Preserve the
+                    // legacy hard timeout for that compatibility escape hatch.
+                    match tokio::time::timeout(timeout, inner.call(req)).await {
+                        Ok(response) => response,
+                        Err(_) => Ok(build_response(
+                            Response::builder().status(StatusCode::REQUEST_TIMEOUT),
+                            boxed_body("Request Timeout"),
+                        )),
+                    }
                 }
             }
         })
@@ -1557,6 +1693,8 @@ where
 
                     async move {
                         let mut bus = Bus::new();
+                        install_request_cancellation(&parts, &mut bus);
+                        let task_owner = request_task_owner(&parts);
                         inject_query_params(&parts, &mut bus);
                         for injector in bus_injectors.iter() {
                             injector(&parts, &mut bus);
@@ -1577,7 +1715,7 @@ where
                             Err(error_response) => return error_response,
                         };
 
-                        tokio::spawn(async move {
+                        let session_task = async move {
                             match on_upgrade.await {
                                 Ok(upgraded) => {
                                     let stream = WebSocketStream::from_raw_socket(
@@ -1597,7 +1735,12 @@ where
                                     );
                                 }
                             }
-                        });
+                        };
+                        if let Some(owner) = task_owner {
+                            owner.spawn(session_task).await;
+                        } else {
+                            tokio::spawn(session_task);
+                        }
 
                         response
                     }
@@ -1779,6 +1922,7 @@ where
 
                 async move {
                     let mut bus = Bus::new();
+                    install_request_cancellation(&parts, &mut bus);
                     inject_query_params(&parts, &mut bus);
                     for injector in route_bus_injectors.iter() {
                         injector(&parts, &mut bus);
@@ -1806,36 +1950,14 @@ where
                         }
                         return response;
                     }
-                    // Timeout enforcement from TimeoutGuard
-                    let result = if let Some(td) = bus.read::<ranvier_guard::TimeoutDeadline>() {
-                        let remaining = td.remaining();
-                        if remaining.is_zero() {
-                            let mut response = json_error_response(
-                                StatusCode::REQUEST_TIMEOUT,
-                                "Request timeout: pipeline deadline exceeded",
-                            );
+                    let result = match execute_http_axon(&circuit, (), &res, &mut bus).await {
+                        Ok(result) => result,
+                        Err(mut response) => {
                             for extractor in route_response_extractors.iter() {
                                 extractor(&bus, response.headers_mut());
                             }
                             return response;
                         }
-                        match tokio::time::timeout(remaining, circuit.execute((), &res, &mut bus))
-                            .await
-                        {
-                            Ok(result) => result,
-                            Err(_) => {
-                                let mut response = json_error_response(
-                                    StatusCode::REQUEST_TIMEOUT,
-                                    "Request timeout: pipeline deadline exceeded",
-                                );
-                                for extractor in route_response_extractors.iter() {
-                                    extractor(&bus, response.headers_mut());
-                                }
-                                return response;
-                            }
-                        }
-                    } else {
-                        circuit.execute((), &res, &mut bus).await
                     };
                     let mut response =
                         outcome_to_response_with_error(result, |error| error_handler(error));
@@ -1938,6 +2060,7 @@ where
                     };
 
                     let mut bus = Bus::new();
+                    install_request_cancellation(&parts, &mut bus);
                     inject_query_params(&parts, &mut bus);
                     for injector in route_bus_injectors.iter() {
                         injector(&parts, &mut bus);
@@ -1965,39 +2088,14 @@ where
                         }
                         return response;
                     }
-                    // Timeout enforcement from TimeoutGuard
-                    let result = if let Some(td) = bus.read::<ranvier_guard::TimeoutDeadline>() {
-                        let remaining = td.remaining();
-                        if remaining.is_zero() {
-                            let mut response = json_error_response(
-                                StatusCode::REQUEST_TIMEOUT,
-                                "Request timeout: pipeline deadline exceeded",
-                            );
+                    let result = match execute_http_axon(&circuit, input, &res, &mut bus).await {
+                        Ok(result) => result,
+                        Err(mut response) => {
                             for extractor in route_response_extractors.iter() {
                                 extractor(&bus, response.headers_mut());
                             }
                             return response;
                         }
-                        match tokio::time::timeout(
-                            remaining,
-                            circuit.execute(input, &res, &mut bus),
-                        )
-                        .await
-                        {
-                            Ok(result) => result,
-                            Err(_) => {
-                                let mut response = json_error_response(
-                                    StatusCode::REQUEST_TIMEOUT,
-                                    "Request timeout: pipeline deadline exceeded",
-                                );
-                                for extractor in route_response_extractors.iter() {
-                                    extractor(&bus, response.headers_mut());
-                                }
-                                return response;
-                            }
-                        }
-                    } else {
-                        circuit.execute(input, &res, &mut bus).await
                     };
                     let mut response = outcome_to_response_with_error(result, |error| {
                         if cfg!(debug_assertions) {
@@ -2201,6 +2299,7 @@ where
                     };
 
                     let mut bus = Bus::new();
+                    install_request_cancellation(&parts, &mut bus);
                     inject_query_params(&parts, &mut bus);
                     for injector in route_bus_injectors.iter() {
                         injector(&parts, &mut bus);
@@ -2227,38 +2326,14 @@ where
                         }
                         return response;
                     }
-                    let result = if let Some(td) = bus.read::<ranvier_guard::TimeoutDeadline>() {
-                        let remaining = td.remaining();
-                        if remaining.is_zero() {
-                            let mut response = json_error_response(
-                                StatusCode::REQUEST_TIMEOUT,
-                                "Request timeout: pipeline deadline exceeded",
-                            );
+                    let result = match execute_http_axon(&circuit, input, &res, &mut bus).await {
+                        Ok(result) => result,
+                        Err(mut response) => {
                             for extractor in route_response_extractors.iter() {
                                 extractor(&bus, response.headers_mut());
                             }
                             return response;
                         }
-                        match tokio::time::timeout(
-                            remaining,
-                            circuit.execute(input, &res, &mut bus),
-                        )
-                        .await
-                        {
-                            Ok(result) => result,
-                            Err(_) => {
-                                let mut response = json_error_response(
-                                    StatusCode::REQUEST_TIMEOUT,
-                                    "Request timeout: pipeline deadline exceeded",
-                                );
-                                for extractor in route_response_extractors.iter() {
-                                    extractor(&bus, response.headers_mut());
-                                }
-                                return response;
-                            }
-                        }
-                    } else {
-                        circuit.execute(input, &res, &mut bus).await
                     };
                     let mut response = outcome_to_response_with_error(result, |error| {
                         if cfg!(debug_assertions) {
@@ -2422,6 +2497,7 @@ where
 
                 async move {
                     let mut bus = Bus::new();
+                    install_request_cancellation(&parts, &mut bus);
                     inject_query_params(&parts, &mut bus);
                     for injector in route_bus_injectors.iter() {
                         injector(&parts, &mut bus);
@@ -2448,35 +2524,14 @@ where
                         }
                         return response;
                     }
-                    let result = if let Some(td) = bus.read::<ranvier_guard::TimeoutDeadline>() {
-                        let remaining = td.remaining();
-                        if remaining.is_zero() {
-                            let mut response = json_error_response(
-                                StatusCode::REQUEST_TIMEOUT,
-                                "Request timeout: pipeline deadline exceeded",
-                            );
+                    let result = match execute_http_axon(&circuit, (), &res, &mut bus).await {
+                        Ok(result) => result,
+                        Err(mut response) => {
                             for extractor in route_response_extractors.iter() {
                                 extractor(&bus, response.headers_mut());
                             }
                             return response;
                         }
-                        match tokio::time::timeout(remaining, circuit.execute((), &res, &mut bus))
-                            .await
-                        {
-                            Ok(result) => result,
-                            Err(_) => {
-                                let mut response = json_error_response(
-                                    StatusCode::REQUEST_TIMEOUT,
-                                    "Request timeout: pipeline deadline exceeded",
-                                );
-                                for extractor in route_response_extractors.iter() {
-                                    extractor(&bus, response.headers_mut());
-                                }
-                                return response;
-                            }
-                        }
-                    } else {
-                        circuit.execute((), &res, &mut bus).await
                     };
                     let mut response = outcome_to_json_response(result);
                     for extractor in route_response_extractors.iter() {
@@ -2569,6 +2624,7 @@ where
                     };
 
                     let mut bus = Bus::new();
+                    install_request_cancellation(&parts, &mut bus);
                     inject_query_params(&parts, &mut bus);
                     for injector in route_bus_injectors.iter() {
                         injector(&parts, &mut bus);
@@ -2602,38 +2658,14 @@ where
                         }
                         return response;
                     }
-                    let result = if let Some(td) = bus.read::<ranvier_guard::TimeoutDeadline>() {
-                        let remaining = td.remaining();
-                        if remaining.is_zero() {
-                            let mut response = json_error_response(
-                                StatusCode::REQUEST_TIMEOUT,
-                                "Request timeout: pipeline deadline exceeded",
-                            );
+                    let result = match execute_http_axon(&circuit, input, &res, &mut bus).await {
+                        Ok(result) => result,
+                        Err(mut response) => {
                             for extractor in route_response_extractors.iter() {
                                 extractor(&bus, response.headers_mut());
                             }
                             return response;
                         }
-                        match tokio::time::timeout(
-                            remaining,
-                            circuit.execute(input, &res, &mut bus),
-                        )
-                        .await
-                        {
-                            Ok(result) => result,
-                            Err(_) => {
-                                let mut response = json_error_response(
-                                    StatusCode::REQUEST_TIMEOUT,
-                                    "Request timeout: pipeline deadline exceeded",
-                                );
-                                for extractor in route_response_extractors.iter() {
-                                    extractor(&bus, response.headers_mut());
-                                }
-                                return response;
-                            }
-                        }
-                    } else {
-                        circuit.execute(input, &res, &mut bus).await
                     };
                     let mut response = outcome_to_json_response(result);
                     for extractor in route_response_extractors.iter() {
@@ -3155,6 +3187,7 @@ where
                     };
 
                     let mut bus = Bus::new();
+                    install_request_cancellation(&parts, &mut bus);
                     inject_query_params(&parts, &mut bus);
                     for injector in route_bus_injectors.iter() {
                         injector(&parts, &mut bus);
@@ -3169,10 +3202,23 @@ where
                         }
                     }
 
-                    // Execute the streaming pipeline
-                    let stream = match circuit.execute(input, &res, &mut bus).await {
+                    let task_owner = request_task_owner(&parts);
+
+                    // Execute the streaming pipeline with the same request
+                    // cancellation owner as ordinary Axons.
+                    let stream_token = bus
+                        .cancellation_token()
+                        .cloned()
+                        .unwrap_or_default();
+                    let stream = match circuit
+                        .execute_cancellable(input, &res, &mut bus, stream_token)
+                        .await
+                    {
                         Ok(s) => s,
-                        Err(e) => {
+                        Err(CancellableStreamingError::Cancelled(context)) => {
+                            return cancellation_http_response(&context);
+                        }
+                        Err(CancellableStreamingError::Stream(e)) => {
                             tracing::error!("Streaming pipeline error: {}", e);
                             if cfg!(debug_assertions) {
                                 return json_error_response(
@@ -3194,7 +3240,7 @@ where
                     let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(buffer_size);
 
                     // Spawn a task to consume the stream and send SSE frames
-                    tokio::spawn(async move {
+                    let producer_task = async move {
                         let mut pinned = Box::pin(stream);
                         while let Some(item) = futures_util::StreamExt::next(&mut pinned).await {
                             let text = match serde_json::to_string(&item) {
@@ -3213,7 +3259,12 @@ where
                         }
                         // Send [DONE] sentinel
                         let _ = tx.send(Bytes::from("data: [DONE]\n\n")).await;
-                    });
+                    };
+                    if let Some(owner) = task_owner {
+                        owner.spawn(producer_task).await;
+                    } else {
+                        tokio::spawn(producer_task);
+                    }
 
                     // Receive channel → frame stream (this is Sync-safe)
                     let frame_stream = async_stream::stream! {
@@ -3459,6 +3510,7 @@ where
 
                 async move {
                     let mut bus = Bus::new();
+                    install_request_cancellation(&parts, &mut bus);
                     inject_query_params(&parts, &mut bus);
                     for injector in fallback_bus_injectors.iter() {
                         injector(&parts, &mut bus);
@@ -3474,7 +3526,15 @@ where
                         }
                     }
                     let result: ranvier_core::Outcome<Out, E> =
-                        circuit.execute((), &res, &mut bus).await;
+                        match execute_http_axon(&circuit, (), &res, &mut bus).await {
+                            Ok(result) => result,
+                            Err(mut response) => {
+                                for extractor in fallback_response_extractors.iter() {
+                                    extractor(&bus, response.headers_mut());
+                                }
+                                return response;
+                            }
+                        };
 
                     let mut response = match result {
                         Outcome::Next(output) => {
@@ -3513,10 +3573,68 @@ where
             .await
     }
 
+    /// Run with managed operating-system shutdown propagation.
+    ///
+    /// Unlike the compatibility [`run`](Self::run) path, this additive entry
+    /// point cancels in-flight Axons before draining connections and owned
+    /// adapter tasks.
+    pub async fn run_managed(
+        self,
+        resources: R,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.run_with_shutdown_signal_and_token(
+            resources,
+            shutdown_signal(),
+            CancellationToken::new(),
+            true,
+        )
+        .await
+    }
+
+    /// Run until the caller-owned cancellation token fires.
+    ///
+    /// The token is also the root for every request execution, so its original
+    /// structured reason reaches Axons before the server drains connections.
+    pub async fn run_with_cancellation(
+        self,
+        resources: R,
+        token: CancellationToken,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let signal_token = token.clone();
+        self.run_with_shutdown_signal_and_token(
+            resources,
+            async move {
+                signal_token.cancelled().await;
+            },
+            token,
+            false,
+        )
+        .await
+    }
+
     async fn run_with_shutdown_signal<S>(
         self,
         resources: R,
         shutdown_signal: S,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+    where
+        S: Future<Output = ()> + Send,
+    {
+        self.run_with_shutdown_signal_and_token(
+            resources,
+            shutdown_signal,
+            CancellationToken::new(),
+            false,
+        )
+        .await
+    }
+
+    async fn run_with_shutdown_signal_and_token<S>(
+        self,
+        resources: R,
+        shutdown_signal: S,
+        root_cancellation: CancellationToken,
+        cancel_on_signal: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     where
         S: Future<Output = ()> + Send,
@@ -3604,10 +3722,14 @@ where
 
         tokio::pin!(shutdown_signal);
         let mut connections = tokio::task::JoinSet::new();
+        let task_registry = ManagedTaskRegistry::default();
 
         loop {
             tokio::select! {
                 _ = &mut shutdown_signal => {
+                    if cancel_on_signal {
+                        root_cancellation.cancel(CancellationReason::OperatorShutdown);
+                    }
                     tracing::info!("Shutdown signal received. Draining in-flight connections.");
                     break;
                 }
@@ -3621,6 +3743,8 @@ where
                     let health = health.clone();
                     let static_assets = static_assets.clone();
                     let preflight_config = preflight_config.clone();
+                    let connection_cancellation = root_cancellation.clone();
+                    let connection_tasks = task_registry.clone();
                     #[cfg(feature = "http3")]
                     let alt_svc_h3_port = self.alt_svc_h3_port;
 
@@ -3628,6 +3752,7 @@ where
                     let tls_acceptor = tls_acceptor.clone();
 
                     connections.spawn(async move {
+                        let service_cancellation = connection_cancellation.clone();
                         let service = build_http_service(
                             routes,
                             fallback,
@@ -3636,6 +3761,8 @@ where
                             health,
                             static_assets,
                             preflight_config,
+                            service_cancellation,
+                            connection_tasks,
                             #[cfg(feature = "http3")] alt_svc_h3_port,
                         );
 
@@ -3644,11 +3771,19 @@ where
                             match acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
                                     let io = TokioIo::new(tls_stream);
-                                    if let Err(err) = http1::Builder::new()
+                                    let connection = http1::Builder::new()
                                         .serve_connection(io, service)
-                                        .with_upgrades()
-                                        .await
-                                    {
+                                        .with_upgrades();
+                                    tokio::pin!(connection);
+                                    let result = tokio::select! {
+                                        biased;
+                                        result = &mut connection => result,
+                                        _ = connection_cancellation.cancelled() => {
+                                            connection.as_mut().graceful_shutdown();
+                                            connection.await
+                                        }
+                                    };
+                                    if let Err(err) = result {
                                         if err.is_incomplete_message() && should_suppress_incomplete_message_error() {
                                             tracing::debug!("TLS connection closed before full request body was received: {:?}", err);
                                         } else if err.is_incomplete_message() {
@@ -3666,11 +3801,19 @@ where
                         }
 
                         let io = TokioIo::new(stream);
-                        if let Err(err) = http1::Builder::new()
+                        let connection = http1::Builder::new()
                             .serve_connection(io, service)
-                            .with_upgrades()
-                            .await
-                        {
+                            .with_upgrades();
+                        tokio::pin!(connection);
+                        let result = tokio::select! {
+                            biased;
+                            result = &mut connection => result,
+                            _ = connection_cancellation.cancelled() => {
+                                connection.as_mut().graceful_shutdown();
+                                connection.await
+                            }
+                        };
+                        if let Err(err) = result {
                             if err.is_incomplete_message() && should_suppress_incomplete_message_error() {
                                 tracing::debug!("Connection closed before full request body was received: {:?}", err);
                             } else if err.is_incomplete_message() {
@@ -3689,7 +3832,18 @@ where
             }
         }
 
-        let _timed_out = drain_connections(&mut connections, graceful_shutdown_timeout).await;
+        let drain_deadline = tokio::time::Instant::now()
+            .checked_add(graceful_shutdown_timeout)
+            .unwrap_or_else(tokio::time::Instant::now);
+        let _connections_timed_out =
+            drain_connections_until(&mut connections, drain_deadline).await;
+        let task_report = task_registry.drain_until(drain_deadline).await;
+        if task_report.forced_aborts > 0 {
+            tracing::warn!(
+                forced_aborts = task_report.forced_aborts,
+                "HTTP adapter child tasks exceeded the graceful shutdown budget"
+            );
+        }
 
         drop(resources);
         if let Some(callback) = on_shutdown.as_ref() {
@@ -3731,7 +3885,23 @@ where
             static_assets,
             preflight_config,
             resources,
+            root_cancellation: CancellationToken::new(),
+            task_registry: ManagedTaskRegistry::default(),
         }
+    }
+
+    /// Convert to a raw service with a caller-owned request root token.
+    ///
+    /// The embedding runtime remains responsible for stopping connection
+    /// acceptance and calling [`RawIngressService::drain_tasks`].
+    pub fn into_raw_service_with_cancellation(
+        self,
+        resources: R,
+        token: CancellationToken,
+    ) -> RawIngressService<R> {
+        let mut service = self.into_raw_service(resources);
+        service.root_cancellation = token;
+        service
     }
 }
 
@@ -3781,6 +3951,8 @@ fn build_http_service<R>(
     health: Arc<HealthConfig<R>>,
     static_assets: Arc<StaticAssetsConfig>,
     preflight_config: Arc<Option<PreflightConfig>>,
+    root_cancellation: CancellationToken,
+    task_registry: ManagedTaskRegistry,
     #[cfg(feature = "http3")] alt_svc_port: Option<u16>,
 ) -> BoxHttpService
 where
@@ -3794,9 +3966,14 @@ where
         let health = health.clone();
         let static_assets = static_assets.clone();
         let preflight_config = preflight_config.clone();
+        let request_cancellation = root_cancellation.child_token();
+        let request_tasks = task_registry.clone();
 
         async move {
             let mut req = req;
+            req.extensions_mut()
+                .insert(RequestCancellationToken(request_cancellation));
+            req.extensions_mut().insert(RequestTaskOwner(request_tasks));
             let method = req.method().clone();
             let path = req.uri().path().to_string();
 
@@ -4702,15 +4879,26 @@ async fn shutdown_signal() {
     }
 }
 
+#[cfg(test)]
 async fn drain_connections(
     connections: &mut tokio::task::JoinSet<()>,
     graceful_shutdown_timeout: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now()
+        .checked_add(graceful_shutdown_timeout)
+        .unwrap_or_else(tokio::time::Instant::now);
+    drain_connections_until(connections, deadline).await
+}
+
+async fn drain_connections_until(
+    connections: &mut tokio::task::JoinSet<()>,
+    deadline: tokio::time::Instant,
 ) -> bool {
     if connections.is_empty() {
         return false;
     }
 
-    let drain_result = tokio::time::timeout(graceful_shutdown_timeout, async {
+    let drain_result = tokio::time::timeout_at(deadline, async {
         while let Some(join_result) = connections.join_next().await {
             if let Err(err) = join_result {
                 tracing::warn!("Connection task join error during shutdown: {:?}", err);
@@ -4720,9 +4908,10 @@ async fn drain_connections(
     .await;
 
     if drain_result.is_err() {
+        let forced_aborts = connections.len();
         tracing::warn!(
-            "Graceful shutdown timeout reached ({:?}). Aborting remaining connections.",
-            graceful_shutdown_timeout
+            forced_aborts,
+            "Graceful shutdown deadline reached. Aborting remaining connections."
         );
         connections.abort_all();
         while let Some(join_result) = connections.join_next().await {
@@ -4787,6 +4976,37 @@ pub struct RawIngressService<R> {
     static_assets: Arc<StaticAssetsConfig>,
     preflight_config: Arc<Option<PreflightConfig>>,
     resources: Arc<R>,
+    root_cancellation: CancellationToken,
+    task_registry: ManagedTaskRegistry,
+}
+
+impl<R> RawIngressService<R> {
+    /// Return the root token owned by this raw service.
+    ///
+    /// The embedding runtime may cancel it to propagate shutdown or another
+    /// structured reason into requests. Connection and task draining remain
+    /// the embedding runtime's responsibility.
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.root_cancellation.clone()
+    }
+
+    /// Replace the request root token for this raw-service instance.
+    pub fn with_cancellation_token(mut self, token: CancellationToken) -> Self {
+        self.root_cancellation = token;
+        self
+    }
+
+    /// Drain adapter-owned SSE/WebSocket tasks within `timeout`.
+    ///
+    /// The embedding runtime should stop routing new requests and cancel the
+    /// root token before calling this method. Connection ownership remains
+    /// outside the raw service.
+    pub async fn drain_tasks(&self, timeout: Duration) -> HttpTaskDrainReport {
+        let deadline = tokio::time::Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(tokio::time::Instant::now);
+        self.task_registry.drain_until(deadline).await
+    }
 }
 
 impl<R> hyper::service::Service<Request<Incoming>> for RawIngressService<R>
@@ -4805,6 +5025,8 @@ where
         let static_assets = self.static_assets.clone();
         let preflight_config = self.preflight_config.clone();
         let resources = self.resources.clone();
+        let root_cancellation = self.root_cancellation.clone();
+        let task_registry = self.task_registry.clone();
 
         Box::pin(async move {
             let service = build_http_service(
@@ -4815,6 +5037,8 @@ where
                 health,
                 static_assets,
                 preflight_config,
+                root_cancellation,
+                task_registry,
                 #[cfg(feature = "http3")]
                 None,
             );
@@ -5443,6 +5667,56 @@ mod tests {
             .await
             .expect("server join")
             .expect("server shutdown should succeed");
+    }
+
+    #[tokio::test]
+    async fn managed_shutdown_aborts_stuck_websocket_child_without_leak() {
+        struct DropProbe(Arc<AtomicBool>);
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
+        let addr = probe.local_addr().expect("local addr");
+        drop(probe);
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let entered_for_handler = entered.clone();
+        let dropped_for_handler = dropped.clone();
+        let ingress = HttpIngress::<()>::new()
+            .bind(addr.to_string())
+            .graceful_shutdown(Duration::from_millis(50))
+            .ws("/ws/stuck", move |_socket, _resources, _bus| {
+                let entered = entered_for_handler.clone();
+                let probe = DropProbe(dropped_for_handler.clone());
+                async move {
+                    let _probe = probe;
+                    entered.notify_one();
+                    std::future::pending::<()>().await;
+                }
+            });
+        let token = CancellationToken::new();
+        let server_token = token.clone();
+        let server =
+            tokio::spawn(async move { ingress.run_with_cancellation((), server_token).await });
+
+        let ws_uri = format!("ws://{addr}/ws/stuck");
+        let (client, _response) = ws_connect_with_retry(&ws_uri, "tenant").await;
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .expect("WebSocket handler should start");
+        assert!(token.cancel(CancellationReason::OperatorShutdown));
+
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("managed server should stop")
+            .expect("server join")
+            .expect("server shutdown");
+        assert!(dropped.load(Ordering::SeqCst));
+        drop(client);
     }
 
     #[test]
@@ -6210,6 +6484,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_task_registry_aborts_stuck_child_at_shared_deadline() {
+        let registry = ManagedTaskRegistry::default();
+        registry
+            .spawn(async { std::future::pending::<()>().await })
+            .await;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(10);
+        let report = registry.drain_until(deadline).await;
+        assert_eq!(report.forced_aborts, 1);
+        assert!(registry.tasks.lock().await.is_empty());
+    }
+
+    #[test]
+    fn cancellation_http_status_is_shared_by_ordinary_and_streaming_routes() {
+        let deadline = cancellation_http_response(&CancellationContext::new(
+            CancellationReason::DeadlineExceeded,
+        ));
+        let shutdown = cancellation_http_response(&CancellationContext::new(
+            CancellationReason::OperatorShutdown,
+        ));
+        let explicit =
+            cancellation_http_response(&CancellationContext::new(CancellationReason::Explicit));
+
+        assert_eq!(deadline.status(), StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(shutdown.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(explicit.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
     async fn timeout_layer_returns_408_for_slow_route() {
         #[derive(Clone)]
         struct SlowRoute;
@@ -6267,6 +6569,172 @@ mod tests {
             .await
             .expect("server join")
             .expect("server shutdown should succeed");
+    }
+
+    #[derive(Clone)]
+    struct RecordingCancellationCompensation {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ranvier_runtime::persistence::CompensationHook for RecordingCancellationCompensation {
+        async fn compensate(
+            &self,
+            _context: ranvier_runtime::persistence::CompensationContext,
+        ) -> anyhow::Result<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn timeout_layer_waits_for_cancellation_persistence_and_compensation() {
+        #[derive(Clone)]
+        struct NeverCompletes;
+
+        #[async_trait]
+        impl Transition<(), String> for NeverCompletes {
+            type Error = String;
+            type Resources = ();
+
+            async fn run(
+                &self,
+                _state: (),
+                _resources: &(),
+                _bus: &mut Bus,
+            ) -> Outcome<String, String> {
+                std::future::pending::<()>().await;
+                Outcome::Next("unreachable".to_string())
+            }
+        }
+
+        let store = Arc::new(ranvier_runtime::persistence::InMemoryPersistenceStore::new());
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let store_for_bus = store.clone();
+        let calls_for_bus = calls.clone();
+        let ingress = HttpIngress::<()>::new()
+            .timeout_layer(Duration::from_millis(10))
+            .bus_injector(move |_parts, bus| {
+                let store_dyn: Arc<dyn ranvier_runtime::persistence::PersistenceStore> =
+                    store_for_bus.clone();
+                bus.insert(ranvier_runtime::persistence::PersistenceHandle::from_arc(
+                    store_dyn,
+                ));
+                bus.insert(ranvier_runtime::persistence::PersistenceTraceId::new(
+                    "http-timeout-cancelled",
+                ));
+                bus.insert(ranvier_runtime::persistence::CompensationHandle::from_hook(
+                    RecordingCancellationCompensation {
+                        calls: calls_for_bus.clone(),
+                    },
+                ));
+            })
+            .get(
+                "/slow",
+                Axon::<(), (), String, ()>::new("HttpTimeoutCancellation").then(NeverCompletes),
+            );
+        let app = crate::test_harness::TestApp::new(ingress, ());
+
+        let response = app
+            .send(crate::test_harness::TestRequest::get("/slow"))
+            .await
+            .expect("timeout response");
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+
+        use ranvier_runtime::persistence::PersistenceStore as _;
+        let trace = store
+            .load("http-timeout-cancelled")
+            .await
+            .expect("load trace")
+            .expect("timeout trace");
+        assert_eq!(
+            trace.completion,
+            Some(ranvier_runtime::persistence::CompletionState::Compensated)
+        );
+        assert_eq!(
+            trace
+                .events
+                .iter()
+                .map(|event| event.outcome_kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Enter", "Cancelled", "Compensated"]
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn managed_shutdown_reaches_in_flight_axon_before_drain() {
+        #[derive(Clone)]
+        struct WaitForShutdown {
+            entered: Arc<tokio::sync::Notify>,
+            saw_token: Arc<AtomicBool>,
+        }
+
+        #[async_trait]
+        impl Transition<(), String> for WaitForShutdown {
+            type Error = String;
+            type Resources = ();
+
+            async fn run(
+                &self,
+                _state: (),
+                _resources: &(),
+                bus: &mut Bus,
+            ) -> Outcome<String, String> {
+                self.saw_token
+                    .store(bus.cancellation_token().is_some(), Ordering::SeqCst);
+                self.entered.notify_one();
+                std::future::pending::<()>().await;
+                Outcome::Next("unreachable".to_string())
+            }
+        }
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
+        let addr = probe.local_addr().expect("local addr");
+        drop(probe);
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let saw_token = Arc::new(AtomicBool::new(false));
+        let token = CancellationToken::new();
+        let ingress = HttpIngress::<()>::new()
+            .bind(addr.to_string())
+            .graceful_shutdown(Duration::from_millis(500))
+            .get(
+                "/wait",
+                Axon::<(), (), String, ()>::new("ShutdownCancellation").then(WaitForShutdown {
+                    entered: entered.clone(),
+                    saw_token: saw_token.clone(),
+                }),
+            );
+        let server_token = token.clone();
+        let server =
+            tokio::spawn(async move { ingress.run_with_cancellation((), server_token).await });
+
+        let mut stream = connect_with_retry(addr).await;
+        stream
+            .write_all(b"GET /wait HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("write request");
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .expect("Axon should start");
+        assert!(token.cancel(CancellationReason::OperatorShutdown));
+
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .await
+            .expect("read shutdown response");
+        assert!(
+            String::from_utf8_lossy(&response).starts_with("HTTP/1.1 503"),
+            "{}",
+            String::from_utf8_lossy(&response)
+        );
+        assert!(saw_token.load(Ordering::SeqCst));
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("managed server should stop")
+            .expect("server join")
+            .expect("server shutdown");
     }
 
     // ── Range request tests ─────────────────────────────────────────

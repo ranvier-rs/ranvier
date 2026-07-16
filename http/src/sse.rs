@@ -2,6 +2,7 @@ use crate::response::{HttpResponse, IntoResponse, build_response};
 use bytes::Bytes;
 use futures_util::stream::Stream;
 
+use ranvier_core::CancellationToken;
 use ranvier_core::event::EventSource;
 use serde::de::{self, Deserializer};
 use serde::ser::Serializer;
@@ -192,9 +193,56 @@ where
 {
     let (tx, mut rx) = tokio::sync::mpsc::channel(16);
     tokio::spawn(async move {
-        while let Some(event) = source.next_event().await {
-            if tx.send(mapper(event)).await.is_err() {
-                break;
+        loop {
+            tokio::select! {
+                biased;
+                _ = tx.closed() => break,
+                event = source.next_event() => {
+                    let Some(event) = event else { break };
+                    if tx.send(mapper(event)).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let stream = async_stream::stream! {
+        while let Some(event) = rx.recv().await {
+            yield Ok(event);
+        }
+    };
+    Box::pin(stream)
+}
+
+/// Convert an [`EventSource`] into SSE while observing cooperative cancellation.
+///
+/// The producer exits when the token fires, the consumer stream is dropped, or
+/// the source ends. The token retains the structured cancellation context for
+/// the lifecycle owner.
+pub fn from_event_source_cancellable<E, S, F>(
+    mut source: S,
+    mut mapper: F,
+    token: CancellationToken,
+) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send + Sync
+where
+    S: EventSource<E> + Send + 'static,
+    E: Send + 'static,
+    F: FnMut(E) -> SseEvent + Send + 'static,
+{
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                biased;
+                _ = token.cancelled() => break,
+                _ = tx.closed() => break,
+                event = source.next_event() => {
+                    let Some(event) = event else { break };
+                    if tx.send(mapper(event)).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
     });

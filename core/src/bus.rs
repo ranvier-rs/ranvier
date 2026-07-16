@@ -27,6 +27,8 @@ use std::sync::Arc;
 use ahash::AHashMap;
 use uuid::Uuid;
 
+use crate::cancellation::CancellationToken;
+
 /// Type reference used by bus access policy declarations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BusTypeRef {
@@ -166,6 +168,10 @@ pub struct Bus {
     pub id: Uuid,
     /// Optional transition-scoped access guard (M143 opt-in)
     access_guard: Option<BusAccessGuard>,
+    /// Framework-owned cooperative cancellation control. This is separate
+    /// from type-erased application context so transition access policy and
+    /// isolated parallel application Bus semantics cannot hide it.
+    cancellation_token: Option<CancellationToken>,
 }
 
 impl Bus {
@@ -181,6 +187,7 @@ impl Bus {
             inherited_resources: AHashMap::new(),
             id: Uuid::new_v4(),
             access_guard: None,
+            cancellation_token: None,
         }
     }
 
@@ -440,7 +447,21 @@ impl Bus {
             inherited_resources,
             id: Uuid::new_v4(),
             access_guard: None,
+            cancellation_token: self.cancellation_token.clone(),
         }
+    }
+
+    /// Install the cooperative cancellation token for this execution.
+    ///
+    /// This control-plane value is deliberately separate from application
+    /// resources and remains observable under transition Bus access policies.
+    pub fn set_cancellation_token(&mut self, token: CancellationToken) {
+        self.cancellation_token = Some(token);
+    }
+
+    /// Read the cooperative cancellation token for this execution.
+    pub fn cancellation_token(&self) -> Option<&CancellationToken> {
+        self.cancellation_token.as_ref()
     }
 
     /// Require a resource from the Bus, panicking if it is missing or denied.

@@ -51,9 +51,10 @@ pub use guard_integration::{
     ResponseBodyTransformFn, ResponseExtractorFn, register_guard,
 };
 pub use ingress::{
-    HttpGuardDescriptor, HttpGuardScope, HttpIngress, HttpRouteDescriptor, PathParams, QueryParams,
-    Ranvier, RouteGroup, StaticAssetPolicy, StaticAssetSource, StaticShell, WebSocketConnection,
-    WebSocketError, WebSocketEvent, WebSocketSessionContext,
+    HttpGuardDescriptor, HttpGuardScope, HttpIngress, HttpRouteDescriptor, HttpTaskDrainReport,
+    PathParams, QueryParams, Ranvier, RawIngressService, RouteGroup, StaticAssetPolicy,
+    StaticAssetSource, StaticShell, WebSocketConnection, WebSocketError, WebSocketEvent,
+    WebSocketSessionContext,
 };
 pub use pagination::{PageParams, Paginated};
 pub use response::{
@@ -62,7 +63,7 @@ pub use response::{
     outcome_to_response, outcome_to_response_with_error,
 };
 pub use service::RanvierService;
-pub use sse::{Sse, SseEvent};
+pub use sse::{Sse, SseEvent, from_event_source, from_event_source_cancellable};
 pub use test_harness::{TestApp, TestHarnessError, TestRequest, TestResponse};
 
 /// Collects Guard registrations for per-route Guard configuration.
@@ -104,9 +105,10 @@ pub mod prelude {
         RegisteredGuard, ResponseBodyTransformFn, ResponseExtractorFn, register_guard,
     };
     pub use crate::ingress::{
-        HttpGuardDescriptor, HttpGuardScope, HttpIngress, HttpRouteDescriptor, PathParams,
-        QueryParams, Ranvier, RouteGroup, StaticAssetPolicy, StaticAssetSource, StaticShell,
-        WebSocketConnection, WebSocketError, WebSocketEvent, WebSocketSessionContext,
+        HttpGuardDescriptor, HttpGuardScope, HttpIngress, HttpRouteDescriptor, HttpTaskDrainReport,
+        PathParams, QueryParams, Ranvier, RawIngressService, RouteGroup, StaticAssetPolicy,
+        StaticAssetSource, StaticShell, WebSocketConnection, WebSocketError, WebSocketEvent,
+        WebSocketSessionContext,
     };
     pub use crate::pagination::{PageParams, Paginated};
     pub use crate::response::{
@@ -115,6 +117,6 @@ pub mod prelude {
         outcome_to_response, outcome_to_response_with_error,
     };
     pub use crate::service::RanvierService;
-    pub use crate::sse::{Sse, SseEvent};
+    pub use crate::sse::{Sse, SseEvent, from_event_source, from_event_source_cancellable};
     pub use crate::test_harness::{TestApp, TestHarnessError, TestRequest, TestResponse};
 }

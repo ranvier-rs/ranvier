@@ -26,6 +26,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use ranvier_core::cancellation::{CancellationReason, CancellationToken};
 use ranvier_core::config::ResolvedRuntimeConfig;
 use ranvier_core::event::DlqReader;
 use ranvier_core::prelude::DebugControl;
@@ -735,6 +736,23 @@ impl Inspector {
         self.serve_with_listener_inner(listener).await
     }
 
+    /// Serve Inspector with an explicit cooperative lifecycle owner.
+    pub async fn serve_with_cancellation(
+        self,
+        token: CancellationToken,
+    ) -> Result<(), std::io::Error> {
+        self.validate_legacy_startup_policy()?;
+        self.prepare_runtime_state()?;
+        let addr = SocketAddr::new(
+            self.bind_address
+                .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
+            self.port,
+        );
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        self.serve_with_listener_inner_with_cancellation(listener, Some(token))
+            .await
+    }
+
     pub async fn serve_with_listener(
         self,
         listener: tokio::net::TcpListener,
@@ -744,9 +762,30 @@ impl Inspector {
         self.serve_with_listener_inner(listener).await
     }
 
+    /// Serve on a caller-owned listener with cooperative cancellation.
+    pub async fn serve_with_listener_and_cancellation(
+        self,
+        listener: tokio::net::TcpListener,
+        token: CancellationToken,
+    ) -> Result<(), std::io::Error> {
+        self.validate_legacy_startup_policy()?;
+        self.prepare_runtime_state()?;
+        self.serve_with_listener_inner_with_cancellation(listener, Some(token))
+            .await
+    }
+
     async fn serve_with_listener_inner(
         self,
         listener: tokio::net::TcpListener,
+    ) -> Result<(), std::io::Error> {
+        self.serve_with_listener_inner_with_cancellation(listener, None)
+            .await
+    }
+
+    async fn serve_with_listener_inner_with_cancellation(
+        self,
+        listener: tokio::net::TcpListener,
+        cancellation: Option<CancellationToken>,
     ) -> Result<(), std::io::Error> {
         let profile = self.profile;
         let surface_policy = self.surface_policy;
@@ -873,17 +912,29 @@ impl Inspector {
         let addr = listener.local_addr()?;
         tracing::info!("Ranvier Inspector listening on http://{}", addr);
 
-        // Spawn periodic metrics broadcast task
-        if surface_policy.expose_events {
+        let lifecycle_token = cancellation.map(|token| token.child_token());
+
+        // Spawn periodic metrics broadcast task. The compatibility path keeps
+        // its historical detached loop; the managed path owns and joins it.
+        let metrics_task = if surface_policy.expose_events {
             let broadcast_interval = std::env::var("RANVIER_INSPECTOR_METRICS_INTERVAL_MS")
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(2000);
-            tokio::spawn(async move {
+            let metrics_token = lifecycle_token.clone();
+            Some(tokio::spawn(async move {
                 let mut interval =
                     tokio::time::interval(std::time::Duration::from_millis(broadcast_interval));
                 loop {
-                    interval.tick().await;
+                    if let Some(token) = metrics_token.as_ref() {
+                        tokio::select! {
+                            biased;
+                            _ = token.cancelled() => break,
+                            _ = interval.tick() => {}
+                        }
+                    } else {
+                        interval.tick().await;
+                    }
                     let snapshots = metrics::snapshot_all();
                     if !snapshots.is_empty() {
                         let msg = serde_json::json!({
@@ -907,10 +958,31 @@ impl Inspector {
                         let _ = get_sender().send(msg);
                     }
                 }
-            });
-        }
+            }))
+        } else {
+            None
+        };
 
-        axum::serve(listener, app).await
+        if let Some(token) = lifecycle_token {
+            let shutdown_token = token.clone();
+            let result = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    shutdown_token.cancelled().await;
+                })
+                .await;
+            token.cancel(CancellationReason::Explicit);
+            if let Some(task) = metrics_task
+                && let Err(error) = task.await
+            {
+                tracing::warn!(error = %error, "Inspector metrics task join failed");
+            }
+            result
+        } else {
+            // Preserve the existing detached metrics-loop behavior for the
+            // compatibility entrypoint.
+            drop(metrics_task);
+            axum::serve(listener, app).await
+        }
     }
 }
 
@@ -1114,6 +1186,19 @@ impl ValidatedInspector {
         let addr = SocketAddr::new(self.inspector.validated_bind_address(), self.inspector.port);
         let listener = tokio::net::TcpListener::bind(addr).await?;
         self.inspector.serve_with_listener_inner(listener).await
+    }
+
+    /// Start a validated Inspector with cooperative server/task ownership.
+    pub async fn serve_with_cancellation(
+        self,
+        token: CancellationToken,
+    ) -> Result<(), std::io::Error> {
+        self.inspector.prepare_runtime_state()?;
+        let addr = SocketAddr::new(self.inspector.validated_bind_address(), self.inspector.port);
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        self.inspector
+            .serve_with_listener_inner_with_cancellation(listener, Some(token))
+            .await
     }
 }
 
@@ -2766,6 +2851,28 @@ mod tests {
         let resolved = ResolvedRuntimeConfig::from_file_for(&path, profile).unwrap();
         std::fs::remove_file(path).unwrap();
         resolved
+    }
+
+    #[tokio::test]
+    async fn managed_cancellation_stops_server_and_metrics_owner() {
+        let (port, listener) = reserve_listener();
+        let token = CancellationToken::new();
+        let inspector =
+            Inspector::new(Schematic::new("managed-cancellation"), port).with_mode("dev");
+        let server_token = token.clone();
+        let handle = tokio::spawn(async move {
+            inspector
+                .serve_with_listener_and_cancellation(listener, server_token)
+                .await
+        });
+
+        wait_ready(port).await;
+        assert!(token.cancel(CancellationReason::OperatorShutdown));
+        let result = tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("managed Inspector should stop")
+            .expect("managed Inspector task should join");
+        assert!(result.is_ok());
     }
 
     #[test]

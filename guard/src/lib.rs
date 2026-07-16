@@ -1452,8 +1452,7 @@ where
 /// Deadline for the current request pipeline.
 ///
 /// Written to the Bus by [`TimeoutGuard`]. The HTTP ingress layer reads this
-/// to enforce the deadline by wrapping circuit execution with
-/// `tokio::time::timeout()`.
+/// to derive a cancellation deadline for cancellation-aware circuit execution.
 ///
 /// Complements `Axon::then_with_timeout()`: TimeoutGuard sets the global
 /// pipeline deadline, while `then_with_timeout()` adds per-node timeouts.
@@ -1490,9 +1489,9 @@ impl TimeoutDeadline {
 
 /// Pipeline timeout guard — sets a [`TimeoutDeadline`] in the Bus.
 ///
-/// This is a **pass-through** guard that writes the deadline. The HTTP
-/// ingress layer enforces it by wrapping circuit execution with
-/// `tokio::time::timeout()`.
+/// This is a **pass-through** guard that writes the deadline. The HTTP ingress
+/// layer enforces it with cooperative cancellation so persistence and
+/// compensation cleanup remain owned after the active transition is dropped.
 ///
 /// # Relationship with `Axon::then_with_timeout()`
 ///

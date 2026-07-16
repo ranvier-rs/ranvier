@@ -22,6 +22,8 @@
         { "prefix": "ranvier_core::bus::Bus::fork_for_parallel", "match": "exact", "tier": "Experimental" },
         { "prefix": "ranvier_core::bus::Bus::insert_shared", "match": "exact", "tier": "Experimental" },
         { "prefix": "ranvier_core::bus::Bus::provide_shared", "match": "exact", "tier": "Experimental" },
+        { "prefix": "ranvier_core::bus::Bus::cancellation_token", "match": "exact", "tier": "Experimental" },
+        { "prefix": "ranvier_core::bus::Bus::set_cancellation_token", "match": "exact", "tier": "Experimental" },
         { "prefix": "ranvier_core::transition::Transition", "tier": "Stable Candidate" },
         { "prefix": "ranvier_core::transition::ResourceRequirement", "tier": "Stable Candidate" },
         { "prefix": "ranvier_core::outcome::Outcome", "tier": "Stable Candidate" },

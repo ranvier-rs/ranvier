@@ -64,6 +64,7 @@ rcgen = { version = "0.13", optional = true }
 askama = { version = "0.16", optional = true }
 
 [dev-dependencies]
+anyhow = { workspace = true }
 tempfile = "3.14"
 
 [lints]

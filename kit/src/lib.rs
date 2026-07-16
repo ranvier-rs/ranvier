@@ -28,14 +28,21 @@ pub use ranvier_macros::{ResourceRequirement, transition};
 // AuthContext and AuthScheme live in ranvier-core::iam (always available, no feature gate).
 pub use ranvier_core::iam::{AuthContext, AuthScheme};
 pub use ranvier_core::tenant::{IsolationPolicy, TenantExtractor, TenantId, TenantResolver};
-pub use ranvier_core::{Bus, Never, Outcome, Schematic, Transition};
+pub use ranvier_core::{
+    Bus, CancellationContext, CancellationReason, CancellationToken, Never, Outcome, Schematic,
+    Transition,
+};
 #[cfg(feature = "http")]
-pub use ranvier_http::{HttpIngress, Ranvier, RanvierService};
+pub use ranvier_http::{
+    HttpIngress, HttpTaskDrainReport, Ranvier, RanvierService, RawIngressService,
+};
 #[cfg(feature = "inspector")]
 pub use ranvier_inspector::{Inspector, StateInspector};
 #[cfg(feature = "openapi")]
 pub use ranvier_openapi::{OpenApiDocument, OpenApiGenerator, swagger_ui_html};
-pub use ranvier_runtime::Axon;
+#[cfg(feature = "streaming")]
+pub use ranvier_runtime::CancellableStreamingError;
+pub use ranvier_runtime::{Axon, ExecutionTerminal};
 
 pub mod prelude {
     pub use ranvier_core::prelude::*;

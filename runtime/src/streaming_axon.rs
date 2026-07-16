@@ -13,6 +13,7 @@ use crate::axon::{Axon, BoxFuture};
 use futures_core::Stream;
 use futures_util::StreamExt;
 use ranvier_core::bus::Bus;
+use ranvier_core::cancellation::{CancellationContext, CancellationToken};
 use ranvier_core::outcome::Outcome;
 use ranvier_core::schematic::Schematic;
 use ranvier_core::streaming::StreamTimeoutConfig;
@@ -72,6 +73,15 @@ pub enum StreamingAxonError<E> {
     Timeout(StreamTimeoutKind),
 }
 
+/// Terminal error for opt-in cancellation-aware stream initialization.
+#[derive(Debug)]
+pub enum CancellableStreamingError<E> {
+    /// Existing streaming initialization or timeout error.
+    Stream(StreamingAxonError<E>),
+    /// Cancellation won before the stream was initialized.
+    Cancelled(CancellationContext),
+}
+
 /// Which timeout phase was exceeded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamTimeoutKind {
@@ -95,6 +105,25 @@ impl<E: Debug> std::fmt::Display for StreamingAxonError<E> {
 }
 
 impl<E: Debug> std::error::Error for StreamingAxonError<E> {}
+
+impl<E: Debug> std::fmt::Display for CancellableStreamingError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stream(error) => write!(f, "{error}"),
+            Self::Cancelled(context) => {
+                write!(f, "stream cancelled: {:?}", context.reason)
+            }
+        }
+    }
+}
+
+impl<E: Debug> std::error::Error for CancellableStreamingError<E> {}
+
+impl<E> From<StreamingAxonError<E>> for CancellableStreamingError<E> {
+    fn from(error: StreamingAxonError<E>) -> Self {
+        Self::Stream(error)
+    }
+}
 
 impl<In, Item, E, Res> Clone for StreamingAxon<In, Item, E, Res> {
     fn clone(&self) -> Self {
@@ -136,6 +165,41 @@ where
             }
             _ => Ok(stream),
         }
+    }
+
+    /// Execute the streaming pipeline with cooperative cancellation.
+    ///
+    /// Cancellation can win during initialization and is checked between
+    /// emitted items. Mid-stream cancellation ends the returned stream; the
+    /// supplied token retains the structured terminal context for the owner.
+    pub async fn execute_cancellable(
+        &self,
+        input: In,
+        resources: &Res,
+        bus: &mut Bus,
+        token: CancellationToken,
+    ) -> Result<Pin<Box<dyn Stream<Item = Item> + Send>>, CancellableStreamingError<E>> {
+        bus.set_cancellation_token(token.clone());
+        let initialized = {
+            let initialization = (self.stream_executor)(input, resources, bus);
+            tokio::pin!(initialization);
+            tokio::select! {
+                biased;
+                context = token.cancelled() => Err(CancellableStreamingError::Cancelled(context)),
+                result = &mut initialization => result.map_err(CancellableStreamingError::Stream),
+            }
+        }?;
+
+        let stream: Pin<Box<dyn Stream<Item = Item> + Send>> = match &self.timeout_config {
+            Some(config)
+                if config.init.is_some() || config.idle.is_some() || config.total.is_some() =>
+            {
+                Box::pin(TimeoutStream::new(initialized, config.clone()))
+            }
+            _ => initialized,
+        };
+
+        Ok(Box::pin(CancellationStream::new(stream, token)))
     }
 
     /// Set the backpressure buffer size (default: 64).
@@ -239,6 +303,44 @@ where
             timeout_config: self.timeout_config,
             buffer_size: self.buffer_size,
         }
+    }
+}
+
+struct CancellationStream<Item> {
+    inner: Pin<Box<dyn Stream<Item = Item> + Send>>,
+    cancellation: Pin<Box<dyn std::future::Future<Output = CancellationContext> + Send>>,
+    finished: bool,
+}
+
+impl<Item> CancellationStream<Item> {
+    fn new(inner: Pin<Box<dyn Stream<Item = Item> + Send>>, token: CancellationToken) -> Self {
+        let cancellation = Box::pin(async move { token.cancelled().await });
+        Self {
+            inner,
+            cancellation,
+            finished: false,
+        }
+    }
+}
+
+impl<Item> Stream for CancellationStream<Item> {
+    type Item = Item;
+
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.finished {
+            return std::task::Poll::Ready(None);
+        }
+
+        if this.cancellation.as_mut().poll(cx).is_ready() {
+            this.finished = true;
+            return std::task::Poll::Ready(None);
+        }
+
+        this.inner.as_mut().poll_next(cx)
     }
 }
 
@@ -569,5 +671,57 @@ mod tests {
             .collect()
             .await;
         assert_eq!(items, vec!["x"]);
+    }
+
+    #[tokio::test]
+    async fn cancellation_can_win_stream_initialization() {
+        let stream_executor: StreamExecutor<(), String, String, ()> =
+            Arc::new(|_input: (), _res: &(), bus: &mut Bus| {
+                assert!(bus.cancellation_token().is_some());
+                Box::pin(async move {
+                    std::future::pending::<()>().await;
+                    Ok(Box::pin(stream::empty()) as Pin<Box<dyn Stream<Item = String> + Send>>)
+                })
+            });
+        let axon = StreamingAxon {
+            schematic: Schematic::new("cancel-init"),
+            stream_executor,
+            timeout_config: None,
+            buffer_size: 1,
+        };
+        let token = CancellationToken::new();
+        token.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
+        let mut bus = Bus::new();
+
+        let error = match axon.execute_cancellable((), &(), &mut bus, token).await {
+            Ok(_) => panic!("initialization should be cancelled"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, CancellableStreamingError::Cancelled(_)));
+    }
+
+    #[tokio::test]
+    async fn cancellation_ends_initialized_stream_between_items() {
+        let stream_executor: StreamExecutor<(), String, String, ()> =
+            Arc::new(|_input: (), _res: &(), _bus: &mut Bus| {
+                Box::pin(async move {
+                    Ok(Box::pin(stream::pending()) as Pin<Box<dyn Stream<Item = String> + Send>>)
+                })
+            });
+        let axon = StreamingAxon {
+            schematic: Schematic::new("cancel-items"),
+            stream_executor,
+            timeout_config: None,
+            buffer_size: 1,
+        };
+        let token = CancellationToken::new();
+        let mut bus = Bus::new();
+        let mut stream = axon
+            .execute_cancellable((), &(), &mut bus, token.clone())
+            .await
+            .expect("stream initialization");
+
+        token.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
+        assert_eq!(stream.next().await, None);
     }
 }

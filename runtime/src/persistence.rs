@@ -548,6 +548,12 @@ impl PersistenceStore for InMemoryPersistenceStore {
         let trace = guard
             .get_mut(trace_id)
             .ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
+        if trace.completion.is_some() {
+            return Err(anyhow!(
+                "trace_id {} is already completed and cannot be resumed",
+                trace_id
+            ));
+        }
         trace.resumed_from_step = Some(resume_from_step);
         Ok(ResumeCursor {
             trace_id: trace_id.to_string(),
@@ -839,7 +845,7 @@ impl PersistenceStore for PostgresPersistenceStore {
         let query = format!(
             "UPDATE {}
              SET resumed_from_step = $2
-             WHERE trace_id = $1",
+             WHERE trace_id = $1 AND completion IS NULL",
             self.state_table
         );
         let rows = sqlx::query(&query)
@@ -849,7 +855,13 @@ impl PersistenceStore for PostgresPersistenceStore {
             .await?
             .rows_affected();
         if rows == 0 {
-            return Err(anyhow!("trace_id {} not found", trace_id));
+            return match self.load(trace_id).await? {
+                Some(_) => Err(anyhow!(
+                    "trace_id {} is already completed and cannot be resumed",
+                    trace_id
+                )),
+                None => Err(anyhow!("trace_id {} not found", trace_id)),
+            };
         }
         Ok(ResumeCursor {
             trace_id: trace_id.to_string(),
@@ -1004,6 +1016,12 @@ impl PersistenceStore for RedisPersistenceStore {
             .load(trace_id)
             .await?
             .ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
+        if trace.completion.is_some() {
+            return Err(anyhow!(
+                "trace_id {} is already completed and cannot be resumed",
+                trace_id
+            ));
+        }
         trace.resumed_from_step = Some(resume_from_step);
         self.write_trace(&trace).await?;
         Ok(ResumeCursor {
@@ -1103,6 +1121,12 @@ mod tests {
             err.to_string()
                 .contains("is already completed and cannot accept new events")
         );
+
+        let err = store.resume("trace-1", 1).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("is already completed and cannot be resumed")
+        );
     }
 
     #[tokio::test]
@@ -1166,6 +1190,7 @@ mod tests {
             .complete(&trace_id, CompletionState::Compensated)
             .await
             .unwrap();
+        assert!(store.resume(&trace_id, 2).await.is_err());
 
         let loaded = store.load(&trace_id).await.unwrap().unwrap();
         assert_eq!(loaded.trace_id, trace_id);
@@ -1212,6 +1237,7 @@ mod tests {
             .complete(&trace_id, CompletionState::Fault)
             .await
             .unwrap();
+        assert!(store.resume(&trace_id, 2).await.is_err());
 
         let loaded = store.load(&trace_id).await.unwrap().unwrap();
         assert_eq!(loaded.trace_id, trace_id);

@@ -19,6 +19,7 @@ use crate::persistence::{
 #[cfg(feature = "inspector")]
 use async_trait::async_trait;
 use ranvier_core::bus::Bus;
+use ranvier_core::cancellation::CancellationContext;
 use ranvier_core::cluster::DistributedLock;
 use ranvier_core::event::{DlqPolicy, DlqSink};
 use ranvier_core::outcome::Outcome;
@@ -79,6 +80,19 @@ pub enum ParallelBusPolicy {
     /// Inherit only parent entries explicitly marked as shared. Inherited
     /// entries are read-only and branch-local writes are discarded at FanIn.
     InheritShared,
+}
+
+/// Terminal result of an opt-in cancellation-aware Axon execution.
+///
+/// Domain control flow remains represented by [`Outcome`]. Cancellation is a
+/// separate infrastructure terminal so existing exhaustive `Outcome` matches
+/// retain source compatibility.
+#[derive(Debug, Clone)]
+pub enum ExecutionTerminal<Out, E> {
+    /// The Axon reached an ordinary domain outcome.
+    Outcome(Outcome<Out, E>),
+    /// Cooperative cancellation won before the ordinary outcome completed.
+    Cancelled(CancellationContext),
 }
 
 /// Type alias for async boxed futures used in Axon execution.

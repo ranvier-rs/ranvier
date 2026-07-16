@@ -14,7 +14,8 @@ pub mod testkit;
 
 pub mod prelude {
     pub use crate::axon::{
-        Axon, BoxFuture, ExecutionMode, ParallelBusPolicy, ParallelStrategy, SchematicExportRequest,
+        Axon, BoxFuture, ExecutionMode, ExecutionTerminal, ParallelBusPolicy, ParallelStrategy,
+        SchematicExportRequest,
     };
     pub use crate::cluster::{ClusterManager, LeaderElection, LockBasedElection};
     pub use crate::distributed::{
@@ -35,7 +36,9 @@ pub mod prelude {
     pub use crate::replay::ReplayEngine;
     pub use crate::retry::{BackoffStrategy, RetryPolicy};
     #[cfg(feature = "streaming")]
-    pub use crate::streaming_axon::{StreamTimeoutKind, StreamingAxon, StreamingAxonError};
+    pub use crate::streaming_axon::{
+        CancellableStreamingError, StreamTimeoutKind, StreamingAxon, StreamingAxonError,
+    };
     pub use crate::testkit::AxonTestKit;
     pub use crate::{InfallibleAxon, SimpleAxon, TypedAxon};
 }
@@ -53,7 +56,9 @@ pub type TypedAxon<In, Out, Res = ()> = Axon<In, Out, ranvier_core::error::Ranvi
 /// required by `Axon`.
 pub type InfallibleAxon<In, Out, Res = ()> = Axon<In, Out, ranvier_core::Never, Res>;
 
-pub use axon::{Axon, ParallelBusPolicy, ParallelStrategy, SchematicExportRequest};
+pub use axon::{
+    Axon, ExecutionTerminal, ParallelBusPolicy, ParallelStrategy, SchematicExportRequest,
+};
 pub use closure_transition::ClosureTransition;
 pub use cluster::{ClusterManager, LeaderElection, LockBasedElection};
 pub use distributed::{DistributedError, DistributedLock, DistributedStore, Guard, LockOptions};
@@ -72,5 +77,7 @@ pub use persistence::{RedisCompensationIdempotencyStore, RedisPersistenceStore};
 pub use replay::ReplayEngine;
 pub use retry::{BackoffStrategy, RetryPolicy};
 #[cfg(feature = "streaming")]
-pub use streaming_axon::{StreamTimeoutKind, StreamingAxon, StreamingAxonError};
+pub use streaming_axon::{
+    CancellableStreamingError, StreamTimeoutKind, StreamingAxon, StreamingAxonError,
+};
 pub use testkit::AxonTestKit;

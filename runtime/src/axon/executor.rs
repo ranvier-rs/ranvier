@@ -1,4 +1,5 @@
 use ranvier_core::bus::Bus;
+use ranvier_core::cancellation::{CancellationContext, CancellationToken};
 use ranvier_core::outcome::Outcome;
 use ranvier_core::saga::{SagaPolicy, SagaStack};
 use ranvier_core::telemetry::InterventionEvent;
@@ -28,6 +29,62 @@ where
     E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
     Res: ranvier_core::transition::ResourceRequirement,
 {
+    /// Execute with an explicit cooperative cancellation owner.
+    ///
+    /// The existing [`execute`](Self::execute) path is unchanged. When
+    /// cancellation wins, the in-flight executor future is dropped and this
+    /// outer owner performs persistence and compensation cleanup before
+    /// returning the structured terminal.
+    pub async fn execute_cancellable(
+        &self,
+        input: In,
+        resources: &Res,
+        bus: &mut Bus,
+        token: CancellationToken,
+    ) -> ExecutionTerminal<Out, E> {
+        bus.set_cancellation_token(token.clone());
+        if bus
+            .read::<crate::persistence::PersistenceTraceId>()
+            .is_none()
+        {
+            let trace_id = persistence_trace_id(bus);
+            bus.insert(crate::persistence::PersistenceTraceId(trace_id));
+        }
+        let caller_owned_timeline = bus.read::<Timeline>().is_some();
+
+        let race = {
+            let execution = self.execute(input, resources, bus);
+            tokio::pin!(execution);
+            tokio::select! {
+                biased;
+                context = token.cancelled() => Err(context),
+                outcome = &mut execution => Ok(outcome),
+            }
+        };
+
+        match race {
+            Err(context) => {
+                // Dropping the execution future releases its mutable Bus
+                // borrow. A transition may have been dropped between
+                // installing and clearing its access policy, so cleanup
+                // explicitly restores framework access first.
+                bus.clear_access_policy();
+                // Cleanup is shielded from the workflow token that just won.
+                // The caller still owns that original token and terminal
+                // context; compensation code receives a fresh control plane
+                // until an outer managed-drain deadline aborts this task.
+                bus.set_cancellation_token(CancellationToken::new());
+                self.finish_cancellation(resources, bus, context.clone())
+                    .await;
+                if !caller_owned_timeline {
+                    let _ = bus.remove::<Timeline>();
+                }
+                ExecutionTerminal::Cancelled(context)
+            }
+            Ok(outcome) => ExecutionTerminal::Outcome(outcome),
+        }
+    }
+
     /// Execute the Axon with the given input and resources.
     pub async fn execute(&self, input: In, resources: &Res, bus: &mut Bus) -> Outcome<Out, E> {
         if let ExecutionMode::Singleton {
@@ -441,48 +498,8 @@ where
         }
 
         // Automated Saga Rollback (LIFO)
-        if matches!(outcome, Outcome::Fault(_)) && self.saga_policy == SagaPolicy::Enabled {
-            while let Some(task) = {
-                let mut stack = bus.read_mut::<SagaStack>();
-                stack.as_mut().and_then(|s| s.pop())
-            } {
-                tracing::info!(trace_id = %trace_id, node_id = %task.node_id, "Compensating step: {}", task.node_label);
-
-                let handler = {
-                    match self.saga_compensation_registry.read() {
-                        Ok(registry) => registry.get(&task.node_id),
-                        Err(poisoned) => {
-                            tracing::warn!(
-                                trace_id = %trace_id,
-                                node_id = %task.node_id,
-                                "Saga compensation registry lock was poisoned; recovering registry for rollback lookup"
-                            );
-                            poisoned.into_inner().get(&task.node_id)
-                        }
-                    }
-                };
-                if let Some(handler) = handler {
-                    let res = handler(task.input_snapshot, resources, bus).await;
-                    match res {
-                        Outcome::Fault(e) => {
-                            tracing::error!(trace_id = %trace_id, node_id = %task.node_id, "Saga compensation FAILED: {:?}", e);
-                        }
-                        Outcome::Emit(event_type, payload) => {
-                            tracing::warn!(
-                                trace_id = %trace_id,
-                                node_id = %task.node_id,
-                                event_type = %event_type,
-                                payload = ?payload,
-                                "Saga compensation emitted a non-fatal event"
-                            );
-                        }
-                        _ => {}
-                    }
-                } else {
-                    tracing::warn!(trace_id = %trace_id, node_id = %task.node_id, "No compensation handler found in registry for saga rollback");
-                }
-            }
-            tracing::info!(trace_id = %trace_id, "Saga automated rollback completed");
+        if matches!(outcome, Outcome::Fault(_)) && effective_saga_policy == SagaPolicy::Enabled {
+            self.rollback_saga(resources, bus, &trace_id).await;
         }
 
         let ingress_exit_ts = now_ms();
@@ -562,6 +579,195 @@ where
 
         outcome
     }
+
+    async fn rollback_saga(&self, resources: &Res, bus: &mut Bus, trace_id: &str) {
+        while let Some(task) = {
+            let mut stack = bus.read_mut::<SagaStack>();
+            stack.as_mut().and_then(|stack| stack.pop())
+        } {
+            tracing::info!(trace_id = %trace_id, node_id = %task.node_id, "Compensating step: {}", task.node_label);
+
+            let handler = match self.saga_compensation_registry.read() {
+                Ok(registry) => registry.get(&task.node_id),
+                Err(poisoned) => {
+                    tracing::warn!(
+                        trace_id = %trace_id,
+                        node_id = %task.node_id,
+                        "Saga compensation registry lock was poisoned; recovering registry for rollback lookup"
+                    );
+                    poisoned.into_inner().get(&task.node_id)
+                }
+            };
+            if let Some(handler) = handler {
+                let result = handler(task.input_snapshot, resources, bus).await;
+                match result {
+                    Outcome::Fault(error) => {
+                        tracing::error!(trace_id = %trace_id, node_id = %task.node_id, "Saga compensation FAILED: {:?}", error);
+                    }
+                    Outcome::Emit(event_type, payload) => {
+                        tracing::warn!(
+                            trace_id = %trace_id,
+                            node_id = %task.node_id,
+                            event_type = %event_type,
+                            payload = ?payload,
+                            "Saga compensation emitted a non-fatal event"
+                        );
+                    }
+                    _ => {}
+                }
+            } else {
+                tracing::warn!(trace_id = %trace_id, node_id = %task.node_id, "No compensation handler found in registry for saga rollback");
+            }
+        }
+        tracing::info!(trace_id = %trace_id, "Saga automated rollback completed");
+    }
+
+    async fn finish_cancellation(
+        &self,
+        resources: &Res,
+        bus: &mut Bus,
+        context: CancellationContext,
+    ) {
+        let trace_id = persistence_trace_id(bus);
+        let label = self.schematic.name.clone();
+        let version = self.schematic.schema_version.clone();
+        let persistence_handle = bus.read::<PersistenceHandle>().cloned();
+        let compensation_handle = bus.read::<CompensationHandle>().cloned();
+        let compensation_retry_policy = compensation_retry_policy(bus);
+        let compensation_idempotency = bus.read::<CompensationIdempotencyHandle>().cloned();
+        let effective_saga_policy = self
+            .dynamic_saga_policy
+            .as_ref()
+            .map(|policy| policy.current())
+            .unwrap_or_else(|| self.saga_policy.clone());
+
+        let (cancellation_step, persistence_writable) = if let Some(handle) =
+            persistence_handle.as_ref()
+        {
+            let (next_step, writable, needs_entry) = match handle.store().load(&trace_id).await {
+                Ok(Some(trace)) if trace.completion.is_some() => {
+                    tracing::warn!(
+                        trace_id = %trace_id,
+                        completion = ?trace.completion,
+                        "Cancellation cleanup will not overwrite an already completed trace"
+                    );
+                    (
+                        trace
+                            .events
+                            .last()
+                            .map(|event| event.step.saturating_add(1))
+                            .unwrap_or(0),
+                        false,
+                        false,
+                    )
+                }
+                Ok(Some(trace)) => (
+                    trace
+                        .events
+                        .last()
+                        .map(|event| event.step.saturating_add(1))
+                        .unwrap_or(0),
+                    true,
+                    false,
+                ),
+                // Preserve the persistence state-machine invariant that a
+                // terminal always follows a normal execution entry, even
+                // when the token was already cancelled before `execute`
+                // was first polled.
+                Ok(None) => (1, true, true),
+                Err(error) => {
+                    tracing::warn!(
+                        trace_id = %trace_id,
+                        error = %error,
+                        "Failed to inspect persistence cursor before cancellation"
+                    );
+                    (0, true, false)
+                }
+            };
+            if writable {
+                if needs_entry {
+                    let ingress_node_id = self.schematic.nodes.first().map(|node| node.id.clone());
+                    persist_execution_event(
+                        handle,
+                        &trace_id,
+                        &label,
+                        &version,
+                        0,
+                        ingress_node_id,
+                        "Enter",
+                        None,
+                    )
+                    .await;
+                }
+                let payload = serde_json::to_value(&context).ok();
+                persist_execution_event(
+                    handle,
+                    &trace_id,
+                    &label,
+                    &version,
+                    next_step,
+                    None,
+                    "Cancelled",
+                    payload,
+                )
+                .await;
+            }
+            (next_step, writable)
+        } else {
+            (0, false)
+        };
+
+        if effective_saga_policy == SagaPolicy::Enabled {
+            self.rollback_saga(resources, bus, &trace_id).await;
+        }
+
+        let mut completion = CompletionState::Cancelled;
+        if let Some(compensation) = compensation_handle.as_ref()
+            && compensation_auto_trigger(bus)
+        {
+            let compensation_context = CompensationContext {
+                trace_id: trace_id.clone(),
+                circuit: label.clone(),
+                fault_kind: "Cancelled".to_string(),
+                fault_step: cancellation_step,
+                timestamp_ms: now_ms(),
+            };
+
+            if run_compensation(
+                compensation,
+                compensation_context,
+                compensation_retry_policy,
+                compensation_idempotency,
+            )
+            .await
+            {
+                if let Some(handle) = persistence_handle.as_ref()
+                    && persistence_writable
+                {
+                    persist_execution_event(
+                        handle,
+                        &trace_id,
+                        &label,
+                        &version,
+                        cancellation_step.saturating_add(1),
+                        None,
+                        "Compensated",
+                        None,
+                    )
+                    .await;
+                }
+                completion = CompletionState::Compensated;
+            }
+        }
+
+        if let Some(handle) = persistence_handle.as_ref()
+            && persistence_writable
+        {
+            if persistence_auto_complete(bus) {
+                persist_completion(handle, &trace_id, completion).await;
+            }
+        }
+    }
 }
 
 /// Convenience methods for Axons with `Res = ()` (no external resources).
@@ -584,5 +790,15 @@ where
     /// ```
     pub async fn execute_simple(&self, input: In, bus: &mut Bus) -> Outcome<Out, E> {
         self.execute(input, &(), bus).await
+    }
+
+    /// Execute without explicit resources using cooperative cancellation.
+    pub async fn execute_simple_cancellable(
+        &self,
+        input: In,
+        bus: &mut Bus,
+        token: CancellationToken,
+    ) -> ExecutionTerminal<Out, E> {
+        self.execute_cancellable(input, &(), bus, token).await
     }
 }

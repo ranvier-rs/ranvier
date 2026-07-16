@@ -1500,6 +1500,45 @@ where
         Ok(self)
     }
 
+    /// Validate and start Inspector with an explicit cancellation owner.
+    ///
+    /// Unlike [`serve_inspector_with_runtime`](Self::serve_inspector_with_runtime),
+    /// this additive path returns the task handle so the embedding runtime can
+    /// await or abort the complete Inspector lifecycle. A disabled Inspector
+    /// returns `None` without spawning a task.
+    #[cfg(feature = "inspector")]
+    pub fn start_managed_inspector_with_runtime(
+        self,
+        bind_address: std::net::IpAddr,
+        runtime: &ranvier_core::config::ResolvedRuntimeConfig,
+        token: ranvier_core::cancellation::CancellationToken,
+    ) -> Result<
+        (
+            Self,
+            Option<tokio::task::JoinHandle<Result<(), std::io::Error>>>,
+        ),
+        ranvier_core::runtime_policy::StartupPolicyError,
+    > {
+        if !runtime.config().inspector.enabled {
+            return Ok((self, None));
+        }
+
+        let schematic = self.schematic.clone();
+        let axon_inspector = Arc::new(self.clone());
+        let inspector =
+            ranvier_inspector::Inspector::new(schematic, runtime.config().inspector.port)
+                .with_projection_files_from_env()
+                .with_runtime_profile(runtime.profile())
+                .with_bind_address(bind_address)
+                .with_auth_policy_from_env()
+                .with_redaction_policy_from_env()
+                .with_bearer_token_from_env()
+                .with_state_inspector(axon_inspector);
+        let validated = inspector.validate(runtime)?;
+        let handle = tokio::spawn(async move { validated.serve_with_cancellation(token).await });
+        Ok((self, Some(handle)))
+    }
+
     /// Get a reference to the Schematic (structural view).
     pub fn schematic(&self) -> &Schematic {
         &self.schematic

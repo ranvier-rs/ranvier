@@ -265,6 +265,7 @@ where
                     // Each branch gets its own Bus so they can run concurrently
                     // without &mut Bus aliasing. Only the explicit policy can
                     // add read-only inherited context.
+                    let cancellation_token = bus.cancellation_token().cloned();
                     let futs: Vec<_> = branches
                         .iter()
                         .enumerate()
@@ -272,10 +273,13 @@ where
                             let branch_state = state.clone();
                             let branch_node_id = branch_ids[i].clone();
                             let trans = trans.clone();
-                            let branch_bus = match bus_policy {
+                            let mut branch_bus = match bus_policy {
                                 ParallelBusPolicy::Isolated => Bus::new(),
                                 ParallelBusPolicy::InheritShared => bus.fork_for_parallel(),
                             };
+                            if let Some(token) = cancellation_token.clone() {
+                                branch_bus.set_cancellation_token(token);
+                            }
 
                             async move {
                                 let mut branch_bus = branch_bus;
