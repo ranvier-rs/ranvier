@@ -1,0 +1,69 @@
+name: Supply Chain Policy
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'deny.toml'
+      - '.ranvier-supply-chain-policy.json'
+      - 'security/advisory-triage.json'
+      - 'security/handoff-exercises/**'
+      - 'scripts/publish_boundary.mjs'
+      - 'scripts/supply_chain_gate.mjs'
+      - 'scripts/maintenance_handoff_gate.mjs'
+      - '.github/workflows/supply-chain.yml'
+  push:
+    branches: [main]
+    paths:
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'deny.toml'
+      - '.ranvier-supply-chain-policy.json'
+      - 'security/advisory-triage.json'
+      - 'security/handoff-exercises/**'
+      - 'scripts/publish_boundary.mjs'
+      - 'scripts/supply_chain_gate.mjs'
+      - 'scripts/maintenance_handoff_gate.mjs'
+      - '.github/workflows/supply-chain.yml'
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    name: Advisory, license, and source gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned scanners
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo install cargo-deny --version 0.20.2 --locked
+      - name: Validate publishable package boundary
+        run: node scripts/publish_boundary.mjs --check
+      - name: Negative policy self-test
+        run: node scripts/supply_chain_gate.mjs --self-test --output target/supply-chain/self-test-and-live.json
+      - name: Validate maintenance handoff record
+        run: node scripts/maintenance_handoff_gate.mjs --self-test --output target/supply-chain/handoff.json
+      - name: Upload machine evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-${{ github.run_id }}
+          path: target/supply-chain/*.json
+          retention-days: 30

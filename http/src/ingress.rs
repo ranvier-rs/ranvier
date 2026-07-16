@@ -4932,24 +4932,21 @@ fn build_tls_acceptor(
     key_path: &str,
 ) -> Result<tokio_rustls::TlsAcceptor, Box<dyn std::error::Error + Send + Sync>> {
     use rustls::ServerConfig;
-    use rustls_pemfile::{certs, private_key};
-    use std::io::BufReader;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
     use tokio_rustls::TlsAcceptor;
 
-    let cert_file = std::fs::File::open(cert_path)
-        .map_err(|e| format!("Failed to open certificate file '{}': {}", cert_path, e))?;
-    let key_file = std::fs::File::open(key_path)
-        .map_err(|e| format!("Failed to open key file '{}': {}", key_path, e))?;
-
-    let cert_chain: Vec<_> = certs(&mut BufReader::new(cert_file))
+    let cert_chain: Vec<_> = CertificateDer::pem_file_iter(cert_path)
+        .map_err(|e| format!("Failed to open certificate file '{}': {}", cert_path, e))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to parse certificate PEM: {}", e))?;
 
-    let key = private_key(&mut BufReader::new(key_file))
-        .map_err(|e| format!("Failed to parse private key PEM: {}", e))?
-        .ok_or("No private key found in key file")?;
+    let key = PrivateKeyDer::from_pem_file(key_path)
+        .map_err(|e| format!("Failed to parse private key PEM '{}': {}", key_path, e))?;
 
-    let config = ServerConfig::builder()
+    let provider = rustls::crypto::aws_lc_rs::default_provider();
+    let config = ServerConfig::builder_with_provider(Arc::new(provider))
+        .with_safe_default_protocol_versions()
+        .map_err(|e| format!("TLS protocol version configuration error: {}", e))?
         .with_no_client_auth()
         .with_single_cert(cert_chain, key)
         .map_err(|e| format!("TLS configuration error: {}", e))?;
@@ -5473,6 +5470,56 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(feature = "http3")]
+    #[test]
+    fn tls_acceptor_loads_certificate_and_private_key_pem() {
+        let directory = tempdir().expect("create TLS fixture directory");
+        let certificate_path = directory.path().join("certificate.pem");
+        let private_key_path = directory.path().join("private-key.pem");
+        let generated = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("generate TLS fixture");
+        fs::write(&certificate_path, generated.cert.pem()).expect("write certificate fixture");
+        fs::write(&private_key_path, generated.key_pair.serialize_pem())
+            .expect("write private key fixture");
+
+        let result = build_tls_acceptor(
+            certificate_path
+                .to_str()
+                .expect("certificate path is UTF-8"),
+            private_key_path
+                .to_str()
+                .expect("private key path is UTF-8"),
+        );
+
+        if let Err(error) = result {
+            panic!("valid PEM pair should load: {error}");
+        }
+    }
+
+    #[cfg(feature = "http3")]
+    #[test]
+    fn tls_acceptor_rejects_invalid_private_key_pem() {
+        let directory = tempdir().expect("create TLS fixture directory");
+        let certificate_path = directory.path().join("certificate.pem");
+        let private_key_path = directory.path().join("private-key.pem");
+        let generated = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("generate TLS fixture");
+        fs::write(&certificate_path, generated.cert.pem()).expect("write certificate fixture");
+        fs::write(&private_key_path, "not a PEM private key")
+            .expect("write invalid private key fixture");
+
+        let result = build_tls_acceptor(
+            certificate_path
+                .to_str()
+                .expect("certificate path is UTF-8"),
+            private_key_path
+                .to_str()
+                .expect("private key path is UTF-8"),
+        );
+
+        assert!(result.is_err(), "invalid private key must be rejected");
     }
 
     #[test]

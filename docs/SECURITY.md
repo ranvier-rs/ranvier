@@ -4,9 +4,14 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.13.x  | ✅ Current |
-| 0.12.x  | ⚠️ Security fixes only |
-| < 0.12  | ❌ End of life |
+| 0.51.x  | ✅ Current stable line; security and correctness fixes |
+| < 0.51  | ❌ No active maintenance promise |
+
+The latest stable line receives security fixes for at least six months. Support
+and MSRV are reviewed quarterly and are never changed silently. `0.51.x` is the
+first candidate line under the current policy, so no earlier candidate line is
+promised. The canonical policy is
+[`VERSION_POLICY.md`](https://github.com/ranvier-rs/docs/blob/main/05_dev_plans/VERSION_POLICY.md).
 
 ## Reporting a Vulnerability
 
@@ -27,8 +32,14 @@ We take security issues seriously. If you discover a security vulnerability in R
 |-------|----------|
 | Acknowledgment | Within **48 hours** |
 | Initial assessment | Within **5 business days** |
-| Fix development | Within **30 days** for Critical/High |
+| Critical fix target | Within **7 calendar days** |
+| High fix target | Within **14 calendar days** |
 | Public disclosure | After fix is released, or **90 days** max |
+
+The primary release/security owner is **Sanghyo Lee** and the distinct backup
+is **이시완**. If the primary is unavailable, the backup owns acknowledgment,
+assessment, and the release go/no-go record. A High or Critical dependency
+finding blocks publication even after it is triaged.
 
 ### Severity Classification
 
@@ -49,25 +60,42 @@ We take security issues seriously. If you discover a security vulnerability in R
 
 ## Security Best Practices for Ranvier Applications
 
-See the [Security Hardening Guide](docs/03_guides/security_hardening_guide.md) for:
+See the [Security Hardening Guide](https://ranvier.studio/docs/security-hardening) for:
 - OWASP Top 10 compliance patterns
 - Production deployment security checklist
 - Input validation and sanitization
 - Security header configuration
 
-## Automated Security Scanning
+## Automated Supply-Chain Gates
 
-We recommend the following tools for Ranvier applications:
+Maintainers install the exact reviewed scanner versions and run the shared
+wrapper. The wrapper preserves RustSec JSON, validates any exception record,
+and runs the license/source policy from `deny.toml`:
 
 ```bash
-# Dependency vulnerability scanning
-cargo install cargo-audit
-cargo audit
-
-# Supply chain security
-cargo install cargo-vet
-cargo vet
+cargo install cargo-audit --version 0.22.2 --locked
+cargo install cargo-deny --version 0.20.2 --locked
+node scripts/supply_chain_gate.mjs --self-test
 ```
+
+The gate runs on relevant pull requests and `main` pushes, every Monday at
+03:17 UTC, and from the release bundle. The tracked
+`security/advisory-triage.json` starts empty. Medium/Low/Unknown temporary
+exceptions require primary and backup approval, rationale, mitigation, review,
+and expiry; stale or expired records fail. High/Critical findings cannot be
+temporarily allowed for publication.
+
+Release provenance is generated from a clean exact-Rust-1.95 checkout:
+
+```bash
+node scripts/release_provenance.mjs --self-test
+node scripts/release_provenance.mjs
+```
+
+It verifies and hashes all 12 publishable `.crate` files plus a source archive.
+Local `provenance.json` is explicitly unsigned. Tag/manual CI bundles the
+evidence and applies a GitHub artifact attestation; consumers should verify that
+attestation and compare published registry bytes before relying on provenance.
 
 ## Acknowledgments
 

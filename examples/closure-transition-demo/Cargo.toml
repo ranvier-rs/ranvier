@@ -1,6 +1,7 @@
 [package]
 name = "closure-transition-demo"
 version = "0.1.0"
+publish = false
 edition = "2024"
 description = "M288: Closure Transition demo ??then_fn() + post_typed() mixed usage"
 

@@ -1,0 +1,51 @@
+name: Release Provenance
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  provenance:
+    name: Package, checksum, and attest release source
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned scanners
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo install cargo-deny --version 0.20.2 --locked
+      - name: Validate release policy and maintenance ownership
+        run: |
+          node scripts/publish_boundary.mjs --check
+          node scripts/supply_chain_gate.mjs --self-test --output target/supply-chain/release.json
+          node scripts/maintenance_handoff_gate.mjs --self-test --output target/supply-chain/release-handoff.json
+      - name: Provenance negative self-test
+        run: node scripts/release_provenance.mjs --self-test
+      - name: Build verified packages and provenance
+        run: node scripts/release_provenance.mjs --output target/release-provenance/current
+      - name: Bundle release evidence
+        run: tar -C target/release-provenance/current -czf ranvier-provenance-${GITHUB_SHA}.tar.gz .
+      - name: Attest release evidence bundle
+        uses: actions/attest@v4
+        with:
+          subject-path: ranvier-provenance-${{ github.sha }}.tar.gz
+      - name: Upload release evidence bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ranvier-provenance-${{ github.sha }}
+          path: ranvier-provenance-${{ github.sha }}.tar.gz
+          retention-days: 90

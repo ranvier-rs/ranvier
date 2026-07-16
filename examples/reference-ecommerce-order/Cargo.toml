@@ -1,6 +1,7 @@
 [package]
 name = "reference-ecommerce-order"
 version = "0.1.0"
+publish = false
 edition = "2024"
 description = "M226: Reference Application ??E-commerce Order Pipeline with Saga Compensation, Audit Trail, and Multi-tenancy"
 

@@ -1,6 +1,7 @@
 [package]
 name = "persistence-production-demo"
 version = "0.1.0"
+publish = false
 edition = "2021"
 description = "M156: Persistence Production Gate ??crash recovery and compensation demo"
 

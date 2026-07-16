@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0.0",
+  "updated": "2026-07-17",
+  "tools": {
+    "cargo_audit": "0.22.2",
+    "cargo_deny": "0.20.2",
+    "rust": "1.95.0",
+    "node_major": 24,
+    "attestation_action": "actions/attest@v4"
+  },
+  "advisory": {
+    "triage_registry": "security/advisory-triage.json",
+    "release_scope_authority": "cargo-deny all-features exclude-unpublished resolved graph",
+    "lockfile_inventory": "cargo-audit broad Cargo.lock inventory",
+    "release_blocking_severities": [
+      "critical",
+      "high"
+    ],
+    "temporary_allow_severities": [
+      "medium",
+      "low",
+      "unknown"
+    ],
+    "max_review_days": 30,
+    "max_expiry_days": 90
+  },
+  "ownership": {
+    "primary": "Sanghyo Lee",
+    "backup": "이시완",
+    "acknowledgment_hours": 48,
+    "initial_assessment_business_days": 5,
+    "critical_fix_days": 7,
+    "high_fix_days": 14,
+    "max_handoff_exercise_age_days": 90
+  },
+  "maintenance": {
+    "weekly_cron_utc": "17 3 * * 1",
+    "monthly_review_due_day": 7,
+    "support_review_cadence_days": 92,
+    "supported_release_line": "0.51.x"
+  },
+  "provenance": {
+    "output_root": "target/release-provenance",
+    "expected_remote": "https://github.com/ranvier-rs/ranvier",
+    "publishable_crates": [
+      "ranvier",
+      "ranvier-audit",
+      "ranvier-compliance",
+      "ranvier-core",
+      "ranvier-guard",
+      "ranvier-http",
+      "ranvier-inspector",
+      "ranvier-macros",
+      "ranvier-openapi",
+      "ranvier-runtime",
+      "ranvier-std",
+      "ranvier-test"
+    ]
+  }
+}

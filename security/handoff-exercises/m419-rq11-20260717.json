@@ -1,0 +1,58 @@
+{
+  "schema_version": "1.0.0",
+  "exercise_id": "m419-rq11-backup-handoff-20260717",
+  "exercise_type": "tabletop",
+  "synthetic": true,
+  "started_at": "2026-07-16T15:30:00Z",
+  "completed_at": "2026-07-16T15:50:00Z",
+  "scenario": {
+    "advisory_id": "RUSTSEC-2099-0001",
+    "package": "synthetic-dependency",
+    "version": "1.0.0",
+    "severity": "high",
+    "detected_at": "2026-07-16T15:30:00Z",
+    "description": "Synthetic High dependency advisory discovered during a release candidate gate."
+  },
+  "primary": {
+    "name": "Sanghyo Lee",
+    "available": false
+  },
+  "backup": {
+    "name": "이시완",
+    "accepted_role": true
+  },
+  "events": [
+    {
+      "type": "acknowledged",
+      "actor": "이시완",
+      "at": "2026-07-16T15:35:00Z",
+      "note": "Backup assumes synthetic incident ownership because the primary is unavailable."
+    },
+    {
+      "type": "initial_assessment",
+      "actor": "이시완",
+      "at": "2026-07-16T15:40:00Z",
+      "severity": "high",
+      "affected_scope": "release candidate dependency graph",
+      "note": "The scenario is treated as release-blocking even though a triage record could document it."
+    },
+    {
+      "type": "release_decision",
+      "actor": "이시완",
+      "at": "2026-07-16T15:45:00Z",
+      "decision": "no-go",
+      "reason": "High vulnerabilities cannot be temporarily allowed for publication."
+    },
+    {
+      "type": "handoff_closed",
+      "actor": "이시완",
+      "at": "2026-07-16T15:50:00Z",
+      "next_action": "Fix or remove the affected dependency, rerun the locked gate, and obtain primary review before release."
+    }
+  ],
+  "non_claims": [
+    "This synthetic exercise does not prove security mailbox delivery.",
+    "This synthetic exercise does not prove GitHub organization or crates.io permissions.",
+    "This synthetic exercise does not prove real incident availability or remediation performance."
+  ]
+}

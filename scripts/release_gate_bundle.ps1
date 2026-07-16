@@ -442,6 +442,10 @@ function Invoke-LocalReleaseChecks {
 
     $checks.Add((Invoke-SubmoduleStatusGate -RootWorkspace $RootWorkspace -LogPath $LogPath))
     $checks.Add((Invoke-VersionDriftGate -RootWorkspace $RootWorkspace -RanvierWorkspace $RanvierWorkspace -ProfileKey $ProfileKey -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "publishable package boundary" -Executable "node" -Arguments @("scripts/publish_boundary.mjs", "--check") -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "supply-chain advisory license and source policy" -Executable "node" -Arguments @("scripts/supply_chain_gate.mjs", "--output", "target/supply-chain/release-gate.json") -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "release security backup handoff" -Executable "node" -Arguments @("scripts/maintenance_handoff_gate.mjs", "--output", "target/supply-chain/release-handoff.json") -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
+    $checks.Add((Invoke-GateCommand -Name "release artifact checksum and provenance" -Executable "node" -Arguments @("scripts/release_provenance.mjs") -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
     $checks.Add((Invoke-GateCommand -Name "ranvier developer surface check" -Executable "node" -Arguments @("scripts/tiered_example_gate.mjs", "--lane", "developer", "--phase", "check") -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
     $checks.Add((Invoke-GateCommand -Name "ranvier developer surface test" -Executable "node" -Arguments @("scripts/tiered_example_gate.mjs", "--lane", "developer", "--phase", "test") -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))
     $checks.Add((Invoke-GateCommand -Name "ranvier supported example release gate" -Executable "node" -Arguments @("scripts/tiered_example_gate.mjs", "--lane", "release", "--phase", "all") -WorkingDirectory $RanvierWorkspace -LogPath $LogPath))

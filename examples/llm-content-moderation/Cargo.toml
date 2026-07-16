@@ -1,6 +1,7 @@
 [package]
 name = "llm-content-moderation"
 version = "0.1.0"
+publish = false
 edition = "2024"
 description = "M230: LLM Integration Pattern ??AI Content Moderation with Decision Engine"
 

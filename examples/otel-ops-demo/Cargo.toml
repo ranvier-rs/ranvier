@@ -1,6 +1,7 @@
 [package]
 name = "otel-ops-demo"
 version = "0.1.0"
+publish = false
 edition = "2021"
 description = "M154: OTel Ops Playbook — policy enforcement demonstration"
 

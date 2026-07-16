@@ -168,10 +168,10 @@ quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
 proc-macro2 = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
-sqlx = { version = "0.8", features = [
+sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
+    "derive",
     "postgres",
-    "mysql",
     "sqlite",
     "chrono",
     "uuid",

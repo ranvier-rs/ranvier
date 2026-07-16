@@ -71,7 +71,9 @@ where
 
     let key = PrivateKeyDer::try_from(config.private_key)?;
 
-    let mut crypto = rustls::ServerConfig::builder()
+    let provider = rustls::crypto::aws_lc_rs::default_provider();
+    let mut crypto = rustls::ServerConfig::builder_with_provider(Arc::new(provider))
+        .with_safe_default_protocol_versions()?
         .with_no_client_auth()
         .with_single_cert(certs, key)?;
 

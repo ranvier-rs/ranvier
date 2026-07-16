@@ -1,6 +1,7 @@
 [package]
 name = "reference-todo-api"
 version = "0.1.0"
+publish = false
 edition = "2024"
 description = "M219: Reference Application ??Todo API with CRUD, Auth, and testing"
 
