@@ -9,6 +9,55 @@ use ranvier_guard::prelude::*;
 use ranvier_http::guards;
 use ranvier_http::prelude::*;
 use ranvier_runtime::Axon;
+use std::sync::{Arc, Mutex};
+
+#[derive(Clone)]
+struct RecordingGuard {
+    label: &'static str,
+    calls: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl RecordingGuard {
+    fn new(label: &'static str, calls: Arc<Mutex<Vec<&'static str>>>) -> Self {
+        Self { label, calls }
+    }
+}
+
+struct RecordingGuardExec {
+    label: &'static str,
+    calls: Arc<Mutex<Vec<&'static str>>>,
+}
+
+#[async_trait::async_trait]
+impl GuardExec for RecordingGuardExec {
+    async fn exec_guard(&self, _bus: &mut Bus) -> Result<(), GuardRejection> {
+        self.calls
+            .lock()
+            .expect("recording guard calls mutex")
+            .push(self.label);
+        Ok(())
+    }
+}
+
+impl GuardIntegration for RecordingGuard {
+    fn guard_label(&self) -> String {
+        self.label.to_string()
+    }
+
+    fn register(self) -> RegisteredGuard {
+        RegisteredGuard {
+            bus_injectors: Vec::new(),
+            response_extractor: None,
+            response_body_transform: None,
+            exec: Arc::new(RecordingGuardExec {
+                label: self.label,
+                calls: self.calls,
+            }),
+            handles_preflight: false,
+            preflight_config: None,
+        }
+    }
+}
 
 #[derive(Clone, Default)]
 struct OkTransition;
@@ -166,19 +215,87 @@ async fn group_routes_and_plain_routes_can_coexist() {
 }
 
 #[tokio::test]
-async fn deeply_nested_groups_work_up_to_supported_depth() {
-    let ingress = Ranvier::http::<()>().group("/a", |g| {
-        g.group("/b", |b| {
-            b.group("/c", |c| c.get_json_out("", ok_circuit()))
-        })
-    });
+async fn deeply_nested_groups_preserve_prefix_guard_order_and_scope() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let ingress = Ranvier::http::<()>()
+        .guard(RecordingGuard::new("global", Arc::clone(&calls)))
+        .group("/api", |api| {
+            api.guard(RecordingGuard::new("api", Arc::clone(&calls)))
+                .group("/v1", |v1| {
+                    v1.guard(RecordingGuard::new("v1", Arc::clone(&calls)))
+                        .group("/accounts", |accounts| {
+                            accounts
+                                .guard(RecordingGuard::new("accounts", Arc::clone(&calls)))
+                                .group("/internal", |internal| {
+                                    internal
+                                        .guard(RecordingGuard::new("internal", Arc::clone(&calls)))
+                                        .get_json_out("/ready", ok_circuit())
+                                })
+                                .get_json_out("/summary", ok_circuit())
+                        })
+                })
+                .get_json_out("/status", ok_circuit())
+        });
+
+    let descriptors = ingress.route_descriptors();
+    let ready = descriptors
+        .iter()
+        .find(|descriptor| descriptor.path_pattern() == "/api/v1/accounts/internal/ready")
+        .expect("deep route descriptor should exist");
+    let ready_guards = ready.guard_descriptors();
+    assert_eq!(
+        ready_guards
+            .iter()
+            .map(HttpGuardDescriptor::name)
+            .collect::<Vec<_>>(),
+        vec!["global", "api", "v1", "accounts", "internal"]
+    );
+    assert_eq!(
+        ready_guards
+            .iter()
+            .map(HttpGuardDescriptor::scope_path)
+            .collect::<Vec<_>>(),
+        vec![
+            None,
+            Some("/api"),
+            Some("/api/v1"),
+            Some("/api/v1/accounts"),
+            Some("/api/v1/accounts/internal"),
+        ]
+    );
 
     let app = TestApp::new(ingress, ());
     let res = app
-        .send(TestRequest::get("/a/b/c"))
+        .send(TestRequest::get("/api/v1/accounts/internal/ready"))
         .await
         .expect("request should succeed");
     assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        *calls.lock().expect("recorded deep guard order"),
+        vec!["global", "api", "v1", "accounts", "internal"]
+    );
+
+    calls.lock().expect("clear recorded guard order").clear();
+    let res = app
+        .send(TestRequest::get("/api/v1/accounts/summary"))
+        .await
+        .expect("sibling request should succeed");
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        *calls.lock().expect("recorded sibling guard order"),
+        vec!["global", "api", "v1", "accounts"]
+    );
+
+    calls.lock().expect("clear recorded guard order").clear();
+    let res = app
+        .send(TestRequest::get("/api/status"))
+        .await
+        .expect("parent request should succeed");
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        *calls.lock().expect("recorded parent guard order"),
+        vec!["global", "api"]
+    );
 }
 
 #[tokio::test]

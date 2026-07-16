@@ -2776,8 +2776,8 @@ where
     ///
     /// # Nesting
     ///
-    /// Groups can be nested up to 2 levels deep (group inside a group).
-    /// Attempting to nest further will panic.
+    /// Groups can be nested without a framework-imposed depth limit. Prefixes
+    /// and guards compose in declaration order at every level.
     ///
     /// # Example
     ///
@@ -2803,7 +2803,6 @@ where
         let group = RouteGroup {
             ingress: self,
             prefix: prefix.to_string(),
-            depth: 0,
         };
         let group = f(group);
         let mut ingress = group.ingress;
@@ -4833,7 +4832,8 @@ where
 ///
 /// # Nesting
 ///
-/// Groups can be nested up to 2 levels deep. Attempting 3+ levels panics.
+/// Groups can be nested without a framework-imposed depth limit. Prefixes and
+/// guards compose in declaration order at every level.
 ///
 /// # Example
 ///
@@ -4851,7 +4851,6 @@ where
 pub struct RouteGroup<R = ()> {
     ingress: HttpIngress<R>,
     prefix: String,
-    depth: usize,
 }
 
 impl<R> RouteGroup<R>
@@ -4898,17 +4897,8 @@ where
     /// Nested group guards are scoped: they apply only to routes inside the
     /// sub-group and are removed when the sub-group closure returns.
     ///
-    /// # Panics
-    /// Panics if nesting exceeds 2 levels.
     pub fn group(self, prefix: &str, f: impl FnOnce(RouteGroup<R>) -> RouteGroup<R>) -> Self {
-        assert!(
-            self.depth < 2,
-            "Route groups cannot be nested more than 2 levels deep (attempted depth: {})",
-            self.depth + 2
-        );
-
         let my_prefix = self.prefix;
-        let my_depth = self.depth;
         let ingress = self.ingress;
 
         let saved_injectors_len = ingress.bus_injectors.len();
@@ -4920,7 +4910,6 @@ where
         let nested = RouteGroup {
             ingress,
             prefix: format!("{}{}", my_prefix, prefix),
-            depth: my_depth + 1,
         };
         let nested = f(nested);
         let mut ingress = nested.ingress;
@@ -4938,7 +4927,6 @@ where
         RouteGroup {
             ingress,
             prefix: my_prefix,
-            depth: my_depth,
         }
     }
 
