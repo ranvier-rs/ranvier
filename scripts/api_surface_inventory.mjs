@@ -192,6 +192,16 @@ function countBy(items, field) {
 
 function buildInventory() {
   const policy = readJson(policyPath);
+  if (!/^\d+\.\d+\.\d+$/.test(policy.rustdoc_toolchain ?? '')) {
+    throw new Error('API policy rustdoc_toolchain must be an exact Rust version');
+  }
+  const rustc = run('rustc', ['--version']).trim();
+  if (!rustc.startsWith(`rustc ${policy.rustdoc_toolchain} `)) {
+    throw new Error(
+      `API inventory requires rustc ${policy.rustdoc_toolchain}; observed ${rustc}. ` +
+        `Install it and run with RUSTUP_TOOLCHAIN=${policy.rustdoc_toolchain}`
+    );
+  }
   const metadata = JSON.parse(run('cargo', ['metadata', '--no-deps', '--format-version', '1', '--locked']));
   const products = metadata.packages
     .map((pkg) => ({
@@ -287,7 +297,7 @@ function buildInventory() {
       policy: '.ranvier-api-policy.json'
     },
     product_version: policy.product_version,
-    rustc: run('rustc', ['--version']).trim(),
+    rustc,
     rustdoc_format_versions: [...rustdocFormats].sort((left, right) => left - right),
     input_sha256: inputIdentity,
     product_crate_count: crates.length,

@@ -12,7 +12,7 @@
     57
   ],
   "input_sha256": {
-    ".ranvier-api-policy.json": "2b8aa78ce591472a0352eab446af51227e835e71339db1c77694c19e7caa1339",
+    ".ranvier-api-policy.json": "afb24c826f6a76529daf41d2d1ef3dc79d2a5ea6371f0f6853cfc723baaf4ac3",
     "Cargo.toml": "440d6e7cf11bcb30644ca6f1ead0310cba39690502de16209033caef906bfc7b",
     "core/Cargo.toml": "3f320ee0cad2525275b43b3658b6224784d0413abb702c9e4d9b825d3415564e",
     "extensions/audit/Cargo.toml": "6e09af66c9c4a531dc07b2ec8ff91254b668df48148f961e13b801f3a04a8cb4",

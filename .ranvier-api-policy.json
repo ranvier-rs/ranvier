@@ -1,6 +1,7 @@
 {
   "schema_version": "1.0.0",
   "product_version": "0.51.0",
+  "rustdoc_toolchain": "1.95.0",
   "tiers": [
     "Stable Candidate",
     "Experimental",

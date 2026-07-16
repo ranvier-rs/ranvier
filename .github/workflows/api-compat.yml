@@ -37,10 +37,13 @@ jobs:
     name: Candidate API baseline and SemVer
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
+      # Rustdoc JSON is compiler-owned. Keep the API inventory on the exact
+      # reviewed toolchain from .ranvier-api-policy.json; current stable is
+      # covered independently by CI's cross-platform compile matrix.
+      - uses: dtolnay/rust-toolchain@1.95.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-semver-checks --version 0.48.0 --locked
       - run: node scripts/api_surface_inventory.mjs --check
