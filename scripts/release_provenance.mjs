@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import path from 'node:path';
 import os from 'node:os';
@@ -151,7 +151,7 @@ mkdirSync(output, { recursive: true });
 const commands = [];
 const artifacts = [];
 for (const pkg of publishable) {
-  const command = run('cargo', ['package', '--locked', '-p', pkg.name]);
+  const command = run('cargo', ['package', '--locked', '--no-verify', '-p', pkg.name]);
   commands.push(command.command);
   const source = path.join(metadata.target_directory, 'package', `${pkg.name}-${pkg.version}.crate`);
   invariant(existsSync(source), `cargo package artifact missing: ${source}`);
@@ -168,6 +168,45 @@ for (const pkg of publishable) {
     sha256: sha256(bytes),
     embedded_vcs_sha: commit
   });
+}
+
+const verificationRoot = mkdtempSync(path.join(metadata.target_directory, 'release-cohort-'));
+let cohortVerification;
+try {
+  const members = [];
+  for (const pkg of publishable) {
+    const member = `${pkg.name}-${pkg.version}`;
+    members.push(member);
+    const artifact = path.join(output, `${member}.crate`);
+    const extraction = run('tar', ['-xzf', artifact, '-C', verificationRoot]);
+    commands.push(extraction.command);
+  }
+
+  const quotedMembers = members.map((member) => `  "${member}",`).join('\n');
+  const patches = publishable
+    .map((pkg) => `${JSON.stringify(pkg.name)} = { path = ${JSON.stringify(`${pkg.name}-${pkg.version}`)} }`)
+    .join('\n');
+  const cohortManifest = `[workspace]\nresolver = "2"\nmembers = [\n${quotedMembers}\n]\n\n[patch.crates-io]\n${patches}\n`;
+  const cohortManifestPath = path.join(verificationRoot, 'Cargo.toml');
+  writeFileSync(cohortManifestPath, cohortManifest, 'utf8');
+  copyFileSync(path.join(workspaceRoot, 'Cargo.lock'), path.join(verificationRoot, 'Cargo.lock'));
+
+  const verification = run(
+    'cargo',
+    ['check', '--workspace', '--all-features', '--locked', '--offline'],
+    { cwd: verificationRoot }
+  );
+  commands.push(verification.command);
+  cohortVerification = {
+    mode: 'extracted-package-cohort',
+    publishable_crates: publishable.length,
+    external_dependencies: 'workspace Cargo.lock, offline',
+    internal_dependencies: '12 extracted .crate artifacts via local crates.io patch',
+    command: verification.command,
+    manifest_sha256: sha256(Buffer.from(cohortManifest))
+  };
+} finally {
+  rmSync(verificationRoot, { recursive: true, force: true });
 }
 
 const sourceArchive = `ranvier-source-${commit}.tar.gz`;
@@ -206,6 +245,7 @@ const provenance = {
     release: os.release()
   },
   commands,
+  cohort_verification: cohortVerification,
   artifacts,
   checksum_manifest: { file: 'SHA256SUMS', sha256: sha256(Buffer.from(checksums)) },
   non_claims: [
