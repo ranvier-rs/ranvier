@@ -28,10 +28,10 @@
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2416,
+  "public_item_count": 2481,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2224,
+    "Experimental": 2289,
     "Stable Candidate": 184
   },
   "crates": [
@@ -3292,23 +3292,23 @@
         "default",
         "streaming"
       ],
-      "public_item_count": 599,
+      "public_item_count": 664,
       "counts_by_kind": {
         "assoc_type": 11,
         "constant": 2,
-        "enum": 45,
-        "function": 171,
+        "enum": 53,
+        "function": 189,
         "macro": 3,
-        "module": 22,
-        "struct": 85,
+        "module": 23,
+        "struct": 95,
         "struct_field": 144,
         "trait": 31,
         "type_alias": 5,
-        "variant": 80
+        "variant": 108
       },
       "counts_by_stability": {
         "Deprecated": 6,
-        "Experimental": 463,
+        "Experimental": 528,
         "Stable Candidate": 130
       },
       "facade_reexport_count": 0,
@@ -4913,6 +4913,160 @@
         {
           "path": "ranvier_core::config::RanvierConfig::tls",
           "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/config.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::config::ResolvedConfigError",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/config.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::config::ResolvedConfigError::Config",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/config.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::config::ResolvedConfigError::InvalidRuntimePolicy",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/config.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::config::ResolvedRuntimeConfig",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/config.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::config::ResolvedRuntimeConfig::config",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/config.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::config::ResolvedRuntimeConfig::from_file",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/config.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::config::ResolvedRuntimeConfig::from_file_for",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/config.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::config::ResolvedRuntimeConfig::load",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/config.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::config::ResolvedRuntimeConfig::load_for",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/config.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::config::ResolvedRuntimeConfig::profile",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/config.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::config::ResolvedRuntimeConfig::validate_startup",
+          "kind": "function",
           "origin": "direct",
           "target": null,
           "stability": "Experimental",
@@ -7977,10 +8131,52 @@
           }
         },
         {
+          "path": "ranvier_core::prelude::ResolvedConfigError",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "crate::config::ResolvedConfigError",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::prelude::ResolvedRuntimeConfig",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "crate::config::ResolvedRuntimeConfig",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier_core::prelude::ResourceRequirement",
           "kind": "trait",
           "origin": "reexport",
           "target": "crate::transition::ResourceRequirement",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::prelude::RuntimeProfile",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "crate::runtime_policy::RuntimeProfile",
           "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": null,
@@ -8079,6 +8275,20 @@
           "kind": "struct",
           "origin": "reexport",
           "target": "crate::config::ServerConfig",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::prelude::StartupPolicyStatus",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "crate::runtime_policy::StartupPolicyStatus",
           "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": null,
@@ -8268,6 +8478,706 @@
           "deprecation": null,
           "source": {
             "file": "core/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy",
+          "kind": "module",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::PolicyComponent",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::PolicyComponent::new",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::PolicyField",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::PolicyField::new",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::PolicyObservation",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::PolicyObservation::new",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::PolicyValue",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::PolicyValue::Bool",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::PolicyValue::Configured",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::PolicyValue::Count",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::PolicyValue::DurationMs",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::PolicyValue::Label",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::PolicyValue::RatioBasisPoints",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::RuntimeProfile",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::RuntimeProfile::as_str",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::RuntimeProfile::Development",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::RuntimeProfile::Production",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::RuntimeProfileParseError",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCode",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCode::AuditRetentionUnbounded",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCode::AuditRotationUnbounded",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCode::ConfigEnvValueInvalid",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCode::ConfigValueInvalid",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCode::DistributedFailureModeUnset",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCode::InspectorAuthMissing",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCode::InspectorBindImplicit",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCode::InspectorCorsPermissive",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCode::InspectorRetentionUnbounded",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCode::LegacyModeConflict",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCode::LegacyModeInvalid",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCode::LocalRateLimitUnbounded",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCode::RuntimeProfileInvalid",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCode::UnsafeAckExpired",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCode::UnsafeAckInvalid",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyCodeParseError",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyContribution",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyContribution::new",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyError",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyError::report",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyError::unacknowledged_count",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyReport",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyReport::profile",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyReport::schema_version",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyReport::status",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyReport::violation_codes",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyStatus",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyStatus::AcknowledgedUnsafe",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyStatus::Invalid",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::runtime_policy::StartupPolicyStatus::Valid",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/runtime_policy.rs"
           }
         },
         {

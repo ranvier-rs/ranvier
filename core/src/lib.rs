@@ -21,6 +21,7 @@ pub mod metadata;
 pub mod never;
 pub mod outcome;
 pub mod policy;
+pub mod runtime_policy;
 pub mod saga;
 pub mod schematic;
 pub mod static_gen;
@@ -48,7 +49,7 @@ pub mod prelude {
     pub use crate::bus::{Bus, BusAccessError, BusAccessPolicy, BusTypeRef};
     pub use crate::config::{
         ConfigError, InspectorConfig, LogFormat, LoggingConfig, OtlpProtocol, RanvierConfig,
-        ServerConfig, TelemetryConfig, TlsConfig,
+        ResolvedConfigError, ResolvedRuntimeConfig, ServerConfig, TelemetryConfig, TlsConfig,
     };
     pub use crate::debug::{DebugControl, DebugState};
     pub use crate::error::{RanvierError, TransitionErrorContext};
@@ -60,6 +61,7 @@ pub mod prelude {
     pub use crate::never::Never;
     pub use crate::outcome::{BranchId, NodeId, Outcome};
     pub use crate::policy::{DynamicPolicy, PolicyRegistry};
+    pub use crate::runtime_policy::{RuntimeProfile, StartupPolicyStatus};
     pub use crate::saga::{SagaCompensationRegistry, SagaPolicy, SagaStack, SagaTask};
     pub use crate::schematic::{Edge, EdgeType, Node, NodeKind, SchemaMigrationMapper, Schematic};
     pub use crate::tenant::{IsolationPolicy, TenantExtractor, TenantId, TenantResolver};

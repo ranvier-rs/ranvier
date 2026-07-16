@@ -37,8 +37,16 @@
 //! inspector.enabled = false
 //! ```
 
+use crate::runtime_policy::{
+    ComponentPolicyReport, PolicyComponent, PolicyField, PolicyObservation, PolicyValue,
+    RuntimeProfile, RuntimeProfileSource, StartupPolicyCode, StartupPolicyContribution,
+    StartupPolicyError, StartupPolicyReport, StartupPolicyViolation, UnsafeAcknowledgement,
+    evaluate_startup_policy, invalid_startup_policy,
+};
+use chrono::{NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 /// Top-level Ranvier configuration.
@@ -254,6 +262,451 @@ pub enum ConfigError {
     ProfileNotFound(String),
 }
 
+/// Errors produced only by the additive resolved runtime-config path.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ResolvedConfigError {
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error(transparent)]
+    InvalidRuntimePolicy(StartupPolicyError),
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+struct RuntimeDocument {
+    runtime: RuntimeSection,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct RuntimeSection {
+    profile: Option<String>,
+    unsafe_acknowledgements: Vec<UnsafeAcknowledgementInput>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct UnsafeAcknowledgementInput {
+    policy_code: Option<String>,
+    id: Option<String>,
+    owner: Option<String>,
+    rationale: Option<String>,
+    review_on: Option<String>,
+    expires_on: Option<String>,
+}
+
+/// Configuration resolved with one explicit runtime safety intent.
+///
+/// This additive wrapper preserves the public layout and legacy behavior of
+/// [`RanvierConfig`] while enabling strict parsing and pre-side-effect startup
+/// policy validation.
+#[derive(Clone)]
+pub struct ResolvedRuntimeConfig {
+    profile: RuntimeProfile,
+    profile_source: RuntimeProfileSource,
+    config: RanvierConfig,
+    acknowledgements: Vec<UnsafeAcknowledgement>,
+}
+
+impl std::fmt::Debug for ResolvedRuntimeConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResolvedRuntimeConfig")
+            .field("profile", &self.profile)
+            .field("profile_source", &self.profile_source)
+            .field("config", &"<redacted>")
+            .field("acknowledgement_count", &self.acknowledgements.len())
+            .finish()
+    }
+}
+
+impl ResolvedRuntimeConfig {
+    /// Discover `ranvier.toml`, resolve runtime intent, and apply strict
+    /// environment overrides.
+    pub fn load() -> Result<Self, ResolvedConfigError> {
+        Self::load_with_explicit_profile(None)
+    }
+
+    /// Load configuration while giving a typed runtime profile highest
+    /// precedence.
+    pub fn load_for(profile: RuntimeProfile) -> Result<Self, ResolvedConfigError> {
+        Self::load_with_explicit_profile(Some(profile))
+    }
+
+    /// Load a specific file and resolve runtime intent from file/environment.
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Self, ResolvedConfigError> {
+        Self::from_file_with_explicit_profile(path, None)
+    }
+
+    /// Load a specific file with a typed runtime profile at highest precedence.
+    pub fn from_file_for(
+        path: impl AsRef<Path>,
+        profile: RuntimeProfile,
+    ) -> Result<Self, ResolvedConfigError> {
+        Self::from_file_with_explicit_profile(path, Some(profile))
+    }
+
+    pub const fn profile(&self) -> RuntimeProfile {
+        self.profile
+    }
+
+    pub fn config(&self) -> &RanvierConfig {
+        &self.config
+    }
+
+    /// Aggregate core and adapter policy without starting listeners, tasks,
+    /// migrations, dependency loops, or durable writes.
+    pub fn validate_startup(
+        &self,
+        contributions: Vec<StartupPolicyContribution>,
+    ) -> Result<StartupPolicyReport, StartupPolicyError> {
+        let mut components = Vec::with_capacity(contributions.len() + 1);
+        let mut violations = Vec::new();
+        for contribution in contributions {
+            let (report, current_violations) = contribution.into_report_and_violations();
+            components.push(report);
+            violations.extend(current_violations);
+        }
+        for acknowledgement in &self.acknowledgements {
+            violations.extend(acknowledgement.violations_on(Utc::now().date_naive()));
+        }
+        components.push(self.core_policy_report());
+        evaluate_startup_policy(
+            self.profile,
+            self.profile_source,
+            &self.acknowledgements,
+            components,
+            violations,
+        )
+    }
+
+    fn load_with_explicit_profile(
+        explicit_profile: Option<RuntimeProfile>,
+    ) -> Result<Self, ResolvedConfigError> {
+        if let Some(path) = RanvierConfig::find_config_file() {
+            Self::from_file_with_explicit_profile(path, explicit_profile)
+        } else {
+            let mut environment = |key: &str| std::env::var(key).ok();
+            Self::resolve_document_with_environment("", explicit_profile, &mut environment)
+        }
+    }
+
+    fn from_file_with_explicit_profile(
+        path: impl AsRef<Path>,
+        explicit_profile: Option<RuntimeProfile>,
+    ) -> Result<Self, ResolvedConfigError> {
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path).map_err(|source| ConfigError::ReadFile {
+            path: path.display().to_string(),
+            source,
+        })?;
+        let mut environment = |key: &str| std::env::var(key).ok();
+        Self::resolve_document_with_environment(&content, explicit_profile, &mut environment)
+    }
+
+    fn resolve_document_with_environment<F>(
+        content: &str,
+        explicit_profile: Option<RuntimeProfile>,
+        environment: &mut F,
+    ) -> Result<Self, ResolvedConfigError>
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
+        let mut config: RanvierConfig = toml::from_str(content).map_err(ConfigError::from)?;
+        let runtime_document: RuntimeDocument =
+            toml::from_str(content).map_err(ConfigError::from)?;
+
+        if let Some(profile_name) = environment("RANVIER_PROFILE") {
+            config.apply_profile(&profile_name)?;
+        }
+
+        let mut violations = config.apply_env_overrides_collect(environment);
+        violations.extend(config.value_violations());
+
+        let file_profile = parse_runtime_profile(
+            runtime_document.runtime.profile.as_deref(),
+            PolicyField::RUNTIME_PROFILE,
+            &mut violations,
+        );
+        let environment_profile_raw = environment("RANVIER_RUNTIME_PROFILE");
+        let environment_profile = parse_runtime_profile(
+            environment_profile_raw.as_deref(),
+            PolicyField::RUNTIME_PROFILE,
+            &mut violations,
+        );
+
+        let (profile, profile_source) = if let Some(profile) = explicit_profile {
+            (profile, RuntimeProfileSource::Explicit)
+        } else if let Some(profile) = environment_profile {
+            (profile, RuntimeProfileSource::Environment)
+        } else if let Some(profile) = file_profile {
+            (profile, RuntimeProfileSource::File)
+        } else {
+            (RuntimeProfile::Development, RuntimeProfileSource::Default)
+        };
+
+        let (acknowledgements, acknowledgement_violations) =
+            parse_acknowledgements(runtime_document.runtime.unsafe_acknowledgements);
+        violations.extend(acknowledgement_violations);
+        violations.sort_by_key(|violation| (violation.component, violation.code, violation.field));
+
+        let resolved = Self {
+            profile,
+            profile_source,
+            config,
+            acknowledgements,
+        };
+
+        if !violations.is_empty() {
+            let error = invalid_startup_policy(
+                resolved.profile,
+                resolved.profile_source,
+                &resolved.acknowledgements,
+                vec![resolved.core_policy_report()],
+                violations,
+            );
+            return Err(ResolvedConfigError::InvalidRuntimePolicy(error));
+        }
+
+        Ok(resolved)
+    }
+
+    fn core_policy_report(&self) -> ComponentPolicyReport {
+        let config = &self.config;
+        ComponentPolicyReport::new(
+            PolicyComponent::CORE,
+            vec![
+                PolicyObservation::new(
+                    PolicyField::RUNTIME_PROFILE,
+                    PolicyValue::Label(match self.profile {
+                        RuntimeProfile::Development => "development",
+                        RuntimeProfile::Production => "production",
+                    }),
+                ),
+                PolicyObservation::new(
+                    PolicyField::RUNTIME_PROFILE_SOURCE,
+                    PolicyValue::Label(match self.profile_source {
+                        RuntimeProfileSource::Explicit => "explicit",
+                        RuntimeProfileSource::Environment => "environment",
+                        RuntimeProfileSource::File => "file",
+                        RuntimeProfileSource::Default => "default",
+                    }),
+                ),
+                PolicyObservation::new(
+                    PolicyField::SERVER_HOST,
+                    PolicyValue::Label(if is_loopback_host(&config.server.host) {
+                        "loopback"
+                    } else {
+                        "non_loopback"
+                    }),
+                ),
+                PolicyObservation::new(
+                    PolicyField::SERVER_PORT,
+                    PolicyValue::Count(u64::from(config.server.port)),
+                ),
+                PolicyObservation::new(
+                    PolicyField::SERVER_SHUTDOWN_TIMEOUT_SECS,
+                    PolicyValue::DurationMs(
+                        config.server.shutdown_timeout_secs.saturating_mul(1_000),
+                    ),
+                ),
+                PolicyObservation::new(
+                    PolicyField::LOGGING_FORMAT,
+                    PolicyValue::Label(match config.logging.format {
+                        LogFormat::Json => "json",
+                        LogFormat::Pretty => "pretty",
+                        LogFormat::Compact => "compact",
+                    }),
+                ),
+                PolicyObservation::new(
+                    PolicyField::LOGGING_LEVEL,
+                    PolicyValue::Configured(!config.logging.level.trim().is_empty()),
+                ),
+                PolicyObservation::new(
+                    PolicyField::TLS_ENABLED,
+                    PolicyValue::Bool(config.tls.enabled),
+                ),
+                PolicyObservation::new(
+                    PolicyField::TLS_CERT_CONFIGURED,
+                    PolicyValue::Configured(!config.tls.cert_path.trim().is_empty()),
+                ),
+                PolicyObservation::new(
+                    PolicyField::TLS_KEY_CONFIGURED,
+                    PolicyValue::Configured(!config.tls.key_path.trim().is_empty()),
+                ),
+                PolicyObservation::new(
+                    PolicyField::INSPECTOR_ENABLED,
+                    PolicyValue::Bool(config.inspector.enabled),
+                ),
+                PolicyObservation::new(
+                    PolicyField::INSPECTOR_PORT,
+                    PolicyValue::Count(u64::from(config.inspector.port)),
+                ),
+                PolicyObservation::new(
+                    PolicyField::TELEMETRY_ENDPOINT_CONFIGURED,
+                    PolicyValue::Configured(config.telemetry.otlp_endpoint.is_some()),
+                ),
+                PolicyObservation::new(
+                    PolicyField::TELEMETRY_PROTOCOL,
+                    PolicyValue::Label(match config.telemetry.otlp_protocol {
+                        OtlpProtocol::Grpc => "grpc",
+                        OtlpProtocol::Http => "http",
+                    }),
+                ),
+                PolicyObservation::new(
+                    PolicyField::TELEMETRY_SERVICE_NAME_CONFIGURED,
+                    PolicyValue::Configured(!config.telemetry.service_name.trim().is_empty()),
+                ),
+                PolicyObservation::new(
+                    PolicyField::TELEMETRY_SAMPLE_RATIO,
+                    PolicyValue::RatioBasisPoints(
+                        (config.telemetry.sample_ratio * 10_000.0).round() as u16,
+                    ),
+                ),
+            ],
+        )
+    }
+}
+
+fn parse_runtime_profile(
+    raw: Option<&str>,
+    field: PolicyField,
+    violations: &mut Vec<StartupPolicyViolation>,
+) -> Option<RuntimeProfile> {
+    raw.and_then(|value| match value.parse::<RuntimeProfile>() {
+        Ok(profile) => Some(profile),
+        Err(_) => {
+            violations.push(StartupPolicyViolation::new(
+                StartupPolicyCode::RuntimeProfileInvalid,
+                PolicyComponent::CORE,
+                field,
+            ));
+            None
+        }
+    })
+}
+
+fn parse_acknowledgements(
+    inputs: Vec<UnsafeAcknowledgementInput>,
+) -> (Vec<UnsafeAcknowledgement>, Vec<StartupPolicyViolation>) {
+    let today = Utc::now().date_naive();
+    let mut acknowledgements = Vec::new();
+    let mut violations = Vec::new();
+    let mut seen_codes = HashSet::new();
+
+    for input in inputs {
+        let mut input_violations = Vec::new();
+        let code = input
+            .policy_code
+            .as_deref()
+            .and_then(|raw| raw.parse::<StartupPolicyCode>().ok());
+        if code.is_none() {
+            input_violations.push(invalid_ack_field(PolicyField::ACKNOWLEDGEMENT_CODE));
+        }
+        let review_on = parse_acknowledgement_date(
+            input.review_on.as_deref(),
+            PolicyField::ACKNOWLEDGEMENT_REVIEW_ON,
+            &mut input_violations,
+        );
+        let expires_on = parse_acknowledgement_date(
+            input.expires_on.as_deref(),
+            PolicyField::ACKNOWLEDGEMENT_EXPIRES_ON,
+            &mut input_violations,
+        );
+
+        let id = input.id.unwrap_or_default();
+        let owner = input.owner.unwrap_or_default();
+        let rationale = input.rationale.unwrap_or_default();
+        if id.trim().is_empty() {
+            input_violations.push(invalid_ack_field(PolicyField::ACKNOWLEDGEMENT_ID));
+        }
+        if owner.trim().is_empty() {
+            input_violations.push(invalid_ack_field(PolicyField::ACKNOWLEDGEMENT_OWNER));
+        }
+        if rationale.trim().is_empty() {
+            input_violations.push(invalid_ack_field(PolicyField::ACKNOWLEDGEMENT_RATIONALE));
+        }
+
+        if !input_violations.is_empty() {
+            violations.extend(input_violations);
+            continue;
+        }
+
+        let Some((code, review_on, expires_on)) = code
+            .zip(review_on)
+            .zip(expires_on)
+            .map(|((code, review_on), expires_on)| (code, review_on, expires_on))
+        else {
+            continue;
+        };
+
+        if !seen_codes.insert(code) {
+            violations.push(invalid_ack_field(PolicyField::ACKNOWLEDGEMENT_CODE));
+            continue;
+        }
+
+        match UnsafeAcknowledgement::try_new(code, id, owner, rationale, review_on, expires_on) {
+            Ok(acknowledgement) => {
+                let current_violations = acknowledgement.violations_on(today);
+                if current_violations.is_empty() {
+                    acknowledgements.push(acknowledgement);
+                } else {
+                    violations.extend(current_violations);
+                }
+            }
+            Err(current_violations) => violations.extend(current_violations),
+        }
+    }
+
+    (acknowledgements, violations)
+}
+
+fn parse_acknowledgement_date(
+    raw: Option<&str>,
+    field: PolicyField,
+    violations: &mut Vec<StartupPolicyViolation>,
+) -> Option<NaiveDate> {
+    raw.and_then(|value| match NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+        Ok(date) => Some(date),
+        Err(_) => {
+            violations.push(invalid_ack_field(field));
+            None
+        }
+    })
+}
+
+fn invalid_ack_field(field: PolicyField) -> StartupPolicyViolation {
+    StartupPolicyViolation::new(
+        StartupPolicyCode::UnsafeAckInvalid,
+        PolicyComponent::CORE,
+        field,
+    )
+}
+
+fn invalid_environment(field: PolicyField) -> StartupPolicyViolation {
+    StartupPolicyViolation::new(
+        StartupPolicyCode::ConfigEnvValueInvalid,
+        PolicyComponent::CORE,
+        field,
+    )
+}
+
+fn invalid_config_value(field: PolicyField) -> StartupPolicyViolation {
+    StartupPolicyViolation::new(
+        StartupPolicyCode::ConfigValueInvalid,
+        PolicyComponent::CORE,
+        field,
+    )
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
 impl RanvierConfig {
     /// Load configuration from a specific file path.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
@@ -359,6 +812,147 @@ impl RanvierConfig {
         }
 
         Ok(())
+    }
+
+    fn apply_env_overrides_collect<F>(&mut self, environment: &mut F) -> Vec<StartupPolicyViolation>
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
+        let mut violations = Vec::new();
+
+        if let Some(value) = environment("RANVIER_SERVER_HOST") {
+            if value.trim().is_empty() {
+                violations.push(invalid_environment(PolicyField::SERVER_HOST));
+            } else {
+                self.server.host = value;
+            }
+        }
+        if let Some(value) = environment("RANVIER_SERVER_PORT") {
+            match value.parse::<u16>() {
+                Ok(port) => self.server.port = port,
+                Err(_) => violations.push(invalid_environment(PolicyField::SERVER_PORT)),
+            }
+        }
+        if let Some(value) = environment("RANVIER_SERVER_SHUTDOWN_TIMEOUT_SECS") {
+            match value.parse::<u64>() {
+                Ok(timeout) => self.server.shutdown_timeout_secs = timeout,
+                Err(_) => violations.push(invalid_environment(
+                    PolicyField::SERVER_SHUTDOWN_TIMEOUT_SECS,
+                )),
+            }
+        }
+        if let Some(value) = environment("RANVIER_LOGGING_FORMAT") {
+            match value.to_ascii_lowercase().as_str() {
+                "json" => self.logging.format = LogFormat::Json,
+                "pretty" => self.logging.format = LogFormat::Pretty,
+                "compact" => self.logging.format = LogFormat::Compact,
+                _ => violations.push(invalid_environment(PolicyField::LOGGING_FORMAT)),
+            }
+        }
+        if let Some(value) = environment("RANVIER_LOGGING_LEVEL") {
+            if tracing_subscriber::EnvFilter::try_new(&value).is_ok() {
+                self.logging.level = value;
+            } else {
+                violations.push(invalid_environment(PolicyField::LOGGING_LEVEL));
+            }
+        }
+        if let Some(value) = environment("RUST_LOG")
+            && tracing_subscriber::EnvFilter::try_new(&value).is_err()
+        {
+            violations.push(invalid_environment(PolicyField::LOGGING_LEVEL));
+        }
+        if let Some(value) = environment("RANVIER_TLS_ENABLED") {
+            match value.parse::<bool>() {
+                Ok(enabled) => self.tls.enabled = enabled,
+                Err(_) => violations.push(invalid_environment(PolicyField::TLS_ENABLED)),
+            }
+        }
+        if let Some(value) = environment("RANVIER_TLS_CERT_PATH") {
+            self.tls.cert_path = value;
+        }
+        if let Some(value) = environment("RANVIER_TLS_KEY_PATH") {
+            self.tls.key_path = value;
+        }
+        if let Some(value) = environment("RANVIER_INSPECTOR_ENABLED") {
+            match value.parse::<bool>() {
+                Ok(enabled) => self.inspector.enabled = enabled,
+                Err(_) => violations.push(invalid_environment(PolicyField::INSPECTOR_ENABLED)),
+            }
+        }
+        if let Some(value) = environment("RANVIER_INSPECTOR_PORT") {
+            match value.parse::<u16>() {
+                Ok(port) => self.inspector.port = port,
+                Err(_) => violations.push(invalid_environment(PolicyField::INSPECTOR_PORT)),
+            }
+        }
+        if let Some(value) = environment("RANVIER_TELEMETRY_OTLP_ENDPOINT") {
+            if value.trim().is_empty() {
+                violations.push(invalid_environment(
+                    PolicyField::TELEMETRY_ENDPOINT_CONFIGURED,
+                ));
+            } else {
+                self.telemetry.otlp_endpoint = Some(value);
+            }
+        }
+        if let Some(value) = environment("RANVIER_TELEMETRY_OTLP_PROTOCOL") {
+            match value.to_ascii_lowercase().as_str() {
+                "grpc" => self.telemetry.otlp_protocol = OtlpProtocol::Grpc,
+                "http" => self.telemetry.otlp_protocol = OtlpProtocol::Http,
+                _ => violations.push(invalid_environment(PolicyField::TELEMETRY_PROTOCOL)),
+            }
+        }
+        if let Some(value) = environment("RANVIER_TELEMETRY_SERVICE_NAME") {
+            if value.trim().is_empty() {
+                violations.push(invalid_environment(
+                    PolicyField::TELEMETRY_SERVICE_NAME_CONFIGURED,
+                ));
+            } else {
+                self.telemetry.service_name = value;
+            }
+        }
+        if let Some(value) = environment("RANVIER_TELEMETRY_SAMPLE_RATIO") {
+            match value.parse::<f64>() {
+                Ok(ratio) if ratio.is_finite() && (0.0..=1.0).contains(&ratio) => {
+                    self.telemetry.sample_ratio = ratio;
+                }
+                _ => violations.push(invalid_environment(PolicyField::TELEMETRY_SAMPLE_RATIO)),
+            }
+        }
+
+        violations
+    }
+
+    fn value_violations(&self) -> Vec<StartupPolicyViolation> {
+        let mut violations = Vec::new();
+        if self.server.host.trim().is_empty() {
+            violations.push(invalid_config_value(PolicyField::SERVER_HOST));
+        }
+        if tracing_subscriber::EnvFilter::try_new(&self.logging.level).is_err() {
+            violations.push(invalid_config_value(PolicyField::LOGGING_LEVEL));
+        }
+        if self.logging.module_levels.iter().any(|(module, level)| {
+            module.trim().is_empty()
+                || tracing_subscriber::EnvFilter::try_new(format!("{module}={level}")).is_err()
+        }) {
+            violations.push(invalid_config_value(PolicyField::LOGGING_LEVEL));
+        }
+        if self.telemetry.service_name.trim().is_empty() {
+            violations.push(invalid_config_value(
+                PolicyField::TELEMETRY_SERVICE_NAME_CONFIGURED,
+            ));
+        }
+        if !self.telemetry.sample_ratio.is_finite()
+            || !(0.0..=1.0).contains(&self.telemetry.sample_ratio)
+        {
+            violations.push(invalid_config_value(PolicyField::TELEMETRY_SAMPLE_RATIO));
+        }
+        if self.tls.enabled && self.tls.cert_path.trim().is_empty() {
+            violations.push(invalid_config_value(PolicyField::TLS_CERT_CONFIGURED));
+        }
+        if self.tls.enabled && self.tls.key_path.trim().is_empty() {
+            violations.push(invalid_config_value(PolicyField::TLS_KEY_CONFIGURED));
+        }
+        violations
     }
 
     /// Apply environment variable overrides.
@@ -853,5 +1447,191 @@ sample_ratio = 0.5
         let cfg = RanvierConfig::default();
         // Should be a no-op, not panic
         cfg.init_telemetry();
+    }
+
+    #[test]
+    fn resolved_runtime_profile_is_separate_from_named_overlay() {
+        let document = r#"
+[runtime]
+profile = "production"
+
+[profile.prod.server]
+port = 4111
+"#;
+        let environment_values =
+            HashMap::from([("RANVIER_PROFILE".to_string(), "prod".to_string())]);
+        let mut environment = |key: &str| environment_values.get(key).cloned();
+
+        let resolved = ResolvedRuntimeConfig::resolve_document_with_environment(
+            document,
+            None,
+            &mut environment,
+        )
+        .unwrap();
+
+        assert_eq!(resolved.profile(), RuntimeProfile::Production);
+        assert_eq!(resolved.profile_source, RuntimeProfileSource::File);
+        assert_eq!(resolved.config().server.port, 4111);
+    }
+
+    #[test]
+    fn resolved_loader_aggregates_strict_environment_errors_without_raw_values() {
+        let environment_values = HashMap::from([
+            (
+                "RANVIER_SERVER_PORT".to_string(),
+                "secret-port-value".to_string(),
+            ),
+            (
+                "RANVIER_INSPECTOR_ENABLED".to_string(),
+                "secret-bool-value".to_string(),
+            ),
+            (
+                "RANVIER_TELEMETRY_SAMPLE_RATIO".to_string(),
+                "9.5".to_string(),
+            ),
+        ]);
+        let mut environment = |key: &str| environment_values.get(key).cloned();
+
+        let error = ResolvedRuntimeConfig::resolve_document_with_environment(
+            "",
+            Some(RuntimeProfile::Production),
+            &mut environment,
+        )
+        .unwrap_err();
+        let ResolvedConfigError::InvalidRuntimePolicy(error) = error else {
+            panic!("expected structured policy violations");
+        };
+
+        let violation_codes = error.report().violation_codes().collect::<Vec<_>>();
+        assert_eq!(violation_codes.len(), 3);
+        assert!(
+            violation_codes
+                .iter()
+                .all(|code| { *code == StartupPolicyCode::ConfigEnvValueInvalid })
+        );
+        let serialized = serde_json::to_string(error.report()).unwrap();
+        assert!(!serialized.contains("secret-port-value"));
+        assert!(!serialized.contains("secret-bool-value"));
+    }
+
+    #[test]
+    fn invalid_lower_precedence_profile_is_not_silently_ignored() {
+        let environment_values =
+            HashMap::from([("RANVIER_RUNTIME_PROFILE".to_string(), "prod".to_string())]);
+        let mut environment = |key: &str| environment_values.get(key).cloned();
+
+        let error = ResolvedRuntimeConfig::resolve_document_with_environment(
+            "",
+            Some(RuntimeProfile::Production),
+            &mut environment,
+        )
+        .unwrap_err();
+        let ResolvedConfigError::InvalidRuntimePolicy(error) = error else {
+            panic!("expected invalid runtime profile");
+        };
+
+        assert_eq!(error.unacknowledged_count(), 1);
+        assert_eq!(
+            error.report().violation_codes().collect::<Vec<_>>(),
+            vec![StartupPolicyCode::RuntimeProfileInvalid]
+        );
+    }
+
+    #[test]
+    fn acknowledgement_makes_unsafe_state_visible_without_leaking_rationale() {
+        let document = r#"
+[runtime]
+profile = "production"
+
+[[runtime.unsafe_acknowledgements]]
+policy_code = "INSPECTOR_AUTH_MISSING"
+id = "INC-42"
+owner = "release-owner"
+rationale = "sentinel-private-rationale"
+review_on = "2099-01-01"
+expires_on = "2099-01-02"
+"#;
+        let mut environment = |_key: &str| None;
+        let resolved = ResolvedRuntimeConfig::resolve_document_with_environment(
+            document,
+            None,
+            &mut environment,
+        )
+        .unwrap();
+        assert!(!format!("{resolved:?}").contains("sentinel-private-rationale"));
+        let violation = StartupPolicyViolation::new(
+            StartupPolicyCode::InspectorAuthMissing,
+            PolicyComponent::new("inspector"),
+            PolicyField::new("inspector_auth_configured"),
+        );
+
+        let contribution = StartupPolicyContribution::new(
+            PolicyComponent::new("inspector"),
+            vec![],
+            vec![(violation.code, violation.field)],
+        );
+        let report = resolved.validate_startup(vec![contribution]).unwrap();
+        assert_eq!(
+            report.status(),
+            crate::runtime_policy::StartupPolicyStatus::AcknowledgedUnsafe
+        );
+        let serialized = serde_json::to_string(&report).unwrap();
+        assert!(serialized.contains("INC-42"));
+        assert!(!serialized.contains("sentinel-private-rationale"));
+    }
+
+    #[test]
+    fn effective_policy_projection_contains_no_raw_configuration_strings() {
+        let document = r#"
+[runtime]
+profile = "production"
+
+[server]
+host = "sentinel-secret-host"
+
+[tls]
+enabled = false
+cert_path = "sentinel-secret-cert-path"
+key_path = "sentinel-secret-key-path"
+
+[telemetry]
+otlp_endpoint = "https://sentinel-secret-collector"
+service_name = "sentinel-secret-service"
+"#;
+        let mut environment = |_key: &str| None;
+        let resolved = ResolvedRuntimeConfig::resolve_document_with_environment(
+            document,
+            None,
+            &mut environment,
+        )
+        .unwrap();
+        let report = resolved.validate_startup(vec![]).unwrap();
+        let serialized = serde_json::to_string(&report).unwrap();
+        let debug = format!("{resolved:?}");
+
+        assert!(!serialized.contains("sentinel-secret-host"));
+        assert!(!serialized.contains("sentinel-secret-cert-path"));
+        assert!(!serialized.contains("sentinel-secret-key-path"));
+        assert!(!serialized.contains("sentinel-secret-collector"));
+        assert!(!serialized.contains("sentinel-secret-service"));
+        assert!(!debug.contains("sentinel-secret-host"));
+        assert!(!debug.contains("sentinel-secret-key-path"));
+        assert!(!debug.contains("sentinel-secret-collector"));
+    }
+
+    #[test]
+    fn legacy_config_shape_ignores_additive_runtime_table() {
+        let config: RanvierConfig = toml::from_str(
+            r#"
+[runtime]
+profile = "production"
+
+[server]
+port = 4222
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.server.port, 4222);
     }
 }
