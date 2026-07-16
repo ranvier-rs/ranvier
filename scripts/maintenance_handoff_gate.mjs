@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const workspaceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -14,6 +16,20 @@ const defaultExercisePath = path.join(
 
 function invariant(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function sha256(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function git(args) {
+  const result = spawnSync('git', args, {
+    cwd: workspaceRoot,
+    encoding: 'utf8',
+    windowsHide: true
+  });
+  invariant(result.status === 0, `git ${args.join(' ')} failed: ${result.stderr ?? ''}`);
+  return result.stdout ?? '';
 }
 
 function parseInstant(value, field) {
@@ -146,14 +162,22 @@ function parseArgs(argv) {
 }
 
 const args = parseArgs(process.argv.slice(2));
-const policy = JSON.parse(readFileSync(policyPath, 'utf8'));
-const exercise = JSON.parse(readFileSync(args.exercise, 'utf8'));
+const policyBytes = readFileSync(policyPath);
+const exerciseBytes = readFileSync(args.exercise);
+const policy = JSON.parse(policyBytes);
+const exercise = JSON.parse(exerciseBytes);
 if (args.selfTest) runSelfTest(policy, exercise);
 const result = {
   schema_version: '1.0.0',
   evaluated_at: new Date().toISOString(),
+  source: {
+    commit: git(['rev-parse', 'HEAD']).trim(),
+    tree_clean: git(['status', '--porcelain=v1', '--untracked-files=all']).trim() === ''
+  },
   policy: path.relative(workspaceRoot, policyPath).replaceAll('\\', '/'),
+  policy_sha256: sha256(policyBytes),
   exercise: path.relative(workspaceRoot, args.exercise).replaceAll('\\', '/'),
+  exercise_sha256: sha256(exerciseBytes),
   ...evaluateHandoff(policy, exercise)
 };
 if (args.output) {

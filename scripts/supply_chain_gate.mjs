@@ -345,6 +345,7 @@ const registry = JSON.parse(registryBytes);
 const evidence = {
   schema_version: '1.0.0',
   evaluated_at: new Date().toISOString(),
+  source: null,
   policy_sha256: sha256(policyBytes),
   triage_registry_sha256: sha256(registryBytes),
   cargo_lock_sha256: sha256(readFileSync(lockPath)),
@@ -356,6 +357,13 @@ const evidence = {
 };
 
 try {
+  const sourceCommit = run('git', ['rev-parse', 'HEAD']);
+  const sourceStatus = run('git', ['status', '--porcelain=v1', '--untracked-files=all']);
+  invariant(sourceCommit.status === 0 && sourceStatus.status === 0, 'git source identity commands failed');
+  evidence.source = {
+    commit: sourceCommit.stdout.trim(),
+    tree_clean: sourceStatus.stdout.trim() === ''
+  };
   evidence.tools.cargo_audit = exactToolVersion('cargo', ['audit', '--version'], policy.tools.cargo_audit);
   evidence.tools.cargo_deny = exactToolVersion('cargo', ['deny', '--version'], policy.tools.cargo_deny);
   evidence.tools.node = process.version;
