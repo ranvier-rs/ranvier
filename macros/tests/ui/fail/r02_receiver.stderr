@@ -1,0 +1,5 @@
+error: transition functions cannot have a receiver
+  --> tests/ui/fail/r02_receiver.rs:10:22
+   |
+10 |     async fn invalid(&self) -> Outcome<(), String> {
+   |                      ^^^^^

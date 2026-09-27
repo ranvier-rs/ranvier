@@ -1,0 +1,5 @@
+error: transition functions cannot declare generics or a where clause
+ --> tests/ui/fail/r08_lifetime_generic.rs:7:17
+  |
+7 | async fn invalid<'a>(_input: &'a String) -> Outcome<(), String> {
+  |                 ^^^^

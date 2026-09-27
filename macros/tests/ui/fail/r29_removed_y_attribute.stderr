@@ -1,0 +1,5 @@
+error: unsupported transition attribute `y`
+ --> tests/ui/fail/r29_removed_y_attribute.rs:6:14
+  |
+6 | #[transition(y = 20)]
+  |              ^

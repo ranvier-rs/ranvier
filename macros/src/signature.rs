@@ -63,16 +63,16 @@ pub(crate) fn validate_function_signature(function: &ItemFn) -> syn::Result<()> 
             "transition functions cannot be unsafe",
         ));
     }
-    if let Some(abi) = &signature.abi {
-        return Err(Error::new_spanned(
-            abi,
-            "transition functions cannot use an extern ABI",
-        ));
-    }
     if let Some(variadic) = &signature.variadic {
         return Err(Error::new_spanned(
             variadic,
             "transition functions cannot be variadic",
+        ));
+    }
+    if let Some(abi) = &signature.abi {
+        return Err(Error::new_spanned(
+            abi,
+            "transition functions cannot use an extern ABI",
         ));
     }
     if !signature.generics.params.is_empty() || signature.generics.where_clause.is_some() {
@@ -88,6 +88,13 @@ pub(crate) fn parse_parameters(
     function: &ItemFn,
     args: &TransitionArgs,
 ) -> syn::Result<ParameterContract> {
+    if let Some(fourth_parameter) = function.sig.inputs.iter().nth(3) {
+        return Err(Error::new_spanned(
+            fourth_parameter,
+            "transition functions accept at most three parameters",
+        ));
+    }
+
     let mut input_type = quote!(());
     let mut resource_type = args
         .resources

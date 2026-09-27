@@ -1,0 +1,5 @@
+error: transition functions cannot declare generics or a where clause
+ --> tests/ui/fail/r09_const_generic.rs:7:17
+  |
+7 | async fn invalid<const N: usize>(_input: [u8; N]) -> Outcome<(), String> {
+  |                 ^^^^^^^^^^^^^^^^

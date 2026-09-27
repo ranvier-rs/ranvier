@@ -1,0 +1,5 @@
+error: resource parameters must use a shared reference; mutable non-Bus references are unsupported
+ --> tests/ui/fail/r13_mutable_non_bus_reference.rs:7:30
+  |
+7 | async fn invalid(_resources: &mut String) -> Outcome<(), String> {
+  |                              ^^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: transition functions must return Outcome<Output, Error> with exactly two type arguments
+ --> tests/ui/fail/r21_outcome_wrong_arity.rs:7:23
+  |
+7 | async fn invalid() -> Outcome<String> {
+  |                       ^^^^^^^^^^^^^^^

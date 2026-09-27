@@ -1,0 +1,5 @@
+error: `resources` expects a Rust type
+ --> tests/ui/fail/r24_malformed_attribute.rs:6:14
+  |
+6 | #[transition(resources =)]
+  |              ^^^^^^^^^

@@ -1,0 +1,5 @@
+error: transition functions cannot be variadic
+ --> tests/ui/fail/r06_variadic.rs:7:42
+  |
+7 | async extern "C" fn invalid(_input: i32, _: ...) -> Outcome<(), String> {
+  |                                          ^^^^^^

@@ -1,0 +1,5 @@
+error: same type cannot be present in both bus_allow and bus_deny
+ --> tests/ui/fail/r26_bus_policy_overlap.rs:6:27
+  |
+6 | #[transition(bus_allow = [String], bus_deny = [String])]
+  |                           ^^^^^^

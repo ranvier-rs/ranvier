@@ -1,0 +1,5 @@
+error: duplicate type in bus_allow list
+ --> tests/ui/fail/r25_duplicate_bus_type.rs:6:35
+  |
+6 | #[transition(bus_allow = [String, String])]
+  |                                   ^^^^^^

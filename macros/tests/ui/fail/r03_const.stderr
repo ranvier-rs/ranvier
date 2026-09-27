@@ -1,0 +1,5 @@
+error: transition functions cannot be const
+ --> tests/ui/fail/r03_const.rs:7:1
+  |
+7 | const async fn invalid() -> Outcome<(), String> {
+  | ^^^^^

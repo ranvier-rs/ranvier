@@ -1,0 +1,5 @@
+error: transition functions cannot be unsafe
+ --> tests/ui/fail/r04_unsafe.rs:7:7
+  |
+7 | async unsafe fn invalid() -> Outcome<(), String> {
+  |       ^^^^^^

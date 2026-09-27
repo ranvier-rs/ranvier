@@ -1,0 +1,5 @@
+error: duplicate `resources` attribute
+ --> tests/ui/fail/r23_duplicate_attribute.rs:6:30
+  |
+6 | #[transition(resources = (), resources = ())]
+  |                              ^^^^^^^^^

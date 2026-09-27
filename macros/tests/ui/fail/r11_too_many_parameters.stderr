@@ -1,0 +1,5 @@
+error: transition functions accept at most three parameters
+  --> tests/ui/fail/r11_too_many_parameters.rs:14:5
+   |
+14 |     _extra: i64,
+   |     ^^^^^^^^^^^

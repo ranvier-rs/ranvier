@@ -1,0 +1,5 @@
+error: transition functions cannot use an extern ABI
+ --> tests/ui/fail/r05_extern.rs:7:7
+  |
+7 | async extern "C" fn invalid() -> Outcome<(), String> {
+  |       ^^^^^^^^^^
