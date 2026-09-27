@@ -9,6 +9,7 @@ fn transition_macro_contract() {
 #[test]
 fn streaming_transition_macro_contract() {
     let cases = trybuild::TestCases::new();
+    cases.pass("tests/ui/streaming/pass/*.rs");
     cases.compile_fail("tests/ui/streaming/fail/*.rs");
 }
 
