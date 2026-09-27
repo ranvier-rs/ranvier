@@ -210,14 +210,20 @@ fn parse_stream_bounds(
         let TypeParamBound::Trait(trait_bound) = bound else {
             return Err(invalid_stream_return(authored_type));
         };
-        if !matches!(&trait_bound.modifier, &syn::TraitBoundModifier::None) {
+        if trait_bound.lifetimes.is_some()
+            || !matches!(&trait_bound.modifier, &syn::TraitBoundModifier::None)
+        {
             return Err(invalid_stream_return(authored_type));
         }
         let Some(segment) = trait_bound.path.segments.last() else {
             return Err(invalid_stream_return(authored_type));
         };
         if segment.ident == "Send" {
-            if has_send || !matches!(segment.arguments, PathArguments::None) {
+            if has_send
+                || trait_bound.path.leading_colon.is_some()
+                || trait_bound.path.segments.len() != 1
+                || !matches!(segment.arguments, PathArguments::None)
+            {
                 return Err(invalid_stream_return(authored_type));
             }
             has_send = true;
@@ -321,6 +327,22 @@ mod tests {
         let ty: Type = syn::parse_str("Result<impl Stream<Item = String> + ?Send, MyError>")
             .expect("optional trait bound is syntactically valid");
         let error = parse_result_stream_types(&ty).expect_err("?Send does not guarantee Send");
+        assert!(error.to_string().contains("support Result<impl Stream"));
+    }
+
+    #[test]
+    fn rejects_noncanonical_send_path() {
+        let ty: Type = parse_quote!(Result<impl Stream<Item = String> + custom::Send, MyError>);
+        let error = parse_result_stream_types(&ty).expect_err("only the Send marker is accepted");
+        assert!(error.to_string().contains("support Result<impl Stream"));
+    }
+
+    #[test]
+    fn rejects_higher_ranked_stream_bound() {
+        let ty: Type = syn::parse_str("Result<impl for<'a> Stream<Item = String> + Send, MyError>")
+            .expect("higher-ranked stream bound is syntactically valid");
+        let error =
+            parse_result_stream_types(&ty).expect_err("higher-ranked bounds are unsupported");
         assert!(error.to_string().contains("support Result<impl Stream"));
     }
 
