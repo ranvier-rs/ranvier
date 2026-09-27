@@ -1,0 +1,10 @@
+[package]
+name = "ranvier-facade-streaming-feature-off-contract"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+ranvier = { path = "../../../kit", default-features = false }
