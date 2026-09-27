@@ -41,6 +41,16 @@ function expectCompileFailure(args, diagnosticMarkers, description) {
 }
 
 run(['check', '--manifest-path', 'tests/compile/facade-only/Cargo.toml', '--locked']);
+run([
+  'check',
+  '--manifest-path',
+  'tests/compile/facade-only/Cargo.toml',
+  '--features',
+  'schema-contract',
+  '--locked'
+]);
+run(['check', '--manifest-path', 'tests/compile/renamed-direct/Cargo.toml', '--locked']);
+run(['check', '--manifest-path', 'macros/tests/compile/streaming-accepted/Cargo.toml', '--locked']);
 expectCompileFailure([
   'check',
   '--manifest-path',
