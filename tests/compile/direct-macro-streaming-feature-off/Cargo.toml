@@ -1,0 +1,11 @@
+[package]
+name = "ranvier-direct-macro-streaming-feature-off-contract"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+ranvier-core = { path = "../../../core", default-features = false }
+ranvier-macros = { path = "../../../macros" }

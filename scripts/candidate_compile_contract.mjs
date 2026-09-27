@@ -16,8 +16,8 @@ function run(args) {
   if ((result.status ?? 1) !== 0) process.exit(result.status ?? 1);
 }
 
-function expectCompileFailure(args, diagnosticMarkers) {
-  console.log(`[compile-fail] cargo ${args.join(' ')}`);
+function expectCompileFailure(args, diagnosticMarkers, description) {
+  console.log(`[compile-fail] ${description}: cargo ${args.join(' ')}`);
   const result = spawnSync('cargo', args, {
     cwd: workspaceRoot,
     env: { ...process.env, CARGO_TARGET_DIR: path.join(workspaceRoot, 'target') },
@@ -29,7 +29,7 @@ function expectCompileFailure(args, diagnosticMarkers) {
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
   if (result.status === 0) {
     console.error(output);
-    throw new Error('expected the facade streaming feature-off consumer to fail compilation');
+    throw new Error(`expected ${description} to fail compilation`);
   }
 
   const missingMarkers = diagnosticMarkers.filter(marker => !output.includes(marker));
@@ -37,7 +37,7 @@ function expectCompileFailure(args, diagnosticMarkers) {
     console.error(output);
     throw new Error(`compile failed for an unexpected reason; missing diagnostic markers: ${missingMarkers.join(', ')}`);
   }
-  console.log(`[compile-fail] expected facade feature rejection confirmed: ${diagnosticMarkers.join('; ')}`);
+  console.log(`[compile-fail] expected ${description} rejection confirmed: ${diagnosticMarkers.join('; ')}`);
 }
 
 run(['check', '--manifest-path', 'tests/compile/facade-only/Cargo.toml', '--locked']);
@@ -46,7 +46,21 @@ expectCompileFailure([
   '--manifest-path',
   'tests/compile/facade-streaming-feature-off/Cargo.toml',
   '--locked'
-], ['unresolved imports', 'streaming_transition', 'could not find `streaming` in `core`']);
+], [
+  'unresolved import',
+  'no `streaming_transition` in the root',
+  'could not find `streaming` in `core`'
+], 'facade streaming feature-off consumer');
+expectCompileFailure([
+  'check',
+  '--manifest-path',
+  'tests/compile/direct-macro-streaming-feature-off/Cargo.toml',
+  '--locked'
+], [
+  'unresolved import',
+  'no `streaming_transition` in the root',
+  'could not find `streaming` in `ranvier_core`'
+], 'direct-macro streaming feature-off consumer');
 run([
   'check',
   '-p',
