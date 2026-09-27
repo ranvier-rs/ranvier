@@ -1,11 +1,16 @@
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream as TokenStream2};
-use quote::{ToTokens, quote};
-use std::collections::HashSet;
-use syn::{
-    DeriveInput, FnArg, GenericArgument, ItemFn, PathArguments, ReturnType, Type, parse_macro_input,
-};
+use quote::quote;
+use syn::{DeriveInput, ItemFn, parse_macro_input};
+#[cfg(feature = "streaming")]
+use syn::{FnArg, GenericArgument, PathArguments, ReturnType, Type};
+
+mod config;
+mod signature;
+
+use config::TransitionArgs;
+use signature::TransitionFunction;
 
 fn external_crate_path(package: &str) -> Option<TokenStream2> {
     match crate_name(package).ok()? {
@@ -37,155 +42,37 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
         Ok(path) => path,
         Err(error) => return error.to_compile_error().into(),
     };
-    let mut input_fn = parse_macro_input!(item as ItemFn);
-    let original_ident = input_fn.sig.ident.clone();
-    let vis = &input_fn.vis;
-    let block = &input_fn.block;
-    let inputs = &input_fn.sig.inputs;
-
-    // We don't rename the function here, instead we use a prefix for the struct.
-    // However, to make .then(multiply_by_res) work, multiply_by_res MUST be the struct name.
-    // So we rename the FUNCTION and keep the name for the STRUCT.
-    let internal_fn_ident = quote::format_ident!("__ranvier_fn_{}", original_ident);
-    input_fn.sig.ident = internal_fn_ident.clone();
-
-    // Parse attribute for explicit resource type override
-    let mut res_override = None;
-    let mut bus_allow_types: Vec<Type> = Vec::new();
-    let mut bus_deny_types: Vec<Type> = Vec::new();
-    let mut bus_allow_specified = false;
-    let mut bus_deny_specified = false;
-    let mut x_pos = None;
-    let mut y_pos = None;
-    let mut schema_flag = false;
-    if !attr.is_empty() {
-        let parser = syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated;
-        if let Ok(metas) = syn::parse::Parser::parse2(parser, attr.into()) {
-            for meta in metas {
-                match meta {
-                    syn::Meta::Path(path) if path.is_ident("schema") => {
-                        schema_flag = true;
-                    }
-                    syn::Meta::NameValue(nv) => {
-                        if nv.path.is_ident("res") {
-                            res_override = Some(nv.value);
-                        } else if nv.path.is_ident("bus_allow") {
-                            bus_allow_specified = true;
-                            match parse_type_array_expr(&nv.value) {
-                                Ok(types) => bus_allow_types = types,
-                                Err(err) => return err.to_compile_error().into(),
-                            }
-                        } else if nv.path.is_ident("bus_deny") {
-                            bus_deny_specified = true;
-                            match parse_type_array_expr(&nv.value) {
-                                Ok(types) => bus_deny_types = types,
-                                Err(err) => return err.to_compile_error().into(),
-                            }
-                        } else if nv.path.is_ident("x") {
-                            x_pos = Some(nv.value);
-                        } else if nv.path.is_ident("y") {
-                            y_pos = Some(nv.value);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    if let Err(err) = validate_bus_policy_types(&bus_allow_types, &bus_deny_types) {
-        return err.to_compile_error().into();
-    }
-
-    // 1. Extract Input Type (From)
-    let input_type = if let Some(FnArg::Typed(pat_type)) = inputs.first() {
-        let ty = &pat_type.ty;
-        quote! { #ty }
-    } else {
-        quote! { () }
+    let args = match TransitionArgs::parse(attr.into()) {
+        Ok(args) => args,
+        Err(error) => return error.to_compile_error().into(),
     };
-
-    // 2. Extract Resources Type
-    let second_is_bus = inputs.get(1).map(is_bus_argument).unwrap_or(false);
-    let res_type = if let Some(res) = res_override {
-        quote! { #res }
-    } else if second_is_bus {
-        quote! { () }
-    } else if let Some(FnArg::Typed(pat_type)) = inputs.get(1) {
-        let ty = &pat_type.ty;
-        if let Type::Reference(type_ref) = &**ty {
-            let elem = &type_ref.elem;
-            quote! { #elem }
-        } else {
-            quote! { #ty }
-        }
-    } else {
-        quote! { () }
+    let function = match TransitionFunction::parse(parse_macro_input!(item as ItemFn), &args) {
+        Ok(function) => function,
+        Err(error) => return error.to_compile_error().into(),
     };
+    let transition_type = quote::format_ident!("__ranvier_transition_{}", function.name);
+    let name = &function.name;
+    let visibility = &function.visibility;
+    let shared_attributes = &function.shared_attributes;
+    let documentation = &function.documentation;
+    let input_type = &function.input_type;
+    let resource_type = &function.resource_type;
+    let bindings = &function.bindings;
+    let output_type = &function.output_type;
+    let error_type = &function.error_type;
+    let body = &function.body;
+    let bus_allow_types = &args.bus_allow;
+    let bus_deny_types = &args.bus_deny;
 
-    // 3. Extract Outcome Types
-    let (output_type, error_type) = if let ReturnType::Type(_, ty) = &input_fn.sig.output {
-        extract_outcome_types(ty).unwrap_or((quote! { () }, quote! { anyhow::Error }))
-    } else {
-        (quote! { () }, quote! { anyhow::Error })
-    };
-
-    // 4. Handle Arguments
-    let arg_count = inputs.len();
-    let run_body = match arg_count {
-        1 => {
-            if let Some(FnArg::Typed(pat_type)) = inputs.first() {
-                let pat = &pat_type.pat;
-                quote! { let #pat = input; #block }
-            } else {
-                quote! { #block }
-            }
-        }
-        2 => {
-            let mut bindings = quote! {};
-            if let Some(FnArg::Typed(pat_type)) = inputs.first() {
-                let pat = &pat_type.pat;
-                bindings.extend(quote! { let #pat = input; });
-            }
-            if second_is_bus {
-                if let Some(FnArg::Typed(pat_type)) = inputs.get(1) {
-                    let pat = &pat_type.pat;
-                    bindings.extend(quote! { let #pat = bus; });
-                }
-            } else if let Some(FnArg::Typed(pat_type)) = inputs.get(1) {
-                let pat = &pat_type.pat;
-                bindings.extend(quote! { let #pat = resources; });
-            }
-            quote! { #bindings #block }
-        }
-        3 => {
-            let mut bindings = quote! {};
-            if let Some(FnArg::Typed(pat_type)) = inputs.first() {
-                let pat = &pat_type.pat;
-                bindings.extend(quote! { let #pat = input; });
-            }
-            if let Some(FnArg::Typed(pat_type)) = inputs.get(1) {
-                let pat = &pat_type.pat;
-                bindings.extend(quote! { let #pat = resources; });
-            }
-            if let Some(FnArg::Typed(pat_type)) = inputs.get(2) {
-                let pat = &pat_type.pat;
-                bindings.extend(quote! { let #pat = bus; });
-            }
-            quote! { #bindings #block }
-        }
-        _ => quote! { #block },
-    };
-
-    let bus_policy_method = if bus_allow_specified || bus_deny_specified {
-        let allow_expr = if bus_allow_specified {
+    let bus_policy_method = if args.bus_allow_specified || args.bus_deny_specified {
+        let allow_expr = if args.bus_allow_specified {
             quote! {
                 Some(vec![#(#core_path::bus::BusTypeRef::of::<#bus_allow_types>()),*])
             }
         } else {
             quote! { None }
         };
-        let deny_expr = if bus_deny_specified {
+        let deny_expr = if args.bus_deny_specified {
             quote! {
                 vec![#(#core_path::bus::BusTypeRef::of::<#bus_deny_types>()),*]
             }
@@ -204,21 +91,11 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {}
     };
 
-    let position_method = if let (Some(x), Some(y)) = (x_pos, y_pos) {
+    let schema_method = if args.schema {
         quote! {
-            fn position(&self) -> Option<(f32, f32)> {
-                Some((#x as f32, #y as f32))
-            }
-        }
-    } else {
-        quote! {}
-    };
-
-    let schema_method = if schema_flag {
-        quote! {
-            fn input_schema(&self) -> Option<serde_json::Value> {
-                let schema = schemars::schema_for!(#input_type);
-                serde_json::to_value(schema).ok()
+            fn input_schema(&self) -> Option<#core_path::__macro_support::serde_json::Value> {
+                let schema = #core_path::__macro_support::schemars::schema_for!(#input_type);
+                #core_path::__macro_support::serde_json::to_value(schema).ok()
             }
         }
     } else {
@@ -226,17 +103,24 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let expanded = quote! {
-        #[derive(Clone, Default)]
+        #(#shared_attributes)*
+        #[doc(hidden)]
         #[allow(non_camel_case_types)]
-        #vis struct #original_ident;
+        #[derive(Clone)]
+        #visibility struct #transition_type;
 
+        #(#shared_attributes)*
+        #(#documentation)*
+        #[allow(non_upper_case_globals)]
+        #visibility const #name: #transition_type = #transition_type;
+
+        #(#shared_attributes)*
         #[#core_path::__macro_support::async_trait]
-        impl #core_path::transition::Transition<#input_type, #output_type> for #original_ident {
+        impl #core_path::transition::Transition<#input_type, #output_type> for #transition_type {
             type Error = #error_type;
-            type Resources = #res_type;
+            type Resources = #resource_type;
 
             #bus_policy_method
-            #position_method
             #schema_method
 
             async fn run(
@@ -245,11 +129,10 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
                 resources: &Self::Resources,
                 bus: &mut #core_path::bus::Bus,
             ) -> #core_path::outcome::Outcome<#output_type, Self::Error> {
-                #run_body
+                #bindings
+                #body
             }
         }
-
-        #input_fn
     };
 
     TokenStream::from(expanded)
@@ -340,7 +223,7 @@ pub fn ranvier_router(input: TokenStream) -> TokenStream {
 ///
 /// ## Attributes
 ///
-/// - `res = MyType` — explicit resource type override
+/// - `resources = MyType` — explicit resource type override
 ///
 /// # Example
 ///
@@ -367,20 +250,14 @@ pub fn streaming_transition(attr: TokenStream, item: TokenStream) -> TokenStream
     let internal_fn_ident = quote::format_ident!("__ranvier_fn_{}", original_ident);
     input_fn.sig.ident = internal_fn_ident.clone();
 
-    // Parse attribute for explicit resource type override
-    let mut res_override = None;
-    if !attr.is_empty() {
-        let parser = syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated;
-        if let Ok(metas) = syn::parse::Parser::parse2(parser, attr.into()) {
-            for meta in metas {
-                if let syn::Meta::NameValue(nv) = meta {
-                    if nv.path.is_ident("res") {
-                        res_override = Some(nv.value);
-                    }
-                }
-            }
-        }
+    let args = match TransitionArgs::parse(attr.into()) {
+        Ok(args) => args,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    if let Err(error) = args.validate_streaming_metadata() {
+        return error.to_compile_error().into();
     }
+    let res_override = args.resources;
 
     // 1. Extract Input Type (From)
     let input_type = if let Some(FnArg::Typed(pat_type)) = inputs.first() {
@@ -603,24 +480,7 @@ fn extract_item_from_stream_path(path: &syn::Path) -> Option<quote::__private::T
     None
 }
 
-fn extract_outcome_types(
-    ty: &Type,
-) -> Option<(quote::__private::TokenStream, quote::__private::TokenStream)> {
-    if let Type::Path(type_path) = ty
-        && let Some(segment) = type_path.path.segments.last()
-        && segment.ident == "Outcome"
-        && let PathArguments::AngleBracketed(args) = &segment.arguments
-    {
-        let mut type_args = args.args.iter();
-        if let (Some(GenericArgument::Type(to)), Some(GenericArgument::Type(err))) =
-            (type_args.next(), type_args.next())
-        {
-            return Some((quote! { #to }, quote! { #err }));
-        }
-    }
-    None
-}
-
+#[cfg(feature = "streaming")]
 fn is_bus_argument(arg: &FnArg) -> bool {
     let FnArg::Typed(pat_type) = arg else {
         return false;
@@ -637,21 +497,6 @@ fn is_bus_argument(arg: &FnArg) -> bool {
         .last()
         .map(|segment| segment.ident == "Bus")
         .unwrap_or(false)
-}
-
-fn parse_type_array_expr(expr: &syn::Expr) -> syn::Result<Vec<Type>> {
-    let syn::Expr::Array(array) = expr else {
-        return Err(syn::Error::new_spanned(
-            expr,
-            "expected array syntax: [TypeA, TypeB]",
-        ));
-    };
-
-    array
-        .elems
-        .iter()
-        .map(|elem| syn::parse2::<Type>(elem.to_token_stream()))
-        .collect()
 }
 
 /// Derive macro for the `ResourceRequirement` marker trait.
@@ -687,46 +532,10 @@ pub fn derive_resource_requirement(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-fn validate_bus_policy_types(allow: &[Type], deny: &[Type]) -> syn::Result<()> {
-    let mut allow_keys = HashSet::new();
-    for ty in allow {
-        let key = ty.to_token_stream().to_string();
-        if !allow_keys.insert(key) {
-            return Err(syn::Error::new_spanned(
-                ty,
-                "duplicate type in bus_allow list",
-            ));
-        }
-    }
-
-    let mut deny_keys = HashSet::new();
-    for ty in deny {
-        let key = ty.to_token_stream().to_string();
-        if !deny_keys.insert(key) {
-            return Err(syn::Error::new_spanned(
-                ty,
-                "duplicate type in bus_deny list",
-            ));
-        }
-    }
-
-    for ty in allow {
-        let key = ty.to_token_stream().to_string();
-        if deny_keys.contains(&key) {
-            return Err(syn::Error::new_spanned(
-                ty,
-                "same type cannot be present in both bus_allow and bus_deny",
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-#[cfg(test)]
+#[cfg(all(test, feature = "streaming"))]
 mod tests {
-    use super::{is_bus_argument, parse_type_array_expr, validate_bus_policy_types};
-    use syn::{Expr, FnArg, parse_quote};
+    use super::is_bus_argument;
+    use syn::{FnArg, parse_quote};
 
     #[test]
     fn detects_mut_bus_reference_argument() {
@@ -744,32 +553,6 @@ mod tests {
     fn rejects_non_bus_argument() {
         let arg: FnArg = parse_quote!(res: &MyResources);
         assert!(!is_bus_argument(&arg));
-    }
-
-    #[test]
-    fn parses_type_array_expr_for_bus_policy() {
-        let expr: Expr = parse_quote!([i32, alloc::string::String]);
-        let parsed = parse_type_array_expr(&expr).expect("type array should parse");
-        assert_eq!(parsed.len(), 2);
-    }
-
-    #[test]
-    fn validates_bus_policy_rejects_duplicate_allow() {
-        let allow = vec![parse_quote!(i32), parse_quote!(i32)];
-        let deny = Vec::new();
-        let err = validate_bus_policy_types(&allow, &deny).expect_err("should fail");
-        assert!(err.to_string().contains("duplicate type in bus_allow"));
-    }
-
-    #[test]
-    fn validates_bus_policy_rejects_allow_deny_conflict() {
-        let allow = vec![parse_quote!(i32)];
-        let deny = vec![parse_quote!(i32)];
-        let err = validate_bus_policy_types(&allow, &deny).expect_err("should fail");
-        assert!(
-            err.to_string()
-                .contains("same type cannot be present in both bus_allow and bus_deny")
-        );
     }
 
     #[cfg(feature = "streaming")]

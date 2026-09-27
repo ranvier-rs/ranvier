@@ -1,0 +1,5 @@
+error: Bus parameters must use a mutable reference: &mut Bus
+ --> tests/ui/fail/bus_reference_must_be_mutable.rs:8:28
+  |
+8 | async fn invalid_bus(_bus: &Bus) -> Outcome<(), String> {
+  |                            ^^^^

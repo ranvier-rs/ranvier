@@ -1,0 +1,5 @@
+error: transition functions accept at most one input parameter
+ --> tests/ui/fail/duplicate_input_role.rs:7:40
+  |
+7 | async fn duplicate_inputs(_first: i32, _second: i32) -> Outcome<(), String> {
+  |                                        ^^^^^^^^^^^^

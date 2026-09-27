@@ -1,0 +1,5 @@
+error: transition parameters must follow input, resources, Bus role order
+ --> tests/ui/fail/out_of_order_roles.rs:8:43
+  |
+8 | async fn bus_before_input(_bus: &mut Bus, _input: i32) -> Outcome<(), String> {
+  |                                           ^^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: resources = Type cannot be combined with a resources parameter
+  --> tests/ui/fail/resources_override_with_parameter.rs:10:14
+   |
+10 | #[transition(resources = AppResources)]
+   |              ^^^^^^^^^

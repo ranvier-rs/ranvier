@@ -1,0 +1,5 @@
+error: unsupported transition attribute `res`
+ --> tests/ui/fail/removed_res_attribute.rs:8:14
+  |
+8 | #[transition(res = AppResources)]
+  |              ^^^

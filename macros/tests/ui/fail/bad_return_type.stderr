@@ -1,0 +1,5 @@
+error: transition functions must return Outcome<Output, Error> with exactly two type arguments
+ --> tests/ui/fail/bad_return_type.rs:7:30
+  |
+7 | async fn invalid_return() -> Result<String, String> {
+  |                              ^^^^^^^^^^^^^^^^^^^^^^

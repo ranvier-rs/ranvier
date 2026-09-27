@@ -1,0 +1,5 @@
+error: transition functions must declare Outcome<Output, Error>
+ --> tests/ui/fail/missing_return_type.rs:4:10
+  |
+4 | async fn missing_return() {}
+  |          ^^^^^^^^^^^^^^

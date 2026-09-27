@@ -1,0 +1,5 @@
+error: unknown or malformed transition attribute; expected `schema`, `resources = Type`, `bus_allow = [Type, ...]`, or `bus_deny = [Type, ...]`
+ --> tests/ui/fail/unknown_attribute.rs:6:14
+  |
+6 | #[transition(scheam)]
+  |              ^^^^^^

@@ -10,7 +10,7 @@ pub struct AppResources {
 #[derive(Clone)]
 struct RequestContext(&'static str);
 
-#[transition(res = AppResources, bus_allow = [RequestContext])]
+#[transition(bus_allow = [RequestContext])]
 async fn decide(_input: (), resources: &AppResources, bus: &mut Bus) -> Outcome<String, String> {
     let request = match bus.get::<RequestContext>() {
         Ok(request) => request,
@@ -19,9 +19,15 @@ async fn decide(_input: (), resources: &AppResources, bus: &mut Bus) -> Outcome<
     Outcome::next(format!("{}{}", request.0, resources.suffix))
 }
 
-#[transition(res = AppResources)]
+#[transition(resources = AppResources)]
 async fn finalize(input: String) -> Outcome<String, String> {
     Outcome::next(input.to_uppercase())
+}
+
+#[cfg(feature = "schema-contract")]
+#[transition(schema)]
+async fn schema_from_facade(input: String) -> Outcome<String, String> {
+    Outcome::next(input)
 }
 
 pub fn candidate_axon() -> Axon<(), String, String, AppResources> {

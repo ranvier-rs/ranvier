@@ -26,27 +26,27 @@ struct MyResources {
 impl ranvier_core::transition::ResourceRequirement for MyResources {}
 
 // 2. Define Transitions with Macros
-#[transition(res = MyResources)]
+#[transition(resources = MyResources)]
 async fn init_state(_input: ()) -> Outcome<i32, String> {
     Outcome::Next(10i32)
 }
 
-#[transition(res = MyResources)]
+#[transition]
 async fn multiply_by_res(input: i32, res: &MyResources) -> Outcome<i32, String> {
     Outcome::Next(input * res.multiplier)
 }
 
-#[transition(res = MyResources)]
+#[transition(resources = MyResources)]
 async fn add_three(input: i32) -> Outcome<i32, String> {
     Outcome::Next(input + 3)
 }
 
-#[transition(res = MyResources)]
+#[transition(resources = MyResources)]
 async fn attach_trace(input: i32, _bus: &mut Bus) -> Outcome<i32, String> {
     Outcome::Next(input)
 }
 
-#[transition(res = MyResources)]
+#[transition(resources = MyResources)]
 async fn to_string(input: i32) -> Outcome<String, String> {
     Outcome::Next(input.to_string())
 }

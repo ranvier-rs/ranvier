@@ -13,6 +13,7 @@ description = "Protocol-agnostic core for Ranvier - Typed Decision Engine"
 uuid = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true, optional = true }
 thiserror = { workspace = true }
 async-trait.workspace = true
 futures-core = { workspace = true }
@@ -30,6 +31,7 @@ toml = "0.8"
 
 [features]
 default = []
+schema = ["dep:schemars"]
 streaming = []   # Enables StreamingTransition trait, StreamEvent, StreamTimeoutConfig
 
 [lints]

@@ -20,6 +20,7 @@ guard = ["dep:ranvier-guard"]
 inspector = ["dep:ranvier-inspector", "ranvier-runtime/inspector"]
 openapi = ["dep:ranvier-openapi"]
 streaming = ["ranvier-core/streaming", "ranvier-runtime/streaming", "ranvier-macros/streaming"]
+schema = ["ranvier-runtime/schema"]
 validation = ["http", "ranvier-http/validation"]
 
 [dependencies]

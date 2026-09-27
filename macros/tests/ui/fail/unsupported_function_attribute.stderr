@@ -1,0 +1,5 @@
+error: function attribute inline is not supported on a transition
+ --> tests/ui/fail/unsupported_function_attribute.rs:7:1
+  |
+7 | #[inline]
+  | ^^^^^^^^^

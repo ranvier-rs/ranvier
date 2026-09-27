@@ -1,0 +1,11 @@
+[package]
+name = "ranvier-renamed-direct-compile-contract"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+core_alias = { package = "ranvier-core", path = "../../../core", features = ["schema"] }
+macro_alias = { package = "ranvier-macros", path = "../../../macros" }

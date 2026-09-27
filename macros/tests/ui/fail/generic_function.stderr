@@ -1,0 +1,5 @@
+error: transition functions cannot declare generics or a where clause
+ --> tests/ui/fail/generic_function.rs:7:23
+  |
+7 | async fn generic_input<T>(_input: T) -> Outcome<(), String> {
+  |                       ^^^

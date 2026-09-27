@@ -14,16 +14,16 @@
   "input_sha256": {
     ".ranvier-api-policy.json": "afb24c826f6a76529daf41d2d1ef3dc79d2a5ea6371f0f6853cfc723baaf4ac3",
     "Cargo.toml": "46b0f17328e157e2f94481464828184b6bce40ca37f27f3508d773fa2ea0a6dc",
-    "core/Cargo.toml": "3f320ee0cad2525275b43b3658b6224784d0413abb702c9e4d9b825d3415564e",
+    "core/Cargo.toml": "4d84b4b6d2a3d5b159ca761860b88cfbbf08951ab4300c673898996a14cb6103",
     "extensions/audit/Cargo.toml": "6e09af66c9c4a531dc07b2ec8ff91254b668df48148f961e13b801f3a04a8cb4",
     "extensions/compliance/Cargo.toml": "f573800e854ed9ceb5c4a8b36e7047d9d6cdaed13e87f80bdf8fe7298a87f5da",
     "extensions/inspector/Cargo.toml": "cd0a6867a31b3f16b309df1babe9a364e844b88ce318b04f5e9888472e1ceb54",
     "extensions/openapi/Cargo.toml": "ea7ef84621076edbf7d28987186e7a799b77fed57744a86059ca350a751c5c6c",
     "guard/Cargo.toml": "ef7800a506abbb9c6415f5a6f56e25cac68c3065965deb774f7d51b07b593e34",
     "http/Cargo.toml": "11b4eb0c6cccef466a8c57415a12dee56ad4ef4f57032bebb6b3a6d839746ada",
-    "kit/Cargo.toml": "92b9e46106a1b13162f9f01d6719a86d54a15177e24862a7c82f984c9b7941ae",
-    "macros/Cargo.toml": "c59fb5bcd63fccea466ba5f7400dfa9c9e186455367d86b7c584bdad5492b4da",
-    "runtime/Cargo.toml": "22809be5b2488de04f4e4afc3d1d9145267119daf39993ea15033b455092c2ba",
+    "kit/Cargo.toml": "45da8cf9b47f04d0b8e47620df42e724139d065f692383b0cd6b45a359c4c1e1",
+    "macros/Cargo.toml": "26179966b83cf3b25cd6af3c400ee2ac79185ca7a0833ced8d02db2b12f60c30",
+    "runtime/Cargo.toml": "2b1f65f69f5049cc847f297a6a5a3f0e5f36f8e1d69b50f5a3178e166dea4d66",
     "std/Cargo.toml": "593d63ae77471e9e7a1af5dcc57f387c89a7347040008c18c038edf3f9deceaf",
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
@@ -48,6 +48,7 @@
         "http",
         "inspector",
         "openapi",
+        "schema",
         "std",
         "streaming",
         "validation"
@@ -3388,6 +3389,7 @@
       "owner": "runtime-core",
       "features": [
         "default",
+        "schema",
         "streaming"
       ],
       "public_item_count": 697,

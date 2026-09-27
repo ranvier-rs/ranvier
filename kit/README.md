@@ -51,8 +51,12 @@ ranvier = { version = "0.51.0", default-features = false }
 You can enable features explicitly:
 
 ```toml
-ranvier = { version = "0.51.0", features = ["http", "std"] }
+ranvier = { version = "0.51.0", features = ["http", "std", "schema"] }
 ```
+
+The `schema` feature enables `#[transition(schema)]` support. Inputs must
+implement `schemars::JsonSchema`; consumers do not need to declare `schemars`
+or `serde_json` as direct dependencies for macro expansion.
 
 ## Crates (12 publishable product crates, v0.51.0)
 

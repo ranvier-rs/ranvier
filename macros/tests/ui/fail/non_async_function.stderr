@@ -1,0 +1,5 @@
+error: transition functions must be async
+ --> tests/ui/fail/non_async_function.rs:7:4
+  |
+7 | fn not_async() -> Outcome<(), String> {
+  |    ^^^^^^^^^
