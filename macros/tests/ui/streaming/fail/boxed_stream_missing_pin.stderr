@@ -1,0 +1,5 @@
+error: streaming transitions support Result<impl Stream<Item = Item> + Send, Error> or Result<Pin<Box<dyn Stream<Item = Item> + Send>>, Error>
+ --> tests/ui/streaming/fail/boxed_stream_missing_pin.rs:4:50
+  |
+4 | async fn invalid_stream(input: String) -> Result<Box<dyn Stream<Item = String> + Send>, std::convert::Infallible> {
+  |                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: streaming transition return stream must declare exactly one `Item = Type` binding
+ --> tests/ui/streaming/fail/stream_missing_item.rs:4:50
+  |
+4 | async fn invalid_stream(input: String) -> Result<impl Stream + Send, std::convert::Infallible> {
+  |                                                  ^^^^^^^^^^^^^^^^^^

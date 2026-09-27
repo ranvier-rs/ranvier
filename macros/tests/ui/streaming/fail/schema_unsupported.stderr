@@ -1,0 +1,5 @@
+error: streaming item schema metadata is not implemented yet
+ --> tests/ui/streaming/fail/schema_unsupported.rs:3:24
+  |
+3 | #[streaming_transition(schema)]
+  |                        ^^^^^^

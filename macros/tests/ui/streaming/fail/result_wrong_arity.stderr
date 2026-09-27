@@ -1,0 +1,5 @@
+error: streaming transitions support Result<impl Stream<Item = Item> + Send, Error> or Result<Pin<Box<dyn Stream<Item = Item> + Send>>, Error>
+ --> tests/ui/streaming/fail/result_wrong_arity.rs:4:43
+  |
+4 | async fn invalid_stream(input: String) -> Result<impl Stream<Item = String> + Send> {
+  |                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,11 @@
+[package]
+name = "ranvier-streaming-macro-compile-contract"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+ranvier-core = { path = "../../../../core", features = ["streaming"] }
+ranvier-macros = { path = "../../../", features = ["streaming"] }

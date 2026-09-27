@@ -1,0 +1,14 @@
+error[E0432]: unresolved import `ranvier_macros::streaming_transition`
+ --> tests/ui/streaming/feature_off/streaming_disabled.rs:1:5
+  |
+1 | use ranvier_macros::streaming_transition;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `streaming_transition` in the root
+  |
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  | #[cfg(feature = "streaming")]
+  |       --------------------- the item is gated behind the `streaming` feature
+  | #[proc_macro_attribute]
+  | pub fn streaming_transition(attr: TokenStream, item: TokenStream) -> TokenStream {
+  |        ^^^^^^^^^^^^^^^^^^^^

@@ -8,6 +8,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[doc(hidden)]
 pub mod __macro_support {
     pub use async_trait::async_trait;
+    pub use futures_core;
     pub use serde_json;
 
     #[cfg(feature = "schema")]

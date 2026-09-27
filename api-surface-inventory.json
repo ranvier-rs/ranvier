@@ -22,7 +22,7 @@
     "guard/Cargo.toml": "ef7800a506abbb9c6415f5a6f56e25cac68c3065965deb774f7d51b07b593e34",
     "http/Cargo.toml": "11b4eb0c6cccef466a8c57415a12dee56ad4ef4f57032bebb6b3a6d839746ada",
     "kit/Cargo.toml": "45da8cf9b47f04d0b8e47620df42e724139d065f692383b0cd6b45a359c4c1e1",
-    "macros/Cargo.toml": "26179966b83cf3b25cd6af3c400ee2ac79185ca7a0833ced8d02db2b12f60c30",
+    "macros/Cargo.toml": "be904850d65e445c3ac6d766a499b779d2b482117a8b229537f4635aa1aead83",
     "runtime/Cargo.toml": "2b1f65f69f5049cc847f297a6a5a3f0e5f36f8e1d69b50f5a3178e166dea4d66",
     "std/Cargo.toml": "593d63ae77471e9e7a1af5dcc57f387c89a7347040008c18c038edf3f9deceaf",
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"

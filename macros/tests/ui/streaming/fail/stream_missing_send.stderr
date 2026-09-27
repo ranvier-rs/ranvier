@@ -1,0 +1,5 @@
+error: streaming transition return stream must include `Send`
+ --> tests/ui/streaming/fail/stream_missing_send.rs:4:50
+  |
+4 | async fn invalid_stream(input: String) -> Result<impl Stream<Item = String>, std::convert::Infallible> {
+  |                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^

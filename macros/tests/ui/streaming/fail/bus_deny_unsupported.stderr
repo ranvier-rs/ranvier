@@ -1,0 +1,5 @@
+error: streaming transitions do not expose Bus-policy metadata
+ --> tests/ui/streaming/fail/bus_deny_unsupported.rs:3:24
+  |
+3 | #[streaming_transition(bus_deny = [String])]
+  |                        ^^^^^^^^

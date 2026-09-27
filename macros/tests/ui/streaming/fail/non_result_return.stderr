@@ -1,0 +1,5 @@
+error: streaming transitions must return Result<Stream, Error>
+ --> tests/ui/streaming/fail/non_result_return.rs:4:43
+  |
+4 | async fn invalid_stream(input: String) -> String {
+  |                                           ^^^^^^
