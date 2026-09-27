@@ -1,4 +1,5 @@
 /target
+/tests/compile/facade-streaming-feature-off/target
 /coverage
 /debug
 /dist
