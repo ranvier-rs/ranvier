@@ -5,6 +5,7 @@
     "cargo_audit": "0.22.2",
     "cargo_deny": "0.20.2",
     "rust": "1.95.0",
+    "cargo": "1.95.0",
     "node_major": 24,
     "attestation_action": "actions/attest@v4"
   },

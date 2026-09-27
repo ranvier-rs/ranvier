@@ -99,6 +99,10 @@ function validatePolicy(policy) {
   invariant(policy.schema_version === '1.0.0', 'unsupported policy schema');
   invariant(policy.ownership.primary !== policy.ownership.backup, 'primary and backup must be distinct');
   invariant(policy.tools.node_major === 24, 'supply-chain Node major must remain 24');
+  invariant(/^\d+\.\d+\.\d+$/.test(policy.tools.rust ?? ''), 'supply-chain Rust toolchain version must be exact');
+  invariant(/^\d+\.\d+\.\d+$/.test(policy.tools.cargo ?? ''), 'supply-chain Cargo version must be exact');
+  invariant(/^\d+\.\d+\.\d+$/.test(policy.tools.cargo_audit ?? ''), 'cargo-audit version must be exact');
+  invariant(/^\d+\.\d+\.\d+$/.test(policy.tools.cargo_deny ?? ''), 'cargo-deny version must be exact');
   invariant(policy.advisory.max_review_days > 0, 'max_review_days must be positive');
   invariant(policy.advisory.max_expiry_days >= policy.advisory.max_review_days, 'max_expiry_days must cover review window');
 }
@@ -207,6 +211,19 @@ function exactToolVersion(command, args, expected) {
   return output.trim();
 }
 
+function hasExactVersionToken(output, expected) {
+  const expectedTokens = new Set([expected, `v${expected}`]);
+  return output.split(/[ ()]/).some((token) => expectedTokens.has(token));
+}
+
+function collectExactToolVersion(evidence, errors, name, command, args, expected) {
+  const result = run(command, args);
+  invariant(result.status === 0, `${command} version command failed`);
+  const output = `${result.stdout}\n${result.stderr}`.trim();
+  evidence.tools[name] = output;
+  if (!hasExactVersionToken(output, expected)) errors.push(`${command} must be exactly ${expected}; found ${output}`);
+}
+
 function parseDenyDiagnostics(result) {
   const diagnostics = [];
   for (const line of `${result.stdout}\n${result.stderr}`.split(/\r?\n/)) {
@@ -267,6 +284,10 @@ function safeOutputPath(requested) {
 
 function runSelfTest(policy) {
   const now = new Date('2026-07-17T00:00:00Z');
+  invariant(hasExactVersionToken(`rustc ${policy.tools.rust} (commit)`, policy.tools.rust), 'exact stable Rust version was rejected');
+  invariant(!hasExactVersionToken(`rustc ${policy.tools.rust}-nightly (commit)`, policy.tools.rust), 'Rust prerelease passed exact version check');
+  invariant(!hasExactVersionToken('rustc 1.98.1 (commit)', policy.tools.rust), 'mismatched Rust version passed exact version check');
+  invariant(hasExactVersionToken(`cargo ${policy.tools.cargo} (commit)`, policy.tools.cargo), 'exact stable Cargo version was rejected');
   const finding = {
     advisory: { id: 'RUSTSEC-2099-0001', title: 'synthetic', severity: 'low' },
     package: { name: 'synthetic-dependency', version: '1.0.0' }
@@ -364,10 +385,16 @@ try {
     commit: sourceCommit.stdout.trim(),
     tree_clean: sourceStatus.stdout.trim() === ''
   };
-  evidence.tools.cargo_audit = exactToolVersion('cargo', ['audit', '--version'], policy.tools.cargo_audit);
-  evidence.tools.cargo_deny = exactToolVersion('cargo', ['deny', '--version'], policy.tools.cargo_deny);
   evidence.tools.node = process.version;
-  invariant(Number(process.versions.node.split('.')[0]) === policy.tools.node_major, `Node must be major ${policy.tools.node_major}`);
+  const toolVersionErrors = [];
+  collectExactToolVersion(evidence, toolVersionErrors, 'rustc', 'rustc', ['--version'], policy.tools.rust);
+  collectExactToolVersion(evidence, toolVersionErrors, 'cargo', 'cargo', ['--version'], policy.tools.cargo);
+  collectExactToolVersion(evidence, toolVersionErrors, 'cargo_audit', 'cargo', ['audit', '--version'], policy.tools.cargo_audit);
+  collectExactToolVersion(evidence, toolVersionErrors, 'cargo_deny', 'cargo', ['deny', '--version'], policy.tools.cargo_deny);
+  if (Number(process.versions.node.split('.')[0]) !== policy.tools.node_major) {
+    toolVersionErrors.push(`Node must be major ${policy.tools.node_major}; found ${process.version}`);
+  }
+  invariant(toolVersionErrors.length === 0, toolVersionErrors.join('; '));
 
   const audit = run('cargo', ['audit', '--json', '--file', 'Cargo.lock']);
   let auditJson;

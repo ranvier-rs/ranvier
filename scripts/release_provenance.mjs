@@ -137,6 +137,7 @@ invariant(statusBefore === '', `source tree must be clean:\n${statusBefore}`);
 const rustc = run('rustc', ['--version']).stdout.trim();
 const cargoVersion = run('cargo', ['--version']).stdout.trim();
 invariant(rustc.startsWith(`rustc ${policy.tools.rust} `), `rustc must be exactly ${policy.tools.rust}: ${rustc}`);
+invariant(cargoVersion.startsWith(`cargo ${policy.tools.cargo} `), `cargo must be exactly ${policy.tools.cargo}: ${cargoVersion}`);
 invariant(Number(process.versions.node.split('.')[0]) === policy.tools.node_major, `Node must be major ${policy.tools.node_major}`);
 
 const metadata = JSON.parse(run('cargo', ['metadata', '--format-version', '1', '--no-deps', '--locked']).stdout);
