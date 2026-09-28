@@ -107,6 +107,106 @@ pub fn streaming_axon() -> StreamingAxon<i32, i32, String, ()> {
     Axon::<i32, i32, String, ()>::new("facade-streaming").then_stream(stream_only)
 }
 
+#[cfg(feature = "streaming-contract")]
+#[streaming_transition]
+async fn stream_no_roles(
+) -> Result<impl ranvier::core::__macro_support::futures_core::Stream<Item = i32> + Send, String> {
+    Ok(OneItemStream(Some(0)))
+}
+
+#[cfg(feature = "streaming-contract")]
+pub fn streaming_no_roles_axon() -> StreamingAxon<(), i32, String, ()> {
+    Axon::<(), (), String, ()>::new("facade-streaming-no-roles").then_stream(stream_no_roles)
+}
+
+#[cfg(feature = "streaming-contract")]
+#[streaming_transition]
+async fn stream_resources_only(
+    _resources: &AppResources,
+) -> Result<impl ranvier::core::__macro_support::futures_core::Stream<Item = i32> + Send, String> {
+    Ok(OneItemStream(Some(0)))
+}
+
+#[cfg(feature = "streaming-contract")]
+pub fn streaming_resources_only_axon() -> StreamingAxon<(), i32, String, AppResources> {
+    Axon::<(), (), String, AppResources>::new("facade-streaming-resources")
+        .then_stream(stream_resources_only)
+}
+
+#[cfg(feature = "streaming-contract")]
+#[streaming_transition]
+async fn stream_bus_only(
+    _bus: &mut Bus,
+) -> Result<impl ranvier::core::__macro_support::futures_core::Stream<Item = i32> + Send, String> {
+    Ok(OneItemStream(Some(0)))
+}
+
+#[cfg(feature = "streaming-contract")]
+pub fn streaming_bus_only_axon() -> StreamingAxon<(), i32, String, ()> {
+    Axon::<(), (), String, ()>::new("facade-streaming-bus").then_stream(stream_bus_only)
+}
+
+#[cfg(feature = "streaming-contract")]
+#[streaming_transition]
+async fn stream_input_and_resources(
+    input: i32,
+    _resources: &AppResources,
+) -> Result<impl ranvier::core::__macro_support::futures_core::Stream<Item = i32> + Send, String> {
+    Ok(OneItemStream(Some(input)))
+}
+
+#[cfg(feature = "streaming-contract")]
+pub fn streaming_input_and_resources_axon() -> StreamingAxon<i32, i32, String, AppResources> {
+    Axon::<i32, i32, String, AppResources>::new("facade-streaming-input-resources")
+        .then_stream(stream_input_and_resources)
+}
+
+#[cfg(feature = "streaming-contract")]
+#[streaming_transition]
+async fn stream_input_and_bus(
+    input: i32,
+    _bus: &mut Bus,
+) -> Result<impl ranvier::core::__macro_support::futures_core::Stream<Item = i32> + Send, String> {
+    Ok(OneItemStream(Some(input)))
+}
+
+#[cfg(feature = "streaming-contract")]
+pub fn streaming_input_and_bus_axon() -> StreamingAxon<i32, i32, String, ()> {
+    Axon::<i32, i32, String, ()>::new("facade-streaming-input-bus")
+        .then_stream(stream_input_and_bus)
+}
+
+#[cfg(feature = "streaming-contract")]
+#[streaming_transition]
+async fn stream_resources_and_bus(
+    _resources: &AppResources,
+    _bus: &mut Bus,
+) -> Result<impl ranvier::core::__macro_support::futures_core::Stream<Item = i32> + Send, String> {
+    Ok(OneItemStream(Some(0)))
+}
+
+#[cfg(feature = "streaming-contract")]
+pub fn streaming_resources_and_bus_axon() -> StreamingAxon<(), i32, String, AppResources> {
+    Axon::<(), (), String, AppResources>::new("facade-streaming-resources-bus")
+        .then_stream(stream_resources_and_bus)
+}
+
+#[cfg(feature = "streaming-contract")]
+#[streaming_transition]
+async fn stream_all_roles(
+    input: i32,
+    _resources: &AppResources,
+    _bus: &mut Bus,
+) -> Result<impl ranvier::core::__macro_support::futures_core::Stream<Item = i32> + Send, String> {
+    Ok(OneItemStream(Some(input)))
+}
+
+#[cfg(feature = "streaming-contract")]
+pub fn streaming_all_roles_axon() -> StreamingAxon<i32, i32, String, AppResources> {
+    Axon::<i32, i32, String, AppResources>::new("facade-streaming-all-roles")
+        .then_stream(stream_all_roles)
+}
+
 #[derive(Clone, ResourceRequirement)]
 pub struct AppResources {
     suffix: &'static str,
