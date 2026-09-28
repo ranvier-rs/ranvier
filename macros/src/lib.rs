@@ -42,14 +42,19 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
         Ok(path) => path,
         Err(error) => return error.to_compile_error().into(),
     };
-    let args = match TransitionArgs::parse(attr.into()) {
-        Ok(args) => args,
-        Err(error) => return error.to_compile_error().into(),
-    };
-    let function = match TransitionFunction::parse(parse_macro_input!(item as ItemFn), &args) {
-        Ok(function) => function,
-        Err(error) => return error.to_compile_error().into(),
-    };
+
+    expand_transition(core_path, attr.into(), item.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+fn expand_transition(
+    core_path: TokenStream2,
+    attr: TokenStream2,
+    item: TokenStream2,
+) -> syn::Result<TokenStream2> {
+    let args = TransitionArgs::parse(attr)?;
+    let function = TransitionFunction::parse(syn::parse2::<ItemFn>(item)?, &args)?;
     let transition_type = quote::format_ident!("__ranvier_transition_{}", function.name);
     let name = &function.name;
     let visibility = &function.visibility;
@@ -135,7 +140,7 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    TokenStream::from(expanded)
+    Ok(expanded)
 }
 
 /// Attribute macro for HTTP route registration.
@@ -277,4 +282,121 @@ pub fn derive_resource_requirement(input: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(expanded)
+}
+
+#[cfg(test)]
+mod ordinary_expansion_tests {
+    use super::expand_transition;
+    use proc_macro2::TokenStream as TokenStream2;
+    use quote::{ToTokens, quote};
+    use syn::{Attribute, Item, parse_quote};
+
+    fn attribute_count(attributes: &[Attribute], expected: &Attribute) -> usize {
+        let expected_tokens = expected.to_token_stream().to_string();
+        attributes
+            .iter()
+            .filter(|attribute| attribute.to_token_stream().to_string() == expected_tokens)
+            .count()
+    }
+
+    fn documentation_values(attributes: &[Attribute]) -> Vec<String> {
+        attributes
+            .iter()
+            .filter_map(|attribute| {
+                let syn::Meta::NameValue(documentation) = &attribute.meta else {
+                    return None;
+                };
+                if !documentation.path.is_ident("doc") {
+                    return None;
+                }
+                let syn::Expr::Lit(documentation) = &documentation.value else {
+                    return None;
+                };
+                let syn::Lit::Str(documentation) = &documentation.lit else {
+                    return None;
+                };
+                Some(documentation.value())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn copies_shared_attributes_to_each_generated_item() {
+        let source = quote! {
+            #[cfg(any(feature = "ordinary_attr_a", feature = "ordinary_attr_b"))]
+            #[cfg_attr(all(), doc = "conditional ordinary transition documentation")]
+            #[allow(dead_code)]
+            /// Ordinary transition documentation.
+            async fn attributed(
+                input: i32,
+            ) -> ranvier_core::outcome::Outcome<i32, std::convert::Infallible> {
+                ranvier_core::outcome::Outcome::next(input)
+            }
+        };
+        let expanded = expand_transition(quote!(::ranvier_core), TokenStream2::new(), source)
+            .expect("valid ordinary transition function");
+        let file = syn::parse2::<syn::File>(expanded).expect("generated ordinary items parse");
+        assert_eq!(
+            file.items.len(),
+            3,
+            "type, value, and trait impl are generated"
+        );
+
+        let [
+            Item::Struct(transition_type),
+            Item::Const(transition_value),
+            Item::Impl(transition_impl),
+        ] = file.items.as_slice()
+        else {
+            panic!("expected generated struct, const, and impl in order");
+        };
+
+        let expected_shared: [Attribute; 3] = [
+            parse_quote!(#[cfg(any(feature = "ordinary_attr_a", feature = "ordinary_attr_b"))]),
+            parse_quote!(#[cfg_attr(all(), doc = "conditional ordinary transition documentation")]),
+            parse_quote!(#[allow(dead_code)]),
+        ];
+        let generated_attributes = [
+            ("transition type", transition_type.attrs.as_slice()),
+            ("transition value", transition_value.attrs.as_slice()),
+            ("transition impl", transition_impl.attrs.as_slice()),
+        ];
+
+        for (generated_name, attributes) in generated_attributes {
+            for expected_attribute in &expected_shared {
+                assert_eq!(
+                    attribute_count(attributes, expected_attribute),
+                    1,
+                    "{generated_name} must contain exactly one {:?} attribute",
+                    expected_attribute.path(),
+                );
+            }
+        }
+
+        let source_documentation = " Ordinary transition documentation.";
+        assert_eq!(
+            documentation_values(&transition_type.attrs)
+                .iter()
+                .filter(|value| value.as_str() == source_documentation)
+                .count(),
+            0,
+            "hidden type does not receive source docs",
+        );
+        assert_eq!(
+            documentation_values(&transition_value.attrs)
+                .iter()
+                .filter(|value| value.as_str() == source_documentation)
+                .count(),
+            1,
+            "named value receives the source doc exactly once",
+        );
+        assert_eq!(
+            documentation_values(&transition_impl.attrs)
+                .iter()
+                .filter(|value| value.as_str() == source_documentation)
+                .count(),
+            0,
+            "trait impl does not receive source docs",
+        );
+    }
 }
