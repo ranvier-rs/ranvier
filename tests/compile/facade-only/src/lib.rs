@@ -20,6 +20,15 @@ pub fn input_only_axon() -> Axon<i32, i32, String, ()> {
     Axon::<i32, i32, String, ()>::new("facade-input-only").then(input_only)
 }
 
+#[transition]
+async fn resources_only(_resources: &AppResources) -> Outcome<(), String> {
+    Outcome::next(())
+}
+
+pub fn resources_only_axon() -> Axon<(), (), String, AppResources> {
+    Axon::<(), (), String, AppResources>::new("facade-resources-only").then(resources_only)
+}
+
 #[derive(Clone, ResourceRequirement)]
 pub struct AppResources {
     suffix: &'static str,
