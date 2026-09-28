@@ -1,146 +1,23 @@
 use proc_macro::TokenStream;
-use proc_macro_crate::{FoundCrate, crate_name};
-use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::{DeriveInput, ItemFn, parse_macro_input};
+use syn::{ItemFn, parse_macro_input};
 
 mod config;
+mod crate_path;
+mod diagnostic;
+mod expansion;
+mod model;
 mod signature;
 #[cfg(feature = "streaming")]
 mod streaming;
 
-use config::TransitionArgs;
-use signature::TransitionFunction;
-
-fn external_crate_path(package: &str) -> Option<TokenStream2> {
-    match crate_name(package).ok()? {
-        FoundCrate::Itself => Some(quote!(crate)),
-        FoundCrate::Name(name) => {
-            let ident = syn::Ident::new(&name, Span::call_site());
-            Some(quote!(::#ident))
-        }
-    }
-}
-
-pub(crate) fn core_crate_path() -> syn::Result<TokenStream2> {
-    if let Some(path) = external_crate_path("ranvier-core") {
-        return Ok(path);
-    }
-    if let Some(facade) = external_crate_path("ranvier") {
-        return Ok(quote!(#facade::core));
-    }
-    Err(syn::Error::new(
-        Span::call_site(),
-        "Ranvier macro expansion requires a direct `ranvier-core` dependency or the `ranvier` facade",
-    ))
-}
-
 /// Attribute macro to transform an async function into a `Transition` implementation.
 #[proc_macro_attribute]
 pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let core_path = match core_crate_path() {
-        Ok(path) => path,
-        Err(error) => return error.to_compile_error().into(),
-    };
-
-    expand_transition(core_path, attr.into(), item.into())
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-fn expand_transition(
-    core_path: TokenStream2,
-    attr: TokenStream2,
-    item: TokenStream2,
-) -> syn::Result<TokenStream2> {
-    let args = TransitionArgs::parse(attr)?;
-    let function = TransitionFunction::parse(syn::parse2::<ItemFn>(item)?, &args)?;
-    let transition_type = quote::format_ident!("__ranvier_transition_{}", function.name);
-    let name = &function.name;
-    let visibility = &function.visibility;
-    let shared_attributes = &function.shared_attributes;
-    let documentation = &function.documentation;
-    let input_type = &function.input_type;
-    let resource_type = &function.resource_type;
-    let bindings = &function.bindings;
-    let output_type = &function.output_type;
-    let error_type = &function.error_type;
-    let body = &function.body;
-    let bus_allow_types = &args.bus_allow;
-    let bus_deny_types = &args.bus_deny;
-
-    let bus_policy_method = if args.bus_allow_specified || args.bus_deny_specified {
-        let allow_expr = if args.bus_allow_specified {
-            quote! {
-                Some(vec![#(#core_path::bus::BusTypeRef::of::<#bus_allow_types>()),*])
-            }
-        } else {
-            quote! { None }
-        };
-        let deny_expr = if args.bus_deny_specified {
-            quote! {
-                vec![#(#core_path::bus::BusTypeRef::of::<#bus_deny_types>()),*]
-            }
-        } else {
-            quote! { Vec::new() }
-        };
-        quote! {
-            fn bus_access_policy(&self) -> Option<#core_path::bus::BusAccessPolicy> {
-                Some(#core_path::bus::BusAccessPolicy {
-                    allow: #allow_expr,
-                    deny: #deny_expr,
-                })
-            }
-        }
-    } else {
-        quote! {}
-    };
-
-    let schema_method = if args.schema {
-        quote! {
-            fn input_schema(&self) -> Option<#core_path::__macro_support::serde_json::Value> {
-                let schema = #core_path::__macro_support::schemars::schema_for!(#input_type);
-                #core_path::__macro_support::serde_json::to_value(schema).ok()
-            }
-        }
-    } else {
-        quote! {}
-    };
-
-    let expanded = quote! {
-        #(#shared_attributes)*
-        #[doc(hidden)]
-        #[allow(non_camel_case_types)]
-        #[derive(Clone)]
-        #visibility struct #transition_type;
-
-        #(#shared_attributes)*
-        #(#documentation)*
-        #[allow(non_upper_case_globals)]
-        #visibility const #name: #transition_type = #transition_type;
-
-        #(#shared_attributes)*
-        #[#core_path::__macro_support::async_trait]
-        impl #core_path::transition::Transition<#input_type, #output_type> for #transition_type {
-            type Error = #error_type;
-            type Resources = #resource_type;
-
-            #bus_policy_method
-            #schema_method
-
-            async fn run(
-                &self,
-                input: #input_type,
-                resources: &Self::Resources,
-                bus: &mut #core_path::bus::Bus,
-            ) -> #core_path::outcome::Outcome<#output_type, Self::Error> {
-                #bindings
-                #body
-            }
-        }
-    };
-
-    Ok(expanded)
+    crate_path::core_crate_path()
+        .and_then(|core_path| expansion::expand_transition(core_path, attr.into(), item.into()))
+        .map(TokenStream::from)
+        .unwrap_or_else(diagnostic::compile_error)
 }
 
 /// Attribute macro for HTTP route registration.
@@ -285,9 +162,10 @@ pub fn ranvier_router(input: TokenStream) -> TokenStream {
 pub fn streaming_transition(attr: TokenStream, item: TokenStream) -> TokenStream {
     match streaming::expand(attr.into(), item.into()) {
         Ok(expansion) => expansion.into(),
-        Err(error) => error.into_compile_error().into(),
+        Err(error) => diagnostic::compile_error(error),
     }
 }
+
 /// Derive macro for the `ResourceRequirement` marker trait.
 ///
 /// Generates a blanket `impl ResourceRequirement for YourType {}`.
@@ -308,24 +186,15 @@ pub fn streaming_transition(attr: TokenStream, item: TokenStream) -> TokenStream
 /// ```
 #[proc_macro_derive(ResourceRequirement)]
 pub fn derive_resource_requirement(input: TokenStream) -> TokenStream {
-    let core_path = match core_crate_path() {
-        Ok(path) => path,
-        Err(error) => return error.to_compile_error().into(),
-    };
-    let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-
-    let expanded = quote! {
-        impl #impl_generics #core_path::transition::ResourceRequirement for #name #ty_generics #where_clause {}
-    };
-
-    TokenStream::from(expanded)
+    crate_path::core_crate_path()
+        .and_then(|core_path| expansion::derive_resource_requirement(core_path, input.into()))
+        .map(TokenStream::from)
+        .unwrap_or_else(diagnostic::compile_error)
 }
 
 #[cfg(test)]
 mod ordinary_expansion_tests {
-    use super::expand_transition;
+    use super::expansion::expand_transition;
     use proc_macro2::TokenStream as TokenStream2;
     use quote::{ToTokens, quote};
     use syn::{Attribute, Item, parse_quote};

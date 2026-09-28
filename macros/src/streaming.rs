@@ -4,11 +4,9 @@ use syn::{Error, GenericArgument, ItemFn, PathArguments, ReturnType, Type, TypeP
 
 use crate::{
     config::TransitionArgs,
-    core_crate_path,
-    signature::{
-        FunctionAttributes, ParameterContract, parse_function_attributes, parse_parameters,
-        validate_function_signature,
-    },
+    crate_path::core_crate_path,
+    model::{FunctionAttributes, ParameterContract},
+    signature::{parse_function_attributes, parse_parameters, validate_function_signature},
 };
 
 pub(crate) fn expand(attr: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {

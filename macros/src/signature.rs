@@ -1,20 +1,10 @@
-use crate::config::TransitionArgs;
+use crate::{
+    config::TransitionArgs,
+    model::{FunctionAttributes, ParameterContract, TransitionFunction},
+};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{Attribute, Error, FnArg, Ident, ItemFn, PatType, ReturnType, Type, Visibility};
-
-pub(crate) struct TransitionFunction {
-    pub(crate) name: Ident,
-    pub(crate) visibility: Visibility,
-    pub(crate) shared_attributes: Vec<Attribute>,
-    pub(crate) documentation: Vec<Attribute>,
-    pub(crate) input_type: TokenStream2,
-    pub(crate) resource_type: TokenStream2,
-    pub(crate) bindings: TokenStream2,
-    pub(crate) output_type: TokenStream2,
-    pub(crate) error_type: TokenStream2,
-    pub(crate) body: syn::Block,
-}
+use syn::{Error, FnArg, ItemFn, PatType, ReturnType, Type};
 
 enum ParameterRole {
     Input(Type),
@@ -30,17 +20,6 @@ impl ParameterRole {
             Self::Bus => 2,
         }
     }
-}
-
-pub(crate) struct ParameterContract {
-    pub(crate) input_type: TokenStream2,
-    pub(crate) resource_type: TokenStream2,
-    pub(crate) bindings: TokenStream2,
-}
-
-pub(crate) struct FunctionAttributes {
-    pub(crate) shared: Vec<Attribute>,
-    pub(crate) documentation: Vec<Attribute>,
 }
 
 pub(crate) fn validate_function_signature(function: &ItemFn) -> syn::Result<()> {
