@@ -289,8 +289,76 @@ fn invalid_stream_return(ty: &Type) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_result_stream_types;
-    use syn::{Type, parse_quote};
+    use super::{expand, parse_result_stream_types};
+    use proc_macro2::TokenStream as TokenStream2;
+    use quote::ToTokens;
+    use syn::{Attribute, Item, Type, parse_quote};
+
+    #[test]
+    fn copies_shared_attributes_to_each_generated_item() {
+        let source = quote::quote! {
+            #[cfg(any(feature = "streaming_attr_a", feature = "streaming_attr_b"))]
+            #[cfg_attr(all(), doc = "conditional transition documentation")]
+            #[allow(dead_code)]
+            async fn attributed(
+                input: i32,
+            ) -> Result<
+                impl ranvier_core::__macro_support::futures_core::Stream<Item = i32> + Send,
+                std::convert::Infallible,
+            > {
+                let _ = input;
+                todo!()
+            }
+        };
+        let expanded = expand(TokenStream2::new(), source).expect("valid streaming function");
+        let file = syn::parse2::<syn::File>(expanded).expect("generated items parse");
+        assert_eq!(
+            file.items.len(),
+            3,
+            "type, value, and trait impl are generated"
+        );
+
+        let [
+            Item::Struct(transition_type),
+            Item::Const(transition_value),
+            Item::Impl(transition_impl),
+        ] = file.items.as_slice()
+        else {
+            panic!("expected generated struct, const, and impl in order");
+        };
+
+        let expected: [Attribute; 3] = [
+            parse_quote!(#[cfg(any(feature = "streaming_attr_a", feature = "streaming_attr_b"))]),
+            parse_quote!(#[cfg_attr(all(), doc = "conditional transition documentation")]),
+            parse_quote!(#[allow(dead_code)]),
+        ];
+        let generated_attributes = [
+            ("transition type", transition_type.attrs.as_slice()),
+            ("transition value", transition_value.attrs.as_slice()),
+            ("transition impl", transition_impl.attrs.as_slice()),
+        ];
+
+        for (generated_name, attributes) in generated_attributes {
+            for expected_attribute in &expected {
+                let expected_tokens = expected_attribute.to_token_stream().to_string();
+                let actual: Vec<_> = attributes
+                    .iter()
+                    .filter(|attribute| attribute.to_token_stream().to_string() == expected_tokens)
+                    .collect();
+                assert_eq!(
+                    actual.len(),
+                    1,
+                    "{generated_name} must contain exactly one {:?} attribute",
+                    expected_attribute.path()
+                );
+                assert_eq!(
+                    actual[0].to_token_stream().to_string(),
+                    expected_attribute.to_token_stream().to_string(),
+                    "{generated_name} must preserve the source attribute"
+                );
+            }
+        }
+    }
 
     #[test]
     fn parses_impl_stream_return() {
