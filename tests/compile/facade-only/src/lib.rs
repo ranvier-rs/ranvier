@@ -47,6 +47,16 @@ pub fn input_and_bus_axon() -> Axon<i32, i32, String, ()> {
     Axon::<i32, i32, String, ()>::new("facade-input-bus").then(input_and_bus)
 }
 
+#[transition]
+async fn input_and_resources(input: i32, _resources: &AppResources) -> Outcome<i32, String> {
+    Outcome::next(input)
+}
+
+pub fn input_and_resources_axon() -> Axon<i32, i32, String, AppResources> {
+    Axon::<i32, i32, String, AppResources>::new("facade-input-resources")
+        .then(input_and_resources)
+}
+
 #[derive(Clone, ResourceRequirement)]
 pub struct AppResources {
     suffix: &'static str,
