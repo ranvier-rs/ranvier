@@ -93,7 +93,7 @@ Options:
   --runtime <any|none>             Include any examples or only examples without runtimeRequirements
   --field <id|package>             Output field (default: package)
   --format <lines|json>            Output format (default: lines)
-  --verify-workspace-members       Fail if selected packages are not Cargo workspace members
+  --verify-workspace-members       Fail unless the full example manifest and Cargo example workspace members match
   --verify-portfolio               Fail if manifest support tier and owner metadata is incomplete
 `);
 }
@@ -151,7 +151,7 @@ function manifestCargoPath(entry) {
   return path.join(process.cwd(), examplePath, "Cargo.toml");
 }
 
-function getWorkspacePackageNames() {
+function getWorkspacePackages() {
   const metadata = spawnSync(
     "cargo",
     ["metadata", "--format-version", "1", "--no-deps", "--manifest-path", "Cargo.toml"],
@@ -169,11 +169,7 @@ function getWorkspacePackageNames() {
 
   const parsed = JSON.parse(metadata.stdout);
   const workspaceMembers = new Set(parsed.workspace_members);
-  return new Set(
-    parsed.packages
-      .filter((pkg) => workspaceMembers.has(pkg.id))
-      .map((pkg) => pkg.name)
-  );
+  return parsed.packages.filter((pkg) => workspaceMembers.has(pkg.id));
 }
 
 function verifyPortfolio(manifest) {
@@ -411,14 +407,40 @@ async function verifyCatalogMirror(manifest) {
   }
 }
 
+function isExampleWorkspacePackage(pkg) {
+  const relativeManifestPath = path.relative(process.cwd(), pkg.manifest_path);
+  return relativeManifestPath.split(path.sep)[0] === "examples";
+}
+
 async function verifyExamples(entries) {
-  const workspacePackages = getWorkspacePackageNames();
+  const workspacePackages = getWorkspacePackages();
+  const workspacePackagesByName = new Map(
+    workspacePackages.map((pkg) => [pkg.name, pkg])
+  );
+  const entriesByPackage = new Map();
   const errors = [];
 
   for (const entry of entries) {
     const packageName = entry.package;
-    if (!workspacePackages.has(packageName)) {
+    if (entriesByPackage.has(packageName)) {
+      errors.push(`${packageName}: duplicate package in examples manifest`);
+    } else {
+      entriesByPackage.set(packageName, entry);
+    }
+
+    const workspacePackage = workspacePackagesByName.get(packageName);
+    if (!workspacePackage) {
       errors.push(`${packageName}: not found in Cargo workspace members`);
+    } else {
+      const expectedPath = path.resolve(manifestCargoPath(entry));
+      const actualPath = path.resolve(workspacePackage.manifest_path);
+      if (expectedPath !== actualPath) {
+        errors.push(
+          `${packageName}: manifest Cargo path ` +
+            `${path.relative(process.cwd(), expectedPath)} does not match ` +
+            `workspace member path ${path.relative(process.cwd(), actualPath)}`
+        );
+      }
     }
 
     const manifestPath = manifestCargoPath(entry);
@@ -427,11 +449,20 @@ async function verifyExamples(entries) {
     }
   }
 
+  for (const pkg of workspacePackages.filter(isExampleWorkspacePackage)) {
+    if (!entriesByPackage.has(pkg.name)) {
+      errors.push(
+        `${pkg.name}: Cargo example workspace member is missing from examples manifest ` +
+          `(${path.relative(process.cwd(), pkg.manifest_path)})`
+      );
+    }
+  }
+
   if (errors.length > 0) {
     for (const error of errors) {
       console.error(`[examples-manifest] ${error}`);
     }
-    throw new Error(`${errors.length} selected example workspace mismatch(es)`);
+    throw new Error(`${errors.length} example workspace mismatch(es)`);
   }
 }
 
@@ -457,7 +488,7 @@ async function main() {
   const entries = filterExamples(manifest.examples, options);
 
   if (options.verifyWorkspaceMembers) {
-    await verifyExamples(entries);
+    await verifyExamples(manifest.examples);
   }
 
   printEntries(entries, options);

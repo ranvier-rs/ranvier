@@ -64,6 +64,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: node scripts/list_manifest_examples.mjs --verify-portfolio --verify-workspace-members
+      - run: node --test scripts/tests/list_manifest_examples.test.mjs
       - run: node scripts/candidate_api_baseline.mjs --check
       - run: node scripts/candidate_compile_contract.mjs
       - run: node scripts/tiered_example_gate.mjs --lane developer --phase check
