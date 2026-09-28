@@ -6,29 +6,28 @@ This crate is the facade entry point that re-exports the core, runtime, and HTTP
 ## Install
 
 ```bash
-cargo add ranvier
+cargo add ranvier@0.51.0
+cargo add tokio@1 --features macros,rt-multi-thread
 ```
 
-## Quick Start
+## Quick Start (crates.io 0.51.0)
 
 ```rust
 use ranvier::prelude::*;
-
-#[transition]
-async fn greet(_input: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, String> {
-    Outcome::Next("Hello, Ranvier!".to_string())
-}
+use ranvier::runtime::ClosureTransition;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let hello = Axon::<(), (), String>::new("Hello").then(greet);
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let hello = Axon::<(), (), String>::new("hello").then(ClosureTransition::new(
+        "greet",
+        |_input: (), _bus: &mut Bus| Outcome::next("Hello, Ranvier!".to_string()),
+    ));
 
     Ranvier::http()
         .bind("127.0.0.1:3000")
         .route("/", hello)
         .run(())
-        .await
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+        .await?;
 
     Ok(())
 }
@@ -51,12 +50,24 @@ ranvier = { version = "0.51.0", default-features = false }
 You can enable features explicitly:
 
 ```toml
-ranvier = { version = "0.51.0", features = ["http", "std", "schema"] }
+ranvier = { version = "0.51.0", features = ["http", "std"] }
 ```
 
-The `schema` feature enables `#[transition(schema)]` support. Inputs must
-implement `schemars::JsonSchema`; consumers do not need to declare `schemars`
-or `serde_json` as direct dependencies for macro expansion.
+The published `ranvier@0.51.0` facade does not expose a `schema` feature;
+`ranvier-runtime` does. For registry macro schema metadata, use the explicit
+`ranvier::macros::transition` import and declare these dependencies directly:
+
+```toml
+ranvier-core = "0.51.0"
+ranvier-runtime = { version = "0.51.0", features = ["schema"] }
+async-trait = "0.1"
+schemars = { version = "1", features = ["derive"] }
+serde_json = "1"
+```
+
+The 0.51.0 macro expansion refers to those crate names from the consumer crate.
+This differs from the current root-gitlink source candidate, so a local facade
+macro compile does not prove the registry dependency contract.
 
 ## Crates (12 publishable product crates, v0.51.0)
 

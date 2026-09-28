@@ -75,15 +75,14 @@ cargo add tokio@1 --features macros,rt-multi-thread
 
 ```rust
 use ranvier::prelude::*;
-
-#[transition]
-async fn greet(_input: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, String> {
-    Outcome::next("Hello, Ranvier!".to_string())
-}
+use ranvier::runtime::ClosureTransition;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let hello = Axon::<(), (), String>::new("hello").then(greet);
+    let hello = Axon::<(), (), String>::new("hello").then(ClosureTransition::new(
+        "greet",
+        |_input: (), _bus: &mut Bus| Outcome::next("Hello, Ranvier!".to_string()),
+    ));
 
     Ranvier::http()
         .bind("127.0.0.1:3000")
