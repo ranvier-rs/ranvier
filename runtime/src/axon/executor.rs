@@ -681,7 +681,10 @@ where
                         store_operation = "cancellation_load",
                         "Failed to inspect persistence cursor before cancellation"
                     );
-                    (0, true, false)
+                    // The next cursor is unknown. Writing at a guessed step could
+                    // collide with an existing event or create a terminal without
+                    // its entry marker, so leave the persisted trace untouched.
+                    (0, false, false)
                 }
             };
             if writable {

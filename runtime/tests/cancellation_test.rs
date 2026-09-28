@@ -4,7 +4,8 @@ use ranvier_core::saga::SagaPolicy;
 use ranvier_core::{Bus, BusAccessPolicy, Outcome, Transition};
 use ranvier_runtime::persistence::{
     CompensationContext, CompensationHandle, CompensationHook, CompletionState,
-    InMemoryPersistenceStore, PersistenceHandle, PersistenceStore, PersistenceTraceId,
+    InMemoryPersistenceStore, Intervention, PersistedTrace, PersistenceEnvelope, PersistenceHandle,
+    PersistenceStore, PersistenceTraceId, ResumeCursor,
 };
 use ranvier_runtime::{Axon, ExecutionTerminal, ParallelStrategy};
 use serde::{Deserialize, Serialize};
@@ -54,6 +55,75 @@ impl CompensationHook for RecordingCompensation {
 async fn cancel_after_entry(entered: Arc<Notify>, token: CancellationToken) {
     entered.notified().await;
     token.cancel(CancellationReason::OperatorShutdown);
+}
+
+#[derive(Clone, Default)]
+struct FailedCursorPersistenceStore {
+    loads: Arc<AtomicUsize>,
+    appends: Arc<AtomicUsize>,
+    completions: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl PersistenceStore for FailedCursorPersistenceStore {
+    async fn append(&self, _envelope: PersistenceEnvelope) -> anyhow::Result<()> {
+        self.appends.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn load(&self, _trace_id: &str) -> anyhow::Result<Option<PersistedTrace>> {
+        self.loads.fetch_add(1, Ordering::SeqCst);
+        Err(anyhow::anyhow!("database cursor unavailable"))
+    }
+
+    async fn resume(
+        &self,
+        _trace_id: &str,
+        _resume_from_step: u64,
+    ) -> anyhow::Result<ResumeCursor> {
+        Err(anyhow::anyhow!("database cursor unavailable"))
+    }
+
+    async fn complete(&self, _trace_id: &str, _completion: CompletionState) -> anyhow::Result<()> {
+        self.completions.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn save_intervention(
+        &self,
+        _trace_id: &str,
+        _intervention: Intervention,
+    ) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("database cursor unavailable"))
+    }
+}
+
+#[tokio::test]
+async fn pre_cancelled_execution_does_not_write_when_persistence_cursor_load_fails() {
+    let observed = Arc::new(AtomicUsize::new(0));
+    let store = Arc::new(FailedCursorPersistenceStore::default());
+    let token = CancellationToken::new();
+    assert!(token.cancel(CancellationReason::Explicit));
+
+    let axon = Axon::<i32, i32, String>::start("CancellationCursorUnavailable").then(
+        WaitForCancellation {
+            entered: Arc::new(Notify::new()),
+            observed_token: observed.clone(),
+        },
+    );
+    let mut bus = Bus::new();
+    bus.insert(PersistenceHandle::from_arc(
+        store.clone() as Arc<dyn PersistenceStore>
+    ));
+    bus.insert(PersistenceTraceId::new("trace-cursor-unavailable"));
+
+    let terminal = axon.execute_cancellable(1, &(), &mut bus, token).await;
+
+    assert!(matches!(terminal, ExecutionTerminal::Cancelled(_)));
+    assert_eq!(observed.load(Ordering::SeqCst), 0);
+    assert_eq!(store.loads.load(Ordering::SeqCst), 1);
+    assert_eq!(store.appends.load(Ordering::SeqCst), 0);
+    assert_eq!(store.completions.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
