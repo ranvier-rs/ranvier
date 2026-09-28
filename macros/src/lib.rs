@@ -232,16 +232,53 @@ pub fn ranvier_router(input: TokenStream) -> TokenStream {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```rust
+/// use std::{pin::Pin, task::{Context, Poll}};
+/// use ranvier_core::{
+///     __macro_support::futures_core::Stream,
+///     bus::Bus,
+///     transition::ResourceRequirement as ResourceRequirementTrait,
+/// };
+/// use ranvier_macros::{streaming_transition, ResourceRequirement};
+///
+/// #[derive(Clone, ResourceRequirement)]
+/// struct AppResources;
+///
+/// struct OneItemStream(Option<String>);
+///
+/// impl Stream for OneItemStream {
+///     type Item = String;
+///
+///     fn poll_next(
+///         mut self: Pin<&mut Self>,
+///         _context: &mut Context<'_>,
+///     ) -> Poll<Option<Self::Item>> {
+///         Poll::Ready(self.0.take())
+///     }
+/// }
+///
 /// #[streaming_transition]
 /// async fn synthesize(
-///     input: ClassifiedChat,
-///     resources: &AppResources,
-///     bus: &mut Bus,
-/// ) -> Result<impl Stream<Item = ChatChunk> + Send, LlmError> {
-///     let stream = resources.llm.chat_stream(&input.prompt).await?;
-///     Ok(stream)
+///     input: String,
+///     _resources: &AppResources,
+///     _bus: &mut Bus,
+/// ) -> Result<impl Stream<Item = String> + Send, String> {
+///     Ok(OneItemStream(Some(input)))
 /// }
+///
+/// fn assert_streaming_transition<T>(_: &T)
+/// where
+///     T: ranvier_core::streaming::StreamingTransition<
+///         String,
+///         Item = String,
+///         Error = String,
+///         Resources = AppResources,
+///     > + Clone,
+///     AppResources: ResourceRequirementTrait,
+/// {
+/// }
+///
+/// assert_streaming_transition(&synthesize);
 /// ```
 #[cfg(feature = "streaming")]
 #[proc_macro_attribute]
@@ -258,14 +295,16 @@ pub fn streaming_transition(attr: TokenStream, item: TokenStream) -> TokenStream
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// use ranvier::prelude::*;
+/// ```rust
+/// use ranvier_core::transition::ResourceRequirement as ResourceRequirementTrait;
+/// use ranvier_macros::ResourceRequirement;
 ///
 /// #[derive(Clone, ResourceRequirement)]
-/// struct AppResources {
-///     pool: sqlx::PgPool,
-///     redis: redis::Client,
-/// }
+/// struct AppResources;
+///
+/// fn assert_resource_requirement<T: ResourceRequirementTrait>() {}
+///
+/// assert_resource_requirement::<AppResources>();
 /// ```
 #[proc_macro_derive(ResourceRequirement)]
 pub fn derive_resource_requirement(input: TokenStream) -> TokenStream {
