@@ -65,6 +65,9 @@ schemars = { version = "1", features = ["derive"] }
 serde_json = "1"
 ```
 
+Each transition input whose schema is derived must implement
+`schemars::JsonSchema`.
+
 The 0.51.0 macro expansion refers to those crate names from the consumer crate.
 This differs from the current root-gitlink source candidate, so a local facade
 macro compile does not prove the registry dependency contract.
