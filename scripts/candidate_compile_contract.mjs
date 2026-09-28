@@ -49,6 +49,14 @@ run([
   'schema-contract',
   '--locked'
 ]);
+run([
+  'check',
+  '--manifest-path',
+  'tests/compile/facade-only/Cargo.toml',
+  '--features',
+  'streaming-contract',
+  '--locked'
+]);
 run(['check', '--manifest-path', 'tests/compile/renamed-direct/Cargo.toml', '--locked']);
 run(['check', '--manifest-path', 'macros/tests/compile/streaming-accepted/Cargo.toml', '--locked']);
 run([
@@ -91,9 +99,7 @@ expectCompileFailure([
   'tests/compile/facade-streaming-feature-off/Cargo.toml',
   '--locked'
 ], [
-  'unresolved import',
-  'no `streaming_transition` in the root',
-  'could not find `streaming` in `core`'
+  'cannot find attribute `streaming_transition` in this scope'
 ], 'facade streaming feature-off consumer');
 expectCompileFailure([
   'check',

@@ -52,6 +52,8 @@ pub mod prelude {
     pub use ranvier_http::prelude::*;
     #[cfg(feature = "inspector")]
     pub use ranvier_inspector::{Inspector, StateInspector};
+    #[cfg(feature = "streaming")]
+    pub use ranvier_macros::streaming_transition;
     pub use ranvier_macros::{ResourceRequirement, transition};
     #[cfg(feature = "openapi")]
     pub use ranvier_openapi::prelude::*;

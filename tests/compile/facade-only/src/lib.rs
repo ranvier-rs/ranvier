@@ -79,6 +79,34 @@ pub fn resources_and_bus_axon() -> Axon<(), (), String, AppResources> {
     Axon::<(), (), String, AppResources>::new("facade-resources-bus").then(resources_and_bus)
 }
 
+#[cfg(feature = "streaming-contract")]
+struct OneItemStream(Option<i32>);
+
+#[cfg(feature = "streaming-contract")]
+impl ranvier::core::__macro_support::futures_core::Stream for OneItemStream {
+    type Item = i32;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        std::task::Poll::Ready(self.as_mut().get_mut().0.take())
+    }
+}
+
+#[cfg(feature = "streaming-contract")]
+#[streaming_transition]
+async fn stream_only(
+    input: i32,
+) -> Result<impl ranvier::core::__macro_support::futures_core::Stream<Item = i32> + Send, String> {
+    Ok(OneItemStream(Some(input)))
+}
+
+#[cfg(feature = "streaming-contract")]
+pub fn streaming_axon() -> StreamingAxon<i32, i32, String, ()> {
+    Axon::<i32, i32, String, ()>::new("facade-streaming").then_stream(stream_only)
+}
+
 #[derive(Clone, ResourceRequirement)]
 pub struct AppResources {
     suffix: &'static str,
