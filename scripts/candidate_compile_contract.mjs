@@ -50,6 +50,23 @@ run([
   '--locked'
 ]);
 run([
+  'test',
+  '--manifest-path',
+  'tests/compile/facade-schema-attribute/Cargo.toml',
+  '--features',
+  'schema-contract',
+  '--locked'
+]);
+expectCompileFailure([
+  'check',
+  '--manifest-path',
+  'tests/compile/facade-schema-attribute/Cargo.toml',
+  '--locked'
+], [
+  'error[E0433]',
+  'could not find `schemars` in `__macro_support`'
+], 'facade schema attribute with schema feature disabled');
+run([
   'check',
   '--manifest-path',
   'tests/compile/facade-only/Cargo.toml',

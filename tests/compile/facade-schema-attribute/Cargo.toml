@@ -1,0 +1,13 @@
+[package]
+name = "ranvier-facade-schema-attribute-contract"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[features]
+schema-contract = ["ranvier/schema"]
+
+[dependencies]
+ranvier = { path = "../../../kit", default-features = false }
