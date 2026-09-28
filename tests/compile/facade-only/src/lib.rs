@@ -2,6 +2,15 @@
 
 use ranvier::prelude::*;
 
+#[transition]
+async fn no_parameters() -> Outcome<(), String> {
+    Outcome::next(())
+}
+
+pub fn no_parameter_axon() -> Axon<(), (), String, ()> {
+    Axon::<(), (), String, ()>::new("facade-zero-parameter").then(no_parameters)
+}
+
 #[derive(Clone, ResourceRequirement)]
 pub struct AppResources {
     suffix: &'static str,
