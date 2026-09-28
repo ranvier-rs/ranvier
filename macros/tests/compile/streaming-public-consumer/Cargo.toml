@@ -1,3 +1,9 @@
 [workspace]
-members = ["producer", "consumer", "restricted-consumer"]
+members = [
+    "producer",
+    "consumer",
+    "restricted-consumer",
+    "ordinary-producer",
+    "ordinary-consumer",
+]
 resolver = "3"

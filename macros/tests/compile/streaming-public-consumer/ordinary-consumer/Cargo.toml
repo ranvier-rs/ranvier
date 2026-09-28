@@ -1,0 +1,9 @@
+[package]
+name = "ranvier-ordinary-public-api-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ranvier-core = { path = "../../../../../core" }
+ranvier-ordinary-public-api-fixture = { path = "../ordinary-producer" }

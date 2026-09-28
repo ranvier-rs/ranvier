@@ -59,6 +59,14 @@ run([
   'macros/tests/compile/streaming-public-consumer/Cargo.toml',
   '--locked'
 ]);
+run([
+  'check',
+  '--package',
+  'ranvier-ordinary-public-api-consumer',
+  '--manifest-path',
+  'macros/tests/compile/streaming-public-consumer/Cargo.toml',
+  '--locked'
+]);
 expectCompileFailure([
   'check',
   '--manifest-path',

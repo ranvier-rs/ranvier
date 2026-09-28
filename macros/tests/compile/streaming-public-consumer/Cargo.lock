@@ -425,6 +425,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ranvier-ordinary-public-api-consumer"
+version = "0.0.0"
+dependencies = [
+ "ranvier-core",
+ "ranvier-ordinary-public-api-fixture",
+]
+
+[[package]]
+name = "ranvier-ordinary-public-api-fixture"
+version = "0.0.0"
+dependencies = [
+ "ranvier-core",
+ "ranvier-macros",
+]
+
+[[package]]
 name = "ranvier-streaming-crate-private-consumer"
 version = "0.0.0"
 dependencies = [
