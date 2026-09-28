@@ -1,0 +1,12 @@
+error[E0603]: constant `private_stream` is private
+  --> tests/ui/streaming/fail/private_transition_is_not_exported.rs:32:36
+   |
+32 |     let _transition = private_api::private_stream;
+   |                                    ^^^^^^^^^^^^^^ private constant
+   |
+note: the constant `private_stream` is defined here
+  --> tests/ui/streaming/fail/private_transition_is_not_exported.rs:20:5
+   |
+20 |     #[streaming_transition]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the attribute macro `streaming_transition` (in Nightly builds, run with -Z macro-backtrace for more info)
