@@ -1115,7 +1115,7 @@ async fn run_compensation(
                 }
                 return true;
             }
-            Err(err) => {
+            Err(_) => {
                 let is_last = attempt == max_attempts;
                 tracing::warn!(
                     trace_id = %context.trace_id,
@@ -1124,7 +1124,7 @@ async fn run_compensation(
                     fault_step = context.fault_step,
                     attempt,
                     max_attempts,
-                    error = %err,
+                    failure_source = "compensation_hook",
                     "Compensation hook attempt failed"
                 );
                 if !is_last && retry_policy.backoff_ms > 0 {
@@ -1438,7 +1438,7 @@ mod tests {
     use super::{
         Axon, ParallelBusPolicy, ParallelStrategy, inspector_dev_mode_from_value,
         inspector_enabled_from_value, load_persistence_version, persist_completion,
-        persist_execution_event, sampled_by_bus_id, should_force_export,
+        persist_execution_event, run_compensation, sampled_by_bus_id, should_force_export,
     };
     use crate::persistence::{
         CompensationContext, CompensationHandle, CompensationHook, CompensationIdempotencyHandle,
@@ -1494,6 +1494,15 @@ mod tests {
         }
     }
 
+    struct SecretFailingCompensationHook;
+
+    #[async_trait]
+    impl CompensationHook for SecretFailingCompensationHook {
+        async fn compensate(&self, _context: CompensationContext) -> Result<()> {
+            Err(anyhow::anyhow!(PERSISTENCE_ERROR_SENTINEL))
+        }
+    }
+
     #[derive(Clone)]
     struct CapturedLogWriter(Arc<StdMutex<Vec<u8>>>);
 
@@ -1539,6 +1548,20 @@ mod tests {
             )
             .await;
             persist_completion(&handle, "trace-redacted", CompletionState::Success).await;
+            let compensation_succeeded = run_compensation(
+                &CompensationHandle::from_hook(SecretFailingCompensationHook),
+                CompensationContext {
+                    trace_id: "trace-redacted".to_string(),
+                    circuit: "RedactedPersistenceTest".to_string(),
+                    fault_kind: "Fault".to_string(),
+                    fault_step: 2,
+                    timestamp_ms: 0,
+                },
+                CompensationRetryPolicy::default(),
+                None,
+            )
+            .await;
+            assert!(!compensation_succeeded);
         }
 
         let output = String::from_utf8(log_buffer.lock().expect("log buffer lock").clone())
@@ -1547,6 +1570,10 @@ mod tests {
         assert!(output.contains("store_operation=\"load\""), "{output}");
         assert!(output.contains("store_operation=\"append\""), "{output}");
         assert!(output.contains("store_operation=\"complete\""), "{output}");
+        assert!(
+            output.contains("failure_source=\"compensation_hook\""),
+            "{output}"
+        );
     }
 
     #[cfg(feature = "inspector")]
