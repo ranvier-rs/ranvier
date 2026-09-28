@@ -29,6 +29,15 @@ pub fn resources_only_axon() -> Axon<(), (), String, AppResources> {
     Axon::<(), (), String, AppResources>::new("facade-resources-only").then(resources_only)
 }
 
+#[transition]
+async fn bus_only(_bus: &mut Bus) -> Outcome<(), String> {
+    Outcome::next(())
+}
+
+pub fn bus_only_axon() -> Axon<(), (), String, ()> {
+    Axon::<(), (), String, ()>::new("facade-bus-only").then(bus_only)
+}
+
 #[derive(Clone, ResourceRequirement)]
 pub struct AppResources {
     suffix: &'static str,
