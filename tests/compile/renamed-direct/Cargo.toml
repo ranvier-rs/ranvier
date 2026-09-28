@@ -7,5 +7,5 @@ publish = false
 [workspace]
 
 [dependencies]
-core_alias = { package = "ranvier-core", path = "../../../core", features = ["schema"] }
-macro_alias = { package = "ranvier-macros", path = "../../../macros" }
+core_alias = { package = "ranvier-core", path = "../../../core", features = ["schema", "streaming"] }
+macro_alias = { package = "ranvier-macros", path = "../../../macros", features = ["streaming"] }
