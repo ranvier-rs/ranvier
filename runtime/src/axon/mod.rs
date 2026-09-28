@@ -516,10 +516,10 @@ async fn load_persistence_version(
             )
         }
         Ok(None) => (0, None, None, None, None),
-        Err(err) => {
+        Err(_) => {
             tracing::warn!(
                 trace_id = %trace_id,
-                error = %err,
+                store_operation = "load",
                 "Failed to load persistence trace; falling back to step=0"
             );
             (0, None, None, None, None)
@@ -1031,13 +1031,13 @@ pub async fn persist_execution_event(
         payload,
     };
 
-    if let Err(err) = store.append(envelope).await {
+    if store.append(envelope).await.is_err() {
         tracing::warn!(
             trace_id = %trace_id,
             circuit = %circuit,
             step,
             outcome_kind = %outcome_kind,
-            error = %err,
+            store_operation = "append",
             "Failed to append persistence envelope"
         );
     }
@@ -1049,10 +1049,10 @@ async fn persist_completion(
     completion: CompletionState,
 ) {
     let store = handle.store();
-    if let Err(err) = store.complete(trace_id, completion).await {
+    if store.complete(trace_id, completion).await.is_err() {
         tracing::warn!(
             trace_id = %trace_id,
-            error = %err,
+            store_operation = "complete",
             "Failed to complete persistence trace"
         );
     }
@@ -1087,11 +1087,11 @@ async fn run_compensation(
                 return true;
             }
             Ok(false) => {}
-            Err(err) => {
+            Err(_) => {
                 tracing::warn!(
                     trace_id = %context.trace_id,
                     key = %key,
-                    error = %err,
+                    store_operation = "compensation_idempotency_read",
                     "Failed to check compensation idempotency state"
                 );
             }
@@ -1104,11 +1104,11 @@ async fn run_compensation(
             Ok(()) => {
                 if let Some(store_handle) = idempotency.as_ref() {
                     let store = store_handle.store();
-                    if let Err(err) = store.mark_compensated(&key).await {
+                    if store.mark_compensated(&key).await.is_err() {
                         tracing::warn!(
                             trace_id = %context.trace_id,
                             key = %key,
-                            error = %err,
+                            store_operation = "compensation_idempotency_write",
                             "Failed to mark compensation idempotency state"
                         );
                     }
@@ -1437,13 +1437,15 @@ fn now_ms() -> u64 {
 mod tests {
     use super::{
         Axon, ParallelBusPolicy, ParallelStrategy, inspector_dev_mode_from_value,
-        inspector_enabled_from_value, sampled_by_bus_id, should_force_export,
+        inspector_enabled_from_value, load_persistence_version, persist_completion,
+        persist_execution_event, sampled_by_bus_id, should_force_export,
     };
     use crate::persistence::{
         CompensationContext, CompensationHandle, CompensationHook, CompensationIdempotencyHandle,
         CompensationIdempotencyStore, CompensationRetryPolicy, CompletionState,
-        InMemoryCompensationIdempotencyStore, InMemoryPersistenceStore, PersistenceAutoComplete,
-        PersistenceHandle, PersistenceStore, PersistenceTraceId,
+        InMemoryCompensationIdempotencyStore, InMemoryPersistenceStore, Intervention,
+        PersistedTrace, PersistenceAutoComplete, PersistenceEnvelope, PersistenceHandle,
+        PersistenceStore, PersistenceTraceId, ResumeCursor,
     };
     use anyhow::Result;
     use async_trait::async_trait;
@@ -1454,10 +1456,98 @@ mod tests {
     use ranvier_core::timeline::{Timeline, TimelineEvent};
     use ranvier_core::{Bus, BusAccessError, BusAccessPolicy, BusTypeRef, Outcome, Transition};
     use serde::{Deserialize, Serialize};
-    use std::sync::Arc;
+    use std::io;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
     use uuid::Uuid;
+
+    const PERSISTENCE_ERROR_SENTINEL: &str = "db_password=ranvier-test-secret";
+
+    #[derive(Clone)]
+    struct SecretFailingPersistenceStore;
+
+    #[async_trait]
+    impl PersistenceStore for SecretFailingPersistenceStore {
+        async fn append(&self, _envelope: PersistenceEnvelope) -> Result<()> {
+            Err(anyhow::anyhow!(PERSISTENCE_ERROR_SENTINEL))
+        }
+
+        async fn load(&self, _trace_id: &str) -> Result<Option<PersistedTrace>> {
+            Err(anyhow::anyhow!(PERSISTENCE_ERROR_SENTINEL))
+        }
+
+        async fn resume(&self, _trace_id: &str, _resume_from_step: u64) -> Result<ResumeCursor> {
+            Err(anyhow::anyhow!(PERSISTENCE_ERROR_SENTINEL))
+        }
+
+        async fn complete(&self, _trace_id: &str, _completion: CompletionState) -> Result<()> {
+            Err(anyhow::anyhow!(PERSISTENCE_ERROR_SENTINEL))
+        }
+
+        async fn save_intervention(
+            &self,
+            _trace_id: &str,
+            _intervention: Intervention,
+        ) -> Result<()> {
+            Err(anyhow::anyhow!(PERSISTENCE_ERROR_SENTINEL))
+        }
+    }
+
+    #[derive(Clone)]
+    struct CapturedLogWriter(Arc<StdMutex<Vec<u8>>>);
+
+    impl io::Write for CapturedLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .expect("log buffer lock")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn persistence_store_errors_are_redacted_from_runtime_logs() {
+        let log_buffer = Arc::new(StdMutex::new(Vec::new()));
+        let writer_buffer = log_buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(move || CapturedLogWriter(writer_buffer.clone()))
+            .finish();
+        let handle =
+            crate::persistence::PersistenceHandle::from_store(SecretFailingPersistenceStore);
+
+        {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            let _ = load_persistence_version(&handle, "trace-redacted").await;
+            persist_execution_event(
+                &handle,
+                "trace-redacted",
+                "RedactedPersistenceTest",
+                "1",
+                1,
+                None,
+                "Next",
+                None,
+            )
+            .await;
+            persist_completion(&handle, "trace-redacted", CompletionState::Success).await;
+        }
+
+        let output = String::from_utf8(log_buffer.lock().expect("log buffer lock").clone())
+            .expect("captured tracing output is UTF-8");
+        assert!(!output.contains(PERSISTENCE_ERROR_SENTINEL), "{output}");
+        assert!(output.contains("store_operation=\"load\""), "{output}");
+        assert!(output.contains("store_operation=\"append\""), "{output}");
+        assert!(output.contains("store_operation=\"complete\""), "{output}");
+    }
 
     #[cfg(feature = "inspector")]
     struct MockAuditLogger {

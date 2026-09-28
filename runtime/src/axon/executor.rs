@@ -675,10 +675,10 @@ where
                 // when the token was already cancelled before `execute`
                 // was first polled.
                 Ok(None) => (1, true, true),
-                Err(error) => {
+                Err(_) => {
                     tracing::warn!(
                         trace_id = %trace_id,
-                        error = %error,
+                        store_operation = "cancellation_load",
                         "Failed to inspect persistence cursor before cancellation"
                     );
                     (0, true, false)
