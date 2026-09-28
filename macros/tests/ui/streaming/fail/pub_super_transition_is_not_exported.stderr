@@ -1,0 +1,25 @@
+error[E0603]: constant `parent_only` is private
+  --> tests/ui/streaming/fail/pub_super_transition_is_not_exported.rs:56:49
+   |
+56 |         let _transition = super::parent::child::parent_only;
+   |                                                 ^^^^^^^^^^^ private constant
+   |
+note: the constant `parent_only` is defined here
+  --> tests/ui/streaming/fail/pub_super_transition_is_not_exported.rs:25:9
+   |
+25 |         #[streaming_transition]
+   |         ^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the attribute macro `streaming_transition` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0603]: unit struct `__ranvier_stream_transition_parent_only` is private
+  --> tests/ui/streaming/fail/pub_super_transition_is_not_exported.rs:57:54
+   |
+57 |         let _transition_type = super::parent::child::__ranvier_stream_transition_parent_only;
+   |                                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ private unit struct
+   |
+note: the unit struct `__ranvier_stream_transition_parent_only` is defined here
+  --> tests/ui/streaming/fail/pub_super_transition_is_not_exported.rs:25:9
+   |
+25 |         #[streaming_transition]
+   |         ^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the attribute macro `streaming_transition` (in Nightly builds, run with -Z macro-backtrace for more info)
