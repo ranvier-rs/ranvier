@@ -3,7 +3,7 @@
 use std::convert::Infallible;
 
 use ranvier_core::streaming::StreamingTransition;
-use ranvier_streaming_public_api_fixture::transitions::emit_one;
+use ranvier_streaming_public_api_fixture::{assert_crate_scoped_transition, transitions::emit_one};
 
 fn assert_public_contract<T>(_: &T)
 where
@@ -13,4 +13,5 @@ where
 
 fn main() {
     assert_public_contract(&emit_one);
+    assert_crate_scoped_transition();
 }

@@ -51,7 +51,23 @@ run([
 ]);
 run(['check', '--manifest-path', 'tests/compile/renamed-direct/Cargo.toml', '--locked']);
 run(['check', '--manifest-path', 'macros/tests/compile/streaming-accepted/Cargo.toml', '--locked']);
-run(['check', '--manifest-path', 'macros/tests/compile/streaming-public-consumer/Cargo.toml', '--locked']);
+run([
+  'check',
+  '--package',
+  'ranvier-streaming-public-api-consumer',
+  '--manifest-path',
+  'macros/tests/compile/streaming-public-consumer/Cargo.toml',
+  '--locked'
+]);
+expectCompileFailure([
+  'check',
+  '--manifest-path',
+  'macros/tests/compile/streaming-public-consumer/restricted-consumer/Cargo.toml',
+  '--locked'
+], [
+  'error[E0603]',
+  'constant `crate_scoped` is private'
+], 'downstream crate-private streaming transition');
 expectCompileFailure([
   'check',
   '--manifest-path',

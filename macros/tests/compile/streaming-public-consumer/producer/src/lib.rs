@@ -35,4 +35,32 @@ pub mod transitions {
     > {
         Ok(Values(vec![input].into_iter()))
     }
+
+    /// A crate-visible transition used to check downstream privacy.
+    #[streaming_transition]
+    pub(crate) async fn crate_scoped(
+        input: i32,
+    ) -> Result<
+        impl ranvier_core::__macro_support::futures_core::Stream<Item = i32> + Send,
+        Infallible,
+    > {
+        Ok(Values(vec![input].into_iter()))
+    }
+}
+
+/// Verifies that the producer crate can use its crate-visible transition.
+pub fn assert_crate_scoped_transition() {
+    let transition = transitions::crate_scoped;
+    fn assert_contract<
+        T: ranvier_core::streaming::StreamingTransition<
+                i32,
+                Item = i32,
+                Error = Infallible,
+                Resources = (),
+            >,
+    >(
+        _: &T,
+    ) {
+    }
+    assert_contract(&transition);
 }
