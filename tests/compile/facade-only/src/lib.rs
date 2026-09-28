@@ -38,6 +38,15 @@ pub fn bus_only_axon() -> Axon<(), (), String, ()> {
     Axon::<(), (), String, ()>::new("facade-bus-only").then(bus_only)
 }
 
+#[transition]
+async fn input_and_bus(input: i32, _bus: &mut Bus) -> Outcome<i32, String> {
+    Outcome::next(input)
+}
+
+pub fn input_and_bus_axon() -> Axon<i32, i32, String, ()> {
+    Axon::<i32, i32, String, ()>::new("facade-input-bus").then(input_and_bus)
+}
+
 #[derive(Clone, ResourceRequirement)]
 pub struct AppResources {
     suffix: &'static str,
