@@ -134,6 +134,19 @@ pub fn streaming_resources_only_axon() -> StreamingAxon<(), i32, String, AppReso
 }
 
 #[cfg(feature = "streaming-contract")]
+#[streaming_transition(resources = AppResources)]
+async fn stream_resources_override(
+) -> Result<impl ranvier::core::__macro_support::futures_core::Stream<Item = i32> + Send, String> {
+    Ok(OneItemStream(Some(0)))
+}
+
+#[cfg(feature = "streaming-contract")]
+pub fn streaming_resources_override_axon() -> StreamingAxon<(), i32, String, AppResources> {
+    Axon::<(), (), String, AppResources>::new("facade-streaming-resource-override")
+        .then_stream(stream_resources_override)
+}
+
+#[cfg(feature = "streaming-contract")]
 #[streaming_transition]
 async fn stream_bus_only(
     _bus: &mut Bus,
