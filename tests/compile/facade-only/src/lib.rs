@@ -11,6 +11,15 @@ pub fn no_parameter_axon() -> Axon<(), (), String, ()> {
     Axon::<(), (), String, ()>::new("facade-zero-parameter").then(no_parameters)
 }
 
+#[transition]
+async fn input_only(input: i32) -> Outcome<i32, String> {
+    Outcome::next(input)
+}
+
+pub fn input_only_axon() -> Axon<i32, i32, String, ()> {
+    Axon::<i32, i32, String, ()>::new("facade-input-only").then(input_only)
+}
+
 #[derive(Clone, ResourceRequirement)]
 pub struct AppResources {
     suffix: &'static str,
