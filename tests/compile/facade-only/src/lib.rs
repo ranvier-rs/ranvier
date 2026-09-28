@@ -147,6 +147,52 @@ pub fn streaming_resources_override_axon() -> StreamingAxon<(), i32, String, App
 }
 
 #[cfg(feature = "streaming-contract")]
+#[streaming_transition(resources = AppResources)]
+async fn stream_resources_override_and_input(
+    input: i32,
+) -> Result<impl ranvier::core::__macro_support::futures_core::Stream<Item = i32> + Send, String> {
+    Ok(OneItemStream(Some(input)))
+}
+
+#[cfg(feature = "streaming-contract")]
+pub fn streaming_resources_override_and_input_axon(
+) -> StreamingAxon<i32, i32, String, AppResources> {
+    Axon::<i32, i32, String, AppResources>::new("facade-streaming-resource-override-input")
+        .then_stream(stream_resources_override_and_input)
+}
+
+#[cfg(feature = "streaming-contract")]
+#[streaming_transition(resources = AppResources)]
+async fn stream_resources_override_and_bus(
+    _bus: &mut Bus,
+) -> Result<impl ranvier::core::__macro_support::futures_core::Stream<Item = i32> + Send, String> {
+    Ok(OneItemStream(Some(0)))
+}
+
+#[cfg(feature = "streaming-contract")]
+pub fn streaming_resources_override_and_bus_axon(
+) -> StreamingAxon<(), i32, String, AppResources> {
+    Axon::<(), (), String, AppResources>::new("facade-streaming-resource-override-bus")
+        .then_stream(stream_resources_override_and_bus)
+}
+
+#[cfg(feature = "streaming-contract")]
+#[streaming_transition(resources = AppResources)]
+async fn stream_resources_override_input_and_bus(
+    input: i32,
+    _bus: &mut Bus,
+) -> Result<impl ranvier::core::__macro_support::futures_core::Stream<Item = i32> + Send, String> {
+    Ok(OneItemStream(Some(input)))
+}
+
+#[cfg(feature = "streaming-contract")]
+pub fn streaming_resources_override_input_and_bus_axon(
+) -> StreamingAxon<i32, i32, String, AppResources> {
+    Axon::<i32, i32, String, AppResources>::new("facade-streaming-resource-override-input-bus")
+        .then_stream(stream_resources_override_input_and_bus)
+}
+
+#[cfg(feature = "streaming-contract")]
 #[streaming_transition]
 async fn stream_bus_only(
     _bus: &mut Bus,
