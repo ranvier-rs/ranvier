@@ -70,6 +70,15 @@ pub fn all_roles_axon() -> Axon<i32, i32, String, AppResources> {
     Axon::<i32, i32, String, AppResources>::new("facade-all-roles").then(all_roles)
 }
 
+#[transition]
+async fn resources_and_bus(_resources: &AppResources, _bus: &mut Bus) -> Outcome<(), String> {
+    Outcome::next(())
+}
+
+pub fn resources_and_bus_axon() -> Axon<(), (), String, AppResources> {
+    Axon::<(), (), String, AppResources>::new("facade-resources-bus").then(resources_and_bus)
+}
+
 #[derive(Clone, ResourceRequirement)]
 pub struct AppResources {
     suffix: &'static str,
