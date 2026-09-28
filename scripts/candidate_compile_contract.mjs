@@ -51,6 +51,7 @@ run([
 ]);
 run(['check', '--manifest-path', 'tests/compile/renamed-direct/Cargo.toml', '--locked']);
 run(['check', '--manifest-path', 'macros/tests/compile/streaming-accepted/Cargo.toml', '--locked']);
+run(['check', '--manifest-path', 'macros/tests/compile/streaming-public-consumer/Cargo.toml', '--locked']);
 expectCompileFailure([
   'check',
   '--manifest-path',

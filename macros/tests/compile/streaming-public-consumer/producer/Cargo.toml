@@ -1,0 +1,12 @@
+[package]
+name = "ranvier-streaming-public-api-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+ranvier-core = { path = "../../../../../core", features = ["streaming"] }
+ranvier-macros = { path = "../../../../", features = ["streaming"] }

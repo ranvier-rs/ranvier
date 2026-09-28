@@ -1,0 +1,9 @@
+[package]
+name = "ranvier-streaming-public-api-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ranvier-core = { path = "../../../../../core", features = ["streaming"] }
+ranvier-streaming-public-api-fixture = { path = "../producer" }
