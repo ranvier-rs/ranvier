@@ -70,6 +70,15 @@ run([
 expectCompileFailure([
   'check',
   '--manifest-path',
+  'macros/tests/compile/streaming-public-consumer/ordinary-restricted-consumer/Cargo.toml',
+  '--locked'
+], [
+  'error[E0603]',
+  'constant `crate_scoped` is private'
+], 'downstream crate-private ordinary transition');
+expectCompileFailure([
+  'check',
+  '--manifest-path',
   'macros/tests/compile/streaming-public-consumer/restricted-consumer/Cargo.toml',
   '--locked'
 ], [

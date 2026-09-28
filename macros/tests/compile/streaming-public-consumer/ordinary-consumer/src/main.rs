@@ -3,7 +3,10 @@
 use std::convert::Infallible;
 
 use ranvier_core::transition::Transition;
-use ranvier_ordinary_public_api_fixture::transitions::echo;
+use ranvier_ordinary_public_api_fixture::{
+    assert_crate_scoped_transition,
+    transitions::echo,
+};
 
 fn assert_public_contract<T>(_: &T)
 where
@@ -13,4 +16,5 @@ where
 
 fn main() {
     assert_public_contract(&echo);
+    assert_crate_scoped_transition();
 }
