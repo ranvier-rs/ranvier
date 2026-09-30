@@ -3029,10 +3029,21 @@ async fn api_get_trace_diff(
 mod tests {
     #[tokio::test]
     async fn blocked_socket_flush_is_cancelled_and_ownership_drains() {
+        verify_blocked_socket_cancellation(false).await;
+    }
+
+    #[tokio::test]
+    async fn blocked_socket_readiness_is_cancelled_and_ownership_drains() {
+        verify_blocked_socket_cancellation(true).await;
+    }
+
+    async fn verify_blocked_socket_cancellation(block_ready: bool) {
         use std::sync::atomic::{AtomicUsize, Ordering};
         struct BlockedSink {
             waiting: Arc<tokio::sync::Notify>,
             accepted: Arc<AtomicUsize>,
+            closes: Arc<AtomicUsize>,
+            block_ready: bool,
             dropped: Arc<AtomicUsize>,
         }
         impl futures::Sink<Message> for BlockedSink {
@@ -3041,9 +3052,22 @@ mod tests {
                 self: std::pin::Pin<&mut Self>,
                 _: &mut std::task::Context<'_>,
             ) -> std::task::Poll<Result<(), Self::Error>> {
-                std::task::Poll::Ready(Ok(()))
+                if self.block_ready {
+                    self.waiting.notify_one();
+                    std::task::Poll::Pending
+                } else {
+                    std::task::Poll::Ready(Ok(()))
+                }
             }
-            fn start_send(self: std::pin::Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
+            fn start_send(
+                self: std::pin::Pin<&mut Self>,
+                message: Message,
+            ) -> Result<(), Self::Error> {
+                if let Message::Close(Some(frame)) = message {
+                    assert_eq!(frame.code, 1001);
+                    assert_eq!(frame.reason, "Inspector shutting down");
+                    self.closes.fetch_add(1, Ordering::SeqCst);
+                }
                 self.accepted.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
@@ -3070,10 +3094,13 @@ mod tests {
         let lifecycle = Arc::new(SocketLifecycle::new(Some(cancellation.child_token())));
         let waiting = Arc::new(tokio::sync::Notify::new());
         let accepted = Arc::new(AtomicUsize::new(0));
+        let closes = Arc::new(AtomicUsize::new(0));
         let dropped = Arc::new(AtomicUsize::new(0));
         let sink = BlockedSink {
             waiting: waiting.clone(),
             accepted: accepted.clone(),
+            closes: closes.clone(),
+            block_ready,
             dropped: dropped.clone(),
         };
         let (events, receiver) = broadcast::channel(4);
@@ -3098,7 +3125,7 @@ mod tests {
             socket.abort();
             let _ = socket.await;
         }
-        blocked.expect("must reach blocked flush before cancellation");
+        blocked.expect("must reach blocked sink before cancellation");
         joined
             .expect("cancellation must bypass five-second send deadline")
             .unwrap();
@@ -3108,9 +3135,10 @@ mod tests {
         assert_eq!(count_before, 1);
         assert_eq!(
             accepted.load(Ordering::SeqCst),
-            2,
+            if block_ready { 0 } else { 2 },
             "text and bounded close attempt"
         );
+        assert_eq!(closes.load(Ordering::SeqCst), usize::from(!block_ready));
         assert_eq!(dropped.load(Ordering::SeqCst), 1);
         assert_eq!(*lifecycle.active.borrow(), 0);
     }
