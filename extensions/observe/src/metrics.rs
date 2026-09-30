@@ -35,6 +35,9 @@ struct Observing<'a, T> {
 }
 trait CheckedSum: Copy + Send {
     fn checked_sum(self, other: Self) -> Option<Self>;
+    fn valid(self) -> bool {
+        true
+    }
 }
 impl CheckedSum for u64 {
     fn checked_sum(self, other: Self) -> Option<Self> {
@@ -47,6 +50,9 @@ impl CheckedSum for i64 {
     }
 }
 impl CheckedSum for f64 {
+    fn valid(self) -> bool {
+        self.is_finite()
+    }
     fn checked_sum(self, other: Self) -> Option<Self> {
         let sum = self + other;
         sum.is_finite().then_some(sum)
@@ -58,6 +64,10 @@ struct Summing<'a, T> {
 }
 impl<T: CheckedSum> AsyncInstrument<T> for Summing<'_, T> {
     fn observe(&self, value: T, attributes: &[KeyValue]) {
+        if !value.valid() {
+            self.policy.fail_metric();
+            return;
+        }
         let mut attributes = self.policy.metric_attributes(attributes.to_vec());
         attributes.sort_by(|a, b| a.key.as_str().cmp(b.key.as_str()));
         let Ok(mut groups) = self.groups.lock() else {
@@ -208,6 +218,27 @@ impl InstrumentProvider for ProtectedInstruments {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn observable_sum_overflow_and_nonfinite_values_fail_without_wrapping() {
+        let policy = Policy::new(crate::redaction::Mode::Public, "").unwrap();
+        let observations = Summing {
+            groups: std::sync::Mutex::new(Vec::new()),
+            policy: &policy,
+        };
+        observations.observe(u64::MAX, &[]);
+        observations.observe(1_u64, &[]);
+        assert!(policy.metric_failed());
+        let policy = Policy::new(crate::redaction::Mode::Public, "").unwrap();
+        let observations = Summing {
+            groups: std::sync::Mutex::new(Vec::new()),
+            policy: &policy,
+        };
+        observations.observe(f64::NAN, &[]);
+        assert!(policy.metric_failed());
+        assert!(observations.groups.into_inner().unwrap().is_empty());
+        assert_eq!(i64::MAX.checked_sum(1), None);
+        assert_eq!(f64::MAX.checked_sum(f64::MAX), None);
+    }
     use crate::redaction::Mode;
     use opentelemetry_sdk::{
         error::OTelSdkResult,
