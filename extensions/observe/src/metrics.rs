@@ -23,12 +23,15 @@ impl<T> SyncInstrument<T> for RejectedInstrument {
 }
 
 fn labels_within_budget(attributes: &[KeyValue]) -> bool {
+    attribute_iterator_within_budget(attributes.iter())
+}
+fn attribute_iterator_within_budget<'a>(attributes: impl Iterator<Item = &'a KeyValue>) -> bool {
     use opentelemetry::{Array, Value};
-    if attributes.len() > MAX_OBSERVABLE_ATTRIBUTES {
-        return false;
-    }
     let mut bytes = 0usize;
-    for attribute in attributes {
+    for (index, attribute) in attributes.enumerate() {
+        if index >= MAX_OBSERVABLE_ATTRIBUTES {
+            return false;
+        }
         let size = match &attribute.value {
             Value::String(value) => Some(value.as_str().len()),
             Value::Bool(_) => Some(1),
@@ -98,18 +101,13 @@ impl MeterProvider for ProtectedMeterProvider {
         let valid_text = |value: &str, limit: usize| {
             value.len() <= limit && !value.chars().any(char::is_control)
         };
-        let attributes: Vec<_> = scope
-            .attributes()
-            .take(MAX_OBSERVABLE_ATTRIBUTES + 1)
-            .cloned()
-            .collect();
         if scope.name().is_empty()
             || !valid_text(scope.name(), 255)
             || scope.version().is_some_and(|value| !valid_text(value, 255))
             || scope
                 .schema_url()
                 .is_some_and(|value| !valid_text(value, 2048))
-            || !labels_within_budget(&attributes)
+            || !attribute_iterator_within_budget(scope.attributes())
         {
             self.state.fail();
             return NoopMeterProvider::new().meter("rejected-scope");
@@ -392,6 +390,39 @@ impl InstrumentProvider for ProtectedInstruments {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn invalid_scope_is_rejected_before_observable_registration() {
+        let scopes = [
+            InstrumentationScope::builder("x".repeat(256)).build(),
+            InstrumentationScope::builder("valid")
+                .with_version("bad\nversion")
+                .build(),
+            InstrumentationScope::builder("valid")
+                .with_schema_url("x".repeat(2049))
+                .build(),
+            InstrumentationScope::builder("valid")
+                .with_attributes([KeyValue::new("email", "x".repeat(8192))])
+                .build(),
+            InstrumentationScope::builder("valid")
+                .with_attributes(vec![KeyValue::new("x", 1); 65])
+                .build(),
+        ];
+        for scope in scopes {
+            let provider = ProtectedMeterProvider {
+                inner: SdkMeterProvider::builder().build(),
+                policy: Policy::new(crate::redaction::Mode::Strict, "").unwrap(),
+                state: Default::default(),
+            };
+            let _counter = provider
+                .meter_with_scope(scope)
+                .u64_observable_counter("counter")
+                .with_callback(|_| panic!("rejected scope callback ran"))
+                .build();
+            assert!(provider.state.failed());
+            assert!(provider.state.1.lock().unwrap().is_empty());
+            provider.inner.shutdown().unwrap();
+        }
+    }
     #[test]
     fn metric_name_validation_rejects_unsafe_syntax_and_size() {
         for name in [
