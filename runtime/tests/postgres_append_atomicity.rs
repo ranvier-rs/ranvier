@@ -82,6 +82,53 @@ async fn postgres_rejected_append_preserves_snapshot_and_rolls_back_insert_failu
             .is_err()
     );
     assert_eq!(store.load("existing").await.unwrap(), completed);
+    sqlx::query(&format!("ALTER TABLE {prefix}_events ADD CONSTRAINT fixture_reject CHECK (outcome_kind <> 'RejectFixture')"))
+        .execute(&pool).await.unwrap();
+    let mut rejected_insert = event("new-insert-failure", 1, "new-version");
+    rejected_insert.outcome_kind = "RejectFixture".into();
+    assert!(store.append(rejected_insert).await.is_err());
+    assert!(
+        store.load("new-insert-failure").await.unwrap().is_none(),
+        "first event insert failure must roll back state creation"
+    );
+    store.append(event("competing", 0, "seed")).await.unwrap();
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+    let mut writers = Vec::new();
+    for step in [1, 2] {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        writers.push(tokio::spawn(async move {
+            let before = store.load("competing").await.unwrap().unwrap();
+            assert_eq!(before.events.len(), 1);
+            tokio::time::timeout(std::time::Duration::from_secs(3), barrier.wait())
+                .await
+                .unwrap();
+            store.append(event("competing", step, "concurrent")).await
+        }));
+    }
+    let mut results = Vec::new();
+    for mut writer in writers {
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), &mut writer).await;
+        if result.is_err() {
+            writer.abort();
+            let _ = writer.await;
+        }
+        results.push(result);
+    }
+    for result in results {
+        result.unwrap().unwrap().unwrap();
+    }
+    let trace = store.load("competing").await.unwrap().unwrap();
+    assert_eq!(
+        trace.events,
+        vec![
+            event("competing", 0, "seed"),
+            event("competing", 1, "concurrent"),
+            event("competing", 2, "concurrent")
+        ]
+    );
     pool.close().await;
-    println!("POSTGRES_ATOMICITY_PASS wrong-circuit duplicate overflow accepted completed");
+    println!(
+        "POSTGRES_ATOMICITY_PASS wrong-circuit duplicate overflow accepted completed first-insert-rollback competing-writers"
+    );
 }
