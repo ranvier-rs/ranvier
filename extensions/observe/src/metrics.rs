@@ -4,21 +4,35 @@ use opentelemetry::{InstrumentationScope, KeyValue, metrics::*};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use std::sync::Arc;
 
+#[derive(Clone, Default)]
+pub(crate) struct MetricState(Arc<std::sync::atomic::AtomicBool>);
+impl MetricState {
+    fn fail(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+    pub(crate) fn failed(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 pub struct ProtectedMeterProvider {
     pub(crate) inner: SdkMeterProvider,
     pub(crate) policy: Policy,
+    pub(crate) state: MetricState,
 }
 impl MeterProvider for ProtectedMeterProvider {
     fn meter_with_scope(&self, scope: InstrumentationScope) -> Meter {
         Meter::new(Arc::new(ProtectedInstruments {
             inner: self.inner.meter_with_scope(scope),
             policy: self.policy.clone(),
+            state: self.state.clone(),
         }))
     }
 }
 struct ProtectedInstruments {
     inner: Meter,
     policy: Policy,
+    state: MetricState,
 }
 struct Recording<T> {
     record: Box<dyn Fn(T, &[KeyValue]) + Send + Sync>,
@@ -61,24 +75,25 @@ impl CheckedSum for f64 {
 struct Summing<'a, T> {
     groups: std::sync::Mutex<Vec<(Vec<KeyValue>, T)>>,
     policy: &'a Policy,
+    state: &'a MetricState,
 }
 impl<T: CheckedSum> AsyncInstrument<T> for Summing<'_, T> {
     fn observe(&self, value: T, attributes: &[KeyValue]) {
         if !value.valid() {
-            self.policy.fail_metric();
+            self.state.fail();
             return;
         }
         let mut attributes = self.policy.metric_attributes(attributes.to_vec());
         attributes.sort_by(|a, b| a.key.as_str().cmp(b.key.as_str()));
         let Ok(mut groups) = self.groups.lock() else {
-            self.policy.fail_metric();
+            self.state.fail();
             return;
         };
         if let Some((_, total)) = groups.iter_mut().find(|(labels, _)| *labels == attributes) {
             if let Some(sum) = total.checked_sum(value) {
                 *total = sum;
             } else {
-                self.policy.fail_metric();
+                self.state.fail();
             }
         } else {
             groups.push((attributes, value));
@@ -171,16 +186,18 @@ macro_rules! asynchronous_sum {
             }
             let policy = self.policy.clone();
             let callbacks = builder.callbacks;
+            let state = self.state.clone();
             delegated
                 .with_callback(move |inner| {
                     let observations = Summing {
                         groups: std::sync::Mutex::new(Vec::new()),
                         policy: &policy,
+                        state: &state,
                     };
                     for callback in &callbacks {
                         callback(&observations);
                     }
-                    if policy.metric_failed() {
+                    if state.failed() {
                         return;
                     }
                     match observations.groups.into_inner() {
@@ -189,7 +206,7 @@ macro_rules! asynchronous_sum {
                                 inner.observe(value, &attributes);
                             }
                         }
-                        Err(_) => policy.fail_metric(),
+                        Err(_) => state.fail(),
                     }
                 })
                 .build()
@@ -221,20 +238,24 @@ mod tests {
     #[test]
     fn observable_sum_overflow_and_nonfinite_values_fail_without_wrapping() {
         let policy = Policy::new(crate::redaction::Mode::Public, "").unwrap();
+        let state = MetricState::default();
         let observations = Summing {
             groups: std::sync::Mutex::new(Vec::new()),
             policy: &policy,
+            state: &state,
         };
         observations.observe(u64::MAX, &[]);
         observations.observe(1_u64, &[]);
-        assert!(policy.metric_failed());
+        assert!(state.failed());
         let policy = Policy::new(crate::redaction::Mode::Public, "").unwrap();
+        let state = MetricState::default();
         let observations = Summing {
             groups: std::sync::Mutex::new(Vec::new()),
             policy: &policy,
+            state: &state,
         };
         observations.observe(f64::NAN, &[]);
-        assert!(policy.metric_failed());
+        assert!(state.failed());
         assert!(observations.groups.into_inner().unwrap().is_empty());
         assert_eq!(i64::MAX.checked_sum(1), None);
         assert_eq!(f64::MAX.checked_sum(f64::MAX), None);
@@ -295,6 +316,7 @@ mod tests {
                     )
                     .build(),
                 policy: Policy::new(mode, "").unwrap(),
+                state: Default::default(),
             };
             let meter = provider.meter("collision-fixture");
             let gauge = meter.i64_gauge("gauge").build();
@@ -426,6 +448,7 @@ mod tests {
                     )
                     .build(),
                 policy: Policy::new(mode, "").unwrap(),
+                state: Default::default(),
             };
             let meter = provider.meter("numeric-fixture");
             let counter = meter
@@ -488,6 +511,7 @@ mod tests {
             let provider = ProtectedMeterProvider {
                 inner,
                 policy: Policy::new(mode, "account_number").unwrap(),
+                state: Default::default(),
             };
             let meter = provider.meter("fixture");
             let labels = vec![

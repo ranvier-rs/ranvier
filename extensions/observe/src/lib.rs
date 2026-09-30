@@ -190,6 +190,7 @@ pub mod otlp {
                         .with_periodic_exporter(metrics)
                         .build(),
                     policy: redaction,
+                    state: Default::default(),
                 },
             })
         }
@@ -206,7 +207,7 @@ pub mod otlp {
                 },
                 || {
                     let shutdown_ok = self.metrics.inner.shutdown().is_ok();
-                    shutdown_ok && !self.metrics.policy.metric_failed()
+                    shutdown_ok && !self.metrics.state.failed()
                 },
             )
         }

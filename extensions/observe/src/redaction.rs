@@ -19,17 +19,8 @@ pub enum Mode {
 pub struct Policy {
     mode: Mode,
     keys: Vec<String>,
-    metric_failure: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 impl Policy {
-    pub(crate) fn fail_metric(&self) {
-        self.metric_failure
-            .store(true, std::sync::atomic::Ordering::Release);
-    }
-    pub(crate) fn metric_failed(&self) -> bool {
-        self.metric_failure
-            .load(std::sync::atomic::Ordering::Acquire)
-    }
     /// Filters data-point labels before SDK aggregation. Callers must use this for
     /// every record/observe operation; raw SDK instrument handles bypass it.
     /// Masked labels merge formerly distinct time series; apply consistently from
@@ -60,11 +51,7 @@ impl Policy {
                 keys.push(value.to_ascii_lowercase());
             }
         }
-        Ok(Self {
-            mode,
-            keys,
-            metric_failure: Default::default(),
-        })
+        Ok(Self { mode, keys })
     }
 
     pub(crate) fn resource(&self, resource: &Resource) -> Resource {
