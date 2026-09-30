@@ -34,7 +34,9 @@ pub mod otlp {
             .with_current_subscriber()
     }
     use opentelemetry_otlp::WithExportConfig;
-    use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider, trace::SdkTracerProvider};
+    #[cfg(test)]
+    use opentelemetry_sdk::metrics::SdkMeterProvider;
+    use opentelemetry_sdk::{Resource, trace::SdkTracerProvider};
     use opentelemetry_sdk::{
         error::OTelSdkResult,
         trace::{SpanData, SpanExporter},

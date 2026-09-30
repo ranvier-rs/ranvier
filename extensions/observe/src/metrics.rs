@@ -1146,18 +1146,9 @@ mod tests {
     #[test]
     fn sdk_cardinality_overflow_retains_counter_total_across_collections() {
         let captured = Arc::new(Mutex::new(Values::new()));
-        let _stream = opentelemetry_sdk::metrics::Stream::builder()
-            .with_cardinality_limit(MAX_STREAM_SERIES)
-            .build()
-            .unwrap();
         let provider = ProtectedMeterProvider {
-            inner: SdkMeterProvider::builder()
-                .with_view(move |_| {
-                    opentelemetry_sdk::metrics::Stream::builder()
-                        .with_cardinality_limit(MAX_STREAM_SERIES)
-                        .build()
-                        .ok()
-                })
+            inner: bounded_meter_builder()
+                .unwrap()
                 .with_reader(
                     PeriodicReader::builder(CollisionCapture(captured.clone()))
                         .with_interval(Duration::from_secs(3600))
@@ -1321,12 +1312,61 @@ mod tests {
         }
     }
     #[test]
+    fn bounded_view_preserves_histogram_boundaries_and_overflow_totals() {
+        for mode in [Mode::Off, Mode::Public, Mode::Strict] {
+            let totals = Arc::new(Mutex::new(Totals::default()));
+            let provider = ProtectedMeterProvider {
+                inner: bounded_meter_builder()
+                    .unwrap()
+                    .with_reader(
+                        PeriodicReader::builder(NumericCapture(totals.clone()))
+                            .with_interval(Duration::from_secs(3600))
+                            .build(),
+                    )
+                    .build(),
+                policy: Policy::new(mode.clone(), "").unwrap(),
+                state: Default::default(),
+            };
+            let meter = provider.meter("bounded-histogram");
+            let counter = meter.u64_counter("counter").build();
+            let histogram = meter
+                .u64_histogram("histogram")
+                .with_boundaries(vec![5.0])
+                .build();
+            let count = MAX_STREAM_SERIES * 2;
+            for index in 0..count {
+                let labels = [KeyValue::new("series", index as i64)];
+                counter.add(2, &labels);
+                histogram.record(2, &labels);
+            }
+            for _ in 0..2 {
+                provider.inner.force_flush().unwrap();
+                let totals = totals.lock().unwrap();
+                assert!(!totals.unexpected_data);
+                assert_eq!(totals.counter, (count * 2) as u64);
+                assert_eq!(totals.histogram_sum, (count * 2) as u64);
+                assert_eq!(totals.histogram_count, count as u64);
+                assert_eq!(totals.buckets, vec![count as u64, 0]);
+                assert!(totals.counter_series <= MAX_STREAM_SERIES + 1);
+                assert!(totals.histogram_series <= MAX_STREAM_SERIES + 1);
+                if matches!(mode, Mode::Strict) {
+                    assert_eq!(totals.histogram_series, 1);
+                    assert_eq!(totals.counter_series, 1);
+                }
+            }
+            assert!(!provider.state.failed());
+            provider.inner.shutdown().unwrap();
+        }
+    }
+
+    #[test]
     fn masking_merges_series_without_losing_counter_or_histogram_totals() {
         for mode in [Mode::Public, Mode::Strict, Mode::Off] {
             let off = matches!(mode, Mode::Off);
             let totals = Arc::new(Mutex::new(Totals::default()));
             let provider = ProtectedMeterProvider {
-                inner: SdkMeterProvider::builder()
+                inner: bounded_meter_builder()
+                    .unwrap()
                     .with_reader(
                         PeriodicReader::builder(NumericCapture(totals.clone()))
                             .with_interval(Duration::from_secs(3600))
