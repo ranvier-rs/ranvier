@@ -310,9 +310,10 @@ async fn main() -> Result<()> {
         )
         .await;
 
-    match (&alice, &bob) {
+    let (alice_id, bob_id) = match (&alice, &bob) {
         (Outcome::Next(a), Outcome::Next(b)) => {
             println!("created: {}#{}, {}#{}", a.username, a.id, b.username, b.id);
+            (a.id, b.id)
         }
         _ => {
             return Err(anyhow::anyhow!(
@@ -321,39 +322,48 @@ async fn main() -> Result<()> {
                 bob
             ));
         }
-    }
+    };
 
     let before: Outcome<Vec<UserSummary>, String> =
         list.execute(FetchAllInput, &resources, &mut bus).await;
-    if let Outcome::Next(users) = &before {
-        println!("list(before): {} users", users.len());
+    match &before {
+        Outcome::Next(users) if users.len() == 2 => println!("list(before): {} users", users.len()),
+        _ => return Err(anyhow::anyhow!("initial list outcome mismatch")),
     }
 
     let updated = update
         .execute(
             UpdateEmailInput {
-                id: 1,
+                id: alice_id,
                 email: "alice+updated@demo.local".to_string(),
             },
             &resources,
             &mut bus,
         )
         .await;
-    if let Outcome::Next(user) = &updated {
-        println!("updated: {} -> {}", user.username, user.email);
+    match &updated {
+        Outcome::Next(user) if user.id == alice_id && user.email == "alice+updated@demo.local" => {
+            println!("updated: {} -> {}", user.username, user.email)
+        }
+        _ => return Err(anyhow::anyhow!("update outcome mismatch")),
     }
 
     let deleted = delete
-        .execute(DeleteUserInput { id: 2 }, &resources, &mut bus)
+        .execute(DeleteUserInput { id: bob_id }, &resources, &mut bus)
         .await;
-    if let Outcome::Next(id) = &deleted {
-        println!("deleted id={}", id);
+    match &deleted {
+        Outcome::Next(id) if *id == bob_id => println!("deleted id={}", id),
+        _ => return Err(anyhow::anyhow!("delete outcome mismatch")),
     }
 
     let after: Outcome<Vec<UserSummary>, String> =
         list.execute(FetchAllInput, &resources, &mut bus).await;
     match after {
-        Outcome::Next(users) => {
+        Outcome::Next(users)
+            if users.len() == 1
+                && users[0].id == alice_id
+                && users[0].email == "alice+updated@demo.local" =>
+        {
             println!("list(after): {} users", users.len());
             for user in users {
                 println!(
