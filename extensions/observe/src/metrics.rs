@@ -792,6 +792,7 @@ mod tests {
     fn every_instrument_and_callback_exports_filtered_labels() {
         for mode in [Mode::Public, Mode::Strict, Mode::Off] {
             let off = matches!(mode, Mode::Off);
+            let strict = matches!(mode, Mode::Strict);
             let captured = Arc::new(Mutex::new(Vec::new()));
             let inner = SdkMeterProvider::builder()
                 .with_reader(
@@ -814,6 +815,8 @@ mod tests {
                 ($method:ident, $operation:ident, $value:expr) => {
                     meter
                         .$method(stringify!($method))
+                        .with_description("metadata-description-secret")
+                        .with_unit("fixture-unit")
                         .build()
                         .$operation($value, &labels);
                 };
@@ -832,6 +835,8 @@ mod tests {
                     let labels = labels.clone();
                     meter
                         .$method(stringify!($method))
+                        .with_description("metadata-description-secret")
+                        .with_unit("fixture-unit")
                         .with_callback(move |instrument| instrument.observe($value, &labels))
                         .build()
                 }};
@@ -872,6 +877,8 @@ mod tests {
             assert_eq!(payload.contains("builtin-secret"), off);
             assert_eq!(payload.contains("custom-secret"), off);
             assert_eq!(payload.contains("[REDACTED]"), !off);
+            assert_eq!(payload.contains("metadata-description-secret"), off);
+            assert_eq!(payload.contains("fixture-unit"), !strict);
         }
     }
 }
