@@ -32,6 +32,7 @@ function global:podman {
 }
 
 function global:cargo {
+    $global:smokeSafety.cargoCalls++
     if ($args -notcontains '--locked') { throw 'Smoke Cargo invocation must be locked' }
     foreach ($marker in @(
         'postgres_store_roundtrip_when_configured', 'redis_store_roundtrip_when_configured',
@@ -42,18 +43,24 @@ function global:cargo {
 }
 
 try {
-    foreach ($mode in @('present', 'query-error', 'success', 'second-start-fail', 'logs-error', 'cleanup-error', 'logs-and-cleanup-error', 'invalid-id', 'image-query-error')) {
-        $global:smokeSafety = @{ mode = $mode; starts = 0; calls = [Collections.Generic.List[string]]::new(); removed = [Collections.Generic.List[string]]::new() }
+    foreach ($mode in @('present', 'query-error', 'success', 'second-start-fail', 'logs-error', 'cleanup-error', 'logs-and-cleanup-error', 'invalid-id', 'image-query-error', 'host-unreachable')) {
+        $global:smokeSafety = @{ mode = $mode; starts = 0; cargoCalls = 0; calls = [Collections.Generic.List[string]]::new(); removed = [Collections.Generic.List[string]]::new() }
         $env:RANVIER_PERSISTENCE_POSTGRES_URL = 'existing-pg'
         $env:RANVIER_PERSISTENCE_REDIS_URL = 'existing-redis'
         $failure = $null
-        try { & $smokeScript -EvidenceDir (Join-Path $EvidenceDir $mode) -StartupWaitSeconds 0 }
+        $listenerPg = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+        $listenerRedis = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+        $listenerPg.Start(); $listenerRedis.Start()
+        $portPg = $listenerPg.LocalEndpoint.Port; $portRedis = $listenerRedis.LocalEndpoint.Port
+        if ($mode -eq 'host-unreachable') { $listenerPg.Stop(); $listenerRedis.Stop() }
+        try { & $smokeScript -EvidenceDir (Join-Path $EvidenceDir $mode) -StartupWaitSeconds 0 -PostgresPort $portPg -RedisPort $portRedis }
         catch { $failure = $_.Exception.Message }
+        finally { $listenerPg.Stop(); $listenerRedis.Stop() }
         if (($mode -eq 'success') -ne ($null -eq $failure)) { throw "Wrong success classification for $mode : $failure" }
         $expected = switch ($mode) {
             'present' { 'already exists' } 'query-error' { 'existence query failed' }
             'second-start-fail' { 'podman run failed' } 'logs-error' { 'log capture failed' }
-            'cleanup-error' { 'cleanup failed' } 'logs-and-cleanup-error' { 'log capture failed' } 'invalid-id' { 'valid owned container ID' } 'image-query-error' { 'image identity query failed' } default { '' }
+            'cleanup-error' { 'cleanup failed' } 'logs-and-cleanup-error' { 'log capture failed' } 'invalid-id' { 'valid owned container ID' } 'image-query-error' { 'image identity query failed' } 'host-unreachable' { 'Host loopback endpoint not reachable' } default { '' }
         }
         if ($expected -and $failure -notlike "*$expected*") { throw "Wrong failure diagnostic for $mode : $failure" }
         $ownedCount = switch ($mode) { 'present' { 0 } 'query-error' { 0 } 'second-start-fail' { 1 } 'invalid-id' { 0 } default { 2 } }
@@ -64,9 +71,10 @@ try {
             if ($call -notlike '*-p 127.0.0.1:*' -or $call -notlike '*--rm*') { throw "Non-isolated run: $call" }
         }
         if ($env:RANVIER_PERSISTENCE_POSTGRES_URL -ne 'existing-pg' -or $env:RANVIER_PERSISTENCE_REDIS_URL -ne 'existing-redis') { throw "Environment was not restored: $mode" }
+        if ($mode -eq 'host-unreachable' -and $global:smokeSafety.cargoCalls) { throw 'Unreachable host endpoint launched Cargo' }
         Write-Host "PASS: $mode"
     }
-    Write-Host 'PASS: 9 mocked persistence smoke safety cases; no live runtime exercised'
+    Write-Host 'PASS: 10 mocked persistence smoke safety cases; no live runtime exercised'
 } finally {
     [Environment]::SetEnvironmentVariable('RANVIER_PERSISTENCE_POSTGRES_URL', $originalPg)
     [Environment]::SetEnvironmentVariable('RANVIER_PERSISTENCE_REDIS_URL', $originalRedis)

@@ -35,6 +35,19 @@ function Read-SmokeImageId {
     return $imageId
 }
 
+function Assert-HostEndpointReady {
+    param([int]$Port)
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        $client = [Net.Sockets.TcpClient]::new()
+        try {
+            $connected = $client.ConnectAsync("127.0.0.1", $Port).Wait(500)
+            if ($connected -and $client.Connected) { return }
+        } catch { } finally { $client.Dispose() }
+        if ($attempt -lt 4) { Start-Sleep -Milliseconds 200 }
+    }
+    throw "Host loopback endpoint not reachable at port $Port; adapter tests were not started. Check Podman/WSL forwarding."
+}
+
 function Wait-PostgresReady {
     param(
         [string]$ContainerName,
@@ -120,6 +133,9 @@ try {
         postgres = @{ container_id = $postgresOwnedId; image_id = (Read-SmokeImageId $postgresOwnedId); port = $PostgresPort }
         redis = @{ container_id = $redisOwnedId; image_id = (Read-SmokeImageId $redisOwnedId); port = $RedisPort }
     } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 (Join-Path $evidenceDir "smoke-runtime-identity.json")
+
+    Assert-HostEndpointReady -Port $PostgresPort
+    Assert-HostEndpointReady -Port $RedisPort
 
     $env:RANVIER_PERSISTENCE_POSTGRES_URL = "postgres://ranvier:ranvier@127.0.0.1:${PostgresPort}/ranvier"
     $env:RANVIER_PERSISTENCE_REDIS_URL = "redis://127.0.0.1:${RedisPort}"
