@@ -309,6 +309,37 @@ impl InstrumentProvider for ProtectedInstruments {
 mod tests {
     use super::*;
     #[test]
+    fn repeated_original_series_fails_even_when_attribute_order_changes() {
+        let policy = Policy::new(crate::redaction::Mode::Public, "").unwrap();
+        let state = MetricState::default();
+        let observations = Summing {
+            groups: std::sync::Mutex::new(Vec::new()),
+            originals: std::sync::Mutex::new(Vec::new()),
+            policy: &policy,
+            state: &state,
+        };
+        observations.observe(
+            2_u64,
+            &[
+                KeyValue::new("email", "synthetic"),
+                KeyValue::new("safe", true),
+            ],
+        );
+        assert!(!state.failed());
+        observations.observe(
+            8_u64,
+            &[
+                KeyValue::new("safe", true),
+                KeyValue::new("email", "synthetic"),
+            ],
+        );
+        assert!(state.failed());
+        let groups = observations.groups.into_inner().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].1, 2);
+        assert_eq!(observations.originals.into_inner().unwrap().len(), 1);
+    }
+    #[test]
     fn concurrent_observers_normalize_key_order_without_losing_sums() {
         let policy = Policy::new(crate::redaction::Mode::Public, "").unwrap();
         let state = MetricState::default();
@@ -453,8 +484,8 @@ mod tests {
             policy: &policy,
             state: &state,
         };
-        observations.observe(u64::MAX, &[]);
-        observations.observe(1_u64, &[]);
+        observations.observe(u64::MAX, &[KeyValue::new("email", "first")]);
+        observations.observe(1_u64, &[KeyValue::new("email", "second")]);
         assert!(state.failed());
         let policy = Policy::new(crate::redaction::Mode::Public, "").unwrap();
         let state = MetricState::default();
