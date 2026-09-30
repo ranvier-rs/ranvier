@@ -3434,7 +3434,7 @@ expires_on = "2099-01-02"
                         .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
                         .await
                         .unwrap();
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 } else {
                     let body = if case == "success" {
                         "{\"reason\":\"conflict\"}"
@@ -3490,6 +3490,7 @@ expires_on = "2099-01-02"
             match case {
                 "success" => {
                     assert_eq!(status, reqwest::StatusCode::OK);
+                    assert_eq!(body["kind"], "inspector.relay.v1");
                     assert_eq!(body["data"]["status"], 409);
                     assert_eq!(body["data"]["body"]["reason"], "conflict");
                 }
