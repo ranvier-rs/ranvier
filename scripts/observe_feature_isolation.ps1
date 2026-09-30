@@ -20,6 +20,10 @@ try {
         $output | Set-Content -LiteralPath (Join-Path $destination "$case-tree.log") -Encoding utf8
         if ($code -ne 0) { throw "Dependency query failed: $package" }
         $graphs[$case] = $output
+        $compile = @(& cargo check -p $package @featureArgs --lib --locked --offline 2>&1)
+        $compileCode = $LASTEXITCODE
+        $compile | Set-Content -LiteralPath (Join-Path $destination "$case-check.log") -Encoding utf8
+        if ($compileCode -ne 0) { throw "Isolated library compile failed: $case" }
     }
     if ($graphs['ranvier-observe'].Count -ne 1 -or $graphs['ranvier-observe'][0] -notmatch '^ranvier-observe v') {
         throw 'Default observe adapter unexpectedly has normal dependencies.'
@@ -34,7 +38,7 @@ try {
     [ordered]@{
         source = $source; compiler = $compiler
         cargo_lock_sha256 = (Get-FileHash -LiteralPath (Join-Path $root 'Cargo.lock')).Hash
-        status = 'PASS'; scope = 'observe/core normal dependency graphs with and without default features'
+        status = 'PASS'; scope = 'observe/core normal dependency graphs and separate library compiles with and without default features'
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $destination 'result.json') -Encoding utf8
 } finally { Pop-Location }
 Write-Host 'Observe/core normal dependency isolation PASS.'
