@@ -1,9 +1,9 @@
 //! Trace attribute policy. Resource attributes and metric labels are separate gates.
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::{
+    Resource,
     error::OTelSdkResult,
     trace::{SpanData, SpanExporter},
-    Resource,
 };
 use std::time::Duration;
 
@@ -68,9 +68,11 @@ mod tests {
                 KeyValue::new("API_KEY", "fixture-secret"),
             ];
             redact(&mut attributes, &mode);
-            assert!(attributes
-                .iter()
-                .all(|attribute| attribute.value.to_string() == "[REDACTED]"));
+            assert!(
+                attributes
+                    .iter()
+                    .all(|attribute| attribute.value.to_string() == "[REDACTED]")
+            );
         }
     }
     #[test]

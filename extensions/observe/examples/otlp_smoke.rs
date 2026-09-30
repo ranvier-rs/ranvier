@@ -1,9 +1,9 @@
 //! Finite real OTLP fixture; service identity remains otel-demo for collector assertions.
 use async_trait::async_trait;
 use opentelemetry::{
+    KeyValue,
     metrics::MeterProvider,
     trace::{Span, Tracer, TracerProvider},
-    KeyValue,
 };
 use ranvier_core::prelude::*;
 use ranvier_observe::{
