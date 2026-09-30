@@ -3061,7 +3061,7 @@ mod tests {
         }
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let server = tokio::spawn({
+        let mut server = tokio::spawn({
             let lifecycle = lifecycle.clone();
             let failures = failures.clone();
             let failed = failed.clone();
@@ -3114,7 +3114,11 @@ mod tests {
         let failure = tokio::time::timeout(Duration::from_secs(2), failed.notified()).await;
         let drained = tokio::time::timeout(Duration::from_secs(2), lifecycle.join()).await;
         cancellation.cancel(CancellationReason::OperatorShutdown);
-        let joined = tokio::time::timeout(Duration::from_secs(2), server).await;
+        let joined = tokio::time::timeout(Duration::from_secs(2), &mut server).await;
+        if joined.is_err() {
+            server.abort();
+            let _ = server.await;
+        }
         assert!(
             response.is_err(),
             "response writer must fail before upgrade"
