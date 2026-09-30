@@ -3416,6 +3416,59 @@ expires_on = "2099-01-02"
     }
 
     #[tokio::test]
+    async fn relay_route_requires_bearer_and_preserves_input_and_busy_status() {
+        let (port, listener) = reserve_listener();
+        let relay = relay::RelayState::new(relay::RelayConfig {
+            target_url: "http://127.0.0.1:1".into(),
+            timeout_ms: 100,
+            max_concurrent: 1,
+        })
+        .unwrap();
+        let semaphore = relay.semaphore.clone();
+        let mut inspector = Inspector::new(Schematic::new("relay-route"), port)
+            .with_mode("dev")
+            .with_bearer_token("fixture-relay-token");
+        inspector.relay_state = Some(relay);
+        let handle = tokio::spawn(async move { inspector.serve_with_listener(listener).await });
+        wait_ready(port).await;
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .unwrap();
+        let url = format!("http://127.0.0.1:{port}/api/v1/relay");
+        let payload = serde_json::json!({"method":"invalid method SENTINEL", "path":"/"});
+        let unauthorized = client.post(&url).json(&payload).send().await.unwrap();
+        let authorized = client
+            .post(&url)
+            .bearer_auth("fixture-relay-token")
+            .json(&payload)
+            .send()
+            .await
+            .unwrap();
+        let authorized_status = authorized.status();
+        let authorized_body = authorized.text().await.unwrap();
+        let permit = semaphore.acquire().await.unwrap();
+        let busy = client
+            .post(&url)
+            .bearer_auth("fixture-relay-token")
+            .json(&serde_json::json!({"method":"GET", "path":"/"}))
+            .send()
+            .await
+            .unwrap();
+        let busy_status = busy.status();
+        let busy_body = busy.json::<Value>().await.unwrap();
+        drop(permit);
+        handle.abort();
+        assert!(handle.await.unwrap_err().is_cancelled());
+        assert_eq!(unauthorized.status(), reqwest::StatusCode::UNAUTHORIZED);
+        assert_eq!(authorized_status, reqwest::StatusCode::BAD_REQUEST);
+        assert!(!authorized_body.contains("SENTINEL"));
+        assert_eq!(busy_status, reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(busy_body["error"], "concurrency_limit");
+        assert_eq!(semaphore.available_permits(), 1);
+    }
+
+    #[tokio::test]
     async fn bearer_auth_protects_public_schematic_endpoint() {
         let (port, listener) = reserve_listener();
         let inspector = Inspector::new(Schematic::new("bearer-public"), port)
