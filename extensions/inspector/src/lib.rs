@@ -3429,7 +3429,13 @@ expires_on = "2099-01-02"
             .with_mode("dev")
             .with_bearer_token("fixture-relay-token");
         inspector.relay_state = Some(relay);
-        let handle = tokio::spawn(async move { inspector.serve_with_listener(listener).await });
+        let token = CancellationToken::new();
+        let server_token = token.clone();
+        let handle = tokio::spawn(async move {
+            inspector
+                .serve_with_listener_and_cancellation(listener, server_token)
+                .await
+        });
         wait_ready(port).await;
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(3))
@@ -3458,8 +3464,12 @@ expires_on = "2099-01-02"
         let busy_status = busy.status();
         let busy_body = busy.json::<Value>().await.unwrap();
         drop(permit);
-        handle.abort();
-        assert!(handle.await.unwrap_err().is_cancelled());
+        token.cancel(CancellationReason::OperatorShutdown);
+        tokio::time::timeout(std::time::Duration::from_secs(3), handle)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         assert_eq!(unauthorized.status(), reqwest::StatusCode::UNAUTHORIZED);
         assert_eq!(authorized_status, reqwest::StatusCode::BAD_REQUEST);
         assert!(!authorized_body.contains("SENTINEL"));
