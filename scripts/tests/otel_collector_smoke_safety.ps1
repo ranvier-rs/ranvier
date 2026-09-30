@@ -13,7 +13,7 @@ function global:podman {
     $global:otelCalls.Add(($call -join ' '))
     $global:LASTEXITCODE = 0
     switch ($call[0]) {
-        'container' { $global:LASTEXITCODE = if($global:otelCase -eq 'present'){0}elseif($global:otelCase -eq 'query-error'){125}else{1} }
+        'container' { if($call[1] -eq 'inspect'){'c'*64; return}; $global:LASTEXITCODE = if($global:otelCase -eq 'present'){0}elseif($global:otelCase -eq 'query-error'){125}else{1} }
         'run' { if($global:otelCase -eq 'run-error'){$global:LASTEXITCODE=125}elseif($global:otelCase -eq 'invalid-id'){'bad'}else{'a'*64} }
         'logs' { if($global:otelCase -eq 'logs-error'){$global:LASTEXITCODE=125}else{'service.name: Str(otel-demo)'; 'ResourceSpans'; 'ResourceMetrics'; 'customer_email: Str([REDACTED])'; 'api_key: Str([REDACTED])'; if($global:otelCase -eq 'raw-leak'){'demo.user@example.com';'demo-api-key-123'}} }
         'rm' { if($global:otelCase -eq 'cargo-and-cleanup-throw'){throw 'mock cleanup invocation error'}; if($global:otelCase -in @('cleanup-error','cargo-and-cleanup-error')){$global:LASTEXITCODE=125} }

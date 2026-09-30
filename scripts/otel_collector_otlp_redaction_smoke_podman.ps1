@@ -3,6 +3,7 @@ param(
     [ValidateRange(0, 300)][int]$StartupWaitSeconds = 4,
     [string]$EvidenceDir = "",
     [string]$ConfigPath = "",
+    [string]$CollectorImage = "docker.io/otel/opentelemetry-collector-contrib:latest",
     [ValidateSet("grpc", "http/protobuf")]
     [string]$Protocol = "grpc",
     [ValidateSet("off", "public", "strict")][string]$RedactMode = "public"
@@ -57,11 +58,15 @@ try {
         -p 127.0.0.1:4317:4317 `
         -p 127.0.0.1:4318:4318 `
         -v "${configPath}:/etc/otelcol-contrib/config.yaml" `
-        docker.io/otel/opentelemetry-collector-contrib:latest)
+        $CollectorImage)
     if ($LASTEXITCODE -ne 0) { throw 'Collector creation failed.' }
     $createdId = ($created -join '').Trim()
     if ($createdId -notmatch '^[a-f0-9]{64}$') { throw 'Invalid owned container ID; resource preserved.' }
     $ownedId = $createdId
+    $imageId = (podman container inspect $ownedId --format '{{.Image}}' | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $imageId -notmatch '^(sha256:)?[a-f0-9]{64}$') { throw 'Collector image identity query failed.' }
+    [ordered]@{ container_id=$ownedId; image_id=$imageId; config_sha256=(Get-FileHash -LiteralPath $configPath).Hash } |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidenceDir 'collector-runtime-identity.json') -Encoding utf8
 
     Start-Sleep -Seconds $StartupWaitSeconds
 
