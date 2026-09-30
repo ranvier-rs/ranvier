@@ -11,6 +11,16 @@ function global:podman {
 }
 function global:cargo { $global:LASTEXITCODE=1; 'mock build failure' }
 try {
+    $prior = Join-Path ([IO.Path]::GetTempPath()) ('ranvier-prior-' + [Guid]::NewGuid().ToString('N') + '.md')
+    'preserved evidence' | Set-Content $prior
+    $global:depCalls = [Collections.Generic.List[string]]::new()
+    $rejected = $false
+    try { & (Join-Path $PSScriptRoot '../dependency_failure_smoke_podman.ps1') -SummaryPath $prior }
+    catch { if ($_.Exception.Message -notlike 'Summary path already exists*') { throw }; $rejected = $true }
+    if (-not $rejected -or $global:depCalls.Count -or (Get-Content -Raw $prior).Trim() -ne 'preserved evidence') { throw 'Prior evidence preservation failed' }
+    Remove-Item -LiteralPath $prior
+    Write-Host 'PASS: prior summary preserved before Podman launch'
+
     foreach($case in @('present','query-error','second-start','invalid-id','cargo-error','cargo-cleanup-error')) {
         $global:depCase=$case; $global:depRuns=0; $global:depCalls=[Collections.Generic.List[string]]::new()
         $failed=$null
@@ -22,4 +32,4 @@ try {
         Write-Host "PASS: $case"
     }
 } finally { Remove-Item Function:\podman,Function:\cargo }
-Write-Host 'PASS: 6 mocked startup/build controls; no live recovery accepted.'
+Write-Host 'PASS: 7 mocked evidence/startup/build controls; no live recovery accepted.'
