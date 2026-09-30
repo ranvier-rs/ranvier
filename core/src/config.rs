@@ -122,8 +122,8 @@ pub struct InspectorConfig {
 
 /// Telemetry (OpenTelemetry) configuration.
 ///
-/// When `otlp_endpoint` is set, `init_telemetry()` will initialize an OTLP
-/// exporter that sends traces to the given endpoint.  When absent, telemetry
+/// These fields describe the intended OTLP destination. `init_telemetry()` does not initialize an
+/// exporter or send traces. Applications must provide an exporter adapter. When absent, telemetry
 /// initialization is skipped (no-op).
 ///
 /// ```toml

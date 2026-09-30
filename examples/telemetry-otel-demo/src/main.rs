@@ -77,13 +77,13 @@ async fn main() {
     );
 
     if config.telemetry.otlp_endpoint.is_some() {
-        tracing::info!("OTLP exporter will be initialized by HttpIngress::config()");
+        tracing::info!("OTLP destination is configured; this example does not initialize an exporter");
     } else {
         tracing::info!("No OTLP endpoint configured — telemetry is a no-op");
     }
 
     // 4. Build HTTP ingress with config-driven settings
-    //    .config() applies: bind address, shutdown timeout, telemetry init
+    //    .config() applies: bind address, shutdown timeout, telemetry configuration report
     let app = Ranvier::http()
         .config(&config)
         .health_endpoint("/health")
