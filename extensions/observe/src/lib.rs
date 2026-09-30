@@ -212,6 +212,9 @@ pub mod otlp {
                     .with_service_name(service.to_owned())
                     .build(),
             );
+            let metric_stream = opentelemetry_sdk::metrics::Stream::builder()
+                .with_cardinality_limit(crate::metrics::MAX_STREAM_SERIES)
+                .build()?;
             let trace_export_failed = Arc::new(AtomicBool::new(false));
             Ok(Self {
                 traces: SdkTracerProvider::builder()

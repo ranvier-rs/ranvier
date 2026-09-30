@@ -12,6 +12,8 @@ pub const MAX_OBSERVABLE_ATTRIBUTE_BYTES: usize = 8192;
 pub const MAX_METERS: usize = 128;
 pub const MAX_INSTRUMENTS: usize = 1024;
 pub const MAX_HISTOGRAM_BOUNDARIES: usize = 128;
+/// SDK per-stream cardinality budget; overflow uses a separate aggregation point.
+pub const MAX_STREAM_SERIES: usize = 1024;
 
 #[derive(Hash, Eq, PartialEq)]
 struct InstrumentIdentity {
