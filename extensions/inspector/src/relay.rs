@@ -338,6 +338,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn relay_http_error_statuses_distinguish_operation_failures() {
+        use axum::http::StatusCode;
+        assert_eq!(
+            RelayError::concurrency_limit().status_code(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            RelayError::timeout(100).status_code(),
+            StatusCode::GATEWAY_TIMEOUT
+        );
+        assert_eq!(response_too_large().status_code(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            RelayError::internal("sanitized").status_code(),
+            StatusCode::BAD_GATEWAY
+        );
+        assert_eq!(
+            RelayError {
+                error: "future_error".into(),
+                message: String::new(),
+                details: None
+            }
+            .status_code(),
+            StatusCode::BAD_GATEWAY
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_method_returns_bad_request_and_releases_permit() {
+        let relay = RelayState::new(RelayConfig {
+            target_url: "http://127.0.0.1:1".into(),
+            timeout_ms: 100,
+            max_concurrent: 1,
+        })
+        .unwrap();
+        let error = execute_relay(
+            &relay,
+            RelayRequest {
+                method: "invalid method SENTINEL".into(),
+                path: "/".into(),
+                headers: None,
+                body: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.status_code(), axum::http::StatusCode::BAD_REQUEST);
+        assert!(!serde_json::to_string(&error).unwrap().contains("SENTINEL"));
+        assert_eq!(relay.semaphore.available_permits(), 1);
+        let permit = relay.semaphore.acquire().await.unwrap();
+        let busy = execute_relay(
+            &relay,
+            RelayRequest {
+                method: "GET".into(),
+                path: "/".into(),
+                headers: None,
+                body: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            busy.status_code(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        drop(permit);
+    }
+
+    #[test]
     fn response_chunk_budget_rejects_growth_without_partial_append() {
         let mut bytes = vec![0; MAX_RELAY_RESPONSE_BYTES - 1];
         append_response_chunk(&mut bytes, &[1]).unwrap();
