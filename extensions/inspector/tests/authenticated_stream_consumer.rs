@@ -68,8 +68,10 @@ async fn actual_inspector_producers_pass_maintained_stream_consumer() {
     });
     let dispatch =
         tracing::Dispatch::new(tracing_subscriber::registry().with(ranvier_inspector::layer()));
+    let mut phase = "startup";
     let result = tokio::time::timeout(Duration::from_secs(15), std::panic::AssertUnwindSafe(async {
         assert_eq!(lines.next_line().await.unwrap().as_deref(), Some("WIRE_READY"));
+        phase = "subscription";
         // A real delivered marker proves the server subscription exists, avoiding
         // a race between the 101 response and handle_socket's subscribe call.
         loop {
@@ -81,6 +83,7 @@ async fn actual_inspector_producers_pass_maintained_stream_consumer() {
                 break;
             }
         }
+        phase = "stall";
         let (circuit, node) = tracing::dispatcher::with_default(&dispatch, || {
             let circuit = tracing::info_span!(target: "ranvier.stream_fixture", "Circuit", ranvier.circuit = "stream-wire-fixture");
             let _circuit = circuit.enter();
@@ -93,12 +96,14 @@ async fn actual_inspector_producers_pass_maintained_stream_consumer() {
         // Keep the actual span alive until its actual stall frame is received,
         // rather than assuming the broadcaster ran during a fixed sleep.
         assert_eq!(lines.next_line().await.unwrap().as_deref(), Some("WIRE_STALLED"));
+        phase = "completion";
         tracing::dispatcher::with_default(&dispatch, || {
             drop(node);
             drop(circuit);
         });
         let line = lines.next_line().await.unwrap().expect("stream report required");
         assert!(line.starts_with("WIRE_DONE "), "unexpected protocol response");
+        phase = "exit";
         line
     }).catch_unwind()).await;
     if !matches!(result, Ok(Ok(_))) {
@@ -125,7 +130,7 @@ async fn actual_inspector_producers_pass_maintained_stream_consumer() {
     let errors = errors.expect("validator stderr join deadline").unwrap();
     assert!(
         status.success(),
-        "stream validator process failed: {}",
+        "stream validator process failed during {phase}: {}",
         String::from_utf8_lossy(&errors)
     );
     assert!(errors.is_empty(), "stream validator emitted stderr");
