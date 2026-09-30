@@ -283,6 +283,14 @@ function buildInventory() {
   }
 
   const inputFiles = [path.join(workspaceRoot, 'Cargo.toml'), policyPath, ...products.map(({ pkg }) => pkg.manifest_path)];
+  if (optionalObserve) {
+    // Published inventory retains its existing schema/identity contract. The
+    // optional adapter must bind evidence to implementation and locked SDK too.
+    inputFiles.push(path.join(workspaceRoot, 'Cargo.lock'), fileURLToPath(import.meta.url));
+    for (const source of ['lib.rs', 'metrics.rs', 'redaction.rs']) {
+      inputFiles.push(path.join(workspaceRoot, 'extensions/observe/src', source));
+    }
+  }
   const inputIdentity = Object.fromEntries(
     inputFiles
       .map((file) => [relative(file), sha256(canonicalText(readFileSync(file)))])
