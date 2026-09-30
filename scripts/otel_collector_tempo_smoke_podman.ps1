@@ -5,7 +5,12 @@ param(
     [ValidateRange(0,300)][int]$StartupWaitSeconds = 22,
     [string]$EvidenceDir = "",
     [string]$CollectorConfigPath = "",
-    [string]$TempoConfigPath = ""
+    [string]$TempoConfigPath = "",
+    [ValidateRange(1,65535)][int]$GrpcPort = 4317,
+    [ValidateRange(1,65535)][int]$HttpPort = 4318,
+    [ValidateRange(1,65535)][int]$TempoPort = 3200,
+    [string]$CollectorImage = 'docker.io/otel/opentelemetry-collector-contrib:latest',
+    [string]$TempoImage = 'docker.io/grafana/tempo:2.6.1'
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,7 +20,7 @@ $ownedIds = [Collections.Generic.List[string]]::new()
 $ownedNetworkId = $null
 $primaryFailure = $null
 $savedEnvironment = @{}
-foreach ($name in @('RANVIER_OTLP_ENDPOINT','RANVIER_OTLP_PROTOCOL','RUST_LOG')) {
+foreach ($name in @('RANVIER_OTLP_ENDPOINT','RANVIER_OTLP_PROTOCOL','RUST_LOG','RANVIER_TELEMETRY_REDACT_MODE','RANVIER_TELEMETRY_REDACT_KEYS')) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
 }
 function Assert-NewFixture {
@@ -96,27 +101,29 @@ try {
      $created = @(podman run -d --rm --name $TempoContainerName `
         --network $ownedNetworkId `
         --network-alias ranvier-otel-tempo `
-        -p 127.0.0.1:3200:3200 `
+        -p "127.0.0.1:${TempoPort}:3200" `
         -v "${tempoConfig}:/etc/tempo.yaml" `
-        docker.io/grafana/tempo:2.6.1 `
+        $TempoImage `
         '--config.file=/etc/tempo.yaml')
     $ownedIds.Add((Get-OwnedId $created $LASTEXITCODE))
 
      $created = @(podman run -d --rm --name $CollectorContainerName `
         --network $ownedNetworkId `
-        -p 127.0.0.1:4317:4317 `
-        -p 127.0.0.1:4318:4318 `
+        -p "127.0.0.1:${GrpcPort}:4317" `
+        -p "127.0.0.1:${HttpPort}:4318" `
         -v "${collectorConfig}:/etc/otelcol-contrib/config.yaml" `
-        docker.io/otel/opentelemetry-collector-contrib:latest)
+        $CollectorImage)
     $ownedIds.Add((Get-OwnedId $created $LASTEXITCODE))
 
     Start-Sleep -Seconds $StartupWaitSeconds
 
     Push-Location $ranvierRoot
     try {
-        $env:RANVIER_OTLP_ENDPOINT = "http://localhost:4317"
+        $env:RANVIER_OTLP_ENDPOINT = "http://127.0.0.1:$GrpcPort"
         $env:RANVIER_OTLP_PROTOCOL = "grpc"
         $env:RUST_LOG = "info"
+        $env:RANVIER_TELEMETRY_REDACT_MODE = 'public'
+        $env:RANVIER_TELEMETRY_REDACT_KEYS = ''
 
         cargo run --locked -p ranvier-observe --example otlp_smoke --features otlp *>&1 | Tee-Object -FilePath $appLog | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "OTel demo failed." }
@@ -140,7 +147,7 @@ try {
 
     for ($i = 0; $i -lt 6; $i++) {
         try {
-            $tagValuesResponse = Invoke-RestMethod -Uri "http://localhost:3200/api/search/tag/service.name/values" -Method GET -TimeoutSec 10
+            $tagValuesResponse = Invoke-RestMethod -Uri "http://127.0.0.1:$TempoPort/api/search/tag/service.name/values" -Method GET -TimeoutSec 10
             $tagValues = @($tagValuesResponse.tagValues)
             if ($tagValues -contains "otel-demo") {
                 break
@@ -175,6 +182,16 @@ try {
 
     if ($tagValues -notcontains "otel-demo") {
         throw "Tempo search API did not report service.name value 'otel-demo'."
+    }
+    if (-not (Select-String -LiteralPath $appLog -SimpleMatch 'OTLP_SMOKE_EXPORTED outcome=12')) { throw 'Finite export marker missing.' }
+    $collectorText = Get-Content -LiteralPath $collectorLog -Raw
+    $traceIds = @([regex]::Matches($collectorText, 'Trace ID\s+: ([a-f0-9]{32})') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+    if ($traceIds.Count -ne 1) { throw 'Expected one fixture trace identity.' }
+    $trace = Invoke-RestMethod -Uri "http://127.0.0.1:$TempoPort/api/traces/$($traceIds[0])" -Method GET -TimeoutSec 10
+    $trace | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath (Join-Path $evidenceDir 'backend-trace.json') -Encoding utf8
+    $spans = @($trace.batches.scopeSpans.spans)
+    foreach ($entry in @(@('CalculationCircuit',1),@('Circuit',1),@('Node',2))) {
+        if (@($spans | Where-Object { $_.name -eq $entry[0] }).Count -ne $entry[1]) { throw 'Tempo runtime trace receipt mismatch.' }
     }
 
 } catch {
