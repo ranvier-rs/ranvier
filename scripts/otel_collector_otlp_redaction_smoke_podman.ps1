@@ -101,8 +101,21 @@ try {
     }
     if (-not (Select-String -LiteralPath $appLog -SimpleMatch 'OTLP_SMOKE_EXPORTED outcome=12')) { throw 'Finite export success marker missing.' }
     if ($RedactMode -eq 'strict') {
+        foreach ($required in @('service.name: Str([REDACTED])', 'outcome: Str([REDACTED])')) {
+            if (-not (Select-String -LiteralPath $collectorLog -SimpleMatch $required)) { throw "Strict positive receipt missing: $required" }
+        }
+        if (@(Select-String -LiteralPath $collectorLog -Pattern '^\s*Name\s+: \[REDACTED\]\s*$').Count -ne 4) {
+            throw 'Expected four masked root/Circuit/Node span receipts.'
+        }
         foreach ($forbidden in @('CalculationCircuit', 'service.name: Str(otel-demo)', 'outcome: Str(next)')) {
             if (Select-String -LiteralPath $collectorLog -SimpleMatch $forbidden) { throw 'Strict identity or label value leaked.' }
+        }
+    } else {
+        foreach ($entry in @(@('CalculationCircuit', 1), @('Circuit', 1), @('Node', 2))) {
+            $pattern = '^\s*Name\s+: ' + [regex]::Escape($entry[0]) + '\s*$'
+            if (@(Select-String -LiteralPath $collectorLog -Pattern $pattern).Count -ne $entry[1]) {
+                throw "Runtime span receipt mismatch: $($entry[0])"
+            }
         }
     }
 
