@@ -4,7 +4,8 @@ param(
     [ValidateRange(1, 65535)][int]$PostgresPort = 54329,
     [ValidateRange(1, 65535)][int]$RedisPort = 6389,
     [ValidateRange(0, 60)][int]$StartupWaitSeconds = 6,
-    [string]$EvidenceDir = ""
+    [string]$EvidenceDir = "",
+    [Diagnostics.Process]$ForwarderProcess = $null
 )
 
 $ErrorActionPreference = "Stop"
@@ -136,6 +137,7 @@ try {
 
     Assert-HostEndpointReady -Port $PostgresPort
     Assert-HostEndpointReady -Port $RedisPort
+    if ($ForwarderProcess -and $ForwarderProcess.HasExited) { throw "Owned forwarder exited; adapter tests were not started." }
 
     $env:RANVIER_PERSISTENCE_POSTGRES_URL = "postgres://ranvier:ranvier@127.0.0.1:${PostgresPort}/ranvier"
     $env:RANVIER_PERSISTENCE_REDIS_URL = "redis://127.0.0.1:${RedisPort}"

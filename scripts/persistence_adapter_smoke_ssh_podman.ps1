@@ -9,7 +9,11 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'This SSH transport wrapper is for Windows hosts.' }
 if ($PostgresPort -eq $RedisPort) { throw 'Distinct forward ports are required.' }
-if ($env:CONTAINER_HOST -or $env:CONTAINER_CONNECTION) { throw 'Explicit Podman connection overrides are not supported by this machine-scoped wrapper.' }
+if ($env:CONTAINER_HOST -or $env:CONTAINER_CONNECTION -or $env:CONTAINER_SSHKEY) { throw 'Explicit Podman connection overrides are not supported by this machine-scoped wrapper.' }
+foreach ($port in @($PostgresPort, $RedisPort)) {
+    $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port)
+    try { $probe.Start() } catch { throw "Local forward port $port is unavailable." } finally { $probe.Stop() }
+}
 if ([string]::IsNullOrWhiteSpace($EvidenceDir)) {
     $EvidenceDir = Join-Path ([IO.Path]::GetTempPath()) ('ranvier-persistence-ssh-' + [Guid]::NewGuid().ToString('N'))
 }
@@ -21,6 +25,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Podman machine inspection failed.' }
 $machines = @($machineText | ConvertFrom-Json)
 if ($machines.Count -ne 1 -or $machines[0].Name -ne $MachineName -or $machines[0].State -ne 'running') { throw 'Expected one running selected machine.' }
 $machine = $machines[0]
+if ($machine.SSHConfig.RemoteUsername -notmatch '^[a-z_][a-z0-9_-]*[$]?$') { throw 'Invalid machine SSH username.' }
 $connectionText = podman system connection list --format json | Out-String
 if ($LASTEXITCODE -ne 0) { throw 'Podman connection query failed.' }
 $connections = @($connectionText | ConvertFrom-Json | Where-Object Default)
@@ -57,7 +62,7 @@ try {
     if ($tunnel.HasExited) { throw 'SSH loopback tunnel exited during startup; inspect ssh-stderr.log.' }
     [ordered]@{ machine = $MachineName; default_connection = $connection.Name; ssh_port = $uri.Port; process_id = $tunnel.Id; known_hosts_sha256 = (Get-FileHash $knownHosts).Hash } |
         ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $EvidenceDir 'ssh-tunnel-identity.json')
-    & (Join-Path $PSScriptRoot 'persistence_adapter_smoke_podman.ps1') -PostgresPort $PostgresPort -RedisPort $RedisPort -StartupWaitSeconds 0 -EvidenceDir $EvidenceDir
+    & (Join-Path $PSScriptRoot 'persistence_adapter_smoke_podman.ps1') -PostgresPort $PostgresPort -RedisPort $RedisPort -StartupWaitSeconds 0 -EvidenceDir $EvidenceDir -ForwarderProcess $tunnel
 } catch {
     $primaryFailure = $_
     throw
