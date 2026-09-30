@@ -3072,7 +3072,11 @@ mod tests {
             let mut stream = response.upgrade().await.unwrap();
             let mut prefix = [0u8; 4];
             stream.read_exact(&mut prefix).await.unwrap();
-            prefix
+            let mut reason = [0u8; 23];
+            stream.read_exact(&mut reason).await.unwrap();
+            let mut extra = [0u8; 1];
+            let eof = stream.read(&mut extra).await.unwrap();
+            (prefix, reason, eof)
         });
         let reservation = tokio::time::timeout(Duration::from_secs(2), reserved.notified()).await;
         let count_before = *lifecycle.active.borrow();
@@ -3101,9 +3105,12 @@ mod tests {
         reservation.expect("reservation before cancellation");
         assert_eq!(count_before, 1);
         assert!(waiting, "drain must wait for held upgrade");
-        let prefix = receipt.unwrap().unwrap();
+        let (prefix, reason, eof) = receipt.unwrap().unwrap();
         assert_eq!(prefix[0], 0x88, "unmasked final Close frame");
+        assert_eq!(prefix[1], 25, "unmasked bounded close payload");
         assert_eq!(&prefix[2..], &1001u16.to_be_bytes());
+        assert_eq!(&reason, b"Inspector shutting down");
+        assert_eq!(eof, 0, "late upgraded transport must terminate");
         drain.unwrap().unwrap();
         joined.unwrap().unwrap().unwrap();
         assert_eq!(*lifecycle.active.borrow(), 0);
