@@ -15,18 +15,18 @@ function global:podman {
     switch ($call[0]) {
         'container' { if($call[1] -eq 'inspect'){if($global:otelCase -eq 'image-query-error'){$global:LASTEXITCODE=125}else{'c'*64}; return}; $global:LASTEXITCODE = if($global:otelCase -eq 'present'){0}elseif($global:otelCase -eq 'query-error'){125}else{1} }
         'run' { if($global:otelCase -eq 'run-error'){$global:LASTEXITCODE=125}elseif($global:otelCase -eq 'invalid-id'){'bad'}else{'a'*64} }
-        'logs' { if($global:otelCase -eq 'logs-error'){$global:LASTEXITCODE=125}else{'service.name: Str(otel-demo)'; 'ResourceSpans'; 'ResourceMetrics'; 'customer_email: Str([REDACTED])'; 'api_key: Str([REDACTED])'; if($global:otelCase -eq 'raw-leak'){'demo.user@example.com';'demo-api-key-123'}} }
+        'logs' { if($global:otelCase -eq 'logs-error'){$global:LASTEXITCODE=125}else{'service.name: Str(otel-demo)'; 'ResourceSpans'; 'ResourceMetrics'; if($global:otelCase -ne 'missing-receipt'){'ranvier_demo_runs_total'}; 'customer_email: Str([REDACTED])'; 'api_key: Str([REDACTED])'; if($global:otelCase -eq 'raw-leak'){'demo.user@example.com';'demo-api-key-123'}} }
         'rm' { if($global:otelCase -eq 'cargo-and-cleanup-throw'){throw 'mock cleanup invocation error'}; if($global:otelCase -in @('cleanup-error','cargo-and-cleanup-error')){$global:LASTEXITCODE=125} }
         default { throw 'Unexpected Podman command' }
     }
 }
 function global:cargo {
     $global:LASTEXITCODE = if($global:otelCase -in @('cargo-error','cargo-and-cleanup-error','cargo-and-cleanup-throw')){1}else{0}
-    'mock demo'; if($global:otelCase -eq 'metric-error'){'OpenTelemetry metrics error'}
+    'mock demo'; if($global:otelCase -ne 'missing-marker'){'OTLP_SMOKE_EXPORTED outcome=12'}; if($global:otelCase -eq 'metric-error'){'OpenTelemetry metrics error'}
 }
 try {
     $cases = @('present','query-error','run-error','invalid-id','cargo-error','logs-error','cleanup-error','cargo-and-cleanup-error','cargo-and-cleanup-throw','image-query-error','success')
-    if ($Redaction) { $cases += @('raw-leak','metric-error') }
+    if ($Redaction) { $cases += @('raw-leak','metric-error','missing-receipt','missing-marker') }
     foreach ($case in $cases) {
         $global:otelCase=$case
         $global:otelCalls=[Collections.Generic.List[string]]::new()
@@ -34,7 +34,7 @@ try {
         try { & $fixture -ConfigPath $config -EvidenceDir (Join-Path $EvidenceDir $case) -StartupWaitSeconds 0 } catch {$failed=$_}
         if(($case -eq 'success') -eq [bool]$failed){throw "Unexpected outcome: $case"}
         $removed=@($global:otelCalls|Where-Object {$_ -like 'rm *'})
-        $owns=$case -in @('cargo-error','logs-error','cleanup-error','cargo-and-cleanup-error','cargo-and-cleanup-throw','image-query-error','success','raw-leak','metric-error')
+        $owns=$case -in @('cargo-error','logs-error','cleanup-error','cargo-and-cleanup-error','cargo-and-cleanup-throw','image-query-error','success','raw-leak','metric-error','missing-receipt','missing-marker')
         if($removed.Count -ne [int]$owns){throw "Invalid cleanup count: $case"}
         if($owns -and $removed[0] -ne ('rm -f '+('a'*64))){throw 'Cleanup used an unowned identifier'}
         if($case -in @('cargo-and-cleanup-error','cargo-and-cleanup-throw') -and $failed.Exception.Message -ne 'OTel demo failed.'){throw 'Primary error replaced'}

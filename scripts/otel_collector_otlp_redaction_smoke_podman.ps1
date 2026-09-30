@@ -96,6 +96,16 @@ try {
     podman logs $ownedId *> $collectorLog
     if ($LASTEXITCODE -ne 0) { throw "Collector log capture failed." }
 
+    foreach ($required in @('ResourceSpans', 'ResourceMetrics', 'ranvier_demo_runs_total')) {
+        if (-not (Select-String -LiteralPath $collectorLog -SimpleMatch $required)) { throw "Collector receipt missing: $required" }
+    }
+    if (-not (Select-String -LiteralPath $appLog -SimpleMatch 'OTLP_SMOKE_EXPORTED outcome=12')) { throw 'Finite export success marker missing.' }
+    if ($RedactMode -eq 'strict') {
+        foreach ($forbidden in @('CalculationCircuit', 'service.name: Str(otel-demo)', 'outcome: Str(next)')) {
+            if (Select-String -LiteralPath $collectorLog -SimpleMatch $forbidden) { throw 'Strict identity or label value leaked.' }
+        }
+    }
+
     $redactedEmail = Select-String -Path $collectorLog -Pattern "customer_email: Str([REDACTED])" -SimpleMatch
     $redactedApiKey = Select-String -Path $collectorLog -Pattern "api_key: Str([REDACTED])" -SimpleMatch
     $rawEmailLeak = Select-String -Path $collectorLog -Pattern "demo.user@example.com" -SimpleMatch
