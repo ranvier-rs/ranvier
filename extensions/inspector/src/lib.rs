@@ -2524,9 +2524,19 @@ async fn get_quick_view_css() -> impl IntoResponse {
 }
 
 async fn handle_socket(socket: WebSocket, lifecycle: Arc<SocketLifecycle>) {
-    let (mut sender, mut incoming) = socket.split();
-    let mut rx = get_sender().subscribe();
+    let (sender, incoming) = socket.split();
+    handle_socket_io(sender, incoming, lifecycle, get_sender().subscribe()).await;
+}
 
+async fn handle_socket_io<S, I, E>(
+    mut sender: S,
+    mut incoming: I,
+    lifecycle: Arc<SocketLifecycle>,
+    mut rx: broadcast::Receiver<String>,
+) where
+    S: futures::Sink<Message> + Unpin,
+    I: futures::Stream<Item = Result<Message, E>> + Unpin,
+{
     loop {
         let received = tokio::select! {
             biased;
@@ -3017,6 +3027,94 @@ async fn api_get_trace_diff(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn blocked_socket_flush_is_cancelled_and_ownership_drains() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct BlockedSink {
+            waiting: Arc<tokio::sync::Notify>,
+            accepted: Arc<AtomicUsize>,
+            dropped: Arc<AtomicUsize>,
+        }
+        impl futures::Sink<Message> for BlockedSink {
+            type Error = std::convert::Infallible;
+            fn poll_ready(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Result<(), Self::Error>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+            fn start_send(self: std::pin::Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
+                self.accepted.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            fn poll_flush(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Result<(), Self::Error>> {
+                self.waiting.notify_one();
+                std::task::Poll::Pending
+            }
+            fn poll_close(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Result<(), Self::Error>> {
+                std::task::Poll::Pending
+            }
+        }
+        impl Drop for BlockedSink {
+            fn drop(&mut self) {
+                self.dropped.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let cancellation = CancellationToken::new();
+        let lifecycle = Arc::new(SocketLifecycle::new(Some(cancellation.child_token())));
+        let waiting = Arc::new(tokio::sync::Notify::new());
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let sink = BlockedSink {
+            waiting: waiting.clone(),
+            accepted: accepted.clone(),
+            dropped: dropped.clone(),
+        };
+        let (events, receiver) = broadcast::channel(4);
+        let lease = lifecycle.acquire();
+        let owner = lifecycle.clone();
+        let mut socket = tokio::spawn(async move {
+            let _lease = lease;
+            handle_socket_io(
+                sink,
+                futures::stream::pending::<Result<Message, ()>>(),
+                owner,
+                receiver,
+            )
+            .await;
+        });
+        events.send("blocked-fixture".into()).unwrap();
+        let blocked = tokio::time::timeout(Duration::from_secs(2), waiting.notified()).await;
+        let count_before = *lifecycle.active.borrow();
+        cancellation.cancel(CancellationReason::OperatorShutdown);
+        let joined = tokio::time::timeout(Duration::from_secs(2), &mut socket).await;
+        if joined.is_err() {
+            socket.abort();
+            let _ = socket.await;
+        }
+        blocked.expect("must reach blocked flush before cancellation");
+        joined
+            .expect("cancellation must bypass five-second send deadline")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), lifecycle.join())
+            .await
+            .unwrap();
+        assert_eq!(count_before, 1);
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            2,
+            "text and bounded close attempt"
+        );
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        assert_eq!(*lifecycle.active.borrow(), 0);
+    }
+
     #[tokio::test]
     async fn late_actual_upgrade_after_cancellation_closes_and_releases_ownership() {
         use tokio::io::AsyncReadExt;
