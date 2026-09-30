@@ -2,7 +2,8 @@ param(
     [ValidatePattern('^[a-zA-Z0-9_-]+$')][string]$MachineName = 'podman-machine-default',
     [ValidateRange(1, 65535)][int]$PostgresPort = 54329,
     [ValidateRange(1, 65535)][int]$RedisPort = 6389,
-    [string]$EvidenceDir = ''
+    [string]$EvidenceDir = '',
+    [ValidateSet('adapters','dependency-recovery')][string]$Scenario = 'adapters'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,7 +76,11 @@ try {
     if ($tunnel.HasExited) { throw 'SSH loopback tunnel exited during startup; inspect ssh-stderr.log.' }
     [ordered]@{ machine = $MachineName; default_connection = $connection.Name; ssh_port = $uri.Port; process_id = $tunnel.Id; known_hosts_sha256 = (Get-FileHash $knownHosts).Hash } |
         ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $EvidenceDir 'ssh-tunnel-identity.json')
-    & (Join-Path $PSScriptRoot 'persistence_adapter_smoke_podman.ps1') -PostgresPort $PostgresPort -RedisPort $RedisPort -StartupWaitSeconds 0 -EvidenceDir $EvidenceDir -ForwarderProcess $tunnel
+    if ($Scenario -eq 'dependency-recovery') {
+        & (Join-Path $PSScriptRoot 'dependency_failure_smoke_podman.ps1') -PostgresPort $PostgresPort -RedisPort $RedisPort -SummaryPath (Join-Path $EvidenceDir 'dependency-recovery-summary.md') -ForwarderProcess $tunnel
+    } else {
+        & (Join-Path $PSScriptRoot 'persistence_adapter_smoke_podman.ps1') -PostgresPort $PostgresPort -RedisPort $RedisPort -StartupWaitSeconds 0 -EvidenceDir $EvidenceDir -ForwarderProcess $tunnel
+    }
 } catch {
     $primaryFailure = $_
     throw
@@ -89,4 +94,4 @@ try {
         }
     }
 }
-Write-Host 'SSH persistence adapter smoke passed; owned tunnel stopped.'
+Write-Host "SSH persistence $Scenario smoke passed; owned tunnel stopped."

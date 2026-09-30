@@ -5,7 +5,8 @@ param(
     [string]$RedisImage = "docker.io/library/redis:7-alpine",
     [int]$PostgresPort = 54329,
     [int]$RedisPort = 6389,
-    [string]$SummaryPath = ""
+    [string]$SummaryPath = "",
+    [Diagnostics.Process]$ForwarderProcess = $null
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,6 +32,19 @@ function Get-OwnedContainer {
     if ($id -notmatch '^[a-f0-9]{64}$') { throw 'Invalid owned container ID; resource preserved.' }
     return $id
 }
+function Assert-HostEndpointReady {
+    param([int]$Port)
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        $client = [Net.Sockets.TcpClient]::new()
+        try {
+            $connected = $client.ConnectAsync("127.0.0.1", $Port).Wait(500)
+            if ($connected -and $client.Connected) { return }
+        } catch { } finally { $client.Dispose() }
+        if ($attempt -lt 4) { Start-Sleep -Milliseconds 200 }
+    }
+    throw "Host loopback endpoint not reachable at port $Port; adapter tests were not started. Check Podman/WSL forwarding."
+}
+
 function Wait-PostgresReady {
     param([string]$ContainerName, [int]$MaxAttempts = 20)
 
@@ -185,6 +199,9 @@ try {
     $postgresInitialReady = Wait-PostgresReady -ContainerName $ownedPostgres
     $redisInitialReady = Wait-RedisReady -ContainerName $ownedRedis
 
+    Assert-HostEndpointReady $PostgresPort
+    Assert-HostEndpointReady $RedisPort
+    if ($ForwarderProcess -and $ForwarderProcess.HasExited) { throw "Owned forwarder exited before dependency tests." }
     $env:RANVIER_PERSISTENCE_POSTGRES_URL = "postgres://ranvier:ranvier@127.0.0.1:${PostgresPort}/ranvier"
     $env:RANVIER_PERSISTENCE_REDIS_URL = "redis://127.0.0.1:${RedisPort}"
     $env:REDIS_URL = $env:RANVIER_PERSISTENCE_REDIS_URL
