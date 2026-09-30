@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use axum::{
     Json, Router,
     extract::{
-        FromRequestParts, Path as AxPath, Query, Request, State,
+        DefaultBodyLimit, FromRequestParts, Path as AxPath, Query, Request, State,
         rejection::JsonRejection,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
@@ -881,7 +881,11 @@ impl Inspector {
                     "/api/v1/routes/sample",
                     axum::routing::post(api_post_routes_sample),
                 )
-                .route("/api/v1/relay", axum::routing::post(api_post_relay))
+                .route(
+                    "/api/v1/relay",
+                    axum::routing::post(api_post_relay)
+                        .layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
+                )
                 .route("/api/v1/traces/stored", get(api_get_stored_traces))
                 .route("/api/v1/lineage/:trace_id", get(api_get_lineage))
                 .route("/api/v1/traces/diff", get(api_get_trace_diff));
@@ -3569,6 +3573,56 @@ expires_on = "2099-01-02"
             .unwrap();
         let authorized_status = authorized.status();
         let authorized_body = authorized.text().await.unwrap();
+        let malformed_unauthorized = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .body("{SECRET malformed")
+            .send()
+            .await
+            .unwrap();
+        let mut rejected_inputs = Vec::new();
+        for (payload, content_type, expected_status, expected_code) in [
+            (
+                "{SECRET malformed".to_owned(),
+                "application/json",
+                reqwest::StatusCode::BAD_REQUEST,
+                "invalid_request",
+            ),
+            (
+                r#"{"method":12,"path":"/SECRET"}"#.to_owned(),
+                "application/json",
+                reqwest::StatusCode::BAD_REQUEST,
+                "invalid_request",
+            ),
+            (
+                "SECRET".to_owned(),
+                "text/plain",
+                reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "unsupported_media_type",
+            ),
+            (
+                "x".repeat(2 * 1024 * 1024 + 1),
+                "application/json",
+                reqwest::StatusCode::PAYLOAD_TOO_LARGE,
+                "request_too_large",
+            ),
+        ] {
+            let response = client
+                .post(&url)
+                .bearer_auth("fixture-relay-token")
+                .header("content-type", content_type)
+                .body(payload)
+                .send()
+                .await
+                .unwrap();
+            let status = response.status();
+            let content_type = response.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .to_owned();
+            let body = response.text().await.unwrap();
+            rejected_inputs.push((status, content_type, body, expected_status, expected_code));
+        }
         let permit = semaphore.acquire().await.unwrap();
         let busy = client
             .post(&url)
@@ -3587,6 +3641,18 @@ expires_on = "2099-01-02"
             .unwrap()
             .unwrap();
         assert_eq!(unauthorized.status(), reqwest::StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            malformed_unauthorized.status(),
+            reqwest::StatusCode::UNAUTHORIZED
+        );
+        for (status, content_type, body, expected_status, expected_code) in rejected_inputs {
+            assert_eq!(status, expected_status);
+            assert_eq!(content_type, "application/json");
+            assert!(!body.contains("SECRET"));
+            let body: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(body["error"], expected_code);
+            assert!(body["message"].is_string());
+        }
         assert_eq!(authorized_status, reqwest::StatusCode::BAD_REQUEST);
         assert!(!authorized_body.contains("SENTINEL"));
         assert_eq!(busy_status, reqwest::StatusCode::SERVICE_UNAVAILABLE);
