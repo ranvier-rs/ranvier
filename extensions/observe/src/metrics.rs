@@ -135,6 +135,100 @@ mod tests {
     };
     use std::{sync::Mutex, time::Duration};
     struct Capture(Arc<Mutex<Vec<String>>>);
+    type Values = std::collections::BTreeMap<String, Vec<i64>>;
+    struct CollisionCapture(Arc<Mutex<Values>>);
+    impl PushMetricExporter for CollisionCapture {
+        async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+            use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+            let mut values = Values::new();
+            for scope in metrics.scope_metrics() {
+                for metric in scope.metrics() {
+                    let points = match metric.data() {
+                        AggregatedMetrics::I64(MetricData::Gauge(data)) => {
+                            data.data_points().map(|p| p.value()).collect()
+                        }
+                        AggregatedMetrics::I64(MetricData::Sum(data)) => {
+                            data.data_points().map(|p| p.value()).collect()
+                        }
+                        _ => vec![i64::MIN],
+                    };
+                    values.insert(metric.name().to_owned(), points);
+                }
+            }
+            *self.0.lock().unwrap() = values;
+            Ok(())
+        }
+        fn force_flush(&self) -> OTelSdkResult {
+            Ok(())
+        }
+        fn shutdown_with_timeout(&self, _: Duration) -> OTelSdkResult {
+            Ok(())
+        }
+        fn temporality(&self) -> Temporality {
+            Temporality::Cumulative
+        }
+    }
+    #[test]
+    fn gauge_and_observable_collisions_have_explicit_sdk_semantics() {
+        for mode in [Mode::Public, Mode::Strict, Mode::Off] {
+            let off = matches!(mode, Mode::Off);
+            let captured = Arc::new(Mutex::new(Values::new()));
+            let provider = ProtectedMeterProvider {
+                inner: SdkMeterProvider::builder()
+                    .with_reader(
+                        PeriodicReader::builder(CollisionCapture(captured.clone()))
+                            .with_interval(Duration::from_secs(3600))
+                            .build(),
+                    )
+                    .build(),
+                policy: Policy::new(mode, "").unwrap(),
+            };
+            let meter = provider.meter("collision-fixture");
+            let gauge = meter.i64_gauge("gauge").build();
+            let changes = meter.i64_up_down_counter("changes").build();
+            for (label, value) in [("first-secret", 2), ("second-secret", 8)] {
+                let attributes = [KeyValue::new("email", label)];
+                gauge.record(value, &attributes);
+                changes.add(value, &attributes);
+            }
+            let _observable = meter
+                .i64_observable_gauge("observable_gauge")
+                .with_callback(|instrument| {
+                    instrument.observe(2, &[KeyValue::new("email", "first-secret")]);
+                    instrument.observe(8, &[KeyValue::new("email", "second-secret")]);
+                })
+                .build();
+            let _observable_changes = meter
+                .i64_observable_up_down_counter("observable_changes")
+                .with_callback(|instrument| {
+                    instrument.observe(2, &[KeyValue::new("email", "first-secret")]);
+                    instrument.observe(8, &[KeyValue::new("email", "second-secret")]);
+                })
+                .build();
+            provider.inner.force_flush().unwrap();
+            let mut values = captured.lock().unwrap().clone();
+            for points in values.values_mut() {
+                points.sort();
+            }
+            assert_eq!(
+                values.get("gauge"),
+                Some(&if off { vec![2, 8] } else { vec![8] })
+            );
+            assert_eq!(
+                values.get("changes"),
+                Some(&if off { vec![2, 8] } else { vec![10] })
+            );
+            assert_eq!(
+                values.get("observable_gauge"),
+                Some(&if off { vec![2, 8] } else { vec![8] })
+            );
+            assert_eq!(
+                values.get("observable_changes"),
+                Some(&if off { vec![2, 8] } else { vec![8] })
+            );
+            provider.inner.shutdown().unwrap();
+        }
+    }
     #[derive(Debug, Default, PartialEq)]
     struct Totals {
         counter: u64,
