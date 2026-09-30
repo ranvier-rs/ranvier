@@ -1076,13 +1076,12 @@ impl RanvierConfig {
         init_logging(&self.logging);
     }
 
-    /// Initialize OpenTelemetry telemetry based on this configuration.
+    /// Report the configured telemetry destination through the tracing subscriber.
     ///
-    /// When `telemetry.otlp_endpoint` is set, this creates a TracerProvider
-    /// and registers it as the global tracer.  When absent, this is a no-op.
-    ///
-    /// Call this *after* `init_logging()` so that the OTel layer can attach
-    /// to the existing tracing subscriber.
+    /// This method does not create an OTLP exporter, register tracer or meter
+    /// providers, or attach a tracing layer. Applications initialize exporters
+    /// separately. When the endpoint is absent, this is a no-op.
+    /// Call this after `init_logging()` to make the report visible.
     pub fn init_telemetry(&self) {
         if let Some(ref endpoint) = self.telemetry.otlp_endpoint {
             tracing::info!(
