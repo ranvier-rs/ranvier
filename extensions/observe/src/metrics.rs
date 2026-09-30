@@ -236,6 +236,47 @@ impl InstrumentProvider for ProtectedInstruments {
 mod tests {
     use super::*;
     #[test]
+    fn reused_policy_does_not_share_provider_failure_state() {
+        let policy = Policy::new(crate::redaction::Mode::Public, "").unwrap();
+        let create = |policy| ProtectedMeterProvider {
+            inner: SdkMeterProvider::builder()
+                .with_reader(
+                    PeriodicReader::builder(Capture(Arc::new(Mutex::new(Vec::new()))))
+                        .with_interval(Duration::from_secs(3600))
+                        .build(),
+                )
+                .build(),
+            policy,
+            state: Default::default(),
+        };
+        let failing = create(policy.clone());
+        let healthy = create(policy);
+        let _bad = failing
+            .meter("bad")
+            .u64_observable_counter("overflow")
+            .with_callback(|instrument| {
+                instrument.observe(u64::MAX, &[]);
+                instrument.observe(1, &[]);
+            })
+            .build();
+        let _good = healthy
+            .meter("good")
+            .u64_observable_counter("healthy")
+            .with_callback(|instrument| {
+                instrument.observe(1, &[]);
+            })
+            .build();
+        failing.inner.force_flush().unwrap();
+        healthy.inner.force_flush().unwrap();
+        assert!(failing.state.failed());
+        assert!(!healthy.state.failed());
+        failing.inner.force_flush().unwrap();
+        assert!(failing.state.failed());
+        assert!(!healthy.state.failed());
+        failing.inner.shutdown().unwrap();
+        healthy.inner.shutdown().unwrap();
+    }
+    #[test]
     fn observable_sum_overflow_and_nonfinite_values_fail_without_wrapping() {
         let policy = Policy::new(crate::redaction::Mode::Public, "").unwrap();
         let state = MetricState::default();
