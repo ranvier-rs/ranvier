@@ -64,6 +64,11 @@ jobs:
         run: |
           mkdir -p target/supply-chain
           cargo deny --manifest-path extensions/observe/Cargo.toml --all-features --format json check advisories licenses sources > target/supply-chain/observe-stdout.jsonl 2> target/supply-chain/observe-stderr.jsonl
+      - name: Check benchmark dependency advisories
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p target/supply-chain
+          cargo deny --manifest-path bench/Cargo.toml --all-features --format json check advisories > target/supply-chain/bench-stdout.jsonl 2> target/supply-chain/bench-stderr.jsonl
       - name: Validate maintenance handoff record
         run: node scripts/maintenance_handoff_gate.mjs --self-test --output target/supply-chain/handoff.json
       - name: Upload machine evidence
