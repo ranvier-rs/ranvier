@@ -1,20 +1,28 @@
 param(
-    [string]$PostgresContainer = "ranvier-persistence-pg-smoke",
-    [string]$RedisContainer = "ranvier-persistence-redis-smoke",
+    [string]$PostgresContainer = "",
+    [string]$RedisContainer = "",
     [int]$PostgresPort = 54329,
     [int]$RedisPort = 6389,
-    [int]$StartupWaitSeconds = 6
+    [ValidateRange(0, 60)][int]$StartupWaitSeconds = 6,
+    [string]$EvidenceDir = ""
 )
 
 $ErrorActionPreference = "Stop"
 
-function Stop-ContainerIfExists {
+function Assert-ContainerAbsent {
     param([string]$Name)
+    podman container exists $Name | Out-Null
+    $queryExit = $LASTEXITCODE
+    if ($queryExit -eq 0) { throw "Container already exists; choose a fresh name: $Name" }
+    if ($queryExit -ne 1) { throw "Container existence query failed ($queryExit): $Name" }
+}
 
-    $existing = podman ps -a --format "{{.Names}}" | Select-String -Pattern "^$Name$"
-    if ($existing) {
-        podman rm -f $Name | Out-Null
-    }
+function Read-CreatedContainerId {
+    param([object[]]$Output, [int]$ExitCode)
+    if ($ExitCode -ne 0) { throw "podman run failed ($ExitCode). Existing resources are preserved." }
+    $id = ($Output -join "`n").Trim()
+    if ($id -notmatch '^[a-f0-9]{64}$') { throw "podman run did not return a valid owned container ID; resource preserved." }
+    return $id
 }
 
 function Wait-PostgresReady {
@@ -56,7 +64,16 @@ if (-not (Get-Command podman -ErrorAction SilentlyContinue)) {
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ranvierRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $workspaceRoot = (Resolve-Path (Join-Path $ranvierRoot "..")).Path
-$evidenceDir = Join-Path $workspaceRoot "docs/05_dev_plans/evidence"
+$runId = [Guid]::NewGuid().ToString("N")
+if ([string]::IsNullOrWhiteSpace($PostgresContainer)) { $PostgresContainer = "ranvier-persistence-pg-$runId" }
+if ([string]::IsNullOrWhiteSpace($RedisContainer)) { $RedisContainer = "ranvier-persistence-redis-$runId" }
+if ($PostgresContainer -eq $RedisContainer) { throw "PostgreSQL and Redis require distinct container names." }
+if ([string]::IsNullOrWhiteSpace($EvidenceDir)) {
+    $EvidenceDir = Join-Path ([System.IO.Path]::GetTempPath()) "ranvier-persistence-$runId"
+}
+$evidenceDir = [System.IO.Path]::GetFullPath($EvidenceDir)
+$postgresOwnedId = $null
+$redisOwnedId = $null
 New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
 
 $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -65,19 +82,21 @@ $postgresLog = Join-Path $evidenceDir ("persistence_adapter_smoke_postgres_" + $
 $redisLog = Join-Path $evidenceDir ("persistence_adapter_smoke_redis_" + $stamp + ".log")
 
 try {
-    Stop-ContainerIfExists -Name $PostgresContainer
-    Stop-ContainerIfExists -Name $RedisContainer
+    Assert-ContainerAbsent -Name $PostgresContainer
+    Assert-ContainerAbsent -Name $RedisContainer
 
-    podman run -d --name $PostgresContainer `
+    $created = @(podman run -d --name $PostgresContainer `
         -e POSTGRES_USER=ranvier `
         -e POSTGRES_PASSWORD=ranvier `
         -e POSTGRES_DB=ranvier `
-        -p "${PostgresPort}:5432" `
-        postgres:16-alpine | Out-Null
+        -p "127.0.0.1:${PostgresPort}:5432" `
+        postgres:16-alpine)
+    $postgresOwnedId = Read-CreatedContainerId -Output $created -ExitCode $LASTEXITCODE
 
-    podman run -d --name $RedisContainer `
-        -p "${RedisPort}:6379" `
-        redis:7-alpine | Out-Null
+    $created = @(podman run -d --name $RedisContainer `
+        -p "127.0.0.1:${RedisPort}:6379" `
+        redis:7-alpine)
+    $redisOwnedId = Read-CreatedContainerId -Output $created -ExitCode $LASTEXITCODE
 
     Start-Sleep -Seconds $StartupWaitSeconds
     Wait-PostgresReady -ContainerName $PostgresContainer
@@ -88,7 +107,7 @@ try {
 
     Push-Location $ranvierRoot
     try {
-        cargo test -p ranvier-runtime --features persistence-postgres,persistence-redis *>&1 | Tee-Object -FilePath $testLog | Out-Null
+        cargo test --locked -p ranvier-runtime --features persistence-postgres,persistence-redis *>&1 | Tee-Object -FilePath $testLog | Out-Null
         if ($LASTEXITCODE -ne 0) {
             throw "cargo test failed for persistence adapter smoke."
         }
@@ -130,6 +149,10 @@ try {
     Write-Host "POSTGRES_LOG=$postgresLog"
     Write-Host "REDIS_LOG=$redisLog"
 } finally {
-    Stop-ContainerIfExists -Name $PostgresContainer
-    Stop-ContainerIfExists -Name $RedisContainer
+    foreach ($ownedId in @($postgresOwnedId, $redisOwnedId)) {
+        if ($ownedId) {
+            podman rm -f $ownedId | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Owned smoke container cleanup failed: $ownedId" }
+        }
+    }
 }
