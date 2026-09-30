@@ -324,6 +324,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn response_chunk_budget_rejects_growth_without_partial_append() {
+        let mut bytes = vec![0; MAX_RELAY_RESPONSE_BYTES - 1];
+        append_response_chunk(&mut bytes, &[1]).unwrap();
+        assert_eq!(
+            append_response_chunk(&mut bytes, &[2]).unwrap_err().error,
+            "response_too_large"
+        );
+        assert_eq!(bytes.len(), MAX_RELAY_RESPONSE_BYTES);
+    }
+
+    #[tokio::test]
+    async fn relay_reads_actual_http_body_and_rejects_invalid_or_oversized_payload() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for (body, length, expected) in [
+            ("{\"ok\":true}", 11, None),
+            ("invalid", 7, Some("internal_error")),
+            ("", MAX_RELAY_RESPONSE_BYTES + 1, Some("response_too_large")),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) =
+                    tokio::time::timeout(Duration::from_secs(3), listener.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                let mut request = [0; 4096];
+                socket.read(&mut request).await.unwrap();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{body}"
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            });
+            let relay = RelayState::new(RelayConfig {
+                target_url: format!("http://{address}"),
+                timeout_ms: 1000,
+                max_concurrent: 1,
+            })
+            .unwrap();
+            let result = execute_relay(
+                &relay,
+                RelayRequest {
+                    method: "GET".into(),
+                    path: "/".into(),
+                    headers: None,
+                    body: None,
+                },
+            )
+            .await;
+            match expected {
+                None => assert_eq!(result.unwrap().body, serde_json::json!({"ok":true})),
+                Some(error) => assert_eq!(result.unwrap_err().error, error),
+            }
+            assert_eq!(relay.semaphore.available_permits(), 1);
+            server.await.unwrap();
+        }
+    }
+
+    #[test]
     fn relay_budget_parser_rejects_invalid_explicit_values() {
         assert_eq!(parse_budget(None, 10), Ok(10));
         assert_eq!(parse_budget(Some("42"), 10), Ok(42));
