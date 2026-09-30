@@ -141,7 +141,7 @@ impl<T: CheckedSum> AsyncInstrument<T> for Summing<'_, T> {
         if self.state.failed() {
             return;
         }
-        if originals.iter().any(|labels| *labels == original)
+        if originals.contains(&original)
             || originals.len() >= MAX_OBSERVABLE_GROUPS
         {
             self.state.fail();
