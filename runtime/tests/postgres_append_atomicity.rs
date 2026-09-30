@@ -132,3 +132,94 @@ async fn postgres_rejected_append_preserves_snapshot_and_rolls_back_insert_failu
         "POSTGRES_ATOMICITY_PASS wrong-circuit duplicate overflow accepted completed first-insert-rollback competing-writers"
     );
 }
+
+#[tokio::test]
+#[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
+async fn postgres_load_reads_one_snapshot_across_concurrent_append() {
+    let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL")
+        .expect("explicit isolated database required");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .acquire_timeout(std::time::Duration::from_secs(3))
+        .connect(&url)
+        .await
+        .unwrap();
+    let prefix = format!("snapshot_{}", uuid::Uuid::new_v4().simple());
+    let reader_prefix = format!("reader_{}", uuid::Uuid::new_v4().simple());
+    let key = (uuid::Uuid::new_v4().as_u128() & i64::MAX as u128) as i64;
+    let writer = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
+    writer.ensure_schema().await.unwrap();
+    writer
+        .append(event("snapshot", 1, "old-version"))
+        .await
+        .unwrap();
+    let before = writer.load("snapshot").await.unwrap().unwrap();
+    // The state statement takes its MVCC snapshot before waiting on this
+    // fixture-only lock. The production writer uses the real backing tables.
+    sqlx::query(&format!("CREATE VIEW {reader_prefix}_state AS SELECT * FROM {prefix}_state WHERE pg_advisory_xact_lock({key}) IS NOT NULL"))
+        .execute(&pool).await.unwrap();
+    for suffix in ["events", "interventions"] {
+        sqlx::query(&format!(
+            "CREATE VIEW {reader_prefix}_{suffix} AS SELECT * FROM {prefix}_{suffix}"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let options = url
+        .parse::<sqlx::postgres::PgConnectOptions>()
+        .unwrap()
+        .application_name(&reader_prefix);
+    let reader_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+    let reader = PostgresPersistenceStore::with_table_prefix(reader_pool.clone(), &reader_prefix);
+    let mut holder = pool.acquire().await.unwrap();
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(key)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let mut loading = tokio::spawn(async move { reader.load("snapshot").await });
+    let waiting = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE l.locktype = 'advisory' AND NOT l.granted AND a.application_name = $1)")
+                .bind(&reader_prefix).fetch_one(&pool).await.unwrap();
+            if blocked { break; }
+            tokio::task::yield_now().await;
+        }
+    }).await;
+    let appended = if waiting.is_ok() {
+        writer.append(event("snapshot", 2, "new-version")).await
+    } else {
+        Err(anyhow::anyhow!(
+            "reader did not reach actual state-query barrier"
+        ))
+    };
+    sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(key)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    drop(holder);
+    let loaded = tokio::time::timeout(std::time::Duration::from_secs(3), &mut loading).await;
+    if loaded.is_err() {
+        loading.abort();
+        let _ = loading.await;
+    }
+    reader_pool.close().await;
+    let after = writer.load("snapshot").await.unwrap().unwrap();
+    pool.close().await;
+    waiting.expect("actual reader advisory-lock wait required");
+    appended.unwrap();
+    assert_eq!(after.schematic_version, "new-version");
+    assert_eq!(after.events.len(), 2);
+    assert_eq!(
+        loaded.unwrap().unwrap().unwrap().unwrap(),
+        before,
+        "one load must not mix pre-append state with post-append events"
+    );
+    println!("POSTGRES_SNAPSHOT_PASS actual-state-query-barrier concurrent-append one-snapshot");
+}

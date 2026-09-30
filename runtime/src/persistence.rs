@@ -763,6 +763,11 @@ impl PersistenceStore for PostgresPersistenceStore {
     }
 
     async fn load(&self, trace_id: &str) -> Result<Option<PersistedTrace>> {
+        // State, events and interventions must represent the same MVCC snapshot.
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *transaction)
+            .await?;
         let state_query = format!(
             "SELECT trace_id, circuit, schematic_version, resumed_from_step, completion
              FROM {}
@@ -771,9 +776,10 @@ impl PersistenceStore for PostgresPersistenceStore {
         );
         let Some(state): Option<PostgresStateRow> = sqlx::query_as(&state_query)
             .bind(trace_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *transaction)
             .await?
         else {
+            transaction.commit().await?;
             return Ok(None);
         };
 
@@ -786,7 +792,7 @@ impl PersistenceStore for PostgresPersistenceStore {
         );
         let rows: Vec<PostgresEventRow> = sqlx::query_as(&events_query)
             .bind(trace_id)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *transaction)
             .await?;
 
         let mut events = Vec::with_capacity(rows.len());
@@ -818,7 +824,7 @@ impl PersistenceStore for PostgresPersistenceStore {
         );
         let intervention_rows: Vec<PostgresInterventionRow> = sqlx::query_as(&interventions_query)
             .bind(trace_id)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *transaction)
             .await?;
 
         let mut interventions = Vec::with_capacity(intervention_rows.len());
@@ -830,7 +836,7 @@ impl PersistenceStore for PostgresPersistenceStore {
             });
         }
 
-        Ok(Some(PersistedTrace {
+        let trace = PersistedTrace {
             trace_id: state.trace_id,
             circuit: state.circuit,
             schematic_version: state.schematic_version,
@@ -838,7 +844,9 @@ impl PersistenceStore for PostgresPersistenceStore {
             interventions,
             resumed_from_step: state.resumed_from_step.map(u64::try_from).transpose()?,
             completion,
-        }))
+        };
+        transaction.commit().await?;
+        Ok(Some(trace))
     }
 
     async fn resume(&self, trace_id: &str, resume_from_step: u64) -> Result<ResumeCursor> {
