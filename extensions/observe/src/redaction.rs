@@ -146,6 +146,28 @@ impl<E: SpanExporter> SpanExporter for RedactingExporter<E> {
 mod tests {
     use super::*;
     #[test]
+    fn scope_filter_is_idempotent_and_preserves_public_safe_attribute_types() {
+        let scope = opentelemetry::InstrumentationScope::builder("safe-scope")
+            .with_attributes([
+                KeyValue::new("safe", true),
+                KeyValue::new("email", "synthetic-secret"),
+            ])
+            .build();
+        for mode in [Mode::Public, Mode::Strict, Mode::Off] {
+            let strict = matches!(mode, Mode::Strict);
+            let policy = Policy::new(mode, "").unwrap();
+            let filtered = policy.scope(&scope);
+            let repeated = policy.scope(&filtered);
+            assert_eq!(filtered, repeated);
+            assert_eq!(filtered.version(), None);
+            let safe = filtered
+                .attributes()
+                .find(|value| value.key.as_str() == "safe")
+                .unwrap();
+            assert_eq!(safe.value == opentelemetry::Value::Bool(true), !strict);
+        }
+    }
+    #[test]
     fn metric_recording_policy_covers_modes_and_preserves_typed_safe_labels() {
         for mode in [Mode::Public, Mode::Strict, Mode::Off] {
             let off = matches!(mode, Mode::Off);
