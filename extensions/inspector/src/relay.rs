@@ -257,7 +257,8 @@ pub async fn execute_relay(
             let name = key
                 .parse::<reqwest::header::HeaderName>()
                 .map_err(|_| invalid_header())?;
-            if !names.insert(name.clone())
+            if (req.body.is_some() && name == reqwest::header::CONTENT_TYPE)
+                || !names.insert(name.clone())
                 || matches!(
                     name.as_str(),
                     "host"
@@ -372,6 +373,72 @@ fn append_response_chunk(bytes: &mut Vec<u8>, chunk: &[u8]) -> Result<(), RelayE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn relay_rejects_transport_duplicate_and_conflicting_json_headers() {
+        let relay = RelayState::new(RelayConfig {
+            target_url: "http://127.0.0.1:1".into(),
+            timeout_ms: 100,
+            max_concurrent: 1,
+        })
+        .unwrap();
+        for name in [
+            "Host",
+            "Connection",
+            "Content-Length",
+            "Transfer-Encoding",
+            "Keep-Alive",
+            "Proxy-Connection",
+            "Proxy-Authenticate",
+            "Proxy-Authorization",
+            "TE",
+            "Trailer",
+            "Upgrade",
+        ] {
+            let error = execute_relay(
+                &relay,
+                RelayRequest {
+                    method: "GET".into(),
+                    path: "/".into(),
+                    headers: Some(std::collections::HashMap::from([(
+                        name.into(),
+                        "SENTINEL".into(),
+                    )])),
+                    body: None,
+                },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.status_code(), axum::http::StatusCode::BAD_REQUEST);
+        }
+        for (headers, body) in [
+            (
+                std::collections::HashMap::from([
+                    ("X-Test".into(), "a".into()),
+                    ("x-test".into(), "b".into()),
+                ]),
+                None,
+            ),
+            (
+                std::collections::HashMap::from([("Content-Type".into(), "text/plain".into())]),
+                Some(serde_json::json!({"input":1})),
+            ),
+        ] {
+            let error = execute_relay(
+                &relay,
+                RelayRequest {
+                    method: "GET".into(),
+                    path: "/".into(),
+                    headers: Some(headers),
+                    body,
+                },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.status_code(), axum::http::StatusCode::BAD_REQUEST);
+            assert_eq!(relay.semaphore.available_permits(), 1);
+        }
+    }
 
     #[tokio::test]
     async fn malformed_or_oversized_headers_fail_before_network_and_release_permit() {
