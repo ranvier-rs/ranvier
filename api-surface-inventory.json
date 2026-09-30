@@ -28,10 +28,10 @@
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2603,
+  "public_item_count": 2605,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2412,
+    "Experimental": 2414,
     "Stable Candidate": 183
   },
   "crates": [
@@ -24348,11 +24348,11 @@
       "default_stability": "Experimental",
       "owner": "security-ops",
       "features": [],
-      "public_item_count": 301,
+      "public_item_count": 303,
       "counts_by_kind": {
-        "constant": 1,
+        "constant": 2,
         "enum": 4,
-        "function": 102,
+        "function": 103,
         "module": 13,
         "struct": 39,
         "struct_field": 125,
@@ -24360,7 +24360,7 @@
         "variant": 14
       },
       "counts_by_stability": {
-        "Experimental": 301
+        "Experimental": 303
       },
       "facade_reexport_count": 0,
       "boundary_item_count": 0,
@@ -26718,6 +26718,20 @@
           }
         },
         {
+          "path": "ranvier_inspector::relay::MAX_RELAY_RESPONSE_BYTES",
+          "kind": "constant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/relay.rs"
+          }
+        },
+        {
           "path": "ranvier_inspector::relay::RelayConfig",
           "kind": "struct",
           "origin": "direct",
@@ -26944,6 +26958,20 @@
         {
           "path": "ranvier_inspector::relay::RelayError::message",
           "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/relay.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::relay::RelayError::status_code",
+          "kind": "function",
           "origin": "direct",
           "target": null,
           "stability": "Experimental",
