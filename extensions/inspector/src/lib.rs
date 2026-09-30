@@ -3464,7 +3464,7 @@ expires_on = "2099-01-02"
     #[tokio::test]
     async fn authenticated_relay_route_preserves_upstream_status_and_body_failures() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        for case in ["success", "invalid-json", "timeout"] {
+        for case in ["success", "invalid-json", "invalid-status", "timeout"] {
             let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let upstream_address = upstream.local_addr().unwrap();
             let backend = tokio::spawn(async move {
@@ -3482,13 +3482,18 @@ expires_on = "2099-01-02"
                         .unwrap();
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 } else {
-                    let body = if case == "success" {
+                    let body = if case == "success" || case == "invalid-status" {
                         "{\"reason\":\"conflict\"}"
                     } else {
                         "invalid"
                     };
+                    let upstream_status = if case == "invalid-status" {
+                        "600 Invalid"
+                    } else {
+                        "409 Conflict"
+                    };
                     let response = format!(
-                        "HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        "HTTP/1.1 {upstream_status}\r\nContent-Length: {}\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\nConnection: close\r\n\r\n{body}",
                         body.len()
                     );
                     socket.write_all(response.as_bytes()).await.unwrap();
@@ -3544,8 +3549,12 @@ expires_on = "2099-01-02"
                     assert_eq!(body["kind"], "inspector.relay.v2");
                     assert_eq!(body["data"]["status"], 409);
                     assert_eq!(body["data"]["body"]["reason"], "conflict");
+                    assert_eq!(
+                        body["data"]["headers"]["set-cookie"],
+                        serde_json::json!(["a=1", "b=2"])
+                    );
                 }
-                "invalid-json" => {
+                "invalid-json" | "invalid-status" => {
                     assert_eq!(status, reqwest::StatusCode::BAD_GATEWAY);
                     assert_eq!(body["error"], "internal_error");
                 }
@@ -3719,6 +3728,76 @@ expires_on = "2099-01-02"
         assert_eq!(busy_status, reqwest::StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(busy_body["error"], "concurrency_limit");
         assert_eq!(semaphore.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn relay_route_header_policy_rejections_match_access_contract() {
+        let (port, listener) = reserve_listener();
+        let inspector = Inspector::new(Schematic::new("relay-access-contract"), port)
+            .with_mode("dev")
+            .with_bearer_token("fixture-token")
+            .with_auth_enforcement(true)
+            .with_require_tenant_for_internal(true);
+        let token = CancellationToken::new();
+        let server_token = token.clone();
+        let server = tokio::spawn(async move {
+            inspector
+                .serve_with_listener_and_cancellation(listener, server_token)
+                .await
+        });
+        wait_ready(port).await;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap();
+        let mut captures = Vec::new();
+        for (name, role, expected_status, expected_code) in [
+            (
+                "access-viewer",
+                Some("viewer"),
+                reqwest::StatusCode::FORBIDDEN,
+                "role_forbidden_for_internal_endpoint",
+            ),
+            (
+                "access-missing-tenant",
+                Some("operator"),
+                reqwest::StatusCode::FORBIDDEN,
+                "missing_x_ranvier_tenant",
+            ),
+            (
+                "access-missing-role",
+                None,
+                reqwest::StatusCode::UNAUTHORIZED,
+                "missing_x_ranvier_role",
+            ),
+        ] {
+            let mut request = client
+                .post(format!("http://127.0.0.1:{port}/api/v1/relay"))
+                .bearer_auth("fixture-token")
+                .json(&serde_json::json!({"method":"GET", "path":"/"}));
+            if let Some(role) = role {
+                request = request.header("x-ranvier-role", role);
+            }
+            let response = request.send().await.unwrap();
+            let status = response.status();
+            let media = response.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .to_owned();
+            let body = response.json::<Value>().await.unwrap();
+            captures.push((name, status, media, body, expected_status, expected_code));
+        }
+        token.cancel(CancellationReason::OperatorShutdown);
+        tokio::time::timeout(Duration::from_secs(3), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        for (name, status, media, body, expected_status, expected_code) in captures {
+            assert_eq!(status, expected_status);
+            assert_eq!(body, serde_json::json!({"error": expected_code}));
+            capture_relay_response(name, status, &media, &body);
+        }
     }
 
     #[tokio::test]

@@ -300,6 +300,11 @@ pub async fn execute_relay(
     })?;
 
     let status = response.status().as_u16();
+    if !(100..=599).contains(&status) {
+        return Err(RelayError::internal(
+            "Relay response status is outside HTTP status range",
+        ));
+    }
 
     let resp_headers = bounded_response_headers(response.headers())?;
     let trace_id = response
@@ -331,7 +336,7 @@ pub async fn execute_relay(
         serde_json::from_slice(&bytes)
             .map_err(|_| RelayError::internal("Relay response is not valid JSON"))?
     };
-    let duration_ms = start.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    let duration_ms = json_duration_ms(start.elapsed());
 
     Ok(RelayResponse {
         status,
@@ -340,6 +345,11 @@ pub async fn execute_relay(
         duration_ms,
         trace_id,
     })
+}
+
+fn json_duration_ms(duration: std::time::Duration) -> u64 {
+    // Inspector consumers use JSON numbers; keep integers exact in JavaScript.
+    duration.as_millis().min((1_u128 << 53) - 1) as u64
 }
 
 fn response_too_large() -> RelayError {
@@ -396,6 +406,16 @@ fn append_response_chunk(bytes: &mut Vec<u8>, chunk: &[u8]) -> Result<(), RelayE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relay_duration_is_always_an_exact_json_integer() {
+        assert_eq!(json_duration_ms(std::time::Duration::ZERO), 0);
+        assert_eq!(json_duration_ms(std::time::Duration::from_millis(123)), 123);
+        assert_eq!(
+            json_duration_ms(std::time::Duration::MAX),
+            (1_u64 << 53) - 1
+        );
+    }
 
     #[test]
     fn response_headers_accept_exact_budget_and_preserve_repeated_values() {
