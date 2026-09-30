@@ -23,9 +23,11 @@ fn labels_within_budget(attributes: &[KeyValue]) -> bool {
             Value::Array(Array::Bool(values)) => Some(values.len()),
             Value::Array(Array::I64(values)) => values.len().checked_mul(8),
             Value::Array(Array::F64(values)) => values.len().checked_mul(8),
-            Value::Array(Array::String(values)) => values
-                .iter()
-                .try_fold(0usize, |sum, value| sum.checked_add(value.as_str().len())),
+            Value::Array(Array::String(values)) => values.iter().try_fold(0usize, |sum, value| {
+                sum.checked_add(std::mem::size_of::<opentelemetry::StringValue>())
+                    .and_then(|size| size.checked_add(value.as_str().len()))
+                    .filter(|size| *size <= MAX_OBSERVABLE_ATTRIBUTE_BYTES)
+            }),
             _ => return false,
         };
         let Some(total) = size
@@ -280,6 +282,47 @@ impl InstrumentProvider for ProtectedInstruments {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn observable_collection_limits_fail_before_growing_storage() {
+        let policy = Policy::new(crate::redaction::Mode::Off, "").unwrap();
+        let state = MetricState::default();
+        let observations = Summing {
+            groups: std::sync::Mutex::new(Vec::new()),
+            policy: &policy,
+            state: &state,
+        };
+        for index in 0..MAX_OBSERVABLE_GROUPS {
+            observations.observe(1_u64, &[KeyValue::new("index", index as i64)]);
+        }
+        assert!(!state.failed());
+        observations.observe(1, &[KeyValue::new("index", 0_i64)]);
+        assert!(!state.failed());
+        observations.observe(1, &[KeyValue::new("index", MAX_OBSERVABLE_GROUPS as i64)]);
+        assert!(state.failed());
+        assert_eq!(
+            observations.groups.into_inner().unwrap().len(),
+            MAX_OBSERVABLE_GROUPS
+        );
+        let key = "k";
+        assert!(labels_within_budget(&[KeyValue::new(
+            key,
+            "x".repeat(MAX_OBSERVABLE_ATTRIBUTE_BYTES - 1)
+        )]));
+        assert!(!labels_within_budget(&[KeyValue::new(
+            key,
+            "x".repeat(MAX_OBSERVABLE_ATTRIBUTE_BYTES)
+        )]));
+        assert!(!labels_within_budget(&vec![
+            KeyValue::new(key, 1);
+            MAX_OBSERVABLE_ATTRIBUTES + 1
+        ]));
+        assert!(!labels_within_budget(&[KeyValue::new(
+            key,
+            opentelemetry::Value::Array(opentelemetry::Array::String(
+                vec!["".into(); MAX_OBSERVABLE_ATTRIBUTE_BYTES]
+            ))
+        )]));
+    }
     #[test]
     fn reused_policy_does_not_share_provider_failure_state() {
         let policy = Policy::new(crate::redaction::Mode::Public, "").unwrap();
