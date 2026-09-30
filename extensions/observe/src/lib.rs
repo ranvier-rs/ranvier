@@ -47,7 +47,7 @@ pub mod otlp {
         HttpProtobuf,
     }
 
-    /// Signal whose provider did not complete shutdown successfully.
+    /// Signal whose provider shutdown failed, or whose trace export failed earlier.
     /// Backend error bodies are deliberately excluded from this public result.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub enum ShutdownSignal {
@@ -185,6 +185,37 @@ pub mod otlp {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[derive(Debug)]
+        struct AlternatingExporter(AtomicBool);
+        impl SpanExporter for AlternatingExporter {
+            async fn export(&self, _: Vec<SpanData>) -> OTelSdkResult {
+                if self.0.swap(false, Ordering::AcqRel) {
+                    Err(opentelemetry_sdk::error::OTelSdkError::InternalFailure(
+                        "synthetic secret".into(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        #[tokio::test]
+        async fn export_failure_remains_observable_after_later_success() {
+            let failed = Arc::new(AtomicBool::new(false));
+            let exporter = ObservedExporter {
+                inner: AlternatingExporter(AtomicBool::new(true)),
+                failed: failed.clone(),
+            };
+            assert!(exporter.export(Vec::new()).await.is_err());
+            assert!(failed.load(Ordering::Acquire));
+            assert!(exporter.export(Vec::new()).await.is_ok());
+            assert!(failed.load(Ordering::Acquire));
+            assert!(
+                exporter
+                    .shutdown_with_timeout(Duration::from_secs(1))
+                    .is_ok()
+            );
+            assert!(failed.load(Ordering::Acquire));
+        }
         #[test]
         fn rejects_invalid_configuration_without_exporter_workers() {
             let timeout = Duration::from_secs(2);
