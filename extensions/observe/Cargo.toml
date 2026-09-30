@@ -29,3 +29,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 [[example]]
 name = "otlp_smoke"
 required-features = ["otlp"]
+
+[[example]]
+name = "blocked_callback"
+required-features = ["otlp"]
