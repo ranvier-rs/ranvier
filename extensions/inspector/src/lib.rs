@@ -4050,12 +4050,19 @@ expires_on = "2099-01-02"
             .with_auth_enforcement(true)
             .with_require_tenant_for_internal(true)
             .with_state_inspector(state_inspector.clone());
+        let cancellation = CancellationToken::new();
+        let server_token = cancellation.clone();
         let handle = tokio::spawn(async move {
-            let _ = inspector.serve_with_listener(listener).await;
+            inspector
+                .serve_with_listener_and_cancellation(listener, server_token)
+                .await
         });
         wait_ready(port).await;
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .expect("bounded state route client");
         let routes = [
             (
                 reqwest::Method::GET,
@@ -4136,6 +4143,7 @@ expires_on = "2099-01-02"
                     )
                     .await;
                     assert_eq!(response.status(), reqwest::StatusCode::METHOD_NOT_ALLOWED);
+                    assert_eq!(response.headers()[reqwest::header::ALLOW], "POST");
                     match path {
                         "/debug/resume/auth-test-resume" => {
                             assert!(resume_control.should_pause("auth-test-node"));
@@ -4261,7 +4269,31 @@ expires_on = "2099-01-02"
         unregister_debug_control("auth-test-step");
         unregister_debug_control("auth-test-pause");
 
-        handle.abort();
+        for command in ["resume", "step", "pause"] {
+            let response = send_state_route_request(
+                &client,
+                reqwest::Method::POST,
+                &format!("http://127.0.0.1:{port}/debug/{command}/auth-test-missing"),
+                Some("state-test-token"),
+                Some("operator"),
+                Some("team-a"),
+            )
+            .await;
+            assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+            assert!(
+                response
+                    .bytes()
+                    .await
+                    .expect("missing trace body")
+                    .is_empty()
+            );
+        }
+        assert!(cancellation.cancel(CancellationReason::OperatorShutdown));
+        tokio::time::timeout(std::time::Duration::from_secs(3), handle)
+            .await
+            .expect("state route server shutdown deadline")
+            .expect("state route server task")
+            .expect("state route server result");
     }
 
     #[tokio::test]
