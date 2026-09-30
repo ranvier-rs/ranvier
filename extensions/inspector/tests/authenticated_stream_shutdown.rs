@@ -7,6 +7,16 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 #[tokio::test]
 #[ignore = "requires explicit Node and maintained VSCode shutdown verifier paths"]
 async fn managed_inspector_joins_active_idle_socket_on_shutdown() {
+    verify_managed_shutdown(1).await;
+}
+
+#[tokio::test]
+#[ignore = "requires explicit Node and maintained VSCode shutdown verifier paths"]
+async fn managed_inspector_joins_multiple_active_sockets_on_shutdown() {
+    verify_managed_shutdown(8).await;
+}
+
+async fn verify_managed_shutdown(count: usize) {
     let node = std::env::var_os("RANVIER_CONTRACT_NODE").expect("explicit Node required");
     let script = std::env::var_os("RANVIER_STREAM_SHUTDOWN_SCRIPT")
         .expect("explicit shutdown script required");
@@ -36,6 +46,7 @@ async fn managed_inspector_joins_active_idle_socket_on_shutdown() {
         )
         .arg(format!("http://127.0.0.1:{port}"))
         .env("RANVIER_STREAM_FIXTURE_TOKEN", "fixture-shutdown-token")
+        .env("RANVIER_STREAM_SHUTDOWN_COUNT", count.to_string())
         .kill_on_drop(true)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -81,5 +92,5 @@ async fn managed_inspector_joins_active_idle_socket_on_shutdown() {
             .success()
     );
     assert!(errors.unwrap().unwrap().is_empty());
-    println!("active idle socket received 1001; managed server and verifier joined");
+    println!("{count} active idle sockets each received 1001; managed server and verifier joined");
 }
