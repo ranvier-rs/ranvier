@@ -1080,6 +1080,12 @@ mod tests {
         wrong_circuit.schematic_version = "rejected-version".into();
         assert!(store.append(wrong_circuit).await.is_err());
         assert_eq!(store.load("trace-1").await.unwrap(), before);
+        let mut accepted = envelope(2, "Next");
+        accepted.schematic_version = "accepted-version".into();
+        store.append(accepted.clone()).await.unwrap();
+        let updated = store.load("trace-1").await.unwrap().unwrap();
+        assert_eq!(updated.schematic_version, "accepted-version");
+        assert_eq!(updated.events, vec![envelope(1, "Next"), accepted]);
         store
             .complete("trace-1", CompletionState::Success)
             .await
@@ -1103,12 +1109,23 @@ mod tests {
             tasks.push(tokio::spawn(async move {
                 let snapshot = store.load("trace-1").await.unwrap().unwrap();
                 assert_eq!(snapshot.events.len(), 1);
-                barrier.wait().await;
+                tokio::time::timeout(std::time::Duration::from_secs(2), barrier.wait())
+                    .await
+                    .expect("both writers must reach the barrier");
                 store.append(envelope(step, "Next")).await
             }));
         }
-        for task in tasks {
-            task.await.unwrap().unwrap();
+        let mut results = Vec::new();
+        for mut task in tasks {
+            let result = tokio::time::timeout(std::time::Duration::from_secs(4), &mut task).await;
+            if result.is_err() {
+                task.abort();
+                let _ = task.await;
+            }
+            results.push(result);
+        }
+        for result in results {
+            result.expect("bounded writer completion").unwrap().unwrap();
         }
         let trace = store.load("trace-1").await.unwrap().unwrap();
         assert_eq!(
