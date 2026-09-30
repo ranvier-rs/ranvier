@@ -138,7 +138,8 @@ if ([string]::IsNullOrWhiteSpace($SummaryPath)) {
     $SummaryPath = Join-Path $evidenceDir "dependency_failure_summary.md"
 }
 
-$runId = Get-Date -Format "yyyyMMdd_HHmmss"
+if (Test-Path -LiteralPath $SummaryPath) { throw "Summary path already exists; prior evidence preserved." }
+$runId = [Guid]::NewGuid().ToString("N")
 $controlRoot = Join-Path $evidenceDir "control"
 $postgresControl = Join-Path $controlRoot "postgres"
 $redisControl = Join-Path $controlRoot "redis"
@@ -289,8 +290,10 @@ try {
     if ([string]::IsNullOrWhiteSpace($podmanVersion)) {
         $podmanVersion = (podman version | Select-Object -First 1).Trim()
     }
-    $postgresImageId = (podman image inspect $PostgresImage --format "{{.Id}}").Trim()
-    $redisImageId = (podman image inspect $RedisImage --format "{{.Id}}").Trim()
+    $postgresImageId = (podman container inspect $ownedPostgres --format '{{.Image}}' | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $postgresImageId -notmatch '^(sha256:)?[a-f0-9]{64}$') { throw 'PostgreSQL fixture image identity query failed.' }
+    $redisImageId = (podman container inspect $ownedRedis --format '{{.Image}}' | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $redisImageId -notmatch '^(sha256:)?[a-f0-9]{64}$') { throw 'Redis fixture image identity query failed.' }
     $rustcVersion = (& rustc --version).Trim()
     $cargoVersion = (& cargo --version).Trim()
     $completedAt = Get-Date
@@ -354,7 +357,7 @@ being inferred from this external-dependency harness.
 - dependency_recovery_probe redis-live CONTROL_DIR RUN_ID, with an actual podman stop/start between its markers
 - dependency_recovery_probe postgres-crash-write RUN_ID, followed by postgres-crash-recover in a new process
 "@
-    Set-Content -LiteralPath $SummaryPath -Value $summary -Encoding utf8
+    # Publish the success summary only after all cleanup completes.
 
 } catch {
     $primaryFailure = $_
@@ -366,7 +369,7 @@ being inferred from this external-dependency harness.
     }
     $cleanupErrors = [Collections.Generic.List[string]]::new()
     foreach ($process in @($postgresProbe,$redisProbe)) {
-        try { if ($process -and -not $process.HasExited) { $process.Kill($true); $process.WaitForExit(5000) | Out-Null } }
+        try { if ($process -and -not $process.HasExited) { $process.Kill($true); if (-not $process.WaitForExit(5000)) { throw "Owned probe did not terminate." } } }
         catch { $cleanupErrors.Add($_.Exception.Message) }
     }
     foreach ($id in @($ownedPostgres,$ownedRedis)) {
@@ -379,6 +382,7 @@ being inferred from this external-dependency harness.
         else { throw ($cleanupErrors -join '; ') }
     }
 }
+Set-Content -LiteralPath $SummaryPath -Value $summary -Encoding utf8
 Write-Host 'Dependency failure smoke passed; owned resources removed.'
 Write-Host "SUMMARY=$SummaryPath"
 Write-Host "LOCAL_LOG_DIR=$controlRoot"
