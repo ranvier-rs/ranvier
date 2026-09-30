@@ -3018,6 +3018,98 @@ async fn api_get_trace_diff(
 #[cfg(test)]
 mod tests {
     #[tokio::test]
+    async fn late_actual_upgrade_after_cancellation_closes_and_releases_ownership() {
+        use tokio::io::AsyncReadExt;
+        let cancellation = CancellationToken::new();
+        let lifecycle = Arc::new(SocketLifecycle::new(Some(cancellation.child_token())));
+        let reserved = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let app = Router::new().route(
+            "/events",
+            get({
+                let lifecycle = lifecycle.clone();
+                let reserved = reserved.clone();
+                let release = release.clone();
+                move |ws: WebSocketUpgrade| {
+                    let lifecycle = lifecycle.clone();
+                    let reserved = reserved.clone();
+                    let release = release.clone();
+                    async move {
+                        let response = reserve_socket_upgrade(ws, lifecycle);
+                        reserved.notify_one();
+                        // Hold the actual 101 until cancellation and drain have begun.
+                        release.notified().await;
+                        response
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = CancellationToken::new();
+        let server_stop = stop.clone();
+        let mut server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    server_stop.cancelled().await;
+                })
+                .await
+        });
+        let mut client = tokio::spawn(async move {
+            let response = reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap()
+                .get(format!("http://{address}/events"))
+                .header(header::CONNECTION, "upgrade")
+                .header(header::UPGRADE, "websocket")
+                .header("Sec-WebSocket-Version", "13")
+                .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+            let mut stream = response.upgrade().await.unwrap();
+            let mut prefix = [0u8; 4];
+            stream.read_exact(&mut prefix).await.unwrap();
+            prefix
+        });
+        let reservation = tokio::time::timeout(Duration::from_secs(2), reserved.notified()).await;
+        let count_before = *lifecycle.active.borrow();
+        cancellation.cancel(CancellationReason::OperatorShutdown);
+        let owner = lifecycle.clone();
+        let mut drained = tokio::spawn(async move { owner.join().await });
+        tokio::task::yield_now().await;
+        let waiting = !drained.is_finished();
+        release.notify_one();
+        let receipt = tokio::time::timeout(Duration::from_secs(2), &mut client).await;
+        if receipt.is_err() {
+            client.abort();
+            let _ = client.await;
+        }
+        let drain = tokio::time::timeout(Duration::from_secs(2), &mut drained).await;
+        if drain.is_err() {
+            drained.abort();
+            let _ = drained.await;
+        }
+        stop.cancel(CancellationReason::OperatorShutdown);
+        let joined = tokio::time::timeout(Duration::from_secs(2), &mut server).await;
+        if joined.is_err() {
+            server.abort();
+            let _ = server.await;
+        }
+        reservation.expect("reservation before cancellation");
+        assert_eq!(count_before, 1);
+        assert!(waiting, "drain must wait for held upgrade");
+        let prefix = receipt.unwrap().unwrap();
+        assert_eq!(prefix[0], 0x88, "unmasked final Close frame");
+        assert_eq!(&prefix[2..], &1001u16.to_be_bytes());
+        drain.unwrap().unwrap();
+        joined.unwrap().unwrap().unwrap();
+        assert_eq!(*lifecycle.active.borrow(), 0);
+    }
+
+    #[tokio::test]
     async fn failed_actual_upgrade_releases_reserved_socket_ownership() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let cancellation = CancellationToken::new();
