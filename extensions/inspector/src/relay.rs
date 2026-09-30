@@ -335,6 +335,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chunked_overflow_and_stalled_body_release_relay_permit() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for stalled in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) =
+                    tokio::time::timeout(Duration::from_secs(3), listener.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                let mut request = [0; 4096];
+                assert!(socket.read(&mut request).await.unwrap() > 0);
+                socket.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").await.unwrap();
+                if stalled {
+                    // Hold the body open past the client's complete-request budget.
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                } else {
+                    let chunk = vec![b'x'; 64 * 1024];
+                    for _ in 0..17 {
+                        if socket.write_all(b"10000\r\n").await.is_err()
+                            || socket.write_all(&chunk).await.is_err()
+                            || socket.write_all(b"\r\n").await.is_err()
+                        {
+                            break;
+                        }
+                    }
+                    let _ = socket.write_all(b"0\r\n\r\n").await;
+                }
+            });
+            let relay = RelayState::new(RelayConfig {
+                target_url: format!("http://{address}"),
+                timeout_ms: if stalled { 100 } else { 2000 },
+                max_concurrent: 1,
+            })
+            .unwrap();
+            let started = std::time::Instant::now();
+            let result = tokio::time::timeout(
+                Duration::from_secs(3),
+                execute_relay(
+                    &relay,
+                    RelayRequest {
+                        method: "GET".into(),
+                        path: "/".into(),
+                        headers: None,
+                        body: None,
+                    },
+                ),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                result.unwrap_err().error,
+                if stalled {
+                    "timeout"
+                } else {
+                    "response_too_large"
+                }
+            );
+            if stalled {
+                assert!(started.elapsed() < Duration::from_millis(500));
+            }
+            assert_eq!(relay.semaphore.available_permits(), 1);
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn relay_reads_actual_http_body_and_rejects_invalid_or_oversized_payload() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         for (body, length, expected) in [
