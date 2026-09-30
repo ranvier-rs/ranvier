@@ -130,15 +130,24 @@ struct ProtectedInstruments {
 struct Recording<T> {
     record: Box<dyn Fn(T, &[KeyValue]) + Send + Sync>,
     policy: Policy,
+    state: MetricState,
 }
 impl<T> SyncInstrument<T> for Recording<T> {
     fn measure(&self, value: T, attributes: &[KeyValue]) {
+        if self.state.failed() {
+            return;
+        }
+        if !labels_within_budget(attributes) {
+            self.state.fail();
+            return;
+        }
         (self.record)(value, &self.policy.metric_attributes(attributes.to_vec()));
     }
 }
 struct Observing<'a, T> {
     inner: &'a dyn AsyncInstrument<T>,
     policy: &'a Policy,
+    state: &'a MetricState,
 }
 trait CheckedSum: Copy + Send {
     fn checked_sum(self, other: Self) -> Option<Self>;
@@ -225,6 +234,13 @@ impl<T: CheckedSum> AsyncInstrument<T> for Summing<'_, T> {
 }
 impl<T> AsyncInstrument<T> for Observing<'_, T> {
     fn observe(&self, value: T, attributes: &[KeyValue]) {
+        if self.state.failed() {
+            return;
+        }
+        if !labels_within_budget(attributes) {
+            self.state.fail();
+            return;
+        }
         self.inner
             .observe(value, &self.policy.metric_attributes(attributes.to_vec()));
     }
@@ -247,6 +263,7 @@ macro_rules! sync_instrument {
             $kind::new(Arc::new(Recording {
                 record: Box::new(move |value, attributes| instrument.$operation(value, attributes)),
                 policy: self.policy.clone(),
+                state: self.state.clone(),
             }))
         }
     };
@@ -272,6 +289,7 @@ macro_rules! histogram {
             Histogram::new(Arc::new(Recording {
                 record: Box::new(move |value, attributes| instrument.record(value, attributes)),
                 policy: self.policy.clone(),
+                state: self.state.clone(),
             }))
         }
     };
@@ -303,6 +321,7 @@ macro_rules! asynchronous {
                         callback(&Observing {
                             inner,
                             policy: &policy,
+                            state: &state,
                         })
                     }))
                     .is_err()
