@@ -27,6 +27,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use futures::{SinkExt, StreamExt};
 use ranvier_core::cancellation::{CancellationReason, CancellationToken};
 use ranvier_core::config::ResolvedRuntimeConfig;
 use ranvier_core::event::DlqReader;
@@ -2463,13 +2464,25 @@ async fn get_quick_view_css() -> impl IntoResponse {
     )
 }
 
-async fn handle_socket(mut socket: WebSocket) {
+async fn handle_socket(socket: WebSocket) {
+    let (mut sender, mut incoming) = socket.split();
     let mut rx = get_sender().subscribe();
 
     loop {
-        match receive_broadcast(&mut rx).await {
+        let received = tokio::select! {
+            // Observe peer closure even when no broadcast arrives. Receiving also
+            // lets the WebSocket protocol handle control frames promptly.
+            message = incoming.next() => {
+                match message {
+                    None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                    Some(Ok(_)) => continue,
+                }
+            }
+            message = receive_broadcast(&mut rx) => message,
+        };
+        match received {
             Ok(message) => {
-                if socket.send(Message::Text(message)).await.is_err() {
+                if sender.send(Message::Text(message)).await.is_err() {
                     break;
                 }
             }
