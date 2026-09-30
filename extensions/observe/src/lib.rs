@@ -23,7 +23,14 @@ pub mod otlp {
             if service.trim().is_empty() || timeout.is_zero() {
                 return Err("service identity and nonzero export timeout required".into());
             }
-            // SDK builders validate the endpoint. Errors propagate without logging it.
+            let url = url::Url::parse(endpoint).map_err(|_| "invalid OTLP endpoint")?;
+            if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none()
+                || !url.username().is_empty() || url.password().is_some()
+                || url.query().is_some() || url.fragment().is_some()
+            {
+                return Err("OTLP endpoint must be HTTP(S) without credentials, query or fragment".into());
+            }
+            // No endpoint or credentials are included in our validation errors.
             let (traces, metrics) = match protocol {
                 Protocol::Grpc => (
                     opentelemetry_otlp::SpanExporter::builder().with_tonic().with_endpoint(endpoint).with_timeout(timeout).build()?,
