@@ -309,6 +309,55 @@ impl InstrumentProvider for ProtectedInstruments {
 mod tests {
     use super::*;
     #[test]
+    fn metric_scope_payload_is_filtered_before_export() {
+        for mode in [
+            crate::redaction::Mode::Public,
+            crate::redaction::Mode::Strict,
+            crate::redaction::Mode::Off,
+        ] {
+            let off = matches!(mode, crate::redaction::Mode::Off);
+            let strict = matches!(mode, crate::redaction::Mode::Strict);
+            let captured = Arc::new(Mutex::new(Vec::new()));
+            let provider = ProtectedMeterProvider {
+                inner: SdkMeterProvider::builder()
+                    .with_reader(
+                        PeriodicReader::builder(Capture(captured.clone()))
+                            .with_interval(Duration::from_secs(3600))
+                            .build(),
+                    )
+                    .build(),
+                policy: Policy::new(mode, "account_number").unwrap(),
+                state: Default::default(),
+            };
+            let scope = InstrumentationScope::builder("scope-name-fixture")
+                .with_version("scope-version-fixture")
+                .with_schema_url("https://fixture.example/schema-secret")
+                .with_attributes([
+                    KeyValue::new("email", "scope-builtin-secret"),
+                    KeyValue::new("account_number", "scope-custom-secret"),
+                ])
+                .build();
+            provider
+                .meter_with_scope(scope)
+                .u64_counter("counter")
+                .build()
+                .add(1, &[]);
+            provider.inner.force_flush().unwrap();
+            provider.inner.shutdown().unwrap();
+            let payload = captured.lock().unwrap().join("\n");
+            assert!(payload.contains("counter"));
+            for secret in [
+                "scope-builtin-secret",
+                "scope-custom-secret",
+                "schema-secret",
+            ] {
+                assert_eq!(payload.contains(secret), off);
+            }
+            assert_eq!(payload.contains("scope-name-fixture"), !strict);
+            assert_eq!(payload.contains("scope-version-fixture"), !strict);
+        }
+    }
+    #[test]
     fn repeated_original_series_fails_even_when_attribute_order_changes() {
         let policy = Policy::new(crate::redaction::Mode::Public, "").unwrap();
         let state = MetricState::default();
