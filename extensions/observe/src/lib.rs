@@ -23,12 +23,18 @@ pub mod otlp {
         pub metrics: SdkMeterProvider,
     }
 
+    /// Maximum request budget for this initial adapter; longer requests need a reviewed lifecycle policy.
+    pub const MAX_EXPORT_TIMEOUT: Duration = Duration::from_secs(5);
+
     fn validate(service: &str, endpoint: &str, timeout: Duration) -> Result<(), &'static str> {
         if service.trim().is_empty() || service.chars().any(char::is_control) || timeout.is_zero() {
             return Err("service identity and nonzero export timeout required");
         }
         if endpoint.trim() != endpoint || endpoint.chars().any(char::is_control) {
             return Err("invalid OTLP endpoint");
+        }
+        if timeout > MAX_EXPORT_TIMEOUT {
+            return Err("export timeout exceeds adapter maximum");
         }
         let url = url::Url::parse(endpoint).map_err(|_| "invalid OTLP endpoint")?;
         if !matches!(url.scheme(), "http" | "https")
@@ -144,6 +150,11 @@ pub mod otlp {
             for endpoint in ["http://127.0.0.1:4317", "https://collector.example:443"] {
                 assert!(validate("fixture", endpoint, Duration::from_secs(2)).is_ok());
             }
+        }
+        #[test]
+        fn export_timeout_has_an_explicit_upper_bound() {
+            assert!(validate("fixture", "http://localhost:4317", MAX_EXPORT_TIMEOUT).is_ok());
+            assert!(validate("fixture", "http://localhost:4317", MAX_EXPORT_TIMEOUT + Duration::from_nanos(1)).is_err());
         }
     }
 }
