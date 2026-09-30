@@ -8,6 +8,27 @@ use std::sync::Arc;
 pub const MAX_OBSERVABLE_GROUPS: usize = 1024;
 pub const MAX_OBSERVABLE_ATTRIBUTES: usize = 64;
 pub const MAX_OBSERVABLE_ATTRIBUTE_BYTES: usize = 8192;
+/// Provider-lifetime distinct filtered scope and instrument-definition budgets.
+pub const MAX_METERS: usize = 128;
+pub const MAX_INSTRUMENTS: usize = 1024;
+pub const MAX_HISTOGRAM_BOUNDARIES: usize = 128;
+
+#[derive(Hash, Eq, PartialEq)]
+struct InstrumentIdentity {
+    scope: InstrumentationScope,
+    kind: &'static str,
+    name: String,
+    description: Option<String>,
+    unit: Option<String>,
+    boundaries: Option<Vec<u64>>,
+}
+struct InstrumentInput<'a> {
+    kind: &'static str,
+    name: &'a str,
+    description: Option<&'a str>,
+    unit: Option<&'a str>,
+    boundaries: Option<&'a [f64]>,
+}
 
 fn valid_instrument_name(name: &str) -> bool {
     let mut bytes = name.bytes();
@@ -64,8 +85,77 @@ fn attribute_iterator_within_budget<'a>(attributes: impl Iterator<Item = &'a Key
 pub(crate) struct MetricState(
     Arc<std::sync::atomic::AtomicBool>,
     Arc<std::sync::Mutex<std::collections::HashSet<(InstrumentationScope, String)>>>,
+    Arc<std::sync::Mutex<std::collections::HashSet<InstrumentationScope>>>,
+    Arc<std::sync::Mutex<std::collections::HashSet<InstrumentIdentity>>>,
 );
 impl MetricState {
+    fn register_meter(&self, scope: &InstrumentationScope) -> bool {
+        if self.failed() {
+            return false;
+        }
+        let Ok(mut scopes) = self.2.lock() else {
+            self.fail();
+            return false;
+        };
+        if scopes.contains(scope) {
+            return true;
+        }
+        if scopes.len() >= MAX_METERS {
+            self.fail();
+            return false;
+        }
+        scopes.insert(scope.clone());
+        true
+    }
+    fn register_instrument(
+        &self,
+        scope: &InstrumentationScope,
+        policy: &Policy,
+        input: InstrumentInput<'_>,
+    ) -> bool {
+        if self.failed() {
+            return false;
+        }
+        if !valid_instrument_name(input.name)
+            || input.description.is_some_and(|text| text.len() > 1024)
+            || input
+                .unit
+                .is_some_and(|text| text.len() > 64 || text.chars().any(char::is_control))
+            || input
+                .boundaries
+                .is_some_and(|bounds| bounds.len() > MAX_HISTOGRAM_BOUNDARIES)
+        {
+            self.fail();
+            return false;
+        }
+        let identity = InstrumentIdentity {
+            scope: scope.clone(),
+            kind: input.kind,
+            name: input.name.to_owned(),
+            description: policy
+                .metric_description(input.description.map(|text| text.to_owned().into()))
+                .map(|text| text.into_owned()),
+            unit: policy
+                .metric_unit(input.unit.map(|text| text.to_owned().into()))
+                .map(|text| text.into_owned()),
+            boundaries: input
+                .boundaries
+                .map(|bounds| bounds.iter().map(|value| value.to_bits()).collect()),
+        };
+        let Ok(mut instruments) = self.3.lock() else {
+            self.fail();
+            return false;
+        };
+        if instruments.contains(&identity) {
+            return true;
+        }
+        if instruments.len() >= MAX_INSTRUMENTS {
+            self.fail();
+            return false;
+        }
+        instruments.insert(identity);
+        true
+    }
     fn fail(&self) {
         self.0.store(true, std::sync::atomic::Ordering::Release);
     }
@@ -73,6 +163,9 @@ impl MetricState {
         self.0.load(std::sync::atomic::Ordering::Acquire)
     }
     fn register_observable(&self, scope: &InstrumentationScope, name: &str) -> bool {
+        if self.failed() {
+            return false;
+        }
         if !valid_instrument_name(name) {
             self.fail();
             return false;
@@ -113,6 +206,9 @@ impl MeterProvider for ProtectedMeterProvider {
             return NoopMeterProvider::new().meter("rejected-scope");
         }
         let scope = self.policy.scope(&scope);
+        if !self.state.register_meter(&scope) {
+            return NoopMeterProvider::new().meter("rejected-scope");
+        }
         Meter::new(Arc::new(ProtectedInstruments {
             inner: self.inner.meter_with_scope(scope.clone()),
             scope,
@@ -248,7 +344,17 @@ impl<T> AsyncInstrument<T> for Observing<'_, T> {
 macro_rules! sync_instrument {
     ($method:ident, $kind:ident, $number:ty, $operation:ident) => {
         fn $method(&self, builder: InstrumentBuilder<'_, $kind<$number>>) -> $kind<$number> {
-            if !valid_instrument_name(&builder.name) {
+            if !self.state.register_instrument(
+                &self.scope,
+                &self.policy,
+                InstrumentInput {
+                    kind: stringify!($method),
+                    name: &builder.name,
+                    description: builder.description.as_deref(),
+                    unit: builder.unit.as_deref(),
+                    boundaries: None,
+                },
+            ) {
                 self.state.fail();
                 return $kind::new(Arc::new(RejectedInstrument));
             }
@@ -271,7 +377,17 @@ macro_rules! sync_instrument {
 macro_rules! histogram {
     ($method:ident, $number:ty) => {
         fn $method(&self, builder: HistogramBuilder<'_, Histogram<$number>>) -> Histogram<$number> {
-            if !valid_instrument_name(&builder.name) {
+            if !self.state.register_instrument(
+                &self.scope,
+                &self.policy,
+                InstrumentInput {
+                    kind: stringify!($method),
+                    name: &builder.name,
+                    description: builder.description.as_deref(),
+                    unit: builder.unit.as_deref(),
+                    boundaries: builder.boundaries.as_deref(),
+                },
+            ) {
                 self.state.fail();
                 return Histogram::new(Arc::new(RejectedInstrument));
             }
@@ -300,7 +416,18 @@ macro_rules! asynchronous {
             &self,
             builder: AsyncInstrumentBuilder<'_, $kind<$number>, $number>,
         ) -> $kind<$number> {
-            if !self.state.register_observable(&self.scope, &builder.name) {
+            if !self.state.register_instrument(
+                &self.scope,
+                &self.policy,
+                InstrumentInput {
+                    kind: stringify!($method),
+                    name: &builder.name,
+                    description: builder.description.as_deref(),
+                    unit: builder.unit.as_deref(),
+                    boundaries: None,
+                },
+            ) || !self.state.register_observable(&self.scope, &builder.name)
+            {
                 return $kind::new();
             }
             let mut delegated = self.inner.$method(builder.name);
@@ -340,7 +467,18 @@ macro_rules! asynchronous_sum {
             &self,
             builder: AsyncInstrumentBuilder<'_, $kind<$number>, $number>,
         ) -> $kind<$number> {
-            if !self.state.register_observable(&self.scope, &builder.name) {
+            if !self.state.register_instrument(
+                &self.scope,
+                &self.policy,
+                InstrumentInput {
+                    kind: stringify!($method),
+                    name: &builder.name,
+                    description: builder.description.as_deref(),
+                    unit: builder.unit.as_deref(),
+                    boundaries: None,
+                },
+            ) || !self.state.register_observable(&self.scope, &builder.name)
+            {
                 return $kind::new();
             }
             let mut delegated = self.inner.$method(builder.name);
@@ -409,6 +547,91 @@ impl InstrumentProvider for ProtectedInstruments {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn capacity_provider(mode: crate::redaction::Mode) -> ProtectedMeterProvider {
+        ProtectedMeterProvider {
+            inner: SdkMeterProvider::builder().build(),
+            policy: Policy::new(mode, "").unwrap(),
+            state: Default::default(),
+        }
+    }
+    #[test]
+    fn provider_meter_and_instrument_capacity_accepts_reuse_and_rejects_growth() {
+        let provider = capacity_provider(crate::redaction::Mode::Public);
+        for index in 0..MAX_METERS {
+            provider.meter(format!("scope-{index}"));
+        }
+        provider.meter("scope-0");
+        assert!(!provider.state.failed());
+        assert_eq!(provider.state.2.lock().unwrap().len(), MAX_METERS);
+        provider.meter("one-more");
+        assert!(provider.state.failed());
+        assert_eq!(provider.state.2.lock().unwrap().len(), MAX_METERS);
+        let provider = capacity_provider(crate::redaction::Mode::Public);
+        let meter = provider.meter("capacity");
+        for index in 0..MAX_INSTRUMENTS {
+            meter.u64_counter(format!("metric_{index}")).build();
+        }
+        meter
+            .u64_counter("metric_0")
+            .with_description("filtered description")
+            .build();
+        assert!(!provider.state.failed());
+        assert_eq!(provider.state.3.lock().unwrap().len(), MAX_INSTRUMENTS);
+        meter.u64_counter("one_more").build();
+        assert!(provider.state.failed());
+        assert_eq!(provider.state.3.lock().unwrap().len(), MAX_INSTRUMENTS);
+    }
+    #[test]
+    fn metadata_variants_are_bounded_before_redaction() {
+        let provider = capacity_provider(crate::redaction::Mode::Off);
+        let meter = provider.meter("capacity");
+        meter.u64_counter("shared").build();
+        meter.f64_counter("shared").build();
+        meter.u64_counter("shared").with_unit("s").build();
+        meter
+            .u64_counter("shared")
+            .with_description("description")
+            .build();
+        meter
+            .u64_histogram("shared")
+            .with_boundaries(vec![1.0])
+            .build();
+        meter
+            .u64_histogram("shared")
+            .with_boundaries(vec![2.0])
+            .build();
+        assert_eq!(provider.state.3.lock().unwrap().len(), 6);
+        for field in ["description", "unit", "boundaries"] {
+            let provider = capacity_provider(crate::redaction::Mode::Strict);
+            let meter = provider.meter("capacity");
+            match field {
+                "description" => {
+                    meter
+                        .u64_counter("metric")
+                        .with_description("x".repeat(1025))
+                        .build();
+                }
+                "unit" => {
+                    meter
+                        .u64_counter("metric")
+                        .with_unit("x".repeat(65))
+                        .build();
+                }
+                _ => {
+                    meter
+                        .u64_histogram("metric")
+                        .with_boundaries(
+                            (0..=MAX_HISTOGRAM_BOUNDARIES)
+                                .map(|value| value as f64)
+                                .collect(),
+                        )
+                        .build();
+                }
+            }
+            assert!(provider.state.failed());
+            assert!(provider.state.3.lock().unwrap().is_empty());
+        }
+    }
     #[test]
     fn oversized_sync_and_gauge_labels_never_reach_inner_instruments() {
         struct CountObserver(std::sync::atomic::AtomicUsize);
