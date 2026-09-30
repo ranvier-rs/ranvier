@@ -301,19 +301,13 @@ pub async fn execute_relay(
 
     let status = response.status().as_u16();
 
-    let mut resp_headers = std::collections::HashMap::new();
+    let resp_headers = bounded_response_headers(response.headers())?;
     let trace_id = response
         .headers()
         .get("x-request-id")
         .or(response.headers().get("x-trace-id"))
         .and_then(|v| v.to_str().ok())
         .map(String::from);
-
-    for (key, value) in response.headers() {
-        if let Ok(v) = value.to_str() {
-            resp_headers.insert(key.to_string(), v.to_string());
-        }
-    }
 
     if response
         .content_length()
@@ -361,6 +355,35 @@ fn invalid_header() -> RelayError {
         message: "Invalid relay header".into(),
         details: None,
     }
+}
+fn bounded_response_headers(
+    headers: &reqwest::header::HeaderMap,
+) -> Result<std::collections::HashMap<String, String>, RelayError> {
+    let mut bytes = 0usize;
+    if headers.len() > 64 {
+        return Err(response_too_large());
+    }
+    for (key, value) in headers {
+        bytes = bytes
+            .checked_add(key.as_str().len())
+            .and_then(|bytes| bytes.checked_add(value.as_bytes().len()))
+            .ok_or_else(response_too_large)?;
+        if bytes > 8192 {
+            return Err(response_too_large());
+        }
+    }
+    let mut result = std::collections::HashMap::new();
+    for (key, value) in headers {
+        let value = value
+            .to_str()
+            .map_err(|_| RelayError::internal("Relay response header is not valid text"))?;
+        if result.insert(key.to_string(), value.to_owned()).is_some() {
+            return Err(RelayError::internal(
+                "Relay response contains repeated header names",
+            ));
+        }
+    }
+    Ok(result)
 }
 fn append_response_chunk(bytes: &mut Vec<u8>, chunk: &[u8]) -> Result<(), RelayError> {
     if chunk.len() > MAX_RELAY_RESPONSE_BYTES.saturating_sub(bytes.len()) {
