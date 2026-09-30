@@ -309,7 +309,6 @@ pub mod otlp {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn concurrent_spawned_tasks_keep_owned_subscribers_and_parent_contexts() {
             use crate::redaction::{Mode, Policy, RedactingExporter};
-            use tracing::instrument::WithSubscriber;
             use tracing_subscriber::prelude::*;
             let barrier = Arc::new(tokio::sync::Barrier::new(2));
             let mut runs = Vec::new();
@@ -351,11 +350,40 @@ pub mod otlp {
             }
             let mut traces = Vec::new();
             for (providers, capture, task, dispatch) in runs {
-                task.await.unwrap();
+                tokio::time::timeout(Duration::from_secs(5), task)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let (entered, ready) = tokio::sync::oneshot::channel();
+                let cancelled = tracing::dispatcher::with_default(&dispatch, || {
+                    let parent = tracing::info_span!("cancelled-parent");
+                    let _guard = parent.enter();
+                    tokio::spawn(with_current_context(async move {
+                        let _ = entered.send(());
+                        std::future::pending::<()>().await;
+                    }))
+                });
+                tokio::time::timeout(Duration::from_secs(5), ready)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                cancelled.abort();
+                let cancellation = tokio::time::timeout(Duration::from_secs(5), cancelled)
+                    .await
+                    .unwrap()
+                    .unwrap_err();
+                assert!(cancellation.is_cancelled());
                 drop(dispatch);
                 assert_eq!(providers.shutdown(), Ok(()));
                 let spans = capture.0.lock().unwrap();
-                assert_eq!(spans.len(), 2);
+                assert_eq!(spans.len(), 3);
+                assert_eq!(
+                    spans
+                        .iter()
+                        .filter(|span| span.name == "cancelled-parent")
+                        .count(),
+                    1
+                );
                 let parent = spans
                     .iter()
                     .find(|span| span.name == "task-parent")
@@ -371,8 +399,6 @@ pub mod otlp {
                 traces.push(parent.span_context.trace_id());
             }
             assert_ne!(traces[0], traces[1]);
-            // Verify scoped subscriber wrappers remain usable directly as well.
-            async {}.with_current_subscriber().await;
         }
         #[test]
         fn callback_unwind_is_classified_and_exporter_cleanup_completes() {
