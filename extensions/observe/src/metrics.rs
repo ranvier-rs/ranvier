@@ -45,13 +45,29 @@ fn labels_within_budget(attributes: &[KeyValue]) -> bool {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct MetricState(Arc<std::sync::atomic::AtomicBool>);
+pub(crate) struct MetricState(
+    Arc<std::sync::atomic::AtomicBool>,
+    Arc<std::sync::Mutex<std::collections::HashSet<(InstrumentationScope, String)>>>,
+);
 impl MetricState {
     fn fail(&self) {
         self.0.store(true, std::sync::atomic::Ordering::Release);
     }
     pub(crate) fn failed(&self) -> bool {
         self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+    fn register_sum(&self, scope: &InstrumentationScope, name: &str) -> bool {
+        let Ok(mut registered) = self.1.lock() else {
+            self.fail();
+            return false;
+        };
+        if registered.len() >= MAX_OBSERVABLE_GROUPS
+            || !registered.insert((scope.clone(), name.to_owned()))
+        {
+            self.fail();
+            return false;
+        }
+        true
     }
 }
 
@@ -62,14 +78,17 @@ pub struct ProtectedMeterProvider {
 }
 impl MeterProvider for ProtectedMeterProvider {
     fn meter_with_scope(&self, scope: InstrumentationScope) -> Meter {
+        let scope = self.policy.scope(&scope);
         Meter::new(Arc::new(ProtectedInstruments {
-            inner: self.inner.meter_with_scope(self.policy.scope(&scope)),
+            inner: self.inner.meter_with_scope(scope.clone()),
+            scope,
             policy: self.policy.clone(),
             state: self.state.clone(),
         }))
     }
 }
 struct ProtectedInstruments {
+    scope: InstrumentationScope,
     inner: Meter,
     policy: Policy,
     state: MetricState,
@@ -247,6 +266,9 @@ macro_rules! asynchronous_sum {
             &self,
             builder: AsyncInstrumentBuilder<'_, $kind<$number>, $number>,
         ) -> $kind<$number> {
+            if !self.state.register_sum(&self.scope, &builder.name) {
+                return $kind::new();
+            }
             let mut delegated = self.inner.$method(builder.name);
             if let Some(value) = self.policy.metric_description(builder.description) {
                 delegated = delegated.with_description(value);
@@ -307,7 +329,7 @@ impl InstrumentProvider for ProtectedInstruments {
 mod tests {
     use super::*;
     #[test]
-    fn strict_scope_collision_exports_sync_sum_but_overwrites_observable_sum() {
+    fn strict_scope_collision_is_reported_instead_of_overwriting_observable_sum() {
         let captured = Arc::new(Mutex::new(Values::new()));
         let provider = ProtectedMeterProvider {
             inner: SdkMeterProvider::builder()
@@ -335,8 +357,8 @@ mod tests {
         provider.inner.force_flush().unwrap();
         let values = captured.lock().unwrap().clone();
         assert_eq!(values.get("same_sync"), Some(&vec![10]));
-        assert_eq!(values.get("same_observable"), Some(&vec![8]));
-        assert!(!provider.state.failed());
+        assert!(!values.contains_key("same_observable"));
+        assert!(provider.state.failed());
         provider.inner.shutdown().unwrap();
     }
     #[test]
