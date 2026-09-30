@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { validateObserveProducts, observeIdentityInputs } from './optional_api_contract.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = path.resolve(scriptDir, '..');
@@ -214,6 +215,7 @@ function buildInventory() {
       return target && (optionalObserve ? pkg.name === 'ranvier-observe' && !publishEnabled : pkg.name.startsWith('ranvier') && publishEnabled);
     })
     .sort((left, right) => left.pkg.name.localeCompare(right.pkg.name));
+  if (optionalObserve) validateObserveProducts(products);
 
   const policyCrates = Object.keys(policy.crates).sort();
   const productNames = products.map(({ pkg }) => pkg.name);
@@ -286,10 +288,7 @@ function buildInventory() {
   if (optionalObserve) {
     // Published inventory retains its existing schema/identity contract. The
     // optional adapter must bind evidence to implementation and locked SDK too.
-    inputFiles.push(path.join(workspaceRoot, 'Cargo.lock'), fileURLToPath(import.meta.url));
-    for (const source of ['lib.rs', 'metrics.rs', 'redaction.rs']) {
-      inputFiles.push(path.join(workspaceRoot, 'extensions/observe/src', source));
-    }
+    inputFiles.push(...observeIdentityInputs.map((file) => path.join(workspaceRoot, file)));
   }
   const inputIdentity = Object.fromEntries(
     inputFiles
