@@ -3416,6 +3416,96 @@ expires_on = "2099-01-02"
     }
 
     #[tokio::test]
+    async fn authenticated_relay_route_preserves_upstream_status_and_body_failures() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for case in ["success", "invalid-json", "timeout"] {
+            let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let upstream_address = upstream.local_addr().unwrap();
+            let backend = tokio::spawn(async move {
+                let (mut socket, _) =
+                    tokio::time::timeout(std::time::Duration::from_secs(3), upstream.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                let mut request = [0; 4096];
+                assert!(socket.read(&mut request).await.unwrap() > 0);
+                if case == "timeout" {
+                    socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                        .await
+                        .unwrap();
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                } else {
+                    let body = if case == "success" {
+                        "{\"reason\":\"conflict\"}"
+                    } else {
+                        "invalid"
+                    };
+                    let response = format!(
+                        "HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    socket.write_all(response.as_bytes()).await.unwrap();
+                }
+            });
+            let (port, listener) = reserve_listener();
+            let mut inspector = Inspector::new(Schematic::new("relay-upstream"), port)
+                .with_mode("dev")
+                .with_bearer_token("fixture-token");
+            inspector.relay_state = Some(
+                relay::RelayState::new(relay::RelayConfig {
+                    target_url: format!("http://{upstream_address}"),
+                    timeout_ms: if case == "timeout" { 100 } else { 2000 },
+                    max_concurrent: 1,
+                })
+                .unwrap(),
+            );
+            let token = CancellationToken::new();
+            let server_token = token.clone();
+            let server = tokio::spawn(async move {
+                inspector
+                    .serve_with_listener_and_cancellation(listener, server_token)
+                    .await
+            });
+            wait_ready(port).await;
+            let response = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+                .unwrap()
+                .post(format!("http://127.0.0.1:{port}/api/v1/relay"))
+                .bearer_auth("fixture-token")
+                .json(&serde_json::json!({"method":"GET", "path":"/"}))
+                .send()
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = response.json::<Value>().await.unwrap();
+            token.cancel(CancellationReason::OperatorShutdown);
+            tokio::time::timeout(std::time::Duration::from_secs(3), server)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            backend.await.unwrap();
+            match case {
+                "success" => {
+                    assert_eq!(status, reqwest::StatusCode::OK);
+                    assert_eq!(body["data"]["status"], 409);
+                    assert_eq!(body["data"]["body"]["reason"], "conflict");
+                }
+                "invalid-json" => {
+                    assert_eq!(status, reqwest::StatusCode::BAD_GATEWAY);
+                    assert_eq!(body["error"], "internal_error");
+                }
+                _ => {
+                    assert_eq!(status, reqwest::StatusCode::GATEWAY_TIMEOUT);
+                    assert_eq!(body["error"], "timeout");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn relay_route_requires_bearer_and_preserves_input_and_busy_status() {
         let (port, listener) = reserve_listener();
         let relay = relay::RelayState::new(relay::RelayConfig {
