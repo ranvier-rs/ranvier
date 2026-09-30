@@ -18,10 +18,10 @@ use async_trait::async_trait;
 use axum::{
     Json, Router,
     extract::{
-        Path as AxPath, Query, Request, State,
+        FromRequestParts, Path as AxPath, Query, Request, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderMap, Method, StatusCode, header},
+    http::{HeaderMap, Method, StatusCode, header, request::Parts},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
@@ -1373,43 +1373,68 @@ fn is_attribute_bag_key(key: &str) -> bool {
     lowered == "attributes" || lowered.ends_with("_attributes")
 }
 
-async fn debug_resume(AxPath(trace_id): AxPath<String>) -> impl IntoResponse {
+async fn debug_resume(
+    headers: HeaderMap,
+    AxPath(trace_id): AxPath<String>,
+    State(state): State<InspectorState>,
+) -> Result<StatusCode, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    state.bearer_auth.validate(&headers)?;
+
     if let Some(debug) = get_debug_control_for_trace(&trace_id) {
         debug.resume();
-        StatusCode::OK
+        Ok(StatusCode::OK)
     } else {
-        StatusCode::NOT_FOUND
+        Ok(StatusCode::NOT_FOUND)
     }
 }
 
-async fn debug_step(AxPath(trace_id): AxPath<String>) -> impl IntoResponse {
+async fn debug_step(
+    headers: HeaderMap,
+    AxPath(trace_id): AxPath<String>,
+    State(state): State<InspectorState>,
+) -> Result<StatusCode, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    state.bearer_auth.validate(&headers)?;
+
     if let Some(debug) = get_debug_control_for_trace(&trace_id) {
         debug.step();
-        StatusCode::OK
+        Ok(StatusCode::OK)
     } else {
-        StatusCode::NOT_FOUND
+        Ok(StatusCode::NOT_FOUND)
     }
 }
 
-async fn debug_pause(AxPath(trace_id): AxPath<String>) -> impl IntoResponse {
+async fn debug_pause(
+    headers: HeaderMap,
+    AxPath(trace_id): AxPath<String>,
+    State(state): State<InspectorState>,
+) -> Result<StatusCode, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    state.bearer_auth.validate(&headers)?;
+
     if let Some(debug) = get_debug_control_for_trace(&trace_id) {
         debug.pause();
-        StatusCode::OK
+        Ok(StatusCode::OK)
     } else {
-        StatusCode::NOT_FOUND
+        Ok(StatusCode::NOT_FOUND)
     }
 }
 
 async fn api_get_state(
+    headers: HeaderMap,
     AxPath(trace_id): AxPath<String>,
     State(state): State<InspectorState>,
-) -> impl IntoResponse {
+) -> Result<Response, (StatusCode, Json<Value>)> {
+    ensure_internal_access(&headers, &state.auth_policy)?;
+    state.bearer_auth.validate(&headers)?;
+
     if let Some(inspector) = state.state_inspector.as_ref()
         && let Some(val) = inspector.get_state(&trace_id).await
     {
-        return Json(val).into_response();
+        return Ok(Json(val).into_response());
     }
-    StatusCode::NOT_FOUND.into_response()
+    Ok(StatusCode::NOT_FOUND.into_response())
 }
 
 #[derive(Deserialize)]
@@ -1420,7 +1445,24 @@ struct ResumePayload {
     payload_override: Option<Value>,
 }
 
+struct RequireInternalAccess;
+
+#[async_trait]
+impl FromRequestParts<InspectorState> for RequireInternalAccess {
+    type Rejection = (StatusCode, Json<Value>);
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &InspectorState,
+    ) -> Result<Self, Self::Rejection> {
+        ensure_internal_access(&parts.headers, &state.auth_policy)?;
+        state.bearer_auth.validate(&parts.headers)?;
+        Ok(Self)
+    }
+}
+
 async fn api_post_resume(
+    _access: RequireInternalAccess,
     AxPath(trace_id): AxPath<String>,
     State(state): State<InspectorState>,
     Json(payload): Json<ResumePayload>,
@@ -2853,8 +2895,66 @@ async fn api_get_trace_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use ranvier_core::schematic::Schematic;
     use std::time::Duration;
+
+    #[derive(Default)]
+    struct TestStateInspector {
+        resume_calls: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    #[async_trait]
+    impl StateInspector for TestStateInspector {
+        async fn get_state(&self, trace_id: &str) -> Option<Value> {
+            Some(serde_json::json!({
+                "trace_id": trace_id,
+                "status": "paused",
+                "private_payload": "test-state"
+            }))
+        }
+
+        async fn force_resume(
+            &self,
+            trace_id: &str,
+            target_node: &str,
+            _payload_override: Option<Value>,
+        ) -> Result<(), String> {
+            self.resume_calls
+                .lock()
+                .expect("resume call lock")
+                .push((trace_id.to_owned(), target_node.to_owned()));
+            Ok(())
+        }
+    }
+
+    async fn send_state_route_request(
+        client: &reqwest::Client,
+        method: reqwest::Method,
+        url: &str,
+        token: Option<&str>,
+        role: Option<&str>,
+        tenant: Option<&str>,
+    ) -> reqwest::Response {
+        let mut request = client.request(method.clone(), url);
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        if let Some(role) = role {
+            request = request.header("X-Ranvier-Role", role);
+        }
+        if let Some(tenant) = tenant {
+            request = request.header("X-Ranvier-Tenant", tenant);
+        }
+        if method == reqwest::Method::POST {
+            request = request.json(&serde_json::json!({
+                "target_node": "after",
+                "force": true,
+                "payload_override": null
+            }));
+        }
+        request.send().await.expect("internal state route request")
+    }
 
     fn reserve_listener() -> (u16, tokio::net::TcpListener) {
         let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
@@ -3548,6 +3648,203 @@ expires_on = "2099-01-02"
             .await
             .expect("operator internal with tenant request");
         assert_eq!(operator_with_tenant.status(), reqwest::StatusCode::OK);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn state_and_debug_routes_enforce_internal_access_policy() {
+        let (port, listener) = reserve_listener();
+        let state_inspector = Arc::new(TestStateInspector::default());
+        let inspector = Inspector::new(Schematic::new("state-auth"), port)
+            .with_mode("dev")
+            .with_bearer_token("state-test-token")
+            .with_auth_enforcement(true)
+            .with_require_tenant_for_internal(true)
+            .with_state_inspector(state_inspector.clone());
+        let handle = tokio::spawn(async move {
+            let _ = inspector.serve_with_listener(listener).await;
+        });
+        wait_ready(port).await;
+
+        let client = reqwest::Client::new();
+        let routes = [
+            (
+                reqwest::Method::GET,
+                "/api/v1/state/trace-1",
+                reqwest::StatusCode::OK,
+            ),
+            (
+                reqwest::Method::POST,
+                "/api/v1/state/trace-1/resume",
+                reqwest::StatusCode::OK,
+            ),
+            (
+                reqwest::Method::GET,
+                "/debug/resume/auth-test-resume",
+                reqwest::StatusCode::OK,
+            ),
+            (
+                reqwest::Method::GET,
+                "/debug/step/auth-test-step",
+                reqwest::StatusCode::OK,
+            ),
+            (
+                reqwest::Method::GET,
+                "/debug/pause/auth-test-pause",
+                reqwest::StatusCode::OK,
+            ),
+        ];
+        let resume_control = DebugControl::new();
+        resume_control.pause();
+        let step_control = DebugControl::new();
+        let pause_control = DebugControl::new();
+        register_debug_control("auth-test-resume".to_owned(), resume_control.clone());
+        register_debug_control("auth-test-step".to_owned(), step_control.clone());
+        register_debug_control("auth-test-pause".to_owned(), pause_control.clone());
+
+        let denied_cases = [
+            (
+                "missing bearer",
+                None,
+                Some("operator"),
+                Some("team-a"),
+                reqwest::StatusCode::UNAUTHORIZED,
+            ),
+            (
+                "missing role",
+                Some("state-test-token"),
+                None,
+                Some("team-a"),
+                reqwest::StatusCode::UNAUTHORIZED,
+            ),
+            (
+                "viewer role",
+                Some("state-test-token"),
+                Some("viewer"),
+                Some("team-a"),
+                reqwest::StatusCode::FORBIDDEN,
+            ),
+            (
+                "missing tenant",
+                Some("state-test-token"),
+                Some("operator"),
+                None,
+                reqwest::StatusCode::FORBIDDEN,
+            ),
+        ];
+
+        for (method, path, allowed_status) in routes {
+            let url = format!("http://127.0.0.1:{port}{path}");
+            for (case, token, role, tenant, expected_status) in denied_cases {
+                let response =
+                    send_state_route_request(&client, method.clone(), &url, token, role, tenant)
+                        .await;
+                assert_eq!(
+                    response.status(),
+                    expected_status,
+                    "{case} should be rejected for {path}"
+                );
+                match path {
+                    "/debug/resume/auth-test-resume" => {
+                        assert!(
+                            resume_control.should_pause("auth-test-node"),
+                            "denied resume must leave the pending pause unchanged"
+                        );
+                        resume_control.pause();
+                    }
+                    "/debug/step/auth-test-step" => assert!(
+                        !step_control.should_pause("auth-test-node"),
+                        "denied step must not request a pause"
+                    ),
+                    "/debug/pause/auth-test-pause" => assert!(
+                        !pause_control.should_pause("auth-test-node"),
+                        "denied pause must not request a pause"
+                    ),
+                    _ => {}
+                }
+            }
+
+            let allowed = send_state_route_request(
+                &client,
+                method,
+                &url,
+                Some("state-test-token"),
+                Some("operator"),
+                Some("team-a"),
+            )
+            .await;
+            assert_eq!(allowed.status(), allowed_status, "authorized {path}");
+            if path == "/api/v1/state/trace-1" {
+                let body: Value = allowed.json().await.expect("state response JSON");
+                assert_eq!(body["trace_id"], "trace-1");
+                assert_eq!(body["status"], "paused");
+                assert_eq!(body["private_payload"], "test-state");
+            }
+            match path {
+                "/debug/resume/auth-test-resume" => assert!(
+                    !resume_control.should_pause("auth-test-node"),
+                    "authorized resume clears the pending pause"
+                ),
+                "/debug/step/auth-test-step" => assert!(
+                    step_control.should_pause("auth-test-node"),
+                    "authorized step requests a pause at the next node"
+                ),
+                "/debug/pause/auth-test-pause" => assert!(
+                    pause_control.should_pause("auth-test-node"),
+                    "authorized pause requests a pause at the next node"
+                ),
+                _ => {}
+            }
+        }
+
+        let malformed_without_role = client
+            .post(format!(
+                "http://127.0.0.1:{port}/api/v1/state/trace-1/resume"
+            ))
+            .bearer_auth("state-test-token")
+            .header("X-Ranvier-Tenant", "team-a")
+            .header("Content-Type", "application/json")
+            .body("{")
+            .send()
+            .await
+            .expect("malformed resume without role");
+        assert_eq!(
+            malformed_without_role.status(),
+            reqwest::StatusCode::UNAUTHORIZED,
+            "role policy runs before malformed body details are returned"
+        );
+
+        let malformed_with_role = client
+            .post(format!(
+                "http://127.0.0.1:{port}/api/v1/state/trace-1/resume"
+            ))
+            .bearer_auth("state-test-token")
+            .header("X-Ranvier-Role", "operator")
+            .header("X-Ranvier-Tenant", "team-a")
+            .header("Content-Type", "application/json")
+            .body("{")
+            .send()
+            .await
+            .expect("malformed resume with role");
+        assert_eq!(
+            malformed_with_role.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "authorized malformed body retains the JSON rejection response"
+        );
+
+        assert_eq!(
+            *state_inspector
+                .resume_calls
+                .lock()
+                .expect("resume call lock"),
+            vec![("trace-1".to_owned(), "after".to_owned())],
+            "only the authorized resume request may mutate state"
+        );
+
+        unregister_debug_control("auth-test-resume");
+        unregister_debug_control("auth-test-step");
+        unregister_debug_control("auth-test-pause");
 
         handle.abort();
     }
