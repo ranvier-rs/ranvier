@@ -2743,7 +2743,7 @@ async fn api_post_relay(
             serde_json::to_value(&response).unwrap_or(Value::Null),
         )),
         Err(err) => Err((
-            StatusCode::BAD_GATEWAY,
+            err.status_code(),
             Json(serde_json::to_value(&err).unwrap_or(Value::Null)),
         )),
     }

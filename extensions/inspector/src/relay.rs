@@ -165,6 +165,16 @@ pub struct RelayError {
 }
 
 impl RelayError {
+    /// HTTP status of the relay operation failure, distinct from upstream status.
+    pub fn status_code(&self) -> axum::http::StatusCode {
+        use axum::http::StatusCode;
+        match self.error.as_str() {
+            "concurrency_limit" => StatusCode::SERVICE_UNAVAILABLE,
+            "timeout" => StatusCode::GATEWAY_TIMEOUT,
+            "invalid_request" => StatusCode::BAD_REQUEST,
+            _ => StatusCode::BAD_GATEWAY,
+        }
+    }
     pub fn connection_refused(target: &str) -> Self {
         Self {
             error: "connection_refused".to_string(),
@@ -213,7 +223,11 @@ pub async fn execute_relay(
     let method = req
         .method
         .parse::<reqwest::Method>()
-        .map_err(|_| RelayError::internal("Invalid relay method"))?;
+        .map_err(|_| RelayError {
+            error: "invalid_request".into(),
+            message: "Invalid relay method".into(),
+            details: None,
+        })?;
 
     let url = format!(
         "{}{}",
