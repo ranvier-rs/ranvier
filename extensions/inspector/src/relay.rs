@@ -375,6 +375,75 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn relay_forwards_exact_header_count_and_byte_boundary() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut headers: std::collections::HashMap<String, String> = (0..64)
+            .map(|index| (format!("x-{index}"), "a".into()))
+            .collect();
+        let initial: usize = headers
+            .iter()
+            .map(|(key, value)| key.len() + value.len())
+            .sum();
+        headers.insert("x-0".into(), "a".repeat(1 + 8192 - initial));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            let mut bytes = Vec::new();
+            while !bytes.ends_with(b"\r\n\r\n") {
+                let mut chunk = [0; 1024];
+                let count = tokio::time::timeout(Duration::from_secs(3), socket.read(&mut chunk))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(count > 0);
+                assert!(bytes.len() + count <= 16 * 1024);
+                bytes.extend_from_slice(&chunk[..count]);
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntrue")
+                .await
+                .unwrap();
+            String::from_utf8(bytes).unwrap()
+        });
+        let relay = RelayState::new(RelayConfig {
+            target_url: format!("http://{address}"),
+            timeout_ms: 2000,
+            max_concurrent: 1,
+        })
+        .unwrap();
+        let result = execute_relay(
+            &relay,
+            RelayRequest {
+                method: "GET".into(),
+                path: "/".into(),
+                headers: Some(headers),
+                body: None,
+            },
+        )
+        .await;
+        let received = server.await.unwrap();
+        assert_eq!(result.unwrap().body, Value::Bool(true));
+        let forwarded: Vec<_> = received
+            .lines()
+            .filter_map(|line| line.split_once(": "))
+            .filter(|(name, _)| name.starts_with("x-"))
+            .collect();
+        assert_eq!(forwarded.len(), 64);
+        assert_eq!(
+            forwarded
+                .iter()
+                .map(|(key, value)| key.len() + value.len())
+                .sum::<usize>(),
+            8192
+        );
+        assert_eq!(relay.semaphore.available_permits(), 1);
+    }
+
+    #[tokio::test]
     async fn relay_rejects_transport_duplicate_and_conflicting_json_headers() {
         let relay = RelayState::new(RelayConfig {
             target_url: "http://127.0.0.1:1".into(),
