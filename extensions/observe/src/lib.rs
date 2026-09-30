@@ -93,7 +93,7 @@ pub mod otlp {
     }
     /// Caller-owned providers; no process-global provider is installed.
     pub struct Providers {
-        /// Trace provider: redacts span/event/link/resource attributes; names are not filtered.
+        /// Trace provider: applies the configured span/event/scope/resource policy.
         pub traces: SdkTracerProvider,
         /// Metric provider: filters resource and record/observe labels; metadata is a separate policy gate.
         pub metrics: crate::metrics::ProtectedMeterProvider,
@@ -137,7 +137,10 @@ pub mod otlp {
             S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
         {
             use opentelemetry::trace::TracerProvider;
-            tracing_opentelemetry::layer().with_tracer(self.traces.tracer("ranvier-observe"))
+            tracing_opentelemetry::layer()
+                .with_tracer(self.traces.tracer("ranvier-observe"))
+                .with_location(false)
+                .with_threads(false)
         }
 
         pub fn build(
@@ -245,7 +248,7 @@ pub mod otlp {
             use tracing_subscriber::prelude::*;
             for mode in [Mode::Off, Mode::Public, Mode::Strict] {
                 let capture = LayerCapture::default();
-                let policy = Policy::new(mode, "private_key").unwrap();
+                let policy = Policy::new(mode.clone(), "private_key").unwrap();
                 let providers = Providers {
                     traces: SdkTracerProvider::builder()
                         .with_simple_exporter(RedactingExporter {
@@ -279,11 +282,11 @@ pub mod otlp {
                 assert_eq!(child.events.len(), 1);
                 let payload = format!("{spans:?}");
                 for secret in ["layer.user@example.com", "layer-secret", "event-secret"] {
-                    assert_eq!(payload.contains(secret), mode == Mode::Off);
+                    assert_eq!(payload.contains(secret), matches!(mode, Mode::Off));
                 }
                 assert_eq!(
                     root.name,
-                    if mode == Mode::Strict {
+                    if matches!(mode, Mode::Strict) {
                         "[REDACTED]"
                     } else {
                         "root"
