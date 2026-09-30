@@ -199,6 +199,9 @@ pub mod otlp {
         /// This synchronous operation has no adapter-enforced overall deadline.
         /// SDK 0.32 meter shutdown ignores its timeout argument; callers must not
         /// infer worker termination or a shutdown budget from the export timeout.
+        /// A blocked observable callback can outlive a Metrics failure return.
+        /// Callbacks must finish cooperatively; an untrusted callback requires an
+        /// externally supervised process to provide a hard termination boundary.
         pub fn shutdown(&self) -> Result<(), Vec<ShutdownSignal>> {
             shutdown_both(
                 || {
