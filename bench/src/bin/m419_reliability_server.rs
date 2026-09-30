@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use ranvier_audit::{AuditEvent, AuditSink, InMemoryAuditSink, RetentionPolicy};
 use ranvier_core::cancellation::{CancellationReason, CancellationToken};
-use ranvier_core::prelude::{Bus, Outcome, ResourceRequirement, Transition};
+use ranvier_core::prelude::{Bus, Outcome, Transition};
 use ranvier_http::Ranvier;
 use ranvier_inspector::{get_trace_registry, metrics, payload};
 use ranvier_runtime::Axon;
@@ -30,8 +30,6 @@ struct AppState {
     audit_expired: Arc<AtomicU64>,
     slow_started: Arc<AtomicU64>,
 }
-
-impl ResourceRequirement for AppState {}
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 struct DecisionRequest {

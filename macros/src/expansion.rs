@@ -1,7 +1,7 @@
 use crate::{config::TransitionArgs, model::TransitionFunction};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{DeriveInput, ItemFn};
+use syn::ItemFn;
 
 pub(crate) fn expand_transition(
     core_path: TokenStream2,
@@ -96,17 +96,4 @@ pub(crate) fn expand_transition(
     };
 
     Ok(expanded)
-}
-
-pub(crate) fn derive_resource_requirement(
-    core_path: TokenStream2,
-    input: TokenStream2,
-) -> syn::Result<TokenStream2> {
-    let input = syn::parse2::<DeriveInput>(input)?;
-    let name = &input.ident;
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-
-    Ok(quote! {
-        impl #impl_generics #core_path::transition::ResourceRequirement for #name #ty_generics #where_clause {}
-    })
 }

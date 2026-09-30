@@ -5,7 +5,7 @@ use std::{pin::Pin, task::{Context, Poll}};
 use core_alias::{
     __macro_support::futures_core::Stream,
     streaming::StreamingTransition,
-    transition::{ResourceRequirement, Transition},
+    transition::Transition,
 };
 
 #[derive(Clone)]
@@ -33,7 +33,6 @@ pub fn compile_renamed_dependency_paths() {
 
 struct AppResources;
 
-impl ResourceRequirement for AppResources {}
 
 struct OneItemStream(Option<i32>);
 

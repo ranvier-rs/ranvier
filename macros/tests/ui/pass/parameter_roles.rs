@@ -6,12 +6,10 @@
 
 use std::convert::Infallible;
 
-use ranvier_core::transition::{ResourceRequirement, Transition};
+use ranvier_core::transition::Transition;
 use ranvier_macros::transition;
 
 struct AppResources;
-impl ResourceRequirement for AppResources {}
-
 fn assert_transition<T, From, To, Error, Resources>(_: &T)
 where
     T: Transition<From, To, Error = Error, Resources = Resources> + Clone,

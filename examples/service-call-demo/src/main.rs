@@ -32,7 +32,6 @@ use ranvier::prelude::*;
 
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
-use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -70,8 +69,6 @@ struct ApiResources {
     client: reqwest::Client,
     base_url: String,
 }
-
-impl ResourceRequirement for ApiResources {}
 
 // ============================================================================
 // Transition 1: Local Validation

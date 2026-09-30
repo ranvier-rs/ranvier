@@ -30,7 +30,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use ranvier_core::prelude::*;
-use ranvier_core::transition::ResourceRequirement;
 use ranvier_guard::prelude::*;
 use ranvier_http::prelude::*;
 use ranvier_runtime::Axon;
@@ -50,8 +49,6 @@ struct RequestHeaders(HashMap<String, String>);
 struct AppState {
     pool: SqlitePool,
 }
-
-impl ResourceRequirement for AppState {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Claims {

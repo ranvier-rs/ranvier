@@ -139,8 +139,6 @@ struct DocsResources {
     swagger_html: String,
 }
 
-impl ranvier_core::transition::ResourceRequirement for DocsResources {}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let get_user = Axon::<(), (), String, DocsResources>::new("GetUser").then(GetUser);

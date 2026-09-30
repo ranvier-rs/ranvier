@@ -73,7 +73,7 @@ pub mod prelude {
     pub use crate::schematic::{Edge, EdgeType, Node, NodeKind, SchemaMigrationMapper, Schematic};
     pub use crate::tenant::{IsolationPolicy, TenantExtractor, TenantId, TenantResolver};
     pub use crate::timeline::{Timeline, TimelineEvent};
-    pub use crate::transition::{ResourceRequirement, Transition};
+    pub use crate::transition::Transition;
 
     // Macros re-exported for convenient access via `use ranvier_core::prelude::*`
     pub use crate::try_outcome;

@@ -11,7 +11,6 @@
 //! * **Bus snapshot** — Bus is available in `run_stream()` but not during streaming
 
 use crate::bus::Bus;
-use crate::transition::ResourceRequirement;
 use async_trait::async_trait;
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
@@ -74,7 +73,7 @@ where
     type Error: Send + Sync + Debug + 'static;
 
     /// The type of resources required by this streaming transition.
-    type Resources: ResourceRequirement;
+    type Resources: Send + Sync + 'static;
 
     /// Produce a stream of items from the input.
     ///

@@ -1,7 +1,6 @@
 #![cfg(feature = "validation")]
 
 use http::StatusCode;
-use ranvier_core::transition::ResourceRequirement;
 use ranvier_core::{Bus, Outcome, Transition};
 use ranvier_guard::prelude::{AuthGuard, RequestIdGuard};
 use ranvier_http::prelude::*;
@@ -18,8 +17,6 @@ use validator::Validate;
 struct TestResources {
     calls: Arc<AtomicUsize>,
 }
-
-impl ResourceRequirement for TestResources {}
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, Validate)]
 struct CreateUserInput {

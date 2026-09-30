@@ -17,7 +17,6 @@ use ranvier_core::cancellation::{CancellationContext, CancellationToken};
 use ranvier_core::outcome::Outcome;
 use ranvier_core::schematic::Schematic;
 use ranvier_core::streaming::StreamTimeoutConfig;
-use ranvier_core::transition::ResourceRequirement;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fmt::Debug;
@@ -141,7 +140,7 @@ where
     In: Send + Sync + 'static,
     Item: Send + 'static,
     E: Send + Sync + Debug + 'static,
-    Res: ResourceRequirement,
+    Res: Send + Sync + 'static,
 {
     /// Execute the streaming pipeline, returning a stream of items.
     ///
@@ -349,7 +348,7 @@ where
     In: Send + Sync + Serialize + DeserializeOwned + 'static,
     Item: Send + Sync + Serialize + DeserializeOwned + 'static,
     E: Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
-    Res: ResourceRequirement,
+    Res: Send + Sync + 'static,
 {
     /// Collapse the stream into a `Vec<Item>`, returning a regular `Axon`.
     ///

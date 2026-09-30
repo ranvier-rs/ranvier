@@ -23,8 +23,6 @@ pub struct OrderResources {
     pub shipping: ShippingSynapse,
 }
 
-impl ranvier_core::transition::ResourceRequirement for OrderResources {}
-
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OrderStatus {

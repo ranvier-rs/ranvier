@@ -12,7 +12,7 @@
     57
   ],
   "input_sha256": {
-    ".ranvier-api-policy.json": "a0940c3934c9fa76c5fbeee589c89bb3b6087b13b8a4fb7b5d7266e6854ccb51",
+    ".ranvier-api-policy.json": "2762f2dca75bf1a3f48f30d2f7c659c14f27f44919c3bdc84062b004e6090f3d",
     "Cargo.toml": "46b0f17328e157e2f94481464828184b6bce40ca37f27f3508d773fa2ea0a6dc",
     "core/Cargo.toml": "4d84b4b6d2a3d5b159ca761860b88cfbbf08951ab4300c673898996a14cb6103",
     "extensions/audit/Cargo.toml": "6e09af66c9c4a531dc07b2ec8ff91254b668df48148f961e13b801f3a04a8cb4",
@@ -28,11 +28,11 @@
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2605,
+  "public_item_count": 2600,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2413,
-    "Stable Candidate": 184
+    "Experimental": 2409,
+    "Stable Candidate": 183
   },
   "crates": [
     {
@@ -53,21 +53,20 @@
         "streaming",
         "validation"
       ],
-      "public_item_count": 45,
+      "public_item_count": 43,
       "counts_by_kind": {
         "enum": 8,
         "function": 1,
         "module": 10,
         "proc_attribute": 4,
-        "proc_derive": 2,
         "struct": 16,
         "trait": 4
       },
       "counts_by_stability": {
-        "Experimental": 34,
+        "Experimental": 32,
         "Stable Candidate": 11
       },
-      "facade_reexport_count": 43,
+      "facade_reexport_count": 41,
       "boundary_item_count": 0,
       "items": [
         {
@@ -435,20 +434,6 @@
           }
         },
         {
-          "path": "ranvier::prelude::ResourceRequirement",
-          "kind": "proc_derive",
-          "origin": "facade-reexport",
-          "target": "ranvier_macros::ResourceRequirement",
-          "stability": "Experimental",
-          "owner": "developer-tooling",
-          "boundary": null,
-          "deprecated": false,
-          "deprecation": null,
-          "source": {
-            "file": "kit/src/lib.rs"
-          }
-        },
-        {
           "path": "ranvier::prelude::StateInspector",
           "kind": "trait",
           "origin": "facade-reexport",
@@ -523,20 +508,6 @@
           "kind": "struct",
           "origin": "facade-reexport",
           "target": "ranvier_http::RawIngressService",
-          "stability": "Experimental",
-          "owner": "developer-tooling",
-          "boundary": null,
-          "deprecated": false,
-          "deprecation": null,
-          "source": {
-            "file": "kit/src/lib.rs"
-          }
-        },
-        {
-          "path": "ranvier::ResourceRequirement",
-          "kind": "proc_derive",
-          "origin": "facade-reexport",
-          "target": "ranvier_macros::ResourceRequirement",
           "stability": "Experimental",
           "owner": "developer-tooling",
           "boundary": null,
@@ -3406,7 +3377,7 @@
         "schema",
         "streaming"
       ],
-      "public_item_count": 697,
+      "public_item_count": 695,
       "counts_by_kind": {
         "assoc_type": 11,
         "constant": 2,
@@ -3416,14 +3387,14 @@
         "module": 24,
         "struct": 101,
         "struct_field": 147,
-        "trait": 32,
+        "trait": 30,
         "type_alias": 5,
         "variant": 112
       },
       "counts_by_stability": {
         "Deprecated": 6,
-        "Experimental": 561,
-        "Stable Candidate": 130
+        "Experimental": 560,
+        "Stable Candidate": 129
       },
       "facade_reexport_count": 0,
       "boundary_item_count": 49,
@@ -8707,20 +8678,6 @@
           }
         },
         {
-          "path": "ranvier_core::prelude::ResourceRequirement",
-          "kind": "trait",
-          "origin": "reexport",
-          "target": "crate::transition::ResourceRequirement",
-          "stability": "Experimental",
-          "owner": "runtime-core",
-          "boundary": null,
-          "deprecated": false,
-          "deprecation": null,
-          "source": {
-            "file": "core/src/lib.rs"
-          }
-        },
-        {
           "path": "ranvier_core::prelude::RuntimeProfile",
           "kind": "enum",
           "origin": "reexport",
@@ -13038,20 +12995,6 @@
           "deprecation": null,
           "source": {
             "file": "core/src/lib.rs"
-          }
-        },
-        {
-          "path": "ranvier_core::transition::ResourceRequirement",
-          "kind": "trait",
-          "origin": "direct",
-          "target": null,
-          "stability": "Stable Candidate",
-          "owner": "runtime-core",
-          "boundary": null,
-          "deprecated": false,
-          "deprecation": null,
-          "source": {
-            "file": "core/src/transition.rs"
           }
         },
         {
@@ -28578,15 +28521,14 @@
       "features": [
         "streaming"
       ],
-      "public_item_count": 6,
+      "public_item_count": 5,
       "counts_by_kind": {
         "macro": 1,
         "module": 1,
-        "proc_attribute": 3,
-        "proc_derive": 1
+        "proc_attribute": 3
       },
       "counts_by_stability": {
-        "Experimental": 4,
+        "Experimental": 3,
         "Stable Candidate": 2
       },
       "facade_reexport_count": 0,
@@ -28619,18 +28561,6 @@
           "source": {
             "file": "macros/src/lib.rs"
           }
-        },
-        {
-          "path": "ranvier_macros::ResourceRequirement",
-          "kind": "proc_derive",
-          "origin": "direct",
-          "target": null,
-          "stability": "Experimental",
-          "owner": "developer-tooling",
-          "boundary": null,
-          "deprecated": false,
-          "deprecation": null,
-          "source": null
         },
         {
           "path": "ranvier_macros::route",

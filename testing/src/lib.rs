@@ -89,7 +89,7 @@ impl TestAxon {
         In: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         Out: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
-        Res: ranvier_core::transition::ResourceRequirement,
+        Res: Send + Sync + 'static,
     {
         let mut bus = test_bus.build();
         let outcome = axon.execute(input, resources, &mut bus).await;
@@ -226,7 +226,7 @@ impl TestAxon {
         In: Send + Sync + 'static,
         Item: Send + 'static,
         E: Send + Sync + std::fmt::Debug + 'static,
-        Res: ranvier_core::transition::ResourceRequirement,
+        Res: Send + Sync + 'static,
     {
         use futures_util::StreamExt;
         let mut bus = test_bus.build();

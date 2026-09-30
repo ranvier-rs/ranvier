@@ -13,17 +13,6 @@ use crate::outcome::Outcome;
 use async_trait::async_trait;
 use std::fmt::Debug;
 
-/// Resource requirement for a transition.
-///
-/// This trait marks the compile-time-declared resource bundle passed separately
-/// to [`Transition::run`]. Implementations should usually be a struct containing
-/// application dependencies. Adapter-injected request context belongs in the
-/// per-execution [`Bus`], where presence and authorization are runtime checks.
-pub trait ResourceRequirement: Send + Sync + 'static {}
-
-/// Blanket implementation for () if no resources are needed.
-impl ResourceRequirement for () {}
-
 /// The contract for a Typed State Transition.
 ///
 /// `Transition` converts state `From` to `Outcome<To, Error>`.
@@ -79,7 +68,7 @@ where
     /// This follows the "Hard-Wired Types" principle from the Master Plan and
     /// is the compile-time dependency boundary. It does not make resources read
     /// dynamically from `Bus` compile-time-present.
-    type Resources: ResourceRequirement;
+    type Resources: Send + Sync + 'static;
 
     /// Execute the transition.
     ///

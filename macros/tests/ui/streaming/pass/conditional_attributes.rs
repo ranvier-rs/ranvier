@@ -11,7 +11,6 @@ use std::{
 
 use ranvier_core::{
     __macro_support::futures_core::Stream, streaming::StreamingTransition,
-    transition::ResourceRequirement,
 };
 
 struct Values(std::vec::IntoIter<i32>);
@@ -30,7 +29,7 @@ where
     From: Send + 'static,
     Item: Send + 'static,
     Error: Send + Sync + std::fmt::Debug + 'static,
-    Resources: ResourceRequirement,
+    Resources: Send + Sync + 'static,
 {
 }
 

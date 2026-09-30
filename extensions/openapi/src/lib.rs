@@ -212,7 +212,7 @@ impl OpenApiGenerator {
 
     pub fn from_ingress<R>(ingress: &HttpIngress<R>) -> Self
     where
-        R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+        R: Clone + Send + Sync + 'static,
     {
         Self::from_descriptors(ingress.route_descriptors())
     }

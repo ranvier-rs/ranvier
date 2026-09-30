@@ -15,7 +15,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
-use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, Database, DatabaseConnection, EntityTrait, ModelTrait,
@@ -27,8 +26,6 @@ use serde::{Deserialize, Serialize};
 struct AppResources {
     db: DatabaseConnection,
 }
-
-impl ResourceRequirement for AppResources {}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct CreateUserInput {

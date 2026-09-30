@@ -29,7 +29,7 @@ impl<In, E, Res> Axon<In, In, E, Res>
 where
     In: Send + Sync + Serialize + DeserializeOwned + 'static,
     E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
-    Res: ranvier_core::transition::ResourceRequirement,
+    Res: Send + Sync + 'static,
 {
     /// Create a new Axon flow with the given label.
     /// This is the preferred entry point per Flat API guidelines.
@@ -159,7 +159,7 @@ where
     In: Send + Sync + Serialize + DeserializeOwned + 'static,
     Out: Send + Sync + Serialize + DeserializeOwned + 'static,
     E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
-    Res: ranvier_core::transition::ResourceRequirement,
+    Res: Send + Sync + 'static,
 {
     // -----------------------------------------------------------------------
     // Config methods

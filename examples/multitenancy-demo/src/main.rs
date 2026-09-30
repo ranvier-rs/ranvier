@@ -27,7 +27,6 @@
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_core::tenant::TenantId;
-use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -42,8 +41,6 @@ use tokio::sync::RwLock;
 struct TenantStore {
     data: Arc<RwLock<HashMap<String, Vec<TenantRecord>>>>,
 }
-
-impl ResourceRequirement for TenantStore {}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TenantRecord {

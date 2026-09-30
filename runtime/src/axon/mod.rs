@@ -211,7 +211,7 @@ where
     In: Send + Sync + Serialize + DeserializeOwned + 'static,
     Out: Send + Sync + Serialize + DeserializeOwned + 'static,
     E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
-    Res: ranvier_core::transition::ResourceRequirement,
+    Res: Send + Sync + 'static,
 {
     async fn get_state(&self, trace_id: &str) -> Option<serde_json::Value> {
         let store = self.persistence_store.as_ref()?;
@@ -542,7 +542,7 @@ where
     In: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
     Out: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
     E: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + Send + Sync + 'static,
-    Res: ranvier_core::transition::ResourceRequirement,
+    Res: Send + Sync + 'static,
 {
     let label = trans.label();
     let res_type = std::any::type_name::<Res>()
@@ -826,7 +826,7 @@ where
     Out: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync + 'static,
     Next: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
     E: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + Send + Sync + 'static,
-    Res: ranvier_core::transition::ResourceRequirement,
+    Res: Send + Sync + 'static,
     Comp: Transition<Out, (), Resources = Res, Error = E> + Clone + Send + Sync + 'static,
 {
     let label = trans.label();

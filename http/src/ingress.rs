@@ -63,7 +63,7 @@ impl Ranvier {
     /// Create an HTTP Ingress Circuit Builder.
     pub fn http<R>() -> HttpIngress<R>
     where
-        R: ranvier_core::transition::ResourceRequirement + Clone,
+        R: Clone + Send + Sync + 'static,
     {
         HttpIngress::new()
     }
@@ -154,7 +154,7 @@ where
     In: Send + Sync + Serialize + DeserializeOwned + 'static,
     Out: Send + Sync + Serialize + DeserializeOwned + 'static,
     E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
-    R: ranvier_core::transition::ResourceRequirement,
+    R: Send + Sync + 'static,
 {
     let request_token = bus.cancellation_token().cloned().unwrap_or_default();
     let execution_token = match bus.read::<ranvier_guard::TimeoutDeadline>() {
@@ -1265,7 +1265,7 @@ pub struct HttpIngress<R = ()> {
 
 impl<R> HttpIngress<R>
 where
-    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
 {
     /// Create a new empty HttpIngress builder.
     pub fn new() -> Self {
@@ -3956,7 +3956,7 @@ fn build_http_service<R>(
     #[cfg(feature = "http3")] alt_svc_port: Option<u16>,
 ) -> BoxHttpService
 where
-    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
 {
     BoxService::new(move |req: Request<Incoming>| {
         let routes = routes.clone();
@@ -4139,7 +4139,7 @@ fn build_route_service<R>(
     needs_body: bool,
 ) -> BoxHttpService
 where
-    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
 {
     let mut service = BoxService::new(move |req: Request<Incoming>| {
         let handler = handler.clone();
@@ -4193,7 +4193,7 @@ async fn maybe_handle_health_request<R>(
     resources: Arc<R>,
 ) -> Option<HttpResponse>
 where
-    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
 {
     if method != Method::GET {
         return None;
@@ -4796,7 +4796,7 @@ async fn run_named_health_checks<R>(
     resources: Arc<R>,
 ) -> (bool, Vec<HealthCheckReport>)
 where
-    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
 {
     let mut reports = Vec::with_capacity(checks.len());
     let mut healthy = true;
@@ -4956,7 +4956,7 @@ fn build_tls_acceptor(
 
 impl<R> Default for HttpIngress<R>
 where
-    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
 {
     fn default() -> Self {
         Self::new()
@@ -5008,7 +5008,7 @@ impl<R> RawIngressService<R> {
 
 impl<R> hyper::service::Service<Request<Incoming>> for RawIngressService<R>
 where
-    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
 {
     type Response = HttpResponse;
     type Error = Infallible;
@@ -5076,7 +5076,7 @@ pub struct RouteGroup<R = ()> {
 
 impl<R> RouteGroup<R>
 where
-    R: ranvier_core::transition::ResourceRequirement + Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
 {
     fn prefixed(&self, path: impl Into<String>) -> String {
         let p = path.into();

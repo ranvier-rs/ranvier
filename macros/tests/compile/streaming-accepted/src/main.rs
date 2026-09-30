@@ -11,7 +11,6 @@ use std::{
 
 use ranvier_core::{
     __macro_support::futures_core::Stream, bus::Bus, streaming::StreamingTransition,
-    transition::ResourceRequirement,
 };
 use ranvier_macros::streaming_transition;
 
@@ -50,7 +49,6 @@ async fn qualified_pinned_boxed_stream(
 }
 
 struct AppResources;
-impl ResourceRequirement for AppResources {}
 
 // Keep the imported type alias observable after the macro consumes its source signature.
 fn bus_type_witness(_: &mut Bus) {}
@@ -174,7 +172,7 @@ where
     From: Send + 'static,
     Item: Send + 'static,
     Error: Send + Sync + std::fmt::Debug + 'static,
-    Resources: ResourceRequirement,
+    Resources: Send + Sync + 'static,
 {
 }
 

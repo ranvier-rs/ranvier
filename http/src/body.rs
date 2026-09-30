@@ -31,7 +31,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use http::StatusCode;
 use ranvier_core::prelude::*;
-use ranvier_core::transition::ResourceRequirement;
 use serde::de::DeserializeOwned;
 
 use crate::extract::HttpRequestBody;
@@ -101,7 +100,7 @@ impl IntoResponse for JsonBodyError {
 impl<T, R> Transition<(), T> for JsonBody<T, R>
 where
     T: DeserializeOwned + Send + Sync + 'static,
-    R: ResourceRequirement + Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
 {
     type Error = JsonBodyError;
     type Resources = R;

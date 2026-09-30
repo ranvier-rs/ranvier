@@ -31,7 +31,6 @@ use async_trait::async_trait;
 use http::Method;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use ranvier_core::prelude::*;
-use ranvier_core::transition::ResourceRequirement;
 use ranvier_http::prelude::*;
 use ranvier_openapi::prelude::*;
 use ranvier_runtime::Axon;
@@ -54,8 +53,6 @@ struct AppState {
     openapi_json: serde_json::Value,
     swagger_html: String,
 }
-
-impl ResourceRequirement for AppState {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct LoginRequest {

@@ -19,7 +19,6 @@ mod safe_query_builder;
 
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
-use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
 use safe_query_builder::{QueryBuilder, SortDirection};
 use serde::{Deserialize, Serialize};
@@ -32,8 +31,6 @@ use sqlx::{Row, SqlitePool};
 
 #[derive(Clone)]
 struct DbPool(SqlitePool);
-
-impl ResourceRequirement for DbPool {}
 
 // ============================================================================
 // Domain Types

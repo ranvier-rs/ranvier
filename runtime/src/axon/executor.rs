@@ -27,7 +27,7 @@ where
     In: Send + Sync + Serialize + DeserializeOwned + 'static,
     Out: Send + Sync + Serialize + DeserializeOwned + 'static,
     E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
-    Res: ranvier_core::transition::ResourceRequirement,
+    Res: Send + Sync + 'static,
 {
     /// Execute with an explicit cooperative cancellation owner.
     ///

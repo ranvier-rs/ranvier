@@ -9,7 +9,7 @@
   "baseline_ref": "v0.51.0",
   "baseline_commit": "3578799759da5d2fb3ad5742b67b7c281b726754",
   "cargo_semver_feature_mode": "all-features",
-  "stable_candidate_item_count": 184,
+  "stable_candidate_item_count": 183,
   "candidate_bearing_packages": [
     "ranvier",
     "ranvier-core",
@@ -1094,14 +1094,6 @@
         {
           "path": "ranvier_core::schematic::SourceLocation::with_column",
           "kind": "function",
-          "origin": "direct",
-          "target": null,
-          "owner": "runtime-core",
-          "boundary": null
-        },
-        {
-          "path": "ranvier_core::transition::ResourceRequirement",
-          "kind": "trait",
           "origin": "direct",
           "target": null,
           "owner": "runtime-core",

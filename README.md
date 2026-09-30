@@ -162,7 +162,7 @@ Read the full philosophy: [PHILOSOPHY.md](docs/PHILOSOPHY.md)
 3. `http/` — Ingress/Egress adapter boundary (Hyper 1.0 native)
 4. `std/` — standard transitions: utilities
 5. `guard/` — 15 Guard nodes: pipeline-first middleware (replaces Tower)
-6. `macros/` — `#[transition]`, `#[streaming_transition]`, `#[derive(ResourceRequirement)]`
+6. `macros/` — `#[transition]`, `#[streaming_transition]`
 7. `testing/` — TestBus, TestAxon, assertion macros
 8. `kit/` — facade crate (re-exports all as `ranvier`)
 9. `extensions/inspector/` — runtime observability server

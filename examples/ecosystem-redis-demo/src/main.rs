@@ -15,7 +15,6 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
-use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
@@ -26,8 +25,6 @@ struct AppResources {
     redis: redis::aio::ConnectionManager,
     key_prefix: String,
 }
-
-impl ResourceRequirement for AppResources {}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SessionRequest {

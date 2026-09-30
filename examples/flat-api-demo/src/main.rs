@@ -23,8 +23,6 @@ struct MyResources {
     pub multiplier: i32,
 }
 
-impl ranvier_core::transition::ResourceRequirement for MyResources {}
-
 // 2. Define Transitions with Macros
 #[transition(resources = MyResources)]
 async fn init_state(_input: ()) -> Outcome<i32, String> {

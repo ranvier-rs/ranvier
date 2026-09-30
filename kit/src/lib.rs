@@ -23,7 +23,7 @@ pub use ranvier_std as std;
 // Candidate macros re-exported for facade-only consumers.
 #[cfg(feature = "streaming")]
 pub use ranvier_macros::streaming_transition;
-pub use ranvier_macros::{ResourceRequirement, transition};
+pub use ranvier_macros::transition;
 
 // AuthContext and AuthScheme live in ranvier-core::iam (always available, no feature gate).
 pub use ranvier_core::iam::{AuthContext, AuthScheme};
@@ -54,7 +54,7 @@ pub mod prelude {
     pub use ranvier_inspector::{Inspector, StateInspector};
     #[cfg(feature = "streaming")]
     pub use ranvier_macros::streaming_transition;
-    pub use ranvier_macros::{ResourceRequirement, transition};
+    pub use ranvier_macros::transition;
     #[cfg(feature = "openapi")]
     pub use ranvier_openapi::prelude::*;
     pub use ranvier_runtime::prelude::*;

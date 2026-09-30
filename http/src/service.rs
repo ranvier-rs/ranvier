@@ -71,7 +71,7 @@ where
     Out: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
     E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     F: Fn(Request<B>, &mut Bus) -> In + Clone + Send + Sync + 'static,
-    Res: ranvier_core::transition::ResourceRequirement + Send + Sync + 'static,
+    Res: Send + Sync + 'static,
 {
     type Response = Response<Full<Bytes>>;
     type Error = Infallible;

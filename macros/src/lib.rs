@@ -114,11 +114,10 @@ pub fn ranvier_router(input: TokenStream) -> TokenStream {
 /// use ranvier_core::{
 ///     __macro_support::futures_core::Stream,
 ///     bus::Bus,
-///     transition::ResourceRequirement as ResourceRequirementTrait,
 /// };
-/// use ranvier_macros::{streaming_transition, ResourceRequirement};
+/// use ranvier_macros::streaming_transition;
 ///
-/// #[derive(Clone, ResourceRequirement)]
+/// #[derive(Clone)]
 /// struct AppResources;
 ///
 /// struct OneItemStream(Option<String>);
@@ -151,7 +150,6 @@ pub fn ranvier_router(input: TokenStream) -> TokenStream {
 ///         Error = String,
 ///         Resources = AppResources,
 ///     > + Clone,
-///     AppResources: ResourceRequirementTrait,
 /// {
 /// }
 ///
@@ -164,32 +162,6 @@ pub fn streaming_transition(attr: TokenStream, item: TokenStream) -> TokenStream
         Ok(expansion) => expansion.into(),
         Err(error) => diagnostic::compile_error(error),
     }
-}
-
-/// Derive macro for the `ResourceRequirement` marker trait.
-///
-/// Generates a blanket `impl ResourceRequirement for YourType {}`.
-/// The type must also implement `Clone` (required by the Axon execution engine).
-///
-/// # Example
-///
-/// ```rust
-/// use ranvier_core::transition::ResourceRequirement as ResourceRequirementTrait;
-/// use ranvier_macros::ResourceRequirement;
-///
-/// #[derive(Clone, ResourceRequirement)]
-/// struct AppResources;
-///
-/// fn assert_resource_requirement<T: ResourceRequirementTrait>() {}
-///
-/// assert_resource_requirement::<AppResources>();
-/// ```
-#[proc_macro_derive(ResourceRequirement)]
-pub fn derive_resource_requirement(input: TokenStream) -> TokenStream {
-    crate_path::core_crate_path()
-        .and_then(|core_path| expansion::derive_resource_requirement(core_path, input.into()))
-        .map(TokenStream::from)
-        .unwrap_or_else(diagnostic::compile_error)
 }
 
 #[cfg(test)]

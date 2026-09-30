@@ -19,7 +19,7 @@
 use async_trait::async_trait;
 use ranvier_core::bus::Bus;
 use ranvier_core::outcome::Outcome;
-use ranvier_core::transition::{ResourceRequirement, Transition};
+use ranvier_core::transition::Transition;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
@@ -66,7 +66,7 @@ where
     From: Send + 'static,
     To: Send + 'static,
     E: Send + Sync + Debug + 'static,
-    Res: ResourceRequirement,
+    Res: Send + Sync + 'static,
 {
     type Error = E;
     type Resources = Res;

@@ -26,7 +26,6 @@
         { "prefix": "ranvier_core::bus::Bus::cancellation_token", "match": "exact", "tier": "Experimental" },
         { "prefix": "ranvier_core::bus::Bus::set_cancellation_token", "match": "exact", "tier": "Experimental" },
         { "prefix": "ranvier_core::transition::Transition", "tier": "Stable Candidate" },
-        { "prefix": "ranvier_core::transition::ResourceRequirement", "tier": "Stable Candidate" },
         { "prefix": "ranvier_core::outcome::Outcome", "tier": "Stable Candidate" },
         { "prefix": "ranvier_core::outcome::BranchId", "tier": "Stable Candidate" },
         { "prefix": "ranvier_core::outcome::NodeId", "tier": "Stable Candidate" },

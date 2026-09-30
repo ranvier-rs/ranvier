@@ -15,7 +15,6 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
-use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,8 +27,6 @@ struct AppResources {
     api_key: Option<String>,
     index_uid: String,
 }
-
-impl ResourceRequirement for AppResources {}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SearchInput {

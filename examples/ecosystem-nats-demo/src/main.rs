@@ -18,7 +18,6 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use ranvier_core::event::{EventSink, EventSource};
 use ranvier_core::prelude::*;
-use ranvier_core::transition::ResourceRequirement;
 use ranvier_runtime::Axon;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, timeout};
@@ -29,8 +28,6 @@ struct AppResources {
     inbound_subject: String,
     outbound_subject: String,
 }
-
-impl ResourceRequirement for AppResources {}
 
 fn now_ms() -> u128 {
     SystemTime::now()

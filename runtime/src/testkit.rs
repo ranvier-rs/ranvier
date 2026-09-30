@@ -1,5 +1,5 @@
 use crate::Axon;
-use ranvier_core::{Bus, Outcome, transition::ResourceRequirement};
+use ranvier_core::{Bus, Outcome};
 use serde::{Serialize, de::DeserializeOwned};
 use std::any::Any;
 
@@ -52,7 +52,7 @@ impl<R> AxonTestKit<R> {
 
 impl<R> AxonTestKit<R>
 where
-    R: ResourceRequirement,
+    R: Send + Sync + 'static,
 {
     pub async fn run<In, Out, E>(
         &mut self,
@@ -81,8 +81,6 @@ mod tests {
     struct MockResources {
         offset: usize,
     }
-
-    impl ranvier_core::transition::ResourceRequirement for MockResources {}
 
     #[derive(Clone)]
     struct SumWithBus;

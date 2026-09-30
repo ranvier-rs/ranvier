@@ -266,7 +266,7 @@ pub fn streaming_all_roles_axon() -> StreamingAxon<i32, i32, String, AppResource
         .then_stream(stream_all_roles)
 }
 
-#[derive(Clone, ResourceRequirement)]
+#[derive(Clone)]
 pub struct AppResources {
     suffix: &'static str,
 }

@@ -37,7 +37,7 @@ where
     In: Send + Sync + Serialize + DeserializeOwned + 'static,
     Out: Send + Sync + Serialize + DeserializeOwned + 'static,
     E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
-    Res: ranvier_core::transition::ResourceRequirement,
+    Res: Send + Sync + 'static,
 {
     /// Each transition receives a clone of the current step's output and runs
     /// concurrently via [`futures_util::future::join_all`]. The strategy controls

@@ -2,7 +2,6 @@ use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
-use ranvier_core::transition::ResourceRequirement;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -45,7 +44,7 @@ pub struct TestApp<R> {
 
 impl<R> TestApp<R>
 where
-    R: ResourceRequirement + Clone + Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
 {
     pub fn new(ingress: HttpIngress<R>, resources: R) -> Self {
         Self {
