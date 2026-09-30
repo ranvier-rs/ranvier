@@ -14,7 +14,7 @@ try {
     $graphs = @{}
     foreach ($case in @('ranvier-observe', 'ranvier-core', 'ranvier-core-default', 'ranvier-observe-default')) {
         $package = $case.Replace('-default', '')
-        $featureArgs = if ($case.EndsWith('-default')) { @() } else { @('--no-default-features') }
+        $featureArgs = @(if (-not $case.EndsWith('-default')) { '--no-default-features' })
         $output = @(& cargo tree -p $package @featureArgs --edges normal --prefix none --locked --offline 2>&1)
         $code = $LASTEXITCODE
         $output | Set-Content -LiteralPath (Join-Path $destination "$case-tree.log") -Encoding utf8
