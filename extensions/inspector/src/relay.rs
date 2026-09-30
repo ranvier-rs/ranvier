@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 
 /// Configuration for the Inspector relay proxy.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RelayConfig {
     /// Target base URL for the running application server (e.g., `http://127.0.0.1:3111`)
     pub target_url: String,
@@ -13,6 +13,15 @@ pub struct RelayConfig {
     pub timeout_ms: u64,
     /// Maximum concurrent relay requests (default: 10)
     pub max_concurrent: usize,
+}
+impl std::fmt::Debug for RelayConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RelayConfig")
+            .field("target_url", &"[REDACTED]")
+            .field("timeout_ms", &self.timeout_ms)
+            .field("max_concurrent", &self.max_concurrent)
+            .finish()
+    }
 }
 
 impl RelayConfig {
@@ -274,6 +283,69 @@ pub async fn execute_relay(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relay_budget_parser_rejects_invalid_explicit_values() {
+        assert_eq!(parse_budget(None, 10), Ok(10));
+        assert_eq!(parse_budget(Some("42"), 10), Ok(42));
+        for value in [
+            "",
+            "0",
+            "-1",
+            "+1",
+            " 1",
+            "1 ",
+            "1.0",
+            "18446744073709551616",
+            "secret",
+        ] {
+            assert_eq!(
+                parse_budget(Some(value), 10),
+                Err(RelayConfigError::InvalidBudget)
+            );
+        }
+    }
+
+    #[test]
+    fn relay_startup_validates_target_and_direct_budget_configuration() {
+        for target in [
+            "ftp://host",
+            "http://user:secret@host",
+            "http://host?secret=value",
+            "http://host#secret",
+            " http://host",
+            "http://host\n",
+            "invalid",
+        ] {
+            assert_eq!(
+                RelayConfig::from_values(target.into(), None, None).unwrap_err(),
+                RelayConfigError::InvalidTarget
+            );
+        }
+        for (timeout_ms, max_concurrent) in [(0, 1), (1, 0), (1, Semaphore::MAX_PERMITS + 1)] {
+            let config = RelayConfig {
+                target_url: "http://localhost".into(),
+                timeout_ms,
+                max_concurrent,
+            };
+            assert!(matches!(
+                RelayState::new(config),
+                Err(RelayConfigError::InvalidBudget)
+            ));
+        }
+    }
+
+    #[test]
+    fn relay_config_debug_and_errors_do_not_echo_target_secrets() {
+        let config = RelayConfig {
+            target_url: "http://user:SENTINEL@host".into(),
+            timeout_ms: 1,
+            max_concurrent: 1,
+        };
+        assert!(!format!("{config:?}").contains("SENTINEL"));
+        let error = config.validate().unwrap_err();
+        assert!(!format!("{error:?} {error}").contains("SENTINEL"));
+    }
 
     #[test]
     fn relay_config_defaults() {
