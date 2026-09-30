@@ -71,7 +71,10 @@ try {
     Assert-NewFixture container $JaegerContainerName
     Assert-NewFixture network $NetworkName
     $created = @(podman network create $NetworkName)
-    $ownedNetworkId = Get-OwnedId $created $LASTEXITCODE
+    if ($LASTEXITCODE -ne 0) { throw 'Network creation failed.' }
+    # Podman network create prints the name; obtain its immutable ID separately.
+    $networkIdentity = @(podman network inspect $NetworkName --format '{{.ID}}')
+    $ownedNetworkId = Get-OwnedId $networkIdentity $LASTEXITCODE
      $created = @(podman run -d --rm --name $JaegerContainerName `
         --network $ownedNetworkId `
         --network-alias ranvier-otel-jaeger `
