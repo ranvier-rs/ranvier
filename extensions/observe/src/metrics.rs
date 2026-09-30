@@ -349,6 +349,45 @@ impl InstrumentProvider for ProtectedInstruments {
 mod tests {
     use super::*;
     #[test]
+    fn strict_gauge_scope_collision_fails_before_either_callback_runs() {
+        let captured = Arc::new(Mutex::new(Values::new()));
+        let provider = ProtectedMeterProvider {
+            inner: SdkMeterProvider::builder()
+                .with_reader(
+                    PeriodicReader::builder(CollisionCapture(captured.clone()))
+                        .with_interval(Duration::from_secs(3600))
+                        .build(),
+                )
+                .build(),
+            policy: Policy::new(crate::redaction::Mode::Strict, "").unwrap(),
+            state: Default::default(),
+        };
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let first_calls = calls.clone();
+        let _first = provider
+            .meter("first-scope")
+            .i64_observable_gauge("same")
+            .with_callback(move |instrument| {
+                first_calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                instrument.observe(2, &[]);
+            })
+            .build();
+        let second_calls = calls.clone();
+        let _second = provider
+            .meter("second-scope")
+            .i64_observable_gauge("same")
+            .with_callback(move |instrument| {
+                second_calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                instrument.observe(8, &[]);
+            })
+            .build();
+        assert!(provider.state.failed());
+        provider.inner.force_flush().unwrap();
+        provider.inner.shutdown().unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 0);
+        assert!(!captured.lock().unwrap().contains_key("same"));
+    }
+    #[test]
     fn strict_scope_collision_is_reported_instead_of_overwriting_observable_sum() {
         let captured = Arc::new(Mutex::new(Values::new()));
         let provider = ProtectedMeterProvider {
