@@ -135,6 +135,110 @@ mod tests {
     };
     use std::{sync::Mutex, time::Duration};
     struct Capture(Arc<Mutex<Vec<String>>>);
+    #[derive(Debug, Default, PartialEq)]
+    struct Totals {
+        counter: u64,
+        counter_series: usize,
+        histogram_sum: u64,
+        histogram_count: u64,
+        histogram_series: usize,
+        buckets: Vec<u64>,
+    }
+    struct NumericCapture(Arc<Mutex<Totals>>);
+    impl PushMetricExporter for NumericCapture {
+        async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+            use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+            let mut totals = Totals::default();
+            for scope in metrics.scope_metrics() {
+                for metric in scope.metrics() {
+                    if let AggregatedMetrics::U64(data) = metric.data() {
+                        match data {
+                            MetricData::Sum(sum) => {
+                                for point in sum.data_points() {
+                                    totals.counter += point.value();
+                                    totals.counter_series += 1;
+                                }
+                            }
+                            MetricData::Histogram(histogram) => {
+                                for point in histogram.data_points() {
+                                    totals.histogram_sum += point.sum();
+                                    totals.histogram_count += point.count();
+                                    totals.histogram_series += 1;
+                                    assert_eq!(point.bounds().collect::<Vec<_>>(), vec![5.0]);
+                                    let buckets = point.bucket_counts().collect::<Vec<_>>();
+                                    if totals.buckets.is_empty() {
+                                        totals.buckets.resize(buckets.len(), 0);
+                                    }
+                                    for (total, count) in totals.buckets.iter_mut().zip(buckets) {
+                                        *total += count;
+                                    }
+                                }
+                            }
+                            _ => panic!("unexpected aggregation"),
+                        }
+                    } else {
+                        panic!("unexpected numeric type");
+                    }
+                }
+            }
+            *self.0.lock().unwrap() = totals;
+            Ok(())
+        }
+        fn force_flush(&self) -> OTelSdkResult {
+            Ok(())
+        }
+        fn shutdown_with_timeout(&self, _: Duration) -> OTelSdkResult {
+            Ok(())
+        }
+        fn temporality(&self) -> Temporality {
+            Temporality::Cumulative
+        }
+    }
+    #[test]
+    fn masking_merges_series_without_losing_counter_or_histogram_totals() {
+        for mode in [Mode::Public, Mode::Strict, Mode::Off] {
+            let off = matches!(mode, Mode::Off);
+            let totals = Arc::new(Mutex::new(Totals::default()));
+            let provider = ProtectedMeterProvider {
+                inner: SdkMeterProvider::builder()
+                    .with_reader(
+                        PeriodicReader::builder(NumericCapture(totals.clone()))
+                            .with_interval(Duration::from_secs(3600))
+                            .build(),
+                    )
+                    .build(),
+                policy: Policy::new(mode, "").unwrap(),
+            };
+            let meter = provider.meter("numeric-fixture");
+            let counter = meter
+                .u64_counter("counter")
+                .with_unit("runs")
+                .with_description("fixture counter")
+                .build();
+            let histogram = meter
+                .u64_histogram("histogram")
+                .with_boundaries(vec![5.0])
+                .build();
+            for (label, value) in [("first-secret", 2), ("second-secret", 8)] {
+                let labels = [KeyValue::new("email", label)];
+                counter.add(value, &labels);
+                histogram.record(value, &labels);
+            }
+            provider.inner.force_flush().unwrap();
+            assert_eq!(
+                *totals.lock().unwrap(),
+                Totals {
+                    counter: 10,
+                    counter_series: if off { 2 } else { 1 },
+                    histogram_sum: 10,
+                    histogram_count: 2,
+                    histogram_series: if off { 2 } else { 1 },
+                    buckets: vec![1, 1],
+                }
+            );
+            provider.inner.shutdown().unwrap();
+        }
+    }
     impl PushMetricExporter for Capture {
         async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
             self.0.lock().unwrap().push(format!("{metrics:?}"));
