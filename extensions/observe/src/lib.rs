@@ -1,5 +1,7 @@
-//! Optional OTLP adapter. Provider ownership stays with the caller.
-//! Subscriber composition and redaction must be supplied before production use.
+#[cfg(feature = "otlp")]
+pub mod redaction;
+// Optional OTLP adapter. Provider ownership stays with the caller.
+// Subscriber composition and redaction must be supplied before production use.
 
 #[cfg(feature = "otlp")]
 pub mod otlp {
@@ -44,6 +46,7 @@ pub mod otlp {
             service: &str,
             endpoint: &str,
             protocol: Protocol,
+            redaction: crate::redaction::Mode,
             timeout: Duration,
         ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
             validate(service, endpoint, timeout)?;
@@ -82,7 +85,10 @@ pub mod otlp {
             Ok(Self {
                 traces: SdkTracerProvider::builder()
                     .with_resource(resource.clone())
-                    .with_batch_exporter(traces)
+                    .with_batch_exporter(crate::redaction::RedactingExporter {
+                        inner: traces,
+                        mode: redaction,
+                    })
                     .build(),
                 metrics: SdkMeterProvider::builder()
                     .with_resource(resource)

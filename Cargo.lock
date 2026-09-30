@@ -4645,6 +4645,7 @@ dependencies = [
 name = "ranvier-observe"
 version = "0.51.0"
 dependencies = [
+ "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "url",
