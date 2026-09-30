@@ -81,4 +81,51 @@ mod tests {
         redact(&mut attributes, &Mode::Off);
         assert_eq!(attributes[0].value.to_string(), "next");
     }
+    #[derive(Clone, Debug, Default)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<SpanData>>>);
+    impl SpanExporter for Capture {
+        async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
+            self.0.lock().unwrap().extend(batch);
+            Ok(())
+        }
+    }
+    #[test]
+    fn sdk_export_boundary_redacts_span_event_and_link_payloads() {
+        use opentelemetry::trace::{
+            Span, SpanContext, SpanId, TraceFlags, TraceId, TraceState, Tracer, TracerProvider,
+        };
+        for mode in [Mode::Public, Mode::Strict, Mode::Off] {
+            let capture = Capture::default();
+            let protected = !matches!(mode, Mode::Off);
+            let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+                .with_simple_exporter(RedactingExporter {
+                    inner: capture.clone(),
+                    mode,
+                })
+                .build();
+            let tracer = provider.tracer("test");
+            let mut span = tracer.start("fixture");
+            span.set_attribute(KeyValue::new("customer_email", "fixture-secret"));
+            span.add_event("event", vec![KeyValue::new("api_key", "fixture-secret")]);
+            span.add_link(
+                SpanContext::new(
+                    TraceId::from(1),
+                    SpanId::from(1),
+                    TraceFlags::SAMPLED,
+                    false,
+                    TraceState::default(),
+                ),
+                vec![KeyValue::new("token", "fixture-secret")],
+            );
+            span.end();
+            provider.shutdown().unwrap();
+            let spans = capture.0.lock().unwrap();
+            assert_eq!(spans.len(), 1);
+            assert_eq!(spans[0].events.events.len(), 1);
+            assert_eq!(spans[0].links.links.len(), 1);
+            let payload = format!("{spans:?}");
+            assert_eq!(payload.contains("fixture-secret"), !protected);
+            assert_eq!(payload.contains("[REDACTED]"), protected);
+        }
+    }
 }
