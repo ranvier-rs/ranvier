@@ -3,7 +3,9 @@ param(
     [ValidateRange(1, 65535)][int]$PostgresPort = 54329,
     [ValidateRange(1, 65535)][int]$RedisPort = 6389,
     [string]$EvidenceDir = '',
-    [ValidateSet('adapters','dependency-recovery','otel','otel-redaction')][string]$Scenario = 'adapters',
+    [ValidateSet('adapters','dependency-recovery','otel','otel-redaction','jaeger')][string]$Scenario = 'adapters',
+    [ValidateRange(1,65535)][int]$BackendPort = 16686,
+    [string]$JaegerImage = 'docker.io/jaegertracing/all-in-one:1.60.0',
     [string]$CollectorImage = 'docker.io/otel/opentelemetry-collector-contrib:latest',
     [ValidateSet('grpc','http/protobuf')][string]$OtlpProtocol = 'grpc',
     [ValidateSet('off','public','strict')][string]$RedactMode = 'public'
@@ -14,7 +16,10 @@ $PSNativeCommandUseErrorActionPreference = $false
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'This SSH transport wrapper is for Windows hosts.' }
 if ($PostgresPort -eq $RedisPort) { throw 'Distinct forward ports are required.' }
 if ($env:CONTAINER_HOST -or $env:CONTAINER_CONNECTION -or $env:CONTAINER_SSHKEY) { throw 'Explicit Podman connection overrides are not supported by this machine-scoped wrapper.' }
-foreach ($port in @($PostgresPort, $RedisPort)) {
+$forwardPorts = @($PostgresPort, $RedisPort)
+if ($Scenario -eq 'jaeger') { $forwardPorts += $BackendPort }
+if (@($forwardPorts | Select-Object -Unique).Count -ne $forwardPorts.Count) { throw 'Distinct forward ports required.' }
+foreach ($port in $forwardPorts) {
     $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port)
     try { $probe.Start() } catch { throw "Local forward port $port is unavailable." } finally { $probe.Stop() }
 }
@@ -69,6 +74,7 @@ Host ranvier-smoke
     LocalForward 127.0.0.1:$PostgresPort 127.0.0.1:$PostgresPort
     LocalForward 127.0.0.1:$RedisPort 127.0.0.1:$RedisPort
 "@
+if ($Scenario -eq 'jaeger') { $configText += "`n    LocalForward 127.0.0.1:$BackendPort 127.0.0.1:$BackendPort`n" }
 [IO.File]::WriteAllText($configPath, $configText, [Text.UTF8Encoding]::new($false))
 $sshArguments = @('-N', '-T', '-F', ('"{0}"' -f $configPath), 'ranvier-smoke')
 $tunnel = $null
@@ -79,7 +85,9 @@ try {
     if ($tunnel.HasExited) { throw 'SSH loopback tunnel exited during startup; inspect ssh-stderr.log.' }
     [ordered]@{ machine = $MachineName; default_connection = $connection.Name; ssh_port = $uri.Port; process_id = $tunnel.Id; known_hosts_sha256 = (Get-FileHash $knownHosts).Hash } |
         ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $EvidenceDir 'ssh-tunnel-identity.json')
-    if ($Scenario -in @('otel','otel-redaction')) {
+    if ($Scenario -eq 'jaeger') {
+        & (Join-Path $PSScriptRoot 'otel_collector_jaeger_smoke_podman.ps1') -EvidenceDir $EvidenceDir -CollectorImage $CollectorImage -JaegerImage $JaegerImage -GrpcPort $PostgresPort -HttpPort $RedisPort -JaegerPort $BackendPort
+    } elseif ($Scenario -in @('otel','otel-redaction')) {
         $helper = if ($Scenario -eq 'otel') { 'otel_collector_smoke_podman.ps1' } else { 'otel_collector_otlp_redaction_smoke_podman.ps1' }
         $helperArgs = @{ EvidenceDir=$EvidenceDir; CollectorImage=$CollectorImage; GrpcPort=$PostgresPort; HttpPort=$RedisPort; Protocol=$OtlpProtocol }
         if ($Scenario -eq 'otel-redaction') { $helperArgs.RedactMode = $RedactMode }

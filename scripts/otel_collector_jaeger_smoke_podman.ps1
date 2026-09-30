@@ -4,7 +4,12 @@ param(
     [string]$JaegerContainerName = ("ranvier-otel-jaeger-" + [Guid]::NewGuid().ToString("N")),
     [ValidateRange(0, 300)][int]$StartupWaitSeconds = 8,
     [string]$EvidenceDir = "",
-    [string]$ConfigPath = ""
+    [string]$ConfigPath = "",
+    [ValidateRange(1,65535)][int]$GrpcPort = 4317,
+    [ValidateRange(1,65535)][int]$HttpPort = 4318,
+    [ValidateRange(1,65535)][int]$JaegerPort = 16686,
+    [string]$CollectorImage = 'docker.io/otel/opentelemetry-collector-contrib:latest',
+    [string]$JaegerImage = 'docker.io/jaegertracing/all-in-one:1.60.0'
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,7 +19,7 @@ $ownedIds = [Collections.Generic.List[string]]::new()
 $ownedNetworkId = $null
 $primaryFailure = $null
 $savedEnvironment = @{}
-foreach ($name in @('RANVIER_OTLP_ENDPOINT','RANVIER_OTLP_PROTOCOL','RUST_LOG')) {
+foreach ($name in @('RANVIER_OTLP_ENDPOINT','RANVIER_OTLP_PROTOCOL','RUST_LOG','RANVIER_TELEMETRY_REDACT_MODE','RANVIER_TELEMETRY_REDACT_KEYS')) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
 }
 function Assert-NewFixture {
@@ -78,26 +83,28 @@ try {
      $created = @(podman run -d --rm --name $JaegerContainerName `
         --network $ownedNetworkId `
         --network-alias ranvier-otel-jaeger `
-        -p 127.0.0.1:16686:16686 `
+        -p "127.0.0.1:${JaegerPort}:16686" `
         -e COLLECTOR_OTLP_ENABLED=true `
-        docker.io/jaegertracing/all-in-one:1.60.0)
+        $JaegerImage)
     $ownedIds.Add((Get-OwnedId $created $LASTEXITCODE))
 
      $created = @(podman run -d --rm --name $CollectorContainerName `
         --network $ownedNetworkId `
-        -p 127.0.0.1:4317:4317 `
-        -p 127.0.0.1:4318:4318 `
+        -p "127.0.0.1:${GrpcPort}:4317" `
+        -p "127.0.0.1:${HttpPort}:4318" `
         -v "${configPath}:/etc/otelcol-contrib/config.yaml" `
-        docker.io/otel/opentelemetry-collector-contrib:latest)
+        $CollectorImage)
     $ownedIds.Add((Get-OwnedId $created $LASTEXITCODE))
 
     Start-Sleep -Seconds $StartupWaitSeconds
 
     Push-Location $ranvierRoot
     try {
-        $env:RANVIER_OTLP_ENDPOINT = "http://localhost:4317"
+        $env:RANVIER_OTLP_ENDPOINT = "http://127.0.0.1:$GrpcPort"
         $env:RANVIER_OTLP_PROTOCOL = "grpc"
         $env:RUST_LOG = "info"
+        $env:RANVIER_TELEMETRY_REDACT_MODE = 'public'
+        $env:RANVIER_TELEMETRY_REDACT_KEYS = ''
 
         cargo run --locked -p ranvier-observe --example otlp_smoke --features otlp *>&1 | Tee-Object -FilePath $appLog | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "OTel demo failed." }
@@ -127,13 +134,23 @@ try {
         throw "App log contains OpenTelemetry trace error."
     }
 
-    $servicesResponse = Invoke-RestMethod -Uri "http://localhost:16686/api/services" -Method GET -TimeoutSec 10
+    if (-not (Select-String -LiteralPath $appLog -SimpleMatch 'OTLP_SMOKE_EXPORTED outcome=12')) { throw 'Finite export marker missing.' }
+    $servicesResponse = Invoke-RestMethod -Uri "http://127.0.0.1:$JaegerPort/api/services" -Method GET -TimeoutSec 10
     $services = @($servicesResponse.data)
     ("SERVICES=" + ($services -join ",")) | Set-Content -Path $servicesLog -Encoding UTF8
 
     if ($services -notcontains "otel-demo") {
         throw "Jaeger service list does not include otel-demo."
     }
+    $tracesResponse = Invoke-RestMethod -Uri "http://127.0.0.1:$JaegerPort/api/traces?service=otel-demo&limit=10" -Method GET -TimeoutSec 10
+    $tracesResponse | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath (Join-Path $evidenceDir 'backend-traces.json') -Encoding utf8
+    $complete = @($tracesResponse.data | Where-Object {
+        $names = @($_.spans.operationName)
+        @($names | Where-Object { $_ -eq 'CalculationCircuit' }).Count -eq 1 -and
+        @($names | Where-Object { $_ -eq 'Circuit' }).Count -eq 1 -and
+        @($names | Where-Object { $_ -eq 'Node' }).Count -eq 2
+    })
+    if ($complete.Count -ne 1) { throw 'Jaeger runtime trace receipt missing or ambiguous.' }
 
 } catch {
     $primaryFailure = $_
