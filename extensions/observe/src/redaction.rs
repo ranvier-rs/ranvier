@@ -120,6 +120,7 @@ fn redact(attributes: &mut [KeyValue], policy: &Policy) {
 impl<E: SpanExporter> SpanExporter for RedactingExporter<E> {
     async fn export(&self, mut batch: Vec<SpanData>) -> OTelSdkResult {
         for span in &mut batch {
+            span.instrumentation_scope = self.policy.scope(&span.instrumentation_scope);
             redact(&mut span.attributes, &self.policy);
             for event in &mut span.events.events {
                 redact(&mut event.attributes, &self.policy);
@@ -294,13 +295,23 @@ mod tests {
         for mode in [Mode::Public, Mode::Strict, Mode::Off] {
             let capture = Capture::default();
             let protected = !matches!(mode, Mode::Off);
+            let strict = matches!(mode, Mode::Strict);
             let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
                 .with_simple_exporter(RedactingExporter {
                     inner: capture.clone(),
                     policy: Policy::new(mode, "account_number").unwrap(),
                 })
                 .build();
-            let tracer = provider.tracer("test");
+            let tracer = provider.tracer_with_scope(
+                opentelemetry::InstrumentationScope::builder("scope-name-fixture")
+                    .with_version("scope-version-fixture")
+                    .with_schema_url("https://fixture.example/schema-secret")
+                    .with_attributes([
+                        KeyValue::new("email", "scope-builtin-secret"),
+                        KeyValue::new("account_number", "scope-custom-secret"),
+                    ])
+                    .build(),
+            );
             let mut span = tracer.start("fixture");
             span.set_attribute(KeyValue::new("customer_email", "fixture-secret"));
             span.set_attribute(KeyValue::new("ACCOUNT_NUMBER", "custom-secret"));
@@ -331,6 +342,15 @@ mod tests {
             let payload = format!("{spans:?}");
             assert_eq!(payload.contains("fixture-secret"), !protected);
             assert_eq!(payload.contains("custom-secret"), !protected);
+            for secret in [
+                "scope-builtin-secret",
+                "scope-custom-secret",
+                "schema-secret",
+            ] {
+                assert_eq!(payload.contains(secret), !protected);
+            }
+            assert_eq!(payload.contains("scope-name-fixture"), !strict);
+            assert_eq!(payload.contains("scope-version-fixture"), !strict);
             assert_eq!(payload.contains("[REDACTED]"), protected);
         }
     }
