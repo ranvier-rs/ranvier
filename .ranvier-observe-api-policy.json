@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0.0",
+  "deprecations": [],
+  "rustdoc_toolchain": "1.95.0",
+  "owners": {
+    "security-ops": "Operational adapter review role; accountable people remain unset"
+  },
+  "tiers": [
+    "Experimental"
+  ],
+  "crates": {
+    "ranvier-observe": {
+      "owner": "security-ops",
+      "boundaries": [
+        {
+          "kind": "optional operational adapter",
+          "prefix": "ranvier_observe"
+        }
+      ],
+      "rules": [],
+      "default_tier": "Experimental"
+    }
+  },
+  "product_version": "0.51.0"
+}
