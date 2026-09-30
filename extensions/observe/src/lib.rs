@@ -70,13 +70,13 @@ pub mod otlp {
                     opentelemetry_otlp::SpanExporter::builder()
                         .with_http()
                         .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
-                        .with_endpoint(endpoint)
+                        .with_endpoint(format!("{}/v1/traces", endpoint.trim_end_matches("/")))
                         .with_timeout(timeout)
                         .build()?,
                     opentelemetry_otlp::MetricExporter::builder()
                         .with_http()
                         .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
-                        .with_endpoint(endpoint)
+                        .with_endpoint(format!("{}/v1/metrics", endpoint.trim_end_matches("/")))
                         .with_timeout(timeout)
                         .build()?,
                 ),
