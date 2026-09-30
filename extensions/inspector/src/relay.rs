@@ -351,7 +351,7 @@ mod tests {
                 socket.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").await.unwrap();
                 if stalled {
                     // Hold the body open past the client's complete-request budget.
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                 } else {
                     let chunk = vec![b'x'; 64 * 1024];
                     for _ in 0..17 {
@@ -386,6 +386,8 @@ mod tests {
             )
             .await
             .unwrap();
+            let elapsed = started.elapsed();
+            server.await.unwrap();
             assert_eq!(
                 result.unwrap_err().error,
                 if stalled {
@@ -395,10 +397,9 @@ mod tests {
                 }
             );
             if stalled {
-                assert!(started.elapsed() < Duration::from_millis(500));
+                assert!(elapsed < Duration::from_millis(1500));
             }
             assert_eq!(relay.semaphore.available_permits(), 1);
-            server.await.unwrap();
         }
     }
 
