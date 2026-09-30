@@ -526,6 +526,8 @@ mod tests {
                 .i64_observable_up_down_counter("observable_changes")
                 .with_callback(|instrument| {
                     instrument.observe(2, &[KeyValue::new("email", "first-secret")]);
+                })
+                .with_callback(|instrument| {
                     instrument.observe(8, &[KeyValue::new("email", "second-secret")]);
                 })
                 .build();
