@@ -134,17 +134,21 @@ fn type_name_of<T: ?Sized>() -> String {
 ///
 /// ## Example
 ///
-/// ```rust,ignore
+/// ```rust
 /// use ranvier_core::prelude::*;
-/// // ...
-/// // Start with an identity Axon (In -> In)
-/// let axon = Axon::<(), (), _>::new("My Axon")
-///     .then(StepA)
-///     .then(StepB);
+/// use ranvier_runtime::Axon;
+/// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+/// let axon = Axon::<u32, u32, String>::new("increment")
+///     .then_fn("add-one", |input, _bus| Outcome::next(input + 1));
 ///
-/// // Execute multiple times
-/// let res1 = axon.execute((), &mut bus1).await;
-/// let res2 = axon.execute((), &mut bus2).await;
+/// // Reuse the same engine with independent request buses.
+/// let mut bus1 = Bus::new();
+/// let mut bus2 = Bus::new();
+/// let res1 = axon.execute(10, &(), &mut bus1).await;
+/// let res2 = axon.execute(20, &(), &mut bus2).await;
+/// assert!(matches!(res1, Outcome::Next(11)));
+/// assert!(matches!(res2, Outcome::Next(21)));
+/// # });
 /// ```
 pub struct Axon<In, Out, E, Res = ()> {
     /// The static structure (for visualization/analysis)
