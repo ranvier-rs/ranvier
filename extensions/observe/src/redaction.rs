@@ -21,6 +21,26 @@ pub struct Policy {
     keys: Vec<String>,
 }
 impl Policy {
+    pub(crate) fn metric_description(
+        &self,
+        value: Option<std::borrow::Cow<'static, str>>,
+    ) -> Option<std::borrow::Cow<'static, str>> {
+        if matches!(self.mode, Mode::Off) {
+            value
+        } else {
+            None
+        }
+    }
+    pub(crate) fn metric_unit(
+        &self,
+        value: Option<std::borrow::Cow<'static, str>>,
+    ) -> Option<std::borrow::Cow<'static, str>> {
+        if matches!(self.mode, Mode::Strict) {
+            None
+        } else {
+            value
+        }
+    }
     pub(crate) fn scope(
         &self,
         scope: &opentelemetry::InstrumentationScope,

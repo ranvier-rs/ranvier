@@ -182,10 +182,10 @@ macro_rules! sync_instrument {
     ($method:ident, $kind:ident, $number:ty, $operation:ident) => {
         fn $method(&self, builder: InstrumentBuilder<'_, $kind<$number>>) -> $kind<$number> {
             let mut delegated = self.inner.$method(builder.name);
-            if let Some(value) = builder.description {
+            if let Some(value) = self.policy.metric_description(builder.description) {
                 delegated = delegated.with_description(value);
             }
-            if let Some(value) = builder.unit {
+            if let Some(value) = self.policy.metric_unit(builder.unit) {
                 delegated = delegated.with_unit(value);
             }
             let instrument = delegated.build();
@@ -200,10 +200,10 @@ macro_rules! histogram {
     ($method:ident, $number:ty) => {
         fn $method(&self, builder: HistogramBuilder<'_, Histogram<$number>>) -> Histogram<$number> {
             let mut delegated = self.inner.$method(builder.name);
-            if let Some(value) = builder.description {
+            if let Some(value) = self.policy.metric_description(builder.description) {
                 delegated = delegated.with_description(value);
             }
-            if let Some(value) = builder.unit {
+            if let Some(value) = self.policy.metric_unit(builder.unit) {
                 delegated = delegated.with_unit(value);
             }
             if let Some(value) = builder.boundaries {
@@ -224,10 +224,10 @@ macro_rules! asynchronous {
             builder: AsyncInstrumentBuilder<'_, $kind<$number>, $number>,
         ) -> $kind<$number> {
             let mut delegated = self.inner.$method(builder.name);
-            if let Some(value) = builder.description {
+            if let Some(value) = self.policy.metric_description(builder.description) {
                 delegated = delegated.with_description(value);
             }
-            if let Some(value) = builder.unit {
+            if let Some(value) = self.policy.metric_unit(builder.unit) {
                 delegated = delegated.with_unit(value);
             }
             for callback in builder.callbacks {
@@ -250,10 +250,10 @@ macro_rules! asynchronous_sum {
             builder: AsyncInstrumentBuilder<'_, $kind<$number>, $number>,
         ) -> $kind<$number> {
             let mut delegated = self.inner.$method(builder.name);
-            if let Some(value) = builder.description {
+            if let Some(value) = self.policy.metric_description(builder.description) {
                 delegated = delegated.with_description(value);
             }
-            if let Some(value) = builder.unit {
+            if let Some(value) = self.policy.metric_unit(builder.unit) {
                 delegated = delegated.with_unit(value);
             }
             let policy = self.policy.clone();
