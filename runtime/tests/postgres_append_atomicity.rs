@@ -91,6 +91,84 @@ impl Drop for FixtureProcess {
 
 #[tokio::test]
 #[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
+async fn postgres_killed_waiting_process_preserves_seed_and_allows_fresh_writer() {
+    let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL").unwrap();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(3)
+        .acquire_timeout(std::time::Duration::from_secs(3))
+        .connect(&url)
+        .await
+        .unwrap();
+    let prefix = format!("killed_{}", uuid::Uuid::new_v4().simple());
+    let state_table = format!("{prefix}_state");
+    let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
+    store.ensure_schema().await.unwrap();
+    store.append(event("processes", 0, "seed")).await.unwrap();
+    let seed = store.load("processes").await.unwrap().unwrap();
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query(&format!(
+        "SELECT trace_id FROM {state_table} WHERE trace_id = 'processes' FOR UPDATE"
+    ))
+    .execute(&mut *holder)
+    .await
+    .unwrap();
+    let killed_label = format!("killed_client_{}", uuid::Uuid::new_v4().simple());
+    let mut child = FixtureProcess::start(&prefix, &killed_label, 1);
+    let waited = wait_for_row_lock(&pool, &killed_label, "transactionid", &state_table).await;
+    let child_pid = child.0.id();
+    let killed = child.0.kill();
+    let exit = child.finish().await;
+    drop(child);
+    // A backend blocked in SQL need not observe TCP disconnect until the lock releases.
+    let released = holder.commit().await;
+    let disappeared = wait_for_backend_exit(&pool, &killed_label).await;
+    waited.unwrap();
+    killed.unwrap();
+    assert!(
+        !exit.unwrap().success(),
+        "killed child must not report successful append"
+    );
+    released.unwrap();
+    disappeared.unwrap();
+    assert_eq!(store.load("processes").await.unwrap(), Some(seed.clone()));
+    let fresh_label = format!("fresh_client_{}", uuid::Uuid::new_v4().simple());
+    let mut fresh = FixtureProcess::start(&prefix, &fresh_label, 1);
+    let fresh_exit = fresh.finish().await;
+    drop(fresh);
+    assert!(fresh_exit.unwrap().success());
+    wait_for_backend_exit(&pool, &fresh_label).await.unwrap();
+    let mut expected = seed;
+    expected.schematic_version = "concurrent".into();
+    expected.events.push(event("processes", 1, "concurrent"));
+    assert_eq!(store.load("processes").await.unwrap(), Some(expected));
+    pool.close().await;
+    println!("POSTGRES_KILLED_PID child={child_pid}");
+    println!(
+        "POSTGRES_KILL_PASS observed-row-wait killed-reaped backend-gone seed-intact fresh-process-append"
+    );
+}
+
+async fn wait_for_backend_exit(pool: &sqlx::PgPool, label: &str) -> anyhow::Result<()> {
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let present: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = $1)",
+            )
+            .bind(label)
+            .fetch_one(pool)
+            .await?;
+            if !present {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("owned client backend did not disappear"))?
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
 async fn postgres_independent_process_writers_preserve_both_events() {
     let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL").unwrap();
     let pool = sqlx::postgres::PgPoolOptions::new()
