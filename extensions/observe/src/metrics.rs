@@ -141,9 +141,7 @@ impl<T: CheckedSum> AsyncInstrument<T> for Summing<'_, T> {
         if self.state.failed() {
             return;
         }
-        if originals.contains(&original)
-            || originals.len() >= MAX_OBSERVABLE_GROUPS
-        {
+        if originals.contains(&original) || originals.len() >= MAX_OBSERVABLE_GROUPS {
             self.state.fail();
             return;
         }
@@ -308,6 +306,39 @@ impl InstrumentProvider for ProtectedInstruments {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn strict_scope_collision_exports_sync_sum_but_overwrites_observable_sum() {
+        let captured = Arc::new(Mutex::new(Values::new()));
+        let provider = ProtectedMeterProvider {
+            inner: SdkMeterProvider::builder()
+                .with_reader(
+                    PeriodicReader::builder(CollisionCapture(captured.clone()))
+                        .with_interval(Duration::from_secs(3600))
+                        .build(),
+                )
+                .build(),
+            policy: Policy::new(crate::redaction::Mode::Strict, "").unwrap(),
+            state: Default::default(),
+        };
+        let first = provider.meter("first-distinct-scope");
+        let second = provider.meter("second-distinct-scope");
+        first.i64_up_down_counter("same_sync").build().add(2, &[]);
+        second.i64_up_down_counter("same_sync").build().add(8, &[]);
+        let _first = first
+            .i64_observable_up_down_counter("same_observable")
+            .with_callback(|instrument| instrument.observe(2, &[]))
+            .build();
+        let _second = second
+            .i64_observable_up_down_counter("same_observable")
+            .with_callback(|instrument| instrument.observe(8, &[]))
+            .build();
+        provider.inner.force_flush().unwrap();
+        let values = captured.lock().unwrap().clone();
+        assert_eq!(values.get("same_sync"), Some(&vec![10]));
+        assert_eq!(values.get("same_observable"), Some(&vec![8]));
+        assert!(!provider.state.failed());
+        provider.inner.shutdown().unwrap();
+    }
     #[test]
     fn metric_scope_payload_is_filtered_before_export() {
         for mode in [
