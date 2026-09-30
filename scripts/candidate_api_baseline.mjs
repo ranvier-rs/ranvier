@@ -24,7 +24,7 @@ function readJson(file) {
 }
 
 function cargoMetadata() {
-  const result = spawnSync('cargo', ['metadata', '--no-deps', '--format-version', '1'], {
+  const result = spawnSync('cargo', ['metadata', '--no-deps', '--format-version', '1', '--locked'], {
     cwd: workspaceRoot,
     encoding: 'utf8'
   });
