@@ -90,7 +90,9 @@ async fn actual_inspector_producers_pass_maintained_stream_consumer() {
             });
             (circuit.clone(), node)
         });
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        // Keep the actual span alive until its actual stall frame is received,
+        // rather than assuming the broadcaster ran during a fixed sleep.
+        assert_eq!(lines.next_line().await.unwrap().as_deref(), Some("WIRE_STALLED"));
         tracing::dispatcher::with_default(&dispatch, || {
             drop(node);
             drop(circuit);
