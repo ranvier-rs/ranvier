@@ -374,6 +374,42 @@ impl InstrumentProvider for ProtectedInstruments {
 mod tests {
     use super::*;
     #[test]
+    fn metric_name_validation_rejects_unsafe_syntax_and_size() {
+        for name in [
+            "",
+            "1count",
+            "name secret",
+            "name\n",
+            "name=secret",
+            "이름",
+            "name:secret",
+        ] {
+            assert!(!valid_instrument_name(name));
+        }
+        assert!(valid_instrument_name(&"a".repeat(255)));
+        assert!(!valid_instrument_name(&"a".repeat(256)));
+        assert!(valid_instrument_name("count.total/runs-1_ok"));
+        let provider = ProtectedMeterProvider {
+            inner: SdkMeterProvider::builder().build(),
+            policy: Policy::new(crate::redaction::Mode::Public, "").unwrap(),
+            state: Default::default(),
+        };
+        let meter = provider.meter("fixture");
+        meter.u64_counter("bad name").build().add(1, &[]);
+        meter.f64_histogram("bad name").build().record(1.0, &[]);
+        let _counter = meter
+            .u64_observable_counter("bad name")
+            .with_callback(|_| panic!("rejected callback ran"))
+            .build();
+        let _gauge = meter
+            .u64_observable_gauge("bad name")
+            .with_callback(|_| panic!("rejected callback ran"))
+            .build();
+        assert!(provider.state.failed());
+        assert!(provider.state.1.lock().unwrap().is_empty());
+        provider.inner.shutdown().unwrap();
+    }
+    #[test]
     fn strict_gauge_scope_collision_fails_before_either_callback_runs() {
         let captured = Arc::new(Mutex::new(Values::new()));
         let provider = ProtectedMeterProvider {
