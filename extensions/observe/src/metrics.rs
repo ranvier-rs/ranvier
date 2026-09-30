@@ -95,6 +95,25 @@ pub struct ProtectedMeterProvider {
 }
 impl MeterProvider for ProtectedMeterProvider {
     fn meter_with_scope(&self, scope: InstrumentationScope) -> Meter {
+        let valid_text = |value: &str, limit: usize| {
+            value.len() <= limit && !value.chars().any(char::is_control)
+        };
+        let attributes: Vec<_> = scope
+            .attributes()
+            .take(MAX_OBSERVABLE_ATTRIBUTES + 1)
+            .cloned()
+            .collect();
+        if scope.name().is_empty()
+            || !valid_text(scope.name(), 255)
+            || scope.version().is_some_and(|value| !valid_text(value, 255))
+            || scope
+                .schema_url()
+                .is_some_and(|value| !valid_text(value, 2048))
+            || !labels_within_budget(&attributes)
+        {
+            self.state.fail();
+            return NoopMeterProvider::new().meter("rejected-scope");
+        }
         let scope = self.policy.scope(&scope);
         Meter::new(Arc::new(ProtectedInstruments {
             inner: self.inner.meter_with_scope(scope.clone()),
