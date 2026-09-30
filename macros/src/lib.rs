@@ -24,14 +24,19 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ## Parameter Binding
 ///
-/// Follows the same pattern as `#[transition]`:
-/// - 1 param: `(input)` — Resources = ()
-/// - 2 params: `(input, &Resources)` or `(input, &mut Bus)` — auto-detected
-/// - 3 params: `(input, &Resources, &mut Bus)` — full form
+/// Follows the same ordered roles as `#[transition]`, with every role optional:
+/// - no params: `()`
+/// - 1 param: `(input)`, `(&Resources)`, or `(&mut Bus)`
+/// - 2 params: `(input, &Resources)`, `(input, &mut Bus)`, or `(&Resources, &mut Bus)`
+/// - 3 params: `(input, &Resources, &mut Bus)`
+///
+/// A shared non-Bus reference is resources, not a borrowed input. Its referent
+/// must satisfy `Send + Sync + 'static`. Bus must be a mutable reference.
 ///
 /// ## Attributes
 ///
-/// - `resources = MyType` — explicit resource type override
+/// - `resources = MyType` — declares the resource type only when there is no
+///   resource parameter. Combining this attribute with `&Resources` is rejected.
 ///
 /// # Example
 ///
