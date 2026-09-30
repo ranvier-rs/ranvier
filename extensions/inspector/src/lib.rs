@@ -19,6 +19,7 @@ use axum::{
     Json, Router,
     extract::{
         FromRequestParts, Path as AxPath, Query, Request, State,
+        rejection::JsonRejection,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, Method, StatusCode, header, request::Parts},
@@ -2715,7 +2716,7 @@ async fn api_post_routes_sample(
 async fn api_post_relay(
     headers: HeaderMap,
     State(state): State<InspectorState>,
-    Json(body): Json<relay::RelayRequest>,
+    body: Result<Json<relay::RelayRequest>, JsonRejection>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     ensure_internal_access(&headers, &state.auth_policy)?;
 
@@ -2726,6 +2727,30 @@ async fn api_post_relay(
             "relay_only_in_dev_mode",
         ));
     }
+
+    let Json(body) = body.map_err(|rejection| {
+        let (status, code, message) = match rejection.status() {
+            StatusCode::PAYLOAD_TOO_LARGE => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "request_too_large",
+                "Relay request exceeds body budget",
+            ),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "unsupported_media_type",
+                "Relay request requires application/json",
+            ),
+            _ => (
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "Relay request must match the JSON request contract",
+            ),
+        };
+        (
+            status,
+            Json(serde_json::json!({ "error": code, "message": message })),
+        )
+    })?;
 
     let Some(relay_state) = &state.relay_state else {
         return Err((
