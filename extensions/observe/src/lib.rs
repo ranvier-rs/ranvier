@@ -357,7 +357,7 @@ pub mod otlp {
                             TraceFlags::default()
                         },
                         true,
-                        TraceState::default(),
+                        TraceState::from_key_value([("vendor", "safe-state")]).unwrap(),
                     );
                     let subscriber = tracing_subscriber::registry().with(providers.tracing_layer());
                     tracing::subscriber::with_default(subscriber, || {
@@ -366,6 +366,12 @@ pub mod otlp {
                         let context = ingress.context();
                         assert_eq!(context.span().span_context().trace_id(), parent.trace_id());
                         assert_eq!(context.span().span_context().is_sampled(), sampled);
+                        assert_eq!(
+                            context.span().span_context().trace_state(),
+                            parent.trace_state()
+                        );
+                        assert!(!context.span().span_context().is_remote());
+                        assert_ne!(context.span().span_context().span_id(), parent.span_id());
                         ingress.in_scope(|| {
                             let child = tracing::info_span!("remote-child");
                             assert_eq!(
@@ -374,7 +380,18 @@ pub mod otlp {
                             );
                             assert_eq!(child.context().span().span_context().is_sampled(), sampled);
                         });
-                        assert!(set_remote_parent(&ingress, parent.clone()).is_err());
+                        let conflicting = SpanContext::new(
+                            TraceId::from(99),
+                            SpanId::from(100),
+                            TraceFlags::SAMPLED,
+                            true,
+                            TraceState::default(),
+                        );
+                        assert!(set_remote_parent(&ingress, conflicting).is_err());
+                        assert_eq!(
+                            ingress.context().span().span_context().trace_id(),
+                            parent.trace_id()
+                        );
                         assert!(set_remote_parent(&ingress, SpanContext::empty_context()).is_err());
                         let local = SpanContext::new(
                             parent.trace_id(),
