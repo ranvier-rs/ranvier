@@ -21,6 +21,12 @@ pub struct Policy {
     keys: Vec<String>,
 }
 impl Policy {
+    /// Filters data-point labels before SDK aggregation. Callers must use this for
+    /// every record/observe operation; raw SDK instrument handles bypass it.
+    pub fn metric_attributes(&self, mut attributes: Vec<KeyValue>) -> Vec<KeyValue> {
+        redact(&mut attributes, self);
+        attributes
+    }
     /// Empty input adds no keys. Nonempty lists require 1..64 ASCII key fragments,
     /// each at most 128 bytes, using letters, digits, dot, underscore or hyphen.
     pub fn new(mode: Mode, additional_keys: &str) -> Result<Self, &'static str> {
@@ -110,6 +116,27 @@ impl<E: SpanExporter> SpanExporter for RedactingExporter<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn metric_recording_policy_covers_modes_and_preserves_typed_safe_labels() {
+        for mode in [Mode::Public, Mode::Strict, Mode::Off] {
+            let off = matches!(mode, Mode::Off);
+            let strict = matches!(mode, Mode::Strict);
+            let policy = Policy::new(mode, "account_number").unwrap();
+            let attributes = policy.metric_attributes(vec![
+                KeyValue::new("EMAIL", "builtin-secret"),
+                KeyValue::new("account_number", "custom-secret"),
+                KeyValue::new("count", 42_i64),
+            ]);
+            assert_eq!(attributes.len(), 3);
+            assert_eq!(attributes[0].value.to_string() == "builtin-secret", off);
+            assert_eq!(attributes[1].value.to_string() == "custom-secret", off);
+            assert_eq!(
+                attributes[2].value == opentelemetry::Value::I64(42),
+                !strict
+            );
+            assert_eq!(attributes[2].value.to_string() == "[REDACTED]", strict);
+        }
+    }
     #[derive(Debug)]
     struct ResourceCapture(std::sync::Arc<std::sync::Mutex<Option<Resource>>>);
     impl SpanExporter for ResourceCapture {

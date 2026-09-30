@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "otel-demo",
         &endpoint,
         protocol,
-        policy,
+        policy.clone(),
         // Collector acceptance requires a deterministic sampled root span.
         SampleRatio::new(1.0)?,
         Duration::from_secs(3),
@@ -70,10 +70,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .build();
     counter.add(
         1,
-        &[KeyValue::new(
+        &policy.metric_attributes(vec![KeyValue::new(
             "outcome",
             if passed { "next" } else { "fault" },
-        )],
+        )]),
     );
     span.end();
     let shutdown = tokio::task::spawn_blocking(move || providers.shutdown()).await?;
