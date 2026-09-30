@@ -27,7 +27,7 @@ workspace = true
 ranvier-core.workspace = true
 ranvier-runtime.workspace = true
 async-trait.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 
 [[example]]
 name = "otlp_smoke"

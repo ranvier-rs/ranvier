@@ -7,6 +7,17 @@ pub mod redaction;
 
 #[cfg(feature = "otlp")]
 pub mod otlp {
+    /// Captures the current tracing span and subscriber for a future.
+    /// Call before spawning; every poll restores the captured context without
+    /// leaving a thread-local guard alive across an await.
+    pub fn with_current_context<F: std::future::Future>(
+        future: F,
+    ) -> impl std::future::Future<Output = F::Output> {
+        use tracing::{Instrument, instrument::WithSubscriber};
+        future
+            .instrument(tracing::Span::current())
+            .with_current_subscriber()
+    }
     use opentelemetry_otlp::WithExportConfig;
     use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider, trace::SdkTracerProvider};
     use opentelemetry_sdk::{
@@ -295,6 +306,74 @@ pub mod otlp {
             }
         }
         struct SuccessfulMetricExporter(Arc<std::sync::atomic::AtomicUsize>);
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn concurrent_spawned_tasks_keep_owned_subscribers_and_parent_contexts() {
+            use crate::redaction::{Mode, Policy, RedactingExporter};
+            use tracing::instrument::WithSubscriber;
+            use tracing_subscriber::prelude::*;
+            let barrier = Arc::new(tokio::sync::Barrier::new(2));
+            let mut runs = Vec::new();
+            for _ in 0..2 {
+                let capture = LayerCapture::default();
+                let policy = Policy::new(Mode::Public, "").unwrap();
+                let providers = Providers {
+                    traces: SdkTracerProvider::builder()
+                        .with_simple_exporter(RedactingExporter {
+                            inner: capture.clone(),
+                            policy: policy.clone(),
+                        })
+                        .build(),
+                    metrics: crate::metrics::ProtectedMeterProvider {
+                        inner: SdkMeterProvider::builder().build(),
+                        policy,
+                        state: Default::default(),
+                    },
+                    trace_export_failed: Default::default(),
+                };
+                let dispatch = tracing::Dispatch::new(
+                    tracing_subscriber::registry().with(providers.tracing_layer()),
+                );
+                let barrier = barrier.clone();
+                let task = tracing::dispatcher::with_default(&dispatch, || {
+                    let parent = tracing::info_span!("task-parent");
+                    let _guard = parent.enter();
+                    tokio::spawn(with_current_context(async move {
+                        barrier.wait().await;
+                        for _ in 0..8 {
+                            tokio::task::yield_now().await;
+                        }
+                        let child = tracing::info_span!("task-child", api_key = "task-secret");
+                        child.in_scope(|| tracing::info!("task-event"));
+                    }))
+                });
+                // Outer caller dispatch need not remain installed on the worker.
+                runs.push((providers, capture, task, dispatch));
+            }
+            let mut traces = Vec::new();
+            for (providers, capture, task, dispatch) in runs {
+                task.await.unwrap();
+                drop(dispatch);
+                assert_eq!(providers.shutdown(), Ok(()));
+                let spans = capture.0.lock().unwrap();
+                assert_eq!(spans.len(), 2);
+                let parent = spans
+                    .iter()
+                    .find(|span| span.name == "task-parent")
+                    .unwrap();
+                let child = spans.iter().find(|span| span.name == "task-child").unwrap();
+                assert_eq!(child.parent_span_id, parent.span_context.span_id());
+                assert_eq!(
+                    child.span_context.trace_id(),
+                    parent.span_context.trace_id()
+                );
+                assert_eq!(child.events.len(), 1);
+                assert!(!format!("{spans:?}").contains("task-secret"));
+                traces.push(parent.span_context.trace_id());
+            }
+            assert_ne!(traces[0], traces[1]);
+            // Verify scoped subscriber wrappers remain usable directly as well.
+            async {}.with_current_subscriber().await;
+        }
         #[test]
         fn callback_unwind_is_classified_and_exporter_cleanup_completes() {
             use opentelemetry::metrics::MeterProvider;
