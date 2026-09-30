@@ -215,6 +215,68 @@ pub mod otlp {
     #[cfg(test)]
     mod tests {
         use super::*;
+        struct SuccessfulMetricExporter;
+        impl opentelemetry_sdk::metrics::exporter::PushMetricExporter for SuccessfulMetricExporter {
+            async fn export(
+                &self,
+                _: &opentelemetry_sdk::metrics::data::ResourceMetrics,
+            ) -> OTelSdkResult {
+                Ok(())
+            }
+            fn force_flush(&self) -> OTelSdkResult {
+                Ok(())
+            }
+            fn shutdown_with_timeout(&self, _: Duration) -> OTelSdkResult {
+                Ok(())
+            }
+            fn temporality(&self) -> opentelemetry_sdk::metrics::Temporality {
+                opentelemetry_sdk::metrics::Temporality::Cumulative
+            }
+        }
+        #[test]
+        fn shutdown_reports_callback_failure_even_when_sdk_exporter_succeeds() {
+            use opentelemetry::metrics::MeterProvider;
+            for invalid in [false, true] {
+                let providers = Providers {
+                    traces: SdkTracerProvider::builder().build(),
+                    metrics: crate::metrics::ProtectedMeterProvider {
+                        inner: SdkMeterProvider::builder()
+                            .with_reader(
+                                opentelemetry_sdk::metrics::PeriodicReader::builder(
+                                    SuccessfulMetricExporter,
+                                )
+                                .with_interval(Duration::from_secs(3600))
+                                .build(),
+                            )
+                            .build(),
+                        policy: crate::redaction::Policy::new(crate::redaction::Mode::Public, "")
+                            .unwrap(),
+                        state: Default::default(),
+                    },
+                    trace_export_failed: Arc::new(AtomicBool::new(false)),
+                };
+                let _counter = providers
+                    .metrics
+                    .meter("fixture")
+                    .u64_observable_counter("counter")
+                    .with_callback(move |instrument| {
+                        instrument.observe(
+                            if invalid { u64::MAX } else { 2 },
+                            &[opentelemetry::KeyValue::new("email", "first")],
+                        );
+                        instrument.observe(1, &[opentelemetry::KeyValue::new("email", "second")]);
+                    })
+                    .build();
+                assert_eq!(
+                    providers.shutdown(),
+                    if invalid {
+                        Err(vec![ShutdownSignal::Metrics])
+                    } else {
+                        Ok(())
+                    }
+                );
+            }
+        }
         #[test]
         fn ratio_rejects_nonfinite_and_out_of_range_values() {
             for ratio in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.01, 1.01] {
