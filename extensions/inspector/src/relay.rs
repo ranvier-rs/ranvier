@@ -351,7 +351,8 @@ mod tests {
                         .unwrap()
                         .unwrap();
                 let mut request = [0; 4096];
-                socket.read(&mut request).await.unwrap();
+                let received = socket.read(&mut request).await.unwrap();
+                assert!(received > 0, "loopback client sent no request");
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{body}"
                 );
