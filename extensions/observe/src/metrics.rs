@@ -122,3 +122,117 @@ impl InstrumentProvider for ProtectedInstruments {
     asynchronous!(i64_observable_gauge, ObservableGauge, i64);
     asynchronous!(f64_observable_gauge, ObservableGauge, f64);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::redaction::Mode;
+    use opentelemetry_sdk::{
+        error::OTelSdkResult,
+        metrics::{
+            PeriodicReader, Temporality, data::ResourceMetrics, exporter::PushMetricExporter,
+        },
+    };
+    use std::{sync::Mutex, time::Duration};
+    struct Capture(Arc<Mutex<Vec<String>>>);
+    impl PushMetricExporter for Capture {
+        async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+            self.0.lock().unwrap().push(format!("{metrics:?}"));
+            Ok(())
+        }
+        fn force_flush(&self) -> OTelSdkResult {
+            Ok(())
+        }
+        fn shutdown_with_timeout(&self, _: Duration) -> OTelSdkResult {
+            Ok(())
+        }
+        fn temporality(&self) -> Temporality {
+            Temporality::Cumulative
+        }
+    }
+    #[test]
+    fn every_instrument_and_callback_exports_filtered_labels() {
+        for mode in [Mode::Public, Mode::Strict, Mode::Off] {
+            let off = matches!(mode, Mode::Off);
+            let captured = Arc::new(Mutex::new(Vec::new()));
+            let inner = SdkMeterProvider::builder()
+                .with_reader(
+                    PeriodicReader::builder(Capture(captured.clone()))
+                        .with_interval(Duration::from_secs(3600))
+                        .build(),
+                )
+                .build();
+            let provider = ProtectedMeterProvider {
+                inner,
+                policy: Policy::new(mode, "account_number").unwrap(),
+            };
+            let meter = provider.meter("fixture");
+            let labels = vec![
+                KeyValue::new("email", "builtin-secret"),
+                KeyValue::new("account_number", "custom-secret"),
+            ];
+            macro_rules! record {
+                ($method:ident, $operation:ident, $value:expr) => {
+                    meter
+                        .$method(stringify!($method))
+                        .build()
+                        .$operation($value, &labels);
+                };
+            }
+            record!(u64_counter, add, 1);
+            record!(f64_counter, add, 1.0);
+            record!(i64_up_down_counter, add, -1);
+            record!(f64_up_down_counter, add, -1.0);
+            record!(u64_gauge, record, 2);
+            record!(i64_gauge, record, -2);
+            record!(f64_gauge, record, 2.0);
+            record!(u64_histogram, record, 3);
+            record!(f64_histogram, record, 3.0);
+            macro_rules! observe {
+                ($method:ident, $value:expr) => {{
+                    let labels = labels.clone();
+                    meter
+                        .$method(stringify!($method))
+                        .with_callback(move |instrument| instrument.observe($value, &labels))
+                        .build()
+                }};
+            }
+            let _c1 = observe!(u64_observable_counter, 1);
+            let _c2 = observe!(f64_observable_counter, 1.0);
+            let _c3 = observe!(i64_observable_up_down_counter, -1);
+            let _c4 = observe!(f64_observable_up_down_counter, -1.0);
+            let _c5 = observe!(u64_observable_gauge, 2);
+            let _c6 = observe!(i64_observable_gauge, -2);
+            let _c7 = observe!(f64_observable_gauge, 2.0);
+            provider.inner.force_flush().unwrap();
+            provider.inner.shutdown().unwrap();
+            let payload = captured.lock().unwrap().join("\n");
+            for method in [
+                "u64_counter",
+                "f64_counter",
+                "i64_up_down_counter",
+                "f64_up_down_counter",
+                "u64_gauge",
+                "i64_gauge",
+                "f64_gauge",
+                "u64_histogram",
+                "f64_histogram",
+                "u64_observable_counter",
+                "f64_observable_counter",
+                "i64_observable_up_down_counter",
+                "f64_observable_up_down_counter",
+                "u64_observable_gauge",
+                "i64_observable_gauge",
+                "f64_observable_gauge",
+            ] {
+                assert!(
+                    payload.contains(&format!("name: \"{method}\"")),
+                    "missing {method}"
+                );
+            }
+            assert_eq!(payload.contains("builtin-secret"), off);
+            assert_eq!(payload.contains("custom-secret"), off);
+            assert_eq!(payload.contains("[REDACTED]"), !off);
+        }
+    }
+}

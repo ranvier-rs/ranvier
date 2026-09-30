@@ -95,7 +95,7 @@ pub mod otlp {
     pub struct Providers {
         /// Trace provider: redacts span/event/link/resource attributes; names are not filtered.
         pub traces: SdkTracerProvider,
-        /// Metric provider: resource attributes are filtered; callers must supply safe data labels.
+        /// Metric provider: filters resource and record/observe labels; metadata is a separate policy gate.
         pub metrics: crate::metrics::ProtectedMeterProvider,
         trace_export_failed: Arc<AtomicBool>,
     }
