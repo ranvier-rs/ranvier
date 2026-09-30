@@ -7,7 +7,7 @@ use opentelemetry::{
 };
 use ranvier_core::prelude::*;
 use ranvier_observe::{
-    otlp::{Protocol, Providers},
+    otlp::{Protocol, Providers, SampleRatio},
     redaction::{Mode, Policy},
 };
 use ranvier_runtime::Axon;
@@ -49,6 +49,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         &endpoint,
         protocol,
         policy,
+        // Collector acceptance requires a deterministic sampled root span.
+        SampleRatio::new(1.0)?,
         Duration::from_secs(3),
     )?;
     let tracer = providers.traces.tracer("ranvier-otlp-smoke");

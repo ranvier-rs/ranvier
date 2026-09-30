@@ -47,6 +47,23 @@ pub mod otlp {
         HttpProtobuf,
     }
 
+    /// Explicit root-span ratio; incoming parent sampling decisions are preserved.
+    #[derive(Clone, Copy, Debug)]
+    pub struct SampleRatio(f64);
+    impl SampleRatio {
+        pub fn new(value: f64) -> Result<Self, &'static str> {
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                return Err("sample ratio must be finite and within 0..=1");
+            }
+            Ok(Self(value))
+        }
+        fn sampler(self) -> opentelemetry_sdk::trace::Sampler {
+            opentelemetry_sdk::trace::Sampler::ParentBased(Box::new(
+                opentelemetry_sdk::trace::Sampler::TraceIdRatioBased(self.0),
+            ))
+        }
+    }
+
     /// Signal whose provider shutdown failed, or whose trace export failed earlier.
     /// Backend error bodies are deliberately excluded from this public result.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -113,6 +130,7 @@ pub mod otlp {
             endpoint: &str,
             protocol: Protocol,
             redaction: crate::redaction::Policy,
+            sample_ratio: SampleRatio,
             timeout: Duration,
         ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
             validate(service, endpoint, timeout)?;
@@ -151,6 +169,7 @@ pub mod otlp {
             let trace_export_failed = Arc::new(AtomicBool::new(false));
             Ok(Self {
                 traces: SdkTracerProvider::builder()
+                    .with_sampler(sample_ratio.sampler())
                     .with_resource(resource.clone())
                     .with_batch_exporter(crate::redaction::RedactingExporter {
                         inner: ObservedExporter {
