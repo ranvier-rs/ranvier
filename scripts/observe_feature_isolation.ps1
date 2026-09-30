@@ -11,7 +11,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Source identity query failed.' }
     $compiler = (& rustc --version | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Compiler identity query failed.' }
+    $cargoVersion = (& cargo --version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Cargo identity query failed.' }
     $graphs = @{}
+    $checks = @{}
     foreach ($case in @('ranvier-observe', 'ranvier-core', 'ranvier-core-default', 'ranvier-observe-default')) {
         $package = $case.Replace('-default', '')
         $featureArgs = @(if (-not $case.EndsWith('-default')) { '--no-default-features' })
@@ -24,6 +27,8 @@ try {
         $compileCode = $LASTEXITCODE
         $compile | Set-Content -LiteralPath (Join-Path $destination "$case-check.log") -Encoding utf8
         if ($compileCode -ne 0) { throw "Isolated library compile failed: $case" }
+        if ($compile -match '^warning(?:\[|:)') { throw "Isolated library compile has warnings: $case" }
+        $checks[$case] = 'PASS'
     }
     if ($graphs['ranvier-observe'].Count -ne 1 -or $graphs['ranvier-observe'][0] -notmatch '^ranvier-observe v') {
         throw 'Default observe adapter unexpectedly has normal dependencies.'
@@ -37,6 +42,8 @@ try {
     }
     [ordered]@{
         source = $source; compiler = $compiler
+        cargo = $cargoVersion; compile_cases = $checks
+        helper_sha256 = (Get-FileHash -LiteralPath $PSCommandPath).Hash
         cargo_lock_sha256 = (Get-FileHash -LiteralPath (Join-Path $root 'Cargo.lock')).Hash
         status = 'PASS'; scope = 'observe/core normal dependency graphs and separate library compiles with and without default features'
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $destination 'result.json') -Encoding utf8
