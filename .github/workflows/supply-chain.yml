@@ -60,6 +60,7 @@ jobs:
       - name: Negative policy self-test
         run: node scripts/supply_chain_gate.mjs --self-test --output target/supply-chain/self-test-and-live.json
       - name: Check optional observe adapter dependencies
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p target/supply-chain
           cargo deny --manifest-path extensions/observe/Cargo.toml --all-features --format json check advisories licenses sources > target/supply-chain/observe-stdout.jsonl 2> target/supply-chain/observe-stderr.jsonl
