@@ -2,6 +2,8 @@ param(
     [string]$ContainerName = ("ranvier-otel-redaction-smoke-" + [Guid]::NewGuid().ToString("N")),
     [ValidateRange(0, 300)][int]$StartupWaitSeconds = 4,
     [string]$EvidenceDir = "",
+    [ValidateRange(1,65535)][int]$GrpcPort = 4317,
+    [ValidateRange(1,65535)][int]$HttpPort = 4318,
     [string]$ConfigPath = "",
     [string]$CollectorImage = "docker.io/otel/opentelemetry-collector-contrib:latest",
     [ValidateSet("grpc", "http/protobuf")]
@@ -55,8 +57,8 @@ try {
     if ($queryExit -ne 1) { throw "Container query failed ($queryExit); existing resources preserved." }
 
     $created = @(podman run -d --rm --name $ContainerName `
-        -p 127.0.0.1:4317:4317 `
-        -p 127.0.0.1:4318:4318 `
+        -p "127.0.0.1:${GrpcPort}:4317" `
+        -p "127.0.0.1:${HttpPort}:4318" `
         -v "${configPath}:/etc/otelcol-contrib/config.yaml" `
         $CollectorImage)
     if ($LASTEXITCODE -ne 0) { throw 'Collector creation failed.' }
@@ -73,9 +75,9 @@ try {
     Push-Location $ranvierRoot
     try {
         $otlpEndpoint = if ($Protocol -eq "http/protobuf") {
-            "http://localhost:4318"
+            "http://localhost:$HttpPort"
         } else {
-            "http://localhost:4317"
+            "http://localhost:$GrpcPort"
         }
 
         $env:RANVIER_OTLP_ENDPOINT = $otlpEndpoint
