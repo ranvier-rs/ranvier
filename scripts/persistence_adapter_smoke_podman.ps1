@@ -26,6 +26,15 @@ function Read-CreatedContainerId {
     return $id
 }
 
+function Read-SmokeImageId {
+    param([string]$OwnedId)
+    $imageId = (podman inspect $OwnedId --format '{{.Image}}' | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $imageId -notmatch '^(sha256:)?[a-f0-9]{64}$') {
+        throw "Owned container image identity query failed."
+    }
+    return $imageId
+}
+
 function Wait-PostgresReady {
     param(
         [string]$ContainerName,
@@ -94,17 +103,23 @@ try {
         -e POSTGRES_PASSWORD=ranvier `
         -e POSTGRES_DB=ranvier `
         -p "127.0.0.1:${PostgresPort}:5432" `
-        postgres:16-alpine)
+        docker.io/library/postgres:16-alpine)
     $postgresOwnedId = Read-CreatedContainerId -Output $created -ExitCode $LASTEXITCODE
 
     $created = @(podman run -d --rm --name $RedisContainer `
         -p "127.0.0.1:${RedisPort}:6379" `
-        redis:7-alpine)
+        docker.io/library/redis:7-alpine)
     $redisOwnedId = Read-CreatedContainerId -Output $created -ExitCode $LASTEXITCODE
 
     Start-Sleep -Seconds $StartupWaitSeconds
     Wait-PostgresReady -ContainerName $postgresOwnedId
     Wait-RedisReady -ContainerName $redisOwnedId
+
+    [ordered]@{
+        run_id = $runId
+        postgres = @{ container_id = $postgresOwnedId; image_id = (Read-SmokeImageId $postgresOwnedId); port = $PostgresPort }
+        redis = @{ container_id = $redisOwnedId; image_id = (Read-SmokeImageId $redisOwnedId); port = $RedisPort }
+    } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 (Join-Path $evidenceDir "smoke-runtime-identity.json")
 
     $env:RANVIER_PERSISTENCE_POSTGRES_URL = "postgres://ranvier:ranvier@127.0.0.1:${PostgresPort}/ranvier"
     $env:RANVIER_PERSISTENCE_REDIS_URL = "redis://127.0.0.1:${RedisPort}"

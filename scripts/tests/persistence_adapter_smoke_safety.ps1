@@ -19,6 +19,7 @@ function global:podman {
             if ($global:smokeSafety.starts -eq 1) { 'a' * 64 } else { 'b' * 64 }
         }
         'exec' { if ($call -contains 'ping') { 'PONG' } }
+        'inspect' { if ($global:smokeSafety.mode -eq 'image-query-error') { $global:LASTEXITCODE = 125 } else { 'c' * 64 } }
         'logs' {
             if ($global:smokeSafety.mode -in @('logs-error', 'logs-and-cleanup-error')) { $global:LASTEXITCODE = 125 } else { 'mock log' }
         }
@@ -41,7 +42,7 @@ function global:cargo {
 }
 
 try {
-    foreach ($mode in @('present', 'query-error', 'success', 'second-start-fail', 'logs-error', 'cleanup-error', 'logs-and-cleanup-error', 'invalid-id')) {
+    foreach ($mode in @('present', 'query-error', 'success', 'second-start-fail', 'logs-error', 'cleanup-error', 'logs-and-cleanup-error', 'invalid-id', 'image-query-error')) {
         $global:smokeSafety = @{ mode = $mode; starts = 0; calls = [Collections.Generic.List[string]]::new(); removed = [Collections.Generic.List[string]]::new() }
         $env:RANVIER_PERSISTENCE_POSTGRES_URL = 'existing-pg'
         $env:RANVIER_PERSISTENCE_REDIS_URL = 'existing-redis'
@@ -52,7 +53,7 @@ try {
         $expected = switch ($mode) {
             'present' { 'already exists' } 'query-error' { 'existence query failed' }
             'second-start-fail' { 'podman run failed' } 'logs-error' { 'log capture failed' }
-            'cleanup-error' { 'cleanup failed' } 'logs-and-cleanup-error' { 'log capture failed' } 'invalid-id' { 'valid owned container ID' } default { '' }
+            'cleanup-error' { 'cleanup failed' } 'logs-and-cleanup-error' { 'log capture failed' } 'invalid-id' { 'valid owned container ID' } 'image-query-error' { 'image identity query failed' } default { '' }
         }
         if ($expected -and $failure -notlike "*$expected*") { throw "Wrong failure diagnostic for $mode : $failure" }
         $ownedCount = switch ($mode) { 'present' { 0 } 'query-error' { 0 } 'second-start-fail' { 1 } 'invalid-id' { 0 } default { 2 } }
@@ -65,7 +66,7 @@ try {
         if ($env:RANVIER_PERSISTENCE_POSTGRES_URL -ne 'existing-pg' -or $env:RANVIER_PERSISTENCE_REDIS_URL -ne 'existing-redis') { throw "Environment was not restored: $mode" }
         Write-Host "PASS: $mode"
     }
-    Write-Host 'PASS: 8 mocked persistence smoke safety cases; no live runtime exercised'
+    Write-Host 'PASS: 9 mocked persistence smoke safety cases; no live runtime exercised'
 } finally {
     [Environment]::SetEnvironmentVariable('RANVIER_PERSISTENCE_POSTGRES_URL', $originalPg)
     [Environment]::SetEnvironmentVariable('RANVIER_PERSISTENCE_REDIS_URL', $originalRedis)
