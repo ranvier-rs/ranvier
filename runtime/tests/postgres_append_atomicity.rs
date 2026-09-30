@@ -41,6 +41,8 @@ async fn postgres_process_worker() {
     let before = store.load("processes").await.unwrap().unwrap();
     assert_eq!(before.events, vec![event("processes", 0, "seed")]);
     assert_eq!(before.schematic_version, "seed");
+    assert_eq!(before.completion, None);
+    assert!(before.interventions.is_empty());
     store
         .append(event("processes", step, "concurrent"))
         .await
@@ -102,6 +104,12 @@ async fn postgres_independent_process_writers_preserve_both_events() {
     let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
     store.ensure_schema().await.unwrap();
     store.append(event("processes", 0, "seed")).await.unwrap();
+    let mut expected = store.load("processes").await.unwrap().unwrap();
+    expected.schematic_version = "concurrent".into();
+    expected.events.extend([
+        event("processes", 1, "concurrent"),
+        event("processes", 2, "concurrent"),
+    ]);
     let mut holder = pool.begin().await.unwrap();
     sqlx::query(&format!(
         "SELECT trace_id FROM {state_table} WHERE trace_id = 'processes' FOR UPDATE"
@@ -117,6 +125,12 @@ async fn postgres_independent_process_writers_preserve_both_events() {
     assert_ne!(first.0.id(), second.0.id());
     assert_ne!(first.0.id(), std::process::id());
     assert_ne!(second.0.id(), std::process::id());
+    println!(
+        "POSTGRES_PROCESS_PIDS parent={} first={} second={}",
+        std::process::id(),
+        first.0.id(),
+        second.0.id()
+    );
     let second_wait = wait_for_row_lock(&pool, &second_label, "tuple", &state_table).await;
     let released = holder.commit().await;
     let first_exit = first.finish().await;
@@ -140,6 +154,10 @@ async fn postgres_independent_process_writers_preserve_both_events() {
     );
     assert_eq!(trace.schematic_version, "concurrent");
     assert_eq!(trace.completion, None);
+    assert_eq!(
+        trace, expected,
+        "all state, event and intervention fields must match"
+    );
     pool.close().await;
     println!("POSTGRES_PROCESS_PASS independent-pids same-seed row-queue exact-events");
 }
