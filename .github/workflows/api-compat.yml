@@ -8,6 +8,8 @@ on:
       - '**/Cargo.toml'
       - 'Cargo.lock'
       - '.ranvier-api-policy.json'
+      - '.ranvier-observe-api-policy.json'
+      - 'observe-api-surface-inventory.json'
       - 'api-surface-inventory.json'
       - 'api-stable-candidate-baseline.json'
       - 'scripts/api_surface_inventory.mjs'
@@ -21,6 +23,8 @@ on:
       - '**/Cargo.toml'
       - 'Cargo.lock'
       - '.ranvier-api-policy.json'
+      - '.ranvier-observe-api-policy.json'
+      - 'observe-api-surface-inventory.json'
       - 'api-surface-inventory.json'
       - 'api-stable-candidate-baseline.json'
       - 'scripts/api_surface_inventory.mjs'
@@ -32,7 +36,25 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
+  optional-observe-api:
+    name: Optional observe API inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: optional-observe-api-1.95.0
+      - run: node scripts/api_surface_inventory.mjs --check --optional-observe
+
   candidate-api:
     name: Candidate API baseline and SemVer
     runs-on: ubuntu-latest
