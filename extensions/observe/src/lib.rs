@@ -17,7 +17,9 @@ pub mod otlp {
 
     /// Caller-owned providers; no process-global provider is installed.
     pub struct Providers {
+        /// Trace provider: redacts span/event/link attributes only; names and resource data are not filtered.
         pub traces: SdkTracerProvider,
+        /// Metric provider: attribute redaction is not yet implemented; callers must supply safe labels.
         pub metrics: SdkMeterProvider,
     }
 
