@@ -149,7 +149,7 @@ pub struct RelayRequest {
 #[derive(Debug, Serialize)]
 pub struct RelayResponse {
     pub status: u16,
-    pub headers: std::collections::HashMap<String, String>,
+    pub headers: std::collections::HashMap<String, Vec<String>>,
     pub body: Value,
     pub duration_ms: u64,
     pub trace_id: Option<String>,
@@ -358,7 +358,7 @@ fn invalid_header() -> RelayError {
 }
 fn bounded_response_headers(
     headers: &reqwest::header::HeaderMap,
-) -> Result<std::collections::HashMap<String, String>, RelayError> {
+) -> Result<std::collections::HashMap<String, Vec<String>>, RelayError> {
     let mut bytes = 0usize;
     if headers.len() > 64 {
         return Err(response_too_large());
@@ -372,16 +372,16 @@ fn bounded_response_headers(
             return Err(response_too_large());
         }
     }
-    let mut result = std::collections::HashMap::new();
+    let mut result: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     for (key, value) in headers {
         let value = value
             .to_str()
             .map_err(|_| RelayError::internal("Relay response header is not valid text"))?;
-        if result.insert(key.to_string(), value.to_owned()).is_some() {
-            return Err(RelayError::internal(
-                "Relay response contains repeated header names",
-            ));
-        }
+        result
+            .entry(key.to_string())
+            .or_default()
+            .push(value.to_owned());
     }
     Ok(result)
 }
@@ -396,6 +396,44 @@ fn append_response_chunk(bytes: &mut Vec<u8>, chunk: &[u8]) -> Result<(), RelayE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_headers_accept_exact_budget_and_preserve_repeated_values() {
+        use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+        let mut headers = HeaderMap::new();
+        for index in 0..64 {
+            headers.insert(
+                HeaderName::from_bytes(format!("x-{index}").as_bytes()).unwrap(),
+                HeaderValue::from_static("a"),
+            );
+        }
+        let size: usize = headers
+            .iter()
+            .map(|(key, value)| key.as_str().len() + value.as_bytes().len())
+            .sum();
+        headers.insert(
+            "x-0",
+            HeaderValue::from_str(&"a".repeat(1 + 8192 - size)).unwrap(),
+        );
+        assert_eq!(bounded_response_headers(&headers).unwrap().len(), 64);
+        headers.append("x-0", HeaderValue::from_static("extra"));
+        assert_eq!(
+            bounded_response_headers(&headers).unwrap_err().error,
+            "response_too_large"
+        );
+        let mut repeated = HeaderMap::new();
+        repeated.append("set-cookie", HeaderValue::from_static("a=1"));
+        repeated.append("set-cookie", HeaderValue::from_static("b=2"));
+        assert_eq!(
+            bounded_response_headers(&repeated).unwrap()["set-cookie"],
+            vec!["a=1", "b=2"]
+        );
+        repeated.insert("x-opaque", HeaderValue::from_bytes(&[0xff]).unwrap());
+        assert_eq!(
+            bounded_response_headers(&repeated).unwrap_err().error,
+            "internal_error"
+        );
+    }
 
     #[tokio::test]
     async fn relay_forwards_exact_header_count_and_byte_boundary() {
