@@ -120,9 +120,20 @@ fn redact(attributes: &mut [KeyValue], policy: &Policy) {
 impl<E: SpanExporter> SpanExporter for RedactingExporter<E> {
     async fn export(&self, mut batch: Vec<SpanData>) -> OTelSdkResult {
         for span in &mut batch {
+            if matches!(self.policy.mode, Mode::Strict) {
+                span.name = "[REDACTED]".into();
+            }
+            if !matches!(self.policy.mode, Mode::Off) {
+                if matches!(span.status, opentelemetry::trace::Status::Error { .. }) {
+                    span.status = opentelemetry::trace::Status::error("[REDACTED]");
+                }
+            }
             span.instrumentation_scope = self.policy.scope(&span.instrumentation_scope);
             redact(&mut span.attributes, &self.policy);
             for event in &mut span.events.events {
+                if matches!(self.policy.mode, Mode::Strict) {
+                    event.name = "[REDACTED]".into();
+                }
                 redact(&mut event.attributes, &self.policy);
             }
             for link in &mut span.links.links {
@@ -334,7 +345,8 @@ mod tests {
                     ])
                     .build(),
             );
-            let mut span = tracer.start("fixture");
+            let mut span = tracer.start("span-name-fixture");
+            span.set_status(opentelemetry::trace::Status::error("status-secret"));
             span.set_attribute(KeyValue::new("customer_email", "fixture-secret"));
             span.set_attribute(KeyValue::new("ACCOUNT_NUMBER", "custom-secret"));
             span.add_event("event", vec![KeyValue::new("api_key", "fixture-secret")]);
@@ -373,6 +385,16 @@ mod tests {
             }
             assert_eq!(payload.contains("scope-name-fixture"), !strict);
             assert_eq!(payload.contains("scope-version-fixture"), !strict);
+            assert_eq!(payload.contains("status-secret"), !protected);
+            assert_eq!(payload.contains("span-name-fixture"), !strict);
+            assert_eq!(
+                spans[0].events.events[0].name.as_ref() == "[REDACTED]",
+                strict
+            );
+            assert!(matches!(
+                spans[0].status,
+                opentelemetry::trace::Status::Error { .. }
+            ));
             assert_eq!(payload.contains("[REDACTED]"), protected);
         }
     }
