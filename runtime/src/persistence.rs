@@ -697,51 +697,51 @@ impl PostgresPersistenceStore {
 #[async_trait]
 impl PersistenceStore for PostgresPersistenceStore {
     async fn append(&self, envelope: PersistenceEnvelope) -> Result<()> {
+        // Validate representability before creating any persistent state.
+        let step_i64 = i64::try_from(envelope.step)?;
+        let ts_i64 = i64::try_from(envelope.timestamp_ms)?;
+        let mut transaction = self.pool.begin().await?;
         let insert_state = format!(
             "INSERT INTO {} (trace_id, circuit, schematic_version, resumed_from_step, completion)
              VALUES ($1, $2, $3, NULL, NULL)
-             ON CONFLICT (trace_id) DO UPDATE SET schematic_version = $3",
+             ON CONFLICT (trace_id) DO NOTHING",
             self.state_table
         );
         sqlx::query(&insert_state)
             .bind(&envelope.trace_id)
             .bind(&envelope.circuit)
             .bind(&envelope.schematic_version)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
-
         let read_state = format!(
-            "SELECT circuit FROM {} WHERE trace_id = $1",
+            "SELECT circuit, completion FROM {} WHERE trace_id = $1 FOR UPDATE",
             self.state_table
         );
-        let existing_circuit: Option<String> = sqlx::query_scalar(&read_state)
+        let (circuit, completion): (String, Option<String>) = sqlx::query_as(&read_state)
             .bind(&envelope.trace_id)
-            .fetch_optional(&self.pool)
+            .fetch_one(&mut *transaction)
             .await?;
-        if existing_circuit.as_deref() != Some(envelope.circuit.as_str()) {
+        if circuit != envelope.circuit {
             return Err(anyhow!(
                 "trace_id {} already exists for another circuit",
                 envelope.trace_id
             ));
         }
-
-        let completion_query = format!(
-            "SELECT completion FROM {} WHERE trace_id = $1",
-            self.state_table
-        );
-        let completion: Option<Option<String>> = sqlx::query_scalar(&completion_query)
-            .bind(&envelope.trace_id)
-            .fetch_optional(&self.pool)
-            .await?;
-        if completion.flatten().is_some() {
+        if completion.is_some() {
             return Err(anyhow!(
                 "trace_id {} is already completed and cannot accept new events",
                 envelope.trace_id
             ));
         }
-
-        let step_i64 = i64::try_from(envelope.step)?;
-        let ts_i64 = i64::try_from(envelope.timestamp_ms)?;
+        let update_state = format!(
+            "UPDATE {} SET schematic_version = $2 WHERE trace_id = $1",
+            self.state_table
+        );
+        sqlx::query(&update_state)
+            .bind(&envelope.trace_id)
+            .bind(&envelope.schematic_version)
+            .execute(&mut *transaction)
+            .await?;
         let insert_event = format!(
             "INSERT INTO {} (trace_id, circuit, schematic_version, step, outcome_kind, timestamp_ms, payload_hash, payload)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -756,8 +756,9 @@ impl PersistenceStore for PostgresPersistenceStore {
             .bind(ts_i64)
             .bind(&envelope.payload_hash)
             .bind(&envelope.payload)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
+        transaction.commit().await?;
         Ok(())
     }
 
