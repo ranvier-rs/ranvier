@@ -249,11 +249,21 @@ macro_rules! asynchronous {
             }
             for callback in builder.callbacks {
                 let policy = self.policy.clone();
+                let state = self.state.clone();
                 delegated = delegated.with_callback(move |inner| {
-                    callback(&Observing {
-                        inner,
-                        policy: &policy,
-                    })
+                    if state.failed() {
+                        return;
+                    }
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        callback(&Observing {
+                            inner,
+                            policy: &policy,
+                        })
+                    }))
+                    .is_err()
+                    {
+                        state.fail();
+                    }
                 });
             }
             delegated.build()
@@ -288,7 +298,14 @@ macro_rules! asynchronous_sum {
                         state: &state,
                     };
                     for callback in &callbacks {
-                        callback(&observations);
+                        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            callback(&observations)
+                        }))
+                        .is_err()
+                        {
+                            state.fail();
+                            break;
+                        }
                     }
                     if state.failed() {
                         return;
