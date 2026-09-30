@@ -24,6 +24,9 @@ impl Policy {
     /// Empty input adds no keys. Nonempty lists require 1..64 ASCII key fragments,
     /// each at most 128 bytes, using letters, digits, dot, underscore or hyphen.
     pub fn new(mode: Mode, additional_keys: &str) -> Result<Self, &'static str> {
+        if additional_keys.len() > 8255 || additional_keys.chars().any(char::is_control) {
+            return Err("invalid additional redaction keys");
+        }
         let mut keys = Vec::new();
         if !additional_keys.trim().is_empty() {
             for value in additional_keys.split(',') {
@@ -93,6 +96,33 @@ impl<E: SpanExporter> SpanExporter for RedactingExporter<E> {
 mod tests {
     use super::*;
     #[test]
+    fn custom_keys_are_additive_case_insensitive_and_bounded() {
+        let policy = Policy::new(Mode::Public, " ACCOUNT_NUMBER, private.id ").unwrap();
+        let mut attributes = vec![
+            KeyValue::new("customer_account_number", "custom-secret"),
+            KeyValue::new("PRIVATE.ID", "custom-secret"),
+            KeyValue::new("email", "builtin-secret"),
+            KeyValue::new("outcome", "next"),
+        ];
+        redact(&mut attributes, &policy);
+        assert!(
+            attributes[..3]
+                .iter()
+                .all(|v| v.value.to_string() == "[REDACTED]")
+        );
+        assert_eq!(attributes[3].value.to_string(), "next");
+        for invalid in [",", "key,", "a,,b", "secret=value", "key\n", "키", "*"] {
+            assert_eq!(
+                Policy::new(Mode::Off, invalid).unwrap_err(),
+                "invalid additional redaction keys"
+            );
+        }
+        assert!(Policy::new(Mode::Public, &"x".repeat(129)).is_err());
+        assert!(Policy::new(Mode::Public, &vec!["x"; 65].join(",")).is_err());
+        assert!(Policy::new(Mode::Public, &vec!["x"; 64].join(",")).is_ok());
+        assert!(Policy::new(Mode::Public, "").is_ok());
+    }
+    #[test]
     fn attribute_policy_replaces_sensitive_values() {
         for mode in [Mode::Public, Mode::Strict] {
             let mut attributes = vec![
@@ -142,6 +172,10 @@ mod tests {
             span.set_attribute(KeyValue::new("customer_email", "fixture-secret"));
             span.set_attribute(KeyValue::new("ACCOUNT_NUMBER", "custom-secret"));
             span.add_event("event", vec![KeyValue::new("api_key", "fixture-secret")]);
+            span.add_event(
+                "custom-event",
+                vec![KeyValue::new("account_number", "custom-secret")],
+            );
             span.add_link(
                 SpanContext::new(
                     TraceId::from(1),
@@ -150,13 +184,16 @@ mod tests {
                     false,
                     TraceState::default(),
                 ),
-                vec![KeyValue::new("token", "fixture-secret")],
+                vec![
+                    KeyValue::new("token", "fixture-secret"),
+                    KeyValue::new("account_number", "custom-secret"),
+                ],
             );
             span.end();
             provider.shutdown().unwrap();
             let spans = capture.0.lock().unwrap();
             assert_eq!(spans.len(), 1);
-            assert_eq!(spans[0].events.events.len(), 1);
+            assert_eq!(spans[0].events.events.len(), 2);
             assert_eq!(spans[0].links.links.len(), 1);
             let payload = format!("{spans:?}");
             assert_eq!(payload.contains("fixture-secret"), !protected);
