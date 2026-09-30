@@ -23,6 +23,8 @@ pub struct Policy {
 impl Policy {
     /// Filters data-point labels before SDK aggregation. Callers must use this for
     /// every record/observe operation; raw SDK instrument handles bypass it.
+    /// Masked labels merge formerly distinct time series; apply consistently from
+    /// the first recording and review resulting cardinality and aggregation semantics.
     pub fn metric_attributes(&self, mut attributes: Vec<KeyValue>) -> Vec<KeyValue> {
         redact(&mut attributes, self);
         attributes
@@ -136,6 +138,19 @@ mod tests {
             );
             assert_eq!(attributes[2].value.to_string() == "[REDACTED]", strict);
         }
+    }
+    #[test]
+    fn sensitive_array_labels_are_replaced_as_a_whole() {
+        let policy = Policy::new(Mode::Public, "account_number").unwrap();
+        let attributes = policy.metric_attributes(vec![KeyValue::new(
+            "account_number",
+            opentelemetry::Value::Array(opentelemetry::Array::String(vec![
+                "first-secret".into(),
+                "second-secret".into(),
+            ])),
+        )]);
+        assert_eq!(attributes[0].value.to_string(), "[REDACTED]");
+        assert_eq!(attributes[0].key.as_str(), "account_number");
     }
     #[derive(Debug)]
     struct ResourceCapture(std::sync::Arc<std::sync::Mutex<Option<Resource>>>);
