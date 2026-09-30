@@ -415,6 +415,7 @@ mod tests {
             max_concurrent: 1,
         })
         .unwrap();
+        let expected = headers.clone();
         let result = execute_relay(
             &relay,
             RelayRequest {
@@ -432,6 +433,11 @@ mod tests {
             .filter_map(|line| line.split_once(": "))
             .filter(|(name, _)| name.starts_with("x-"))
             .collect();
+        let actual: std::collections::HashMap<String, String> = forwarded
+            .iter()
+            .map(|(key, value)| ((*key).into(), (*value).into()))
+            .collect();
+        assert_eq!(actual, expected);
         assert_eq!(forwarded.len(), 64);
         assert_eq!(
             forwarded
