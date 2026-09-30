@@ -6,8 +6,40 @@ pub mod redaction;
 #[cfg(feature = "otlp")]
 pub mod otlp {
     use opentelemetry_otlp::WithExportConfig;
-    use opentelemetry_sdk::{metrics::SdkMeterProvider, trace::SdkTracerProvider, Resource};
+    use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider, trace::SdkTracerProvider};
+    use opentelemetry_sdk::{
+        error::OTelSdkResult,
+        trace::{SpanData, SpanExporter},
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
     use std::time::Duration;
+
+    #[derive(Debug)]
+    struct ObservedExporter<E> {
+        inner: E,
+        failed: Arc<AtomicBool>,
+    }
+    impl<E: SpanExporter> SpanExporter for ObservedExporter<E> {
+        async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
+            let result = self.inner.export(batch).await;
+            if result.is_err() {
+                self.failed.store(true, Ordering::Release);
+            }
+            result
+        }
+        fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
+            self.inner.shutdown_with_timeout(timeout)
+        }
+        fn force_flush(&self) -> OTelSdkResult {
+            self.inner.force_flush()
+        }
+        fn set_resource(&mut self, resource: &Resource) {
+            self.inner.set_resource(resource);
+        }
+    }
 
     /// Explicit transport selection; there is no fallback on invalid input.
     pub enum Protocol {
@@ -46,6 +78,7 @@ pub mod otlp {
         pub traces: SdkTracerProvider,
         /// Metric provider: attribute redaction is not yet implemented; callers must supply safe labels.
         pub metrics: SdkMeterProvider,
+        trace_export_failed: Arc<AtomicBool>,
     }
 
     /// Maximum request budget for this initial adapter; longer requests need a reviewed lifecycle policy.
@@ -115,14 +148,19 @@ pub mod otlp {
             let resource = Resource::builder()
                 .with_service_name(service.to_owned())
                 .build();
+            let trace_export_failed = Arc::new(AtomicBool::new(false));
             Ok(Self {
                 traces: SdkTracerProvider::builder()
                     .with_resource(resource.clone())
                     .with_batch_exporter(crate::redaction::RedactingExporter {
-                        inner: traces,
+                        inner: ObservedExporter {
+                            inner: traces,
+                            failed: trace_export_failed.clone(),
+                        },
                         mode: redaction,
                     })
                     .build(),
+                trace_export_failed,
                 metrics: SdkMeterProvider::builder()
                     .with_resource(resource)
                     .with_periodic_exporter(metrics)
@@ -136,7 +174,10 @@ pub mod otlp {
         /// infer worker termination or a shutdown budget from the export timeout.
         pub fn shutdown(&self) -> Result<(), Vec<ShutdownSignal>> {
             shutdown_both(
-                || self.traces.shutdown().is_ok(),
+                || {
+                    let shutdown_ok = self.traces.shutdown().is_ok();
+                    shutdown_ok && !self.trace_export_failed.load(Ordering::Acquire)
+                },
                 || self.metrics.shutdown().is_ok(),
             )
         }
@@ -171,12 +212,14 @@ pub mod otlp {
         #[test]
         fn export_timeout_has_an_explicit_upper_bound() {
             assert!(validate("fixture", "http://localhost:4317", MAX_EXPORT_TIMEOUT).is_ok());
-            assert!(validate(
-                "fixture",
-                "http://localhost:4317",
-                MAX_EXPORT_TIMEOUT + Duration::from_nanos(1)
-            )
-            .is_err());
+            assert!(
+                validate(
+                    "fixture",
+                    "http://localhost:4317",
+                    MAX_EXPORT_TIMEOUT + Duration::from_nanos(1)
+                )
+                .is_err()
+            );
         }
         #[test]
         fn shutdown_attempts_both_signals_and_reports_only_classification() {
