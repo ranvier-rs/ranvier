@@ -410,6 +410,45 @@ impl InstrumentProvider for ProtectedInstruments {
 mod tests {
     use super::*;
     #[test]
+    fn oversized_sync_and_gauge_labels_never_reach_inner_instruments() {
+        struct CountObserver(std::sync::atomic::AtomicUsize);
+        impl AsyncInstrument<u64> for CountObserver {
+            fn observe(&self, _: u64, _: &[KeyValue]) {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        }
+        let policy = Policy::new(crate::redaction::Mode::Strict, "").unwrap();
+        let invalid = [KeyValue::new(
+            "email",
+            "x".repeat(MAX_OBSERVABLE_ATTRIBUTE_BYTES),
+        )];
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let record_calls = calls.clone();
+        let state = MetricState::default();
+        let recording = Recording {
+            record: Box::new(move |_: u64, _: &[KeyValue]| {
+                record_calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }),
+            policy: policy.clone(),
+            state: state.clone(),
+        };
+        recording.measure(1, &invalid);
+        recording.measure(1, &[]);
+        assert!(state.failed());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 0);
+        let state = MetricState::default();
+        let inner = CountObserver(std::sync::atomic::AtomicUsize::new(0));
+        let observing = Observing {
+            inner: &inner,
+            policy: &policy,
+            state: &state,
+        };
+        observing.observe(1, &invalid);
+        observing.observe(1, &[]);
+        assert!(state.failed());
+        assert_eq!(inner.0.load(std::sync::atomic::Ordering::Acquire), 0);
+    }
+    #[test]
     fn invalid_scope_is_rejected_before_observable_registration() {
         let scopes = [
             InstrumentationScope::builder("x".repeat(256)).build(),
