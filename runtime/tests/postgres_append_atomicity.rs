@@ -265,12 +265,16 @@ async fn wait_for_row_lock(
     pool: &sqlx::PgPool,
     label: &str,
     lock_kind: &str,
+    state_table: &str,
 ) -> anyhow::Result<()> {
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
         loop {
-            let blocked: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE NOT l.granted AND l.locktype = $2 AND a.application_name = $1 AND a.wait_event_type = 'Lock')")
-                .bind(label).bind(lock_kind).fetch_one(pool).await?;
-            if blocked { return Ok::<(), anyhow::Error>(()); }
+            let blocked: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE NOT l.granted AND l.locktype = $2 AND a.application_name = $1 AND a.wait_event_type = 'Lock' AND a.query LIKE $3)")
+                .bind(label).bind(lock_kind).bind(format!("%{state_table}%")).fetch_one(pool).await?;
+            if blocked {
+                println!("POSTGRES_ROW_WAIT kind={lock_kind} table={state_table} label={label}");
+                return Ok::<(), anyhow::Error>(());
+            }
             tokio::task::yield_now().await;
         }
     }).await?
@@ -320,7 +324,13 @@ async fn verify_append_completion_order(completion_first: bool) {
             first_store.append(event("ordered", 1, "appended")).await
         }
     });
-    let first_wait = wait_for_row_lock(&pool, &first_label, "transactionid").await;
+    let first_wait = wait_for_row_lock(
+        &pool,
+        &first_label,
+        "transactionid",
+        &format!("{prefix}_state"),
+    )
+    .await;
     let mut second = tokio::spawn(async move {
         if completion_first {
             second_store.append(event("ordered", 1, "appended")).await
@@ -330,7 +340,8 @@ async fn verify_append_completion_order(completion_first: bool) {
                 .await
         }
     });
-    let second_wait = wait_for_row_lock(&pool, &second_label, "tuple").await;
+    let second_wait =
+        wait_for_row_lock(&pool, &second_label, "tuple", &format!("{prefix}_state")).await;
     let released = holder.commit().await;
     let first_result = tokio::time::timeout(std::time::Duration::from_secs(3), &mut first).await;
     if first_result.is_err() {
@@ -345,6 +356,10 @@ async fn verify_append_completion_order(completion_first: bool) {
     first_pool.close().await;
     second_pool.close().await;
     let final_trace = store.load("ordered").await;
+    let late = store
+        .append(event("ordered", 2, "rejected-late-version"))
+        .await;
+    let after_late = store.load("ordered").await;
     pool.close().await;
     first_wait.expect("first actual operation must wait on holder transaction");
     second_wait.expect("second actual operation must queue on tuple behind first");
@@ -353,6 +368,12 @@ async fn verify_append_completion_order(completion_first: bool) {
     let second_result = second_result.unwrap().unwrap();
     let trace = final_trace.unwrap().unwrap();
     assert_eq!(trace.completion, Some(CompletionState::Success));
+    assert!(late.unwrap_err().to_string().contains("already completed"));
+    assert_eq!(
+        after_late.unwrap(),
+        Some(trace.clone()),
+        "late rejected append must preserve full terminal snapshot"
+    );
     if completion_first {
         assert!(
             second_result
