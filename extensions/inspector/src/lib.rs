@@ -2931,6 +2931,23 @@ mod tests {
     use ranvier_core::schematic::Schematic;
     use std::time::Duration;
 
+    // Optional cross-language contract capture; normal tests do not write files.
+    fn capture_relay_response(name: &str, status: reqwest::StatusCode, media: &str, body: &Value) {
+        let Some(directory) = std::env::var_os("RANVIER_RELAY_CONTRACT_CAPTURE_DIR") else {
+            return;
+        };
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let capture = serde_json::json!({
+            "status": status.as_u16(), "content_type": media, "body": body,
+        });
+        std::fs::write(
+            directory.join(format!("{name}.json")),
+            serde_json::to_vec_pretty(&capture).unwrap(),
+        )
+        .unwrap();
+    }
+
     #[derive(Default)]
     struct TestStateInspector {
         resume_calls: Arc<Mutex<Vec<(String, String)>>>,
@@ -3508,6 +3525,10 @@ expires_on = "2099-01-02"
                 .await
                 .unwrap();
             let status = response.status();
+            let media = response.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .to_owned();
             let body = response.json::<Value>().await.unwrap();
             token.cancel(CancellationReason::OperatorShutdown);
             tokio::time::timeout(std::time::Duration::from_secs(3), server)
@@ -3516,6 +3537,7 @@ expires_on = "2099-01-02"
                 .unwrap()
                 .unwrap();
             backend.await.unwrap();
+            capture_relay_response(case, status, &media, &body);
             match case {
                 "success" => {
                     assert_eq!(status, reqwest::StatusCode::OK);
@@ -3564,6 +3586,12 @@ expires_on = "2099-01-02"
         let url = format!("http://127.0.0.1:{port}/api/v1/relay");
         let payload = serde_json::json!({"method":"invalid method SENTINEL", "path":"/"});
         let unauthorized = client.post(&url).json(&payload).send().await.unwrap();
+        let unauthorized_status = unauthorized.status();
+        let unauthorized_media = unauthorized.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let unauthorized_body = unauthorized.json::<Value>().await.unwrap();
         let authorized = client
             .post(&url)
             .bearer_auth("fixture-relay-token")
@@ -3572,6 +3600,10 @@ expires_on = "2099-01-02"
             .await
             .unwrap();
         let authorized_status = authorized.status();
+        let authorized_media = authorized.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .to_owned();
         let authorized_body = authorized.text().await.unwrap();
         let malformed_unauthorized = client
             .post(&url)
@@ -3580,6 +3612,12 @@ expires_on = "2099-01-02"
             .send()
             .await
             .unwrap();
+        let malformed_unauthorized_status = malformed_unauthorized.status();
+        let malformed_unauthorized_media = malformed_unauthorized.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let malformed_unauthorized_body = malformed_unauthorized.json::<Value>().await.unwrap();
         let mut rejected_inputs = Vec::new();
         for (payload, content_type, expected_status, expected_code) in [
             (
@@ -3632,6 +3670,7 @@ expires_on = "2099-01-02"
             .await
             .unwrap();
         let busy_status = busy.status();
+        let busy_media = busy.headers()["content-type"].to_str().unwrap().to_owned();
         let busy_body = busy.json::<Value>().await.unwrap();
         drop(permit);
         token.cancel(CancellationReason::OperatorShutdown);
@@ -3640,16 +3679,38 @@ expires_on = "2099-01-02"
             .unwrap()
             .unwrap()
             .unwrap();
-        assert_eq!(unauthorized.status(), reqwest::StatusCode::UNAUTHORIZED);
+        capture_relay_response(
+            "unauthorized",
+            unauthorized_status,
+            &unauthorized_media,
+            &unauthorized_body,
+        );
+        capture_relay_response(
+            "malformed-unauthorized",
+            malformed_unauthorized_status,
+            &malformed_unauthorized_media,
+            &malformed_unauthorized_body,
+        );
+        capture_relay_response(
+            "invalid-method",
+            authorized_status,
+            &authorized_media,
+            &serde_json::from_str(&authorized_body).unwrap(),
+        );
+        capture_relay_response("busy", busy_status, &busy_media, &busy_body);
+        assert_eq!(unauthorized_status, reqwest::StatusCode::UNAUTHORIZED);
         assert_eq!(
-            malformed_unauthorized.status(),
+            malformed_unauthorized_status,
             reqwest::StatusCode::UNAUTHORIZED
         );
-        for (status, content_type, body, expected_status, expected_code) in rejected_inputs {
+        for (index, (status, content_type, body, expected_status, expected_code)) in
+            rejected_inputs.into_iter().enumerate()
+        {
             assert_eq!(status, expected_status);
             assert_eq!(content_type, "application/json");
             assert!(!body.contains("SECRET"));
             let body: Value = serde_json::from_str(&body).unwrap();
+            capture_relay_response(&format!("input-{index}"), status, &content_type, &body);
             assert_eq!(body["error"], expected_code);
             assert!(body["message"].is_string());
         }
