@@ -74,10 +74,10 @@
           "boundary": null
         },
         {
-          "path": "ranvier::prelude::ResourceRequirement",
-          "kind": "proc_derive",
+          "path": "ranvier::prelude::streaming_transition",
+          "kind": "proc_attribute",
           "origin": "facade-reexport",
-          "target": "ranvier_macros::ResourceRequirement",
+          "target": "ranvier_macros::streaming_transition",
           "owner": "developer-tooling",
           "boundary": null
         },
@@ -98,18 +98,18 @@
           "boundary": null
         },
         {
-          "path": "ranvier::ResourceRequirement",
-          "kind": "proc_derive",
-          "origin": "facade-reexport",
-          "target": "ranvier_macros::ResourceRequirement",
-          "owner": "developer-tooling",
-          "boundary": null
-        },
-        {
           "path": "ranvier::Schematic",
           "kind": "struct",
           "origin": "facade-reexport",
           "target": "ranvier_core::Schematic",
+          "owner": "developer-tooling",
+          "boundary": null
+        },
+        {
+          "path": "ranvier::streaming_transition",
+          "kind": "proc_attribute",
+          "origin": "facade-reexport",
+          "target": "ranvier_macros::streaming_transition",
           "owner": "developer-tooling",
           "boundary": null
         },
@@ -1396,8 +1396,8 @@
       ],
       "items": [
         {
-          "path": "ranvier_macros::ResourceRequirement",
-          "kind": "proc_derive",
+          "path": "ranvier_macros::streaming_transition",
+          "kind": "proc_attribute",
           "origin": "direct",
           "target": null,
           "owner": "developer-tooling",

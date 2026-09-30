@@ -115,8 +115,8 @@
       "default_tier": "Experimental",
       "owner": "developer-tooling",
       "rules": [
-        { "prefix": "ranvier_macros::transition", "tier": "Stable Candidate" },
-        { "prefix": "ranvier_macros::ResourceRequirement", "tier": "Stable Candidate" }
+        { "prefix": "ranvier_macros::transition", "match": "exact", "tier": "Stable Candidate" },
+        { "prefix": "ranvier_macros::streaming_transition", "match": "exact", "tier": "Stable Candidate" }
       ]
     },
     "ranvier": {
@@ -130,10 +130,10 @@
         { "prefix": "ranvier::Axon", "tier": "Stable Candidate" },
         { "prefix": "ranvier::Ranvier", "tier": "Stable Candidate" },
         { "prefix": "ranvier::HttpIngress", "tier": "Stable Candidate" },
-        { "prefix": "ranvier::ResourceRequirement", "match": "exact", "tier": "Stable Candidate" },
-        { "prefix": "ranvier::prelude::ResourceRequirement", "match": "exact", "tier": "Stable Candidate" },
         { "prefix": "ranvier::prelude::transition", "match": "exact", "tier": "Stable Candidate" },
-        { "prefix": "ranvier::transition", "tier": "Stable Candidate" }
+        { "prefix": "ranvier::transition", "match": "exact", "tier": "Stable Candidate" },
+        { "prefix": "ranvier::prelude::streaming_transition", "match": "exact", "tier": "Stable Candidate" },
+        { "prefix": "ranvier::streaming_transition", "match": "exact", "tier": "Stable Candidate" }
       ]
     },
     "ranvier-test": {
