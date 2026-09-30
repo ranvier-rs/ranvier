@@ -49,6 +49,8 @@ async fn health_info(_state: (), _resources: &RanvierConfig, _bus: &mut Bus) -> 
         "service": config.telemetry.service_name,
         "otlp_endpoint_configured": config.telemetry.otlp_endpoint.is_some(),
         "sample_ratio": config.telemetry.sample_ratio,
+        "otlp_protocol": format!("{:?}", config.telemetry.otlp_protocol),
+        "exporter_initialized": false,
         "log_format": format!("{:?}", config.logging.format),
     });
     Outcome::Next(info.to_string())
