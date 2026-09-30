@@ -248,3 +248,132 @@ async fn postgres_load_reads_one_snapshot_across_concurrent_append() {
         "POSTGRES_SNAPSHOT_PASS actual-state-query-barrier concurrent-append intervention fresh-load absent one-snapshot"
     );
 }
+
+#[tokio::test]
+#[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
+async fn postgres_completion_before_append_rejects_late_event() {
+    verify_append_completion_order(true).await;
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
+async fn postgres_append_before_completion_preserves_event_and_terminal() {
+    verify_append_completion_order(false).await;
+}
+
+async fn wait_for_row_lock(
+    pool: &sqlx::PgPool,
+    label: &str,
+    lock_kind: &str,
+) -> anyhow::Result<()> {
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE NOT l.granted AND l.locktype = $2 AND a.application_name = $1 AND a.wait_event_type = 'Lock')")
+                .bind(label).bind(lock_kind).fetch_one(pool).await?;
+            if blocked { return Ok::<(), anyhow::Error>(()); }
+            tokio::task::yield_now().await;
+        }
+    }).await?
+}
+
+async fn verify_append_completion_order(completion_first: bool) {
+    let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL")
+        .expect("explicit isolated database required");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .acquire_timeout(std::time::Duration::from_secs(3))
+        .connect(&url)
+        .await
+        .unwrap();
+    let prefix = format!("order_{}", uuid::Uuid::new_v4().simple());
+    let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
+    store.ensure_schema().await.unwrap();
+    store.append(event("ordered", 0, "initial")).await.unwrap();
+    let first_label = format!("first_{}", uuid::Uuid::new_v4().simple());
+    let second_label = format!("second_{}", uuid::Uuid::new_v4().simple());
+    let options = url.parse::<sqlx::postgres::PgConnectOptions>().unwrap();
+    let first_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(options.clone().application_name(&first_label))
+        .await
+        .unwrap();
+    let second_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(options.application_name(&second_label))
+        .await
+        .unwrap();
+    let first_store = PostgresPersistenceStore::with_table_prefix(first_pool.clone(), &prefix);
+    let second_store = PostgresPersistenceStore::with_table_prefix(second_pool.clone(), &prefix);
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query(&format!(
+        "SELECT trace_id FROM {prefix}_state WHERE trace_id = 'ordered' FOR UPDATE"
+    ))
+    .execute(&mut *holder)
+    .await
+    .unwrap();
+    let mut first = tokio::spawn(async move {
+        if completion_first {
+            first_store
+                .complete("ordered", CompletionState::Success)
+                .await
+        } else {
+            first_store.append(event("ordered", 1, "appended")).await
+        }
+    });
+    let first_wait = wait_for_row_lock(&pool, &first_label, "transactionid").await;
+    let mut second = tokio::spawn(async move {
+        if completion_first {
+            second_store.append(event("ordered", 1, "appended")).await
+        } else {
+            second_store
+                .complete("ordered", CompletionState::Success)
+                .await
+        }
+    });
+    let second_wait = wait_for_row_lock(&pool, &second_label, "tuple").await;
+    let released = holder.commit().await;
+    let first_result = tokio::time::timeout(std::time::Duration::from_secs(3), &mut first).await;
+    if first_result.is_err() {
+        first.abort();
+        let _ = first.await;
+    }
+    let second_result = tokio::time::timeout(std::time::Duration::from_secs(3), &mut second).await;
+    if second_result.is_err() {
+        second.abort();
+        let _ = second.await;
+    }
+    first_pool.close().await;
+    second_pool.close().await;
+    let final_trace = store.load("ordered").await;
+    pool.close().await;
+    first_wait.expect("first actual operation must wait on holder transaction");
+    second_wait.expect("second actual operation must queue on tuple behind first");
+    released.unwrap();
+    first_result.unwrap().unwrap().unwrap();
+    let second_result = second_result.unwrap().unwrap();
+    let trace = final_trace.unwrap().unwrap();
+    assert_eq!(trace.completion, Some(CompletionState::Success));
+    if completion_first {
+        assert!(
+            second_result
+                .unwrap_err()
+                .to_string()
+                .contains("already completed")
+        );
+        assert_eq!(trace.schematic_version, "initial");
+        assert_eq!(trace.events, vec![event("ordered", 0, "initial")]);
+    } else {
+        second_result.unwrap();
+        assert_eq!(trace.schematic_version, "appended");
+        assert_eq!(
+            trace.events,
+            vec![
+                event("ordered", 0, "initial"),
+                event("ordered", 1, "appended")
+            ]
+        );
+    }
+    println!(
+        "POSTGRES_ORDER_PASS completion_first={completion_first} actual-transactionid-and-tuple-waits"
+    );
+}
