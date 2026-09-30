@@ -16,20 +16,25 @@ pub mod otlp {
         pub metrics: SdkMeterProvider,
     }
 
-    impl Providers {
-        pub fn build(service: &str, endpoint: &str, protocol: Protocol, timeout: Duration)
-            -> Result<Self, Box<dyn std::error::Error + Send + Sync>>
-        {
+    fn validate(service: &str, endpoint: &str, timeout: Duration) -> Result<(), &'static str> {
             if service.trim().is_empty() || timeout.is_zero() {
-                return Err("service identity and nonzero export timeout required".into());
+                return Err("service identity and nonzero export timeout required");
             }
             let url = url::Url::parse(endpoint).map_err(|_| "invalid OTLP endpoint")?;
             if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none()
                 || !url.username().is_empty() || url.password().is_some()
                 || url.query().is_some() || url.fragment().is_some()
             {
-                return Err("OTLP endpoint must be HTTP(S) without credentials, query or fragment".into());
+                return Err("OTLP endpoint must be HTTP(S) without credentials, query or fragment");
             }
+        Ok(())
+    }
+
+    impl Providers {
+        pub fn build(service: &str, endpoint: &str, protocol: Protocol, timeout: Duration)
+            -> Result<Self, Box<dyn std::error::Error + Send + Sync>>
+        {
+            validate(service, endpoint, timeout)?;
             // No endpoint or credentials are included in our validation errors.
             let (traces, metrics) = match protocol {
                 Protocol::Grpc => (
@@ -54,6 +59,26 @@ pub mod otlp {
             if let Err(error) = self.traces.shutdown() { failures.push(error.to_string()); }
             if let Err(error) = self.metrics.shutdown() { failures.push(error.to_string()); }
             if failures.is_empty() { Ok(()) } else { Err(failures) }
+        }
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn rejects_invalid_configuration_without_exporter_workers() {
+            let timeout = Duration::from_secs(2);
+            for endpoint in ["not a URL", "file:///tmp/export", "http://user:secret@localhost:4317", "http://localhost:4317?secret=value", "http://localhost:4317#secret"] {
+                let error = validate("fixture", endpoint, timeout).unwrap_err();
+                assert!(!error.contains("secret"));
+            }
+            assert!(validate("   ", "http://localhost:4317", timeout).is_err());
+            assert!(validate("fixture", "http://localhost:4317", Duration::ZERO).is_err());
+        }
+        #[test]
+        fn accepts_explicit_http_and_https_destinations() {
+            for endpoint in ["http://127.0.0.1:4317", "https://collector.example:443"] {
+                assert!(validate("fixture", endpoint, Duration::from_secs(2)).is_ok());
+            }
         }
     }
 }
