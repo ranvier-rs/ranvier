@@ -5,12 +5,19 @@ import { fileURLToPath } from 'node:url';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = path.resolve(scriptDir, '..');
+const configuredTargetDir = process.env.CARGO_TARGET_DIR?.trim();
+const cargoTargetDir = configuredTargetDir
+  ? path.resolve(workspaceRoot, configuredTargetDir)
+  : path.join(workspaceRoot, 'target');
+const cargoEnv = { ...process.env, CARGO_TARGET_DIR: cargoTargetDir };
+
+console.log(`[compile] CARGO_TARGET_DIR=${cargoTargetDir}`);
 
 function run(args) {
   console.log(`[compile] cargo ${args.join(' ')}`);
   const result = spawnSync('cargo', args, {
     cwd: workspaceRoot,
-    env: { ...process.env, CARGO_TARGET_DIR: path.join(workspaceRoot, 'target') },
+    env: cargoEnv,
     stdio: 'inherit'
   });
   if ((result.status ?? 1) !== 0) process.exit(result.status ?? 1);
@@ -20,7 +27,7 @@ function expectCompileFailure(args, diagnosticMarkers, description) {
   console.log(`[compile-fail] ${description}: cargo ${args.join(' ')}`);
   const result = spawnSync('cargo', args, {
     cwd: workspaceRoot,
-    env: { ...process.env, CARGO_TARGET_DIR: path.join(workspaceRoot, 'target') },
+    env: cargoEnv,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe']
   });
