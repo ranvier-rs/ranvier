@@ -157,6 +157,30 @@ impl<E: SpanExporter> SpanExporter for RedactingExporter<E> {
 mod tests {
     use super::*;
     #[test]
+    fn protected_export_preserves_nonerror_status_classification() {
+        use opentelemetry::trace::{Span, Status, Tracer, TracerProvider};
+        for mode in [Mode::Public, Mode::Strict] {
+            let capture = Capture::default();
+            let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+                .with_simple_exporter(RedactingExporter {
+                    inner: capture.clone(),
+                    policy: Policy::new(mode, "").unwrap(),
+                })
+                .build();
+            let tracer = provider.tracer("fixture");
+            let mut unset = tracer.start("unset");
+            unset.end();
+            let mut ok = tracer.start("ok");
+            ok.set_status(Status::Ok);
+            ok.end();
+            provider.shutdown().unwrap();
+            let spans = capture.0.lock().unwrap();
+            assert_eq!(spans.len(), 2);
+            assert_eq!(spans[0].status, Status::Unset);
+            assert_eq!(spans[1].status, Status::Ok);
+        }
+    }
+    #[test]
     fn scope_filter_is_idempotent_and_preserves_public_safe_attribute_types() {
         let scope = opentelemetry::InstrumentationScope::builder("safe-scope")
             .with_attributes([
