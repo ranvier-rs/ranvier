@@ -4,6 +4,44 @@ use opentelemetry::{InstrumentationScope, KeyValue, metrics::*};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use std::sync::Arc;
 
+/// Per-observable-instrument collection bounds; exceeding them fails the provider.
+pub const MAX_OBSERVABLE_GROUPS: usize = 1024;
+pub const MAX_OBSERVABLE_ATTRIBUTES: usize = 64;
+pub const MAX_OBSERVABLE_ATTRIBUTE_BYTES: usize = 8192;
+
+fn labels_within_budget(attributes: &[KeyValue]) -> bool {
+    use opentelemetry::{Array, Value};
+    if attributes.len() > MAX_OBSERVABLE_ATTRIBUTES {
+        return false;
+    }
+    let mut bytes = 0usize;
+    for attribute in attributes {
+        let size = match &attribute.value {
+            Value::String(value) => Some(value.as_str().len()),
+            Value::Bool(_) => Some(1),
+            Value::I64(_) | Value::F64(_) => Some(8),
+            Value::Array(Array::Bool(values)) => Some(values.len()),
+            Value::Array(Array::I64(values)) => values.len().checked_mul(8),
+            Value::Array(Array::F64(values)) => values.len().checked_mul(8),
+            Value::Array(Array::String(values)) => values
+                .iter()
+                .try_fold(0usize, |sum, value| sum.checked_add(value.as_str().len())),
+            _ => return false,
+        };
+        let Some(total) = size
+            .and_then(|size| size.checked_add(attribute.key.as_str().len()))
+            .and_then(|size| bytes.checked_add(size))
+        else {
+            return false;
+        };
+        bytes = total;
+        if bytes > MAX_OBSERVABLE_ATTRIBUTE_BYTES {
+            return false;
+        }
+    }
+    true
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct MetricState(Arc<std::sync::atomic::AtomicBool>);
 impl MetricState {
@@ -79,7 +117,10 @@ struct Summing<'a, T> {
 }
 impl<T: CheckedSum> AsyncInstrument<T> for Summing<'_, T> {
     fn observe(&self, value: T, attributes: &[KeyValue]) {
-        if !value.valid() {
+        if self.state.failed() {
+            return;
+        }
+        if !value.valid() || !labels_within_budget(attributes) {
             self.state.fail();
             return;
         }
@@ -96,6 +137,10 @@ impl<T: CheckedSum> AsyncInstrument<T> for Summing<'_, T> {
                 self.state.fail();
             }
         } else {
+            if groups.len() >= MAX_OBSERVABLE_GROUPS {
+                self.state.fail();
+                return;
+            }
             groups.push((attributes, value));
         }
     }
