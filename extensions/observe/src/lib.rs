@@ -215,7 +215,7 @@ pub mod otlp {
     #[cfg(test)]
     mod tests {
         use super::*;
-        struct SuccessfulMetricExporter;
+        struct SuccessfulMetricExporter(Arc<std::sync::atomic::AtomicUsize>);
         impl opentelemetry_sdk::metrics::exporter::PushMetricExporter for SuccessfulMetricExporter {
             async fn export(
                 &self,
@@ -227,6 +227,7 @@ pub mod otlp {
                 Ok(())
             }
             fn shutdown_with_timeout(&self, _: Duration) -> OTelSdkResult {
+                self.0.fetch_add(1, Ordering::AcqRel);
                 Ok(())
             }
             fn temporality(&self) -> opentelemetry_sdk::metrics::Temporality {
@@ -237,13 +238,14 @@ pub mod otlp {
         fn shutdown_reports_callback_failure_even_when_sdk_exporter_succeeds() {
             use opentelemetry::metrics::MeterProvider;
             for invalid in [false, true] {
+                let exporter_shutdowns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
                 let providers = Providers {
                     traces: SdkTracerProvider::builder().build(),
                     metrics: crate::metrics::ProtectedMeterProvider {
                         inner: SdkMeterProvider::builder()
                             .with_reader(
                                 opentelemetry_sdk::metrics::PeriodicReader::builder(
-                                    SuccessfulMetricExporter,
+                                    SuccessfulMetricExporter(exporter_shutdowns.clone()),
                                 )
                                 .with_interval(Duration::from_secs(3600))
                                 .build(),
@@ -275,6 +277,7 @@ pub mod otlp {
                         Ok(())
                     }
                 );
+                assert_eq!(exporter_shutdowns.load(Ordering::Acquire), 1);
             }
         }
         #[test]
