@@ -204,6 +204,53 @@ pub mod otlp {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn ratio_rejects_nonfinite_and_out_of_range_values() {
+            for ratio in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.01, 1.01] {
+                assert!(SampleRatio::new(ratio).is_err());
+            }
+            for ratio in [0.0, 0.25, 1.0] {
+                assert!(SampleRatio::new(ratio).is_ok());
+            }
+        }
+        #[test]
+        fn root_ratio_boundaries_and_remote_parent_decisions_are_explicit() {
+            use opentelemetry::{
+                Context,
+                trace::{
+                    Span, SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
+                    Tracer, TracerProvider,
+                },
+            };
+            for ratio in [0.0, 1.0] {
+                let provider = SdkTracerProvider::builder()
+                    .with_sampler(SampleRatio::new(ratio).unwrap().sampler())
+                    .with_simple_exporter(AlternatingExporter(AtomicBool::new(false)))
+                    .build();
+                let tracer = provider.tracer("ratio-fixture");
+                let mut root = tracer.start_with_context("root", &Context::new());
+                assert_eq!(root.is_recording(), ratio == 1.0);
+                root.end();
+                for sampled in [false, true] {
+                    let parent = Context::new().with_remote_span_context(SpanContext::new(
+                        TraceId::from(1),
+                        SpanId::from(1),
+                        if sampled {
+                            TraceFlags::SAMPLED
+                        } else {
+                            TraceFlags::default()
+                        },
+                        true,
+                        TraceState::default(),
+                    ));
+                    let mut child = tracer.start_with_context("child", &parent);
+                    assert_eq!(child.is_recording(), sampled);
+                    assert_eq!(child.span_context().is_sampled(), sampled);
+                    child.end();
+                }
+                provider.shutdown().unwrap();
+            }
+        }
         #[derive(Debug)]
         struct AlternatingExporter(AtomicBool);
         impl SpanExporter for AlternatingExporter {
