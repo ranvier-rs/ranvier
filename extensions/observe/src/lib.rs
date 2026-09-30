@@ -18,15 +18,27 @@ pub mod otlp {
     /// Signal whose provider did not complete shutdown successfully.
     /// Backend error bodies are deliberately excluded from this public result.
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    pub enum ShutdownSignal { Traces, Metrics }
+    pub enum ShutdownSignal {
+        Traces,
+        Metrics,
+    }
 
-    fn shutdown_both(mut traces: impl FnMut() -> bool, mut metrics: impl FnMut() -> bool)
-        -> Result<(), Vec<ShutdownSignal>>
-    {
+    fn shutdown_both(
+        mut traces: impl FnMut() -> bool,
+        mut metrics: impl FnMut() -> bool,
+    ) -> Result<(), Vec<ShutdownSignal>> {
         let mut failures = Vec::new();
-        if !traces() { failures.push(ShutdownSignal::Traces); }
-        if !metrics() { failures.push(ShutdownSignal::Metrics); }
-        if failures.is_empty() { Ok(()) } else { Err(failures) }
+        if !traces() {
+            failures.push(ShutdownSignal::Traces);
+        }
+        if !metrics() {
+            failures.push(ShutdownSignal::Metrics);
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures)
+        }
     }
     /// Caller-owned providers; no process-global provider is installed.
     pub struct Providers {
@@ -123,7 +135,10 @@ pub mod otlp {
         /// SDK 0.32 meter shutdown ignores its timeout argument; callers must not
         /// infer worker termination or a shutdown budget from the export timeout.
         pub fn shutdown(&self) -> Result<(), Vec<ShutdownSignal>> {
-            shutdown_both(|| self.traces.shutdown().is_ok(), || self.metrics.shutdown().is_ok())
+            shutdown_both(
+                || self.traces.shutdown().is_ok(),
+                || self.metrics.shutdown().is_ok(),
+            )
         }
     }
     #[cfg(test)]
@@ -156,16 +171,37 @@ pub mod otlp {
         #[test]
         fn export_timeout_has_an_explicit_upper_bound() {
             assert!(validate("fixture", "http://localhost:4317", MAX_EXPORT_TIMEOUT).is_ok());
-            assert!(validate("fixture", "http://localhost:4317", MAX_EXPORT_TIMEOUT + Duration::from_nanos(1)).is_err());
+            assert!(validate(
+                "fixture",
+                "http://localhost:4317",
+                MAX_EXPORT_TIMEOUT + Duration::from_nanos(1)
+            )
+            .is_err());
         }
         #[test]
         fn shutdown_attempts_both_signals_and_reports_only_classification() {
             let metrics_called = std::cell::Cell::new(false);
-            let result = shutdown_both(|| false, || { metrics_called.set(true); false });
+            let result = shutdown_both(
+                || false,
+                || {
+                    metrics_called.set(true);
+                    false
+                },
+            );
             assert!(metrics_called.get());
-            assert_eq!(result, Err(vec![ShutdownSignal::Traces, ShutdownSignal::Metrics]));
+            assert_eq!(
+                result,
+                Err(vec![ShutdownSignal::Traces, ShutdownSignal::Metrics])
+            );
             assert_eq!(shutdown_both(|| true, || true), Ok(()));
-            assert_eq!(shutdown_both(|| true, || false), Err(vec![ShutdownSignal::Metrics]));
+            assert_eq!(
+                shutdown_both(|| false, || true),
+                Err(vec![ShutdownSignal::Traces])
+            );
+            assert_eq!(
+                shutdown_both(|| true, || false),
+                Err(vec![ShutdownSignal::Metrics])
+            );
         }
     }
 }
