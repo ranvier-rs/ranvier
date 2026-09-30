@@ -245,11 +245,13 @@ pub async fn execute_relay(
 
     if let Some(headers) = &req.headers {
         for (key, value) in headers {
-            if let Ok(name) = key.parse::<reqwest::header::HeaderName>() {
-                if let Ok(val) = value.parse::<reqwest::header::HeaderValue>() {
-                    builder = builder.header(name, val);
-                }
-            }
+            let name = key
+                .parse::<reqwest::header::HeaderName>()
+                .map_err(|_| invalid_header())?;
+            let value = value
+                .parse::<reqwest::header::HeaderValue>()
+                .map_err(|_| invalid_header())?;
+            builder = builder.header(name, value);
         }
     }
 
@@ -322,6 +324,13 @@ fn response_too_large() -> RelayError {
     RelayError {
         error: "response_too_large".into(),
         message: "Relay response exceeds body budget".into(),
+        details: None,
+    }
+}
+fn invalid_header() -> RelayError {
+    RelayError {
+        error: "invalid_request".into(),
+        message: "Invalid relay header".into(),
         details: None,
     }
 }
