@@ -813,7 +813,10 @@ impl Inspector {
             );
         }
 
+        let lifecycle_token = cancellation.map(|token| token.child_token());
+        let sockets = Arc::new(SocketLifecycle::new(lifecycle_token.clone()));
         let state = InspectorState {
+            sockets: sockets.clone(),
             schematic: self.schematic.clone(),
             public_projection: self.public_projection.clone(),
             internal_projection: self.internal_projection.clone(),
@@ -921,8 +924,6 @@ impl Inspector {
         let addr = listener.local_addr()?;
         tracing::info!("Ranvier Inspector listening on http://{}", addr);
 
-        let lifecycle_token = cancellation.map(|token| token.child_token());
-
         // Spawn periodic metrics broadcast task. The compatibility path keeps
         // its historical detached loop; the managed path owns and joins it.
         let metrics_task = if surface_policy.expose_events {
@@ -980,6 +981,7 @@ impl Inspector {
                 })
                 .await;
             token.cancel(CancellationReason::Explicit);
+            sockets.join().await;
             if let Some(task) = metrics_task
                 && let Err(error) = task.await
             {
@@ -1726,6 +1728,7 @@ fn with_debug_registry<R>(op: impl FnOnce(&mut HashMap<String, DebugControl>) ->
 
 #[derive(Clone)]
 struct InspectorState {
+    sockets: Arc<SocketLifecycle>,
     schematic: Arc<Mutex<Schematic>>,
     public_projection: Arc<Mutex<Option<Value>>>,
     internal_projection: Arc<Mutex<Option<Value>>>,
@@ -2429,6 +2432,49 @@ async fn get_inspector_timeline_by_request_id(
     ))
 }
 
+struct SocketLifecycle {
+    token: Option<CancellationToken>,
+    active: tokio::sync::watch::Sender<usize>,
+}
+
+impl SocketLifecycle {
+    fn new(token: Option<CancellationToken>) -> Self {
+        let (active, _) = tokio::sync::watch::channel(0);
+        Self { token, active }
+    }
+
+    fn acquire(self: &Arc<Self>) -> SocketLease {
+        self.active.send_modify(|active| *active += 1);
+        SocketLease(self.clone())
+    }
+
+    async fn cancelled(&self) {
+        match &self.token {
+            Some(token) => {
+                token.cancelled().await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    }
+
+    async fn join(&self) {
+        let mut active = self.active.subscribe();
+        while *active.borrow_and_update() != 0 {
+            if active.changed().await.is_err() {
+                break;
+            }
+        }
+    }
+}
+
+struct SocketLease(Arc<SocketLifecycle>);
+
+impl Drop for SocketLease {
+    fn drop(&mut self) {
+        self.0.active.send_modify(|active| *active -= 1);
+    }
+}
+
 async fn ws_handler(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
@@ -2437,7 +2483,14 @@ async fn ws_handler(
     if let Err(err) = ensure_internal_access(&headers, &state.auth_policy) {
         return err.into_response();
     }
-    ws.on_upgrade(handle_socket)
+    // Reserve ownership before the upgrade response, covering late upgrade and
+    // failed-upgrade races while the managed server is draining.
+    let lifecycle = state.sockets;
+    let lease = lifecycle.acquire();
+    ws.on_upgrade(move |socket| async move {
+        let _lease = lease;
+        handle_socket(socket, lifecycle).await;
+    })
 }
 
 async fn get_quick_view_html() -> impl IntoResponse {
@@ -2464,12 +2517,20 @@ async fn get_quick_view_css() -> impl IntoResponse {
     )
 }
 
-async fn handle_socket(socket: WebSocket) {
+async fn handle_socket(socket: WebSocket, lifecycle: Arc<SocketLifecycle>) {
     let (mut sender, mut incoming) = socket.split();
     let mut rx = get_sender().subscribe();
 
     loop {
         let received = tokio::select! {
+            biased;
+            _ = lifecycle.cancelled() => {
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(1), sender.send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                    code: 1001,
+                    reason: "Inspector shutting down".into(),
+                })))).await;
+                break;
+            }
             // Observe peer closure even when no broadcast arrives. Receiving also
             // lets the WebSocket protocol handle control frames promptly.
             message = incoming.next() => {
@@ -2478,7 +2539,7 @@ async fn handle_socket(socket: WebSocket) {
                     Some(Ok(Message::Close(_))) => {
                         // Flush the protocol's queued close reply before dropping
                         // the transport, so the peer observes a normal close.
-                        let _ = sender.close().await;
+                        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), sender.close()).await;
                         break;
                     }
                     Some(Ok(_)) => continue,
@@ -2488,7 +2549,12 @@ async fn handle_socket(socket: WebSocket) {
         };
         match received {
             Ok(message) => {
-                if sender.send(Message::Text(message)).await.is_err() {
+                let sent = tokio::select! {
+                    biased;
+                    _ = lifecycle.cancelled() => continue,
+                    sent = tokio::time::timeout(std::time::Duration::from_secs(5), sender.send(Message::Text(message))) => sent,
+                };
+                if !matches!(sent, Ok(Ok(()))) {
                     break;
                 }
             }
