@@ -7,6 +7,21 @@ pub mod redaction;
 
 #[cfg(feature = "otlp")]
 pub mod otlp {
+    /// Attaches a caller-extracted remote parent before the tracing span starts.
+    /// Rejects invalid/local identities and reports unavailable/started layers.
+    /// Header parsing and trust decisions remain at the ingress adapter.
+    pub fn set_remote_parent(
+        span: &tracing::Span,
+        parent: opentelemetry::trace::SpanContext,
+    ) -> Result<(), &'static str> {
+        use opentelemetry::trace::TraceContextExt;
+        use tracing_opentelemetry::OpenTelemetrySpanExt;
+        if !parent.is_valid() || !parent.is_remote() {
+            return Err("valid remote parent required");
+        }
+        span.set_parent(opentelemetry::Context::new().with_remote_span_context(parent))
+            .map_err(|_| "remote parent attachment failed")
+    }
     /// Captures the current tracing span and subscriber for a future.
     /// Call before spawning; every poll restores the captured context without
     /// leaving a thread-local guard alive across an await.
@@ -306,6 +321,89 @@ pub mod otlp {
             }
         }
         struct SuccessfulMetricExporter(Arc<std::sync::atomic::AtomicUsize>);
+        #[test]
+        fn tracing_layer_honors_remote_parent_sampling_and_rejects_invalid_contexts() {
+            use crate::redaction::{Mode, Policy, RedactingExporter};
+            use opentelemetry::trace::{
+                SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
+            };
+            use tracing_opentelemetry::OpenTelemetrySpanExt;
+            use tracing_subscriber::prelude::*;
+            for ratio in [0.0, 1.0] {
+                for sampled in [false, true] {
+                    let capture = LayerCapture::default();
+                    let policy = Policy::new(Mode::Public, "").unwrap();
+                    let providers = Providers {
+                        traces: SdkTracerProvider::builder()
+                            .with_sampler(SampleRatio::new(ratio).unwrap().sampler())
+                            .with_simple_exporter(RedactingExporter {
+                                inner: capture.clone(),
+                                policy: policy.clone(),
+                            })
+                            .build(),
+                        metrics: crate::metrics::ProtectedMeterProvider {
+                            inner: SdkMeterProvider::builder().build(),
+                            policy,
+                            state: Default::default(),
+                        },
+                        trace_export_failed: Default::default(),
+                    };
+                    let parent = SpanContext::new(
+                        TraceId::from(42),
+                        SpanId::from(43),
+                        if sampled {
+                            TraceFlags::SAMPLED
+                        } else {
+                            TraceFlags::default()
+                        },
+                        true,
+                        TraceState::default(),
+                    );
+                    let subscriber = tracing_subscriber::registry().with(providers.tracing_layer());
+                    tracing::subscriber::with_default(subscriber, || {
+                        let ingress = tracing::info_span!("remote-ingress");
+                        set_remote_parent(&ingress, parent.clone()).unwrap();
+                        let context = ingress.context();
+                        assert_eq!(context.span().span_context().trace_id(), parent.trace_id());
+                        assert_eq!(context.span().span_context().is_sampled(), sampled);
+                        ingress.in_scope(|| {
+                            let child = tracing::info_span!("remote-child");
+                            assert_eq!(
+                                child.context().span().span_context().trace_id(),
+                                parent.trace_id()
+                            );
+                            assert_eq!(child.context().span().span_context().is_sampled(), sampled);
+                        });
+                        assert!(set_remote_parent(&ingress, parent.clone()).is_err());
+                        assert!(set_remote_parent(&ingress, SpanContext::empty_context()).is_err());
+                        let local = SpanContext::new(
+                            parent.trace_id(),
+                            parent.span_id(),
+                            TraceFlags::SAMPLED,
+                            false,
+                            TraceState::default(),
+                        );
+                        assert!(set_remote_parent(&ingress, local).is_err());
+                    });
+                    assert_eq!(providers.shutdown(), Ok(()));
+                    let spans = capture.0.lock().unwrap();
+                    assert_eq!(spans.len(), if sampled { 2 } else { 0 });
+                    if sampled {
+                        let ingress = spans
+                            .iter()
+                            .find(|span| span.name == "remote-ingress")
+                            .unwrap();
+                        let child = spans
+                            .iter()
+                            .find(|span| span.name == "remote-child")
+                            .unwrap();
+                        assert_eq!(ingress.parent_span_id, parent.span_id());
+                        assert_eq!(child.parent_span_id, ingress.span_context.span_id());
+                    }
+                    assert!(set_remote_parent(&tracing::Span::none(), parent).is_err());
+                }
+            }
+        }
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn concurrent_spawned_tasks_keep_owned_subscribers_and_parent_contexts() {
             use crate::redaction::{Mode, Policy, RedactingExporter};
