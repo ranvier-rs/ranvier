@@ -17,6 +17,133 @@ fn event(trace: &str, step: u64, version: &str) -> PersistenceEnvelope {
     }
 }
 
+// Invoked only by the independent-process fixture, never accepted as evidence alone.
+#[tokio::test]
+async fn postgres_process_worker() {
+    let Ok(prefix) = std::env::var("RANVIER_PROCESS_PREFIX") else {
+        return;
+    };
+    let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL").unwrap();
+    let label = std::env::var("RANVIER_PROCESS_LABEL").unwrap();
+    let step: u64 = std::env::var("RANVIER_PROCESS_STEP")
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(matches!(step, 1 | 2));
+    let options = url.parse::<sqlx::postgres::PgConnectOptions>().unwrap();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(3))
+        .connect_with(options.application_name(&label))
+        .await
+        .unwrap();
+    let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
+    let before = store.load("processes").await.unwrap().unwrap();
+    assert_eq!(before.events, vec![event("processes", 0, "seed")]);
+    assert_eq!(before.schematic_version, "seed");
+    store
+        .append(event("processes", step, "concurrent"))
+        .await
+        .unwrap();
+    pool.close().await;
+}
+
+struct FixtureProcess(std::process::Child);
+
+impl FixtureProcess {
+    fn start(prefix: &str, label: &str, step: u64) -> Self {
+        Self(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "postgres_process_worker", "--nocapture"])
+                .env("RANVIER_PROCESS_PREFIX", prefix)
+                .env("RANVIER_PROCESS_LABEL", label)
+                .env("RANVIER_PROCESS_STEP", step.to_string())
+                .spawn()
+                .unwrap(),
+        )
+    }
+
+    async fn finish(&mut self) -> anyhow::Result<std::process::ExitStatus> {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(status) = self.0.try_wait()? {
+                    return Ok(status);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("fixture child exceeded exit deadline"))?
+    }
+}
+
+impl Drop for FixtureProcess {
+    fn drop(&mut self) {
+        // Retain ownership through assertions/timeouts; kill and reap only our child.
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            let _ = self.0.kill();
+        }
+        let _ = self.0.wait();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
+async fn postgres_independent_process_writers_preserve_both_events() {
+    let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL").unwrap();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(3)
+        .acquire_timeout(std::time::Duration::from_secs(3))
+        .connect(&url)
+        .await
+        .unwrap();
+    let prefix = format!("process_{}", uuid::Uuid::new_v4().simple());
+    let state_table = format!("{prefix}_state");
+    let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
+    store.ensure_schema().await.unwrap();
+    store.append(event("processes", 0, "seed")).await.unwrap();
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query(&format!(
+        "SELECT trace_id FROM {state_table} WHERE trace_id = 'processes' FOR UPDATE"
+    ))
+    .execute(&mut *holder)
+    .await
+    .unwrap();
+    let first_label = format!("proc_first_{}", uuid::Uuid::new_v4().simple());
+    let second_label = format!("proc_second_{}", uuid::Uuid::new_v4().simple());
+    let mut first = FixtureProcess::start(&prefix, &first_label, 1);
+    let first_wait = wait_for_row_lock(&pool, &first_label, "transactionid", &state_table).await;
+    let mut second = FixtureProcess::start(&prefix, &second_label, 2);
+    assert_ne!(first.0.id(), second.0.id());
+    assert_ne!(first.0.id(), std::process::id());
+    assert_ne!(second.0.id(), std::process::id());
+    let second_wait = wait_for_row_lock(&pool, &second_label, "tuple", &state_table).await;
+    let released = holder.commit().await;
+    let first_exit = first.finish().await;
+    let second_exit = second.finish().await;
+    // Drop/reap both before evaluating results or reading the final trace.
+    drop(first);
+    drop(second);
+    first_wait.unwrap();
+    second_wait.unwrap();
+    released.unwrap();
+    assert!(first_exit.unwrap().success());
+    assert!(second_exit.unwrap().success());
+    let trace = store.load("processes").await.unwrap().unwrap();
+    assert_eq!(
+        trace.events,
+        vec![
+            event("processes", 0, "seed"),
+            event("processes", 1, "concurrent"),
+            event("processes", 2, "concurrent")
+        ]
+    );
+    assert_eq!(trace.schematic_version, "concurrent");
+    assert_eq!(trace.completion, None);
+    pool.close().await;
+    println!("POSTGRES_PROCESS_PASS independent-pids same-seed row-queue exact-events");
+}
+
 #[tokio::test]
 #[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
 async fn postgres_rejected_append_preserves_snapshot_and_rolls_back_insert_failure() {
