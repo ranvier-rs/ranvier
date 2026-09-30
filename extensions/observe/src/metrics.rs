@@ -1127,6 +1127,49 @@ mod tests {
         }
     }
     #[test]
+    fn sdk_cardinality_overflow_retains_counter_total_across_collections() {
+        let captured = Arc::new(Mutex::new(Values::new()));
+        let _stream = opentelemetry_sdk::metrics::Stream::builder()
+            .with_cardinality_limit(MAX_STREAM_SERIES)
+            .build()
+            .unwrap();
+        let provider = ProtectedMeterProvider {
+            inner: SdkMeterProvider::builder()
+                .with_view(move |_| {
+                    opentelemetry_sdk::metrics::Stream::builder()
+                        .with_cardinality_limit(MAX_STREAM_SERIES)
+                        .build()
+                        .ok()
+                })
+                .with_reader(
+                    PeriodicReader::builder(CollisionCapture(captured.clone()))
+                        .with_interval(Duration::from_secs(3600))
+                        .build(),
+                )
+                .build(),
+            policy: Policy::new(Mode::Off, "").unwrap(),
+            state: Default::default(),
+        };
+        let counter = provider
+            .meter("capacity")
+            .i64_up_down_counter("counter")
+            .build();
+        let count = MAX_STREAM_SERIES * 2;
+        for index in 0..count {
+            counter.add(1, &[KeyValue::new("series", index as i64)]);
+        }
+        for _ in 0..2 {
+            provider.inner.force_flush().unwrap();
+            let values = captured.lock().unwrap();
+            let points = &values["counter"];
+            assert!(points.len() <= MAX_STREAM_SERIES + 1);
+            assert_eq!(points.iter().sum::<i64>(), count as i64);
+        }
+        assert!(!provider.state.failed());
+        provider.inner.shutdown().unwrap();
+    }
+
+    #[test]
     fn gauge_and_observable_collisions_have_explicit_sdk_semantics() {
         for mode in [Mode::Public, Mode::Strict, Mode::Off] {
             let off = matches!(mode, Mode::Off);
