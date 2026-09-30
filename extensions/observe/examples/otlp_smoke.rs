@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
     span.end();
     let shutdown = tokio::task::spawn_blocking(move || providers.shutdown()).await?;
-    shutdown.map_err(|_| "OTLP provider shutdown failed")?;
+    shutdown.map_err(|signals| format!("OTLP provider shutdown failed: {signals:?}"))?;
     if !passed {
         return Err("typed Axon outcome mismatch".into());
     }
