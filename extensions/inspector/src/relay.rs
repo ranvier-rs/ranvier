@@ -16,23 +16,85 @@ pub struct RelayConfig {
 }
 
 impl RelayConfig {
-    pub fn new(target_url: impl Into<String>) -> Self {
-        let timeout_ms = std::env::var("RANVIER_INSPECTOR_RELAY_TIMEOUT_MS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .filter(|timeout_ms| *timeout_ms > 0)
-            .unwrap_or(30000);
-        let max_concurrent = std::env::var("RANVIER_INSPECTOR_RELAY_MAX_CONCURRENT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .filter(|max_concurrent| *max_concurrent > 0)
-            .unwrap_or(10);
+    pub fn new(target_url: impl Into<String>) -> Result<Self, RelayConfigError> {
+        Self::from_values(
+            target_url.into(),
+            env_value("RANVIER_INSPECTOR_RELAY_TIMEOUT_MS")?.as_deref(),
+            env_value("RANVIER_INSPECTOR_RELAY_MAX_CONCURRENT")?.as_deref(),
+        )
+    }
 
-        Self {
+    fn from_values(
+        target_url: String,
+        timeout: Option<&str>,
+        concurrency: Option<&str>,
+    ) -> Result<Self, RelayConfigError> {
+        let config = Self {
             target_url: target_url.into(),
-            timeout_ms,
-            max_concurrent,
+            timeout_ms: parse_budget(timeout, 30000)?,
+            max_concurrent: usize::try_from(parse_budget(concurrency, 10)?)
+                .map_err(|_| RelayConfigError::InvalidBudget)?,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<(), RelayConfigError> {
+        let url =
+            reqwest::Url::parse(&self.target_url).map_err(|_| RelayConfigError::InvalidTarget)?;
+        if self.target_url.trim() != self.target_url
+            || self.target_url.chars().any(char::is_control)
+            || !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(RelayConfigError::InvalidTarget);
         }
+        if self.timeout_ms == 0
+            || self.max_concurrent == 0
+            || self.max_concurrent > Semaphore::MAX_PERMITS
+        {
+            return Err(RelayConfigError::InvalidBudget);
+        }
+        Ok(())
+    }
+}
+
+/// Sanitized startup errors; caller input and client errors are never retained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayConfigError {
+    InvalidEnvironment,
+    InvalidTarget,
+    InvalidBudget,
+    ClientBuild,
+}
+impl std::fmt::Display for RelayConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "relay configuration error: {self:?}")
+    }
+}
+impl std::error::Error for RelayConfigError {}
+fn env_value(key: &str) -> Result<Option<String>, RelayConfigError> {
+    match std::env::var(key) {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(_) => Err(RelayConfigError::InvalidEnvironment),
+    }
+}
+fn parse_budget(value: Option<&str>, default: u64) -> Result<u64, RelayConfigError> {
+    match value {
+        None => Ok(default),
+        Some(value) if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) => {
+            value
+                .parse::<u64>()
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or(RelayConfigError::InvalidBudget)
+        }
+        Some(_) => Err(RelayConfigError::InvalidBudget),
     }
 }
 
@@ -45,17 +107,18 @@ pub struct RelayState {
 }
 
 impl RelayState {
-    pub fn new(config: RelayConfig) -> Self {
+    pub fn new(config: RelayConfig) -> Result<Self, RelayConfigError> {
+        config.validate()?;
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms))
             .build()
-            .unwrap_or_default();
+            .map_err(|_| RelayConfigError::ClientBuild)?;
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent));
-        Self {
+        Ok(Self {
             config,
             client,
             semaphore,
-        }
+        })
     }
 }
 
@@ -214,7 +277,7 @@ mod tests {
 
     #[test]
     fn relay_config_defaults() {
-        let config = RelayConfig::new("http://127.0.0.1:3111");
+        let config = RelayConfig::from_values("http://127.0.0.1:3111".into(), None, None).unwrap();
         assert_eq!(config.target_url, "http://127.0.0.1:3111");
         assert_eq!(config.max_concurrent, 10);
     }
@@ -225,7 +288,8 @@ mod tests {
             target_url: "http://127.0.0.1:3111".to_string(),
             timeout_ms: 1_000,
             max_concurrent: 3,
-        });
+        })
+        .unwrap();
 
         assert_eq!(state.semaphore.available_permits(), 3);
     }

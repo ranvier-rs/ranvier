@@ -465,12 +465,15 @@ impl Inspector {
     ///
     /// ```rust,ignore
     /// let inspector = Inspector::new(schematic, 9090)
-    ///     .with_relay_target("http://127.0.0.1:3111");
+    ///     .with_relay_target("http://127.0.0.1:3111")?;
     /// ```
-    pub fn with_relay_target(mut self, target_url: impl Into<String>) -> Self {
-        let config = relay::RelayConfig::new(target_url);
-        self.relay_state = Some(relay::RelayState::new(config));
-        self
+    pub fn with_relay_target(
+        mut self,
+        target_url: impl Into<String>,
+    ) -> Result<Self, relay::RelayConfigError> {
+        let config = relay::RelayConfig::new(target_url)?;
+        self.relay_state = Some(relay::RelayState::new(config)?);
+        Ok(self)
     }
 
     /// Register HTTP route descriptors for the `/api/v1/routes` endpoint.
