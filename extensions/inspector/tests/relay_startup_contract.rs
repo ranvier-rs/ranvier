@@ -18,6 +18,20 @@ fn external_consumer_can_handle_all_fallible_startup_signatures() {
     let _: fn(String) -> Result<Inspector, RelayConfigError> = configure;
     let _: fn(String) -> Result<RelayConfig, RelayConfigError> = config;
     let _: fn(RelayConfig) -> Result<RelayState, RelayConfigError> = RelayState::new;
+    fn require_startup_error<E: std::error::Error + Send + Sync + 'static>() {}
+    require_startup_error::<RelayConfigError>();
+}
+
+#[test]
+fn explicit_valid_configuration_constructs_without_network_execution() {
+    let state = RelayState::new(RelayConfig {
+        target_url: "http://127.0.0.1:3111".into(),
+        timeout_ms: 1000,
+        max_concurrent: 2,
+    })
+    .unwrap();
+    assert_eq!(state.semaphore.available_permits(), 2);
+    assert_eq!(state.config.timeout_ms, 1000);
 }
 
 #[test]
