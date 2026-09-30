@@ -2474,7 +2474,13 @@ async fn handle_socket(socket: WebSocket) {
             // lets the WebSocket protocol handle control frames promptly.
             message = incoming.next() => {
                 match message {
-                    None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                    None | Some(Err(_)) => break,
+                    Some(Ok(Message::Close(_))) => {
+                        // Flush the protocol's queued close reply before dropping
+                        // the transport, so the peer observes a normal close.
+                        let _ = sender.close().await;
+                        break;
+                    }
                     Some(Ok(_)) => continue,
                 }
             }

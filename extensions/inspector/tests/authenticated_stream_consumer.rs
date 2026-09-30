@@ -35,7 +35,8 @@ async fn actual_inspector_producers_pass_maintained_stream_consumer() {
             .serve_with_listener_and_cancellation(listener, server_token)
             .await
     });
-    let mut child = tokio::process::Command::new(node)
+    let mut command = tokio::process::Command::new(node);
+    command
         .args(["--import", "tsx"])
         .arg(&script)
         .current_dir(
@@ -49,10 +50,16 @@ async fn actual_inspector_producers_pass_maintained_stream_consumer() {
         .env("RANVIER_STREAM_FIXTURE_TOKEN", "fixture-stream-token")
         .kill_on_drop(true)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        .stderr(Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(_) => {
+            cancellation.cancel(CancellationReason::OperatorShutdown);
+            let _ = tokio::time::timeout(Duration::from_secs(3), server).await;
+            panic!("stream validator process could not start");
+        }
+    };
+    let mut lines = BufReader::new(child.stdout.take().unwrap().take(16384)).lines();
     let stderr = child.stderr.take().unwrap();
     let errors = tokio::spawn(async move {
         let mut data = Vec::new();
@@ -95,20 +102,25 @@ async fn actual_inspector_producers_pass_maintained_stream_consumer() {
     if !matches!(result, Ok(Ok(_))) {
         let _ = child.kill().await;
     }
-    let status = tokio::time::timeout(Duration::from_secs(3), child.wait())
-        .await
-        .unwrap()
-        .unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+    let reaped = if status.is_err() {
+        let _ = child.kill().await;
+        Some(tokio::time::timeout(Duration::from_secs(3), child.wait()).await)
+    } else {
+        None
+    };
     cancellation.cancel(CancellationReason::OperatorShutdown);
-    tokio::time::timeout(Duration::from_secs(3), server)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    let errors = tokio::time::timeout(Duration::from_secs(3), errors)
-        .await
+    let shutdown = tokio::time::timeout(Duration::from_secs(3), server).await;
+    let errors = tokio::time::timeout(Duration::from_secs(3), errors).await;
+    shutdown
+        .expect("managed Inspector shutdown deadline")
         .unwrap()
         .unwrap();
+    if let Some(reaped) = reaped {
+        assert!(reaped.is_ok(), "validator kill/reap deadline");
+    }
+    let status = status.expect("validator natural exit deadline").unwrap();
+    let errors = errors.expect("validator stderr join deadline").unwrap();
     assert!(
         status.success(),
         "stream validator process failed: {}",
