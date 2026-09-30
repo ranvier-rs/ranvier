@@ -9,6 +9,19 @@ pub const MAX_OBSERVABLE_GROUPS: usize = 1024;
 pub const MAX_OBSERVABLE_ATTRIBUTES: usize = 64;
 pub const MAX_OBSERVABLE_ATTRIBUTE_BYTES: usize = 8192;
 
+fn valid_instrument_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    !name.is_empty()
+        && name.len() <= 255
+        && bytes.next().is_some_and(|byte| byte.is_ascii_alphabetic())
+        && bytes
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-' | b'/'))
+}
+struct RejectedInstrument;
+impl<T> SyncInstrument<T> for RejectedInstrument {
+    fn measure(&self, _: T, _: &[KeyValue]) {}
+}
+
 fn labels_within_budget(attributes: &[KeyValue]) -> bool {
     use opentelemetry::{Array, Value};
     if attributes.len() > MAX_OBSERVABLE_ATTRIBUTES {
@@ -57,6 +70,10 @@ impl MetricState {
         self.0.load(std::sync::atomic::Ordering::Acquire)
     }
     fn register_observable(&self, scope: &InstrumentationScope, name: &str) -> bool {
+        if !valid_instrument_name(name) {
+            self.fail();
+            return false;
+        }
         let Ok(mut registered) = self.1.lock() else {
             self.fail();
             return false;
@@ -198,6 +215,10 @@ impl<T> AsyncInstrument<T> for Observing<'_, T> {
 macro_rules! sync_instrument {
     ($method:ident, $kind:ident, $number:ty, $operation:ident) => {
         fn $method(&self, builder: InstrumentBuilder<'_, $kind<$number>>) -> $kind<$number> {
+            if !valid_instrument_name(&builder.name) {
+                self.state.fail();
+                return $kind::new(Arc::new(RejectedInstrument));
+            }
             let mut delegated = self.inner.$method(builder.name);
             if let Some(value) = self.policy.metric_description(builder.description) {
                 delegated = delegated.with_description(value);
@@ -216,6 +237,10 @@ macro_rules! sync_instrument {
 macro_rules! histogram {
     ($method:ident, $number:ty) => {
         fn $method(&self, builder: HistogramBuilder<'_, Histogram<$number>>) -> Histogram<$number> {
+            if !valid_instrument_name(&builder.name) {
+                self.state.fail();
+                return Histogram::new(Arc::new(RejectedInstrument));
+            }
             let mut delegated = self.inner.$method(builder.name);
             if let Some(value) = self.policy.metric_description(builder.description) {
                 delegated = delegated.with_description(value);
