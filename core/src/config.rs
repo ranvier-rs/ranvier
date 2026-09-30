@@ -1090,7 +1090,7 @@ impl RanvierConfig {
                 protocol = ?self.telemetry.otlp_protocol,
                 service = %self.telemetry.service_name,
                 sample_ratio = %self.telemetry.sample_ratio,
-                "OTLP telemetry configured (exporter integration requires `opentelemetry` feature)"
+                "OTLP destination configured; exporter is not initialized by RanvierConfig"
             );
         }
     }
