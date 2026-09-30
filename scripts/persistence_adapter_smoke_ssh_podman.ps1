@@ -3,7 +3,8 @@ param(
     [ValidateRange(1, 65535)][int]$PostgresPort = 54329,
     [ValidateRange(1, 65535)][int]$RedisPort = 6389,
     [string]$EvidenceDir = '',
-    [ValidateSet('adapters','dependency-recovery')][string]$Scenario = 'adapters'
+    [ValidateSet('adapters','dependency-recovery','otel','otel-redaction')][string]$Scenario = 'adapters',
+    [string]$CollectorImage = 'docker.io/otel/opentelemetry-collector-contrib:latest'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -76,7 +77,11 @@ try {
     if ($tunnel.HasExited) { throw 'SSH loopback tunnel exited during startup; inspect ssh-stderr.log.' }
     [ordered]@{ machine = $MachineName; default_connection = $connection.Name; ssh_port = $uri.Port; process_id = $tunnel.Id; known_hosts_sha256 = (Get-FileHash $knownHosts).Hash } |
         ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $EvidenceDir 'ssh-tunnel-identity.json')
-    if ($Scenario -eq 'dependency-recovery') {
+    if ($Scenario -in @('otel','otel-redaction')) {
+        if ($PostgresPort -ne 4317 -or $RedisPort -ne 4318) { throw 'OTel scenarios require forward ports 4317 and 4318.' }
+        $helper = if ($Scenario -eq 'otel') { 'otel_collector_smoke_podman.ps1' } else { 'otel_collector_otlp_redaction_smoke_podman.ps1' }
+        & (Join-Path $PSScriptRoot $helper) -EvidenceDir $EvidenceDir -CollectorImage $CollectorImage
+    } elseif ($Scenario -eq 'dependency-recovery') {
         & (Join-Path $PSScriptRoot 'dependency_failure_smoke_podman.ps1') -PostgresPort $PostgresPort -RedisPort $RedisPort -SummaryPath (Join-Path $EvidenceDir 'dependency-recovery-summary.md') -ForwarderProcess $tunnel
     } else {
         & (Join-Path $PSScriptRoot 'persistence_adapter_smoke_podman.ps1') -PostgresPort $PostgresPort -RedisPort $RedisPort -StartupWaitSeconds 0 -EvidenceDir $EvidenceDir -ForwarderProcess $tunnel
