@@ -100,6 +100,9 @@ pub mod otlp {
         }
 
         /// Attempts both providers even if the first shutdown fails.
+        /// This synchronous operation has no adapter-enforced overall deadline.
+        /// SDK 0.32 meter shutdown ignores its timeout argument; callers must not
+        /// infer worker termination or a shutdown budget from the export timeout.
         pub fn shutdown(&self) -> Result<(), Vec<String>> {
             let mut failures = Vec::new();
             if let Err(error) = self.traces.shutdown() {
