@@ -112,7 +112,7 @@ pub mod otlp {
             service: &str,
             endpoint: &str,
             protocol: Protocol,
-            redaction: crate::redaction::Mode,
+            redaction: crate::redaction::Policy,
             timeout: Duration,
         ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
             validate(service, endpoint, timeout)?;
@@ -157,7 +157,7 @@ pub mod otlp {
                             inner: traces,
                             failed: trace_export_failed.clone(),
                         },
-                        mode: redaction,
+                        policy: redaction,
                     })
                     .build(),
                 trace_export_failed,

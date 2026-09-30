@@ -8,7 +8,7 @@ use opentelemetry::{
 use ranvier_core::prelude::*;
 use ranvier_observe::{
     otlp::{Protocol, Providers},
-    redaction::Mode,
+    redaction::{Mode, Policy},
 };
 use ranvier_runtime::Axon;
 use std::time::Duration;
@@ -38,11 +38,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok("off") => Mode::Off,
         _ => return Err("invalid redaction mode".into()),
     };
+    let additional_keys = match std::env::var("RANVIER_TELEMETRY_REDACT_KEYS") {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => String::new(),
+        Err(_) => return Err("invalid additional redaction keys encoding".into()),
+    };
+    let policy = Policy::new(mode, &additional_keys)?;
     let providers = Providers::build(
         "otel-demo",
         &endpoint,
         protocol,
-        mode,
+        policy,
         Duration::from_secs(3),
     )?;
     let tracer = providers.traces.tracer("ranvier-otlp-smoke");

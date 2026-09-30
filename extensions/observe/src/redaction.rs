@@ -14,20 +14,52 @@ pub enum Mode {
     Strict,
 }
 
+/// Validated additive, case-insensitive substring keys. Built-in keys always remain active.
+#[derive(Clone, Debug)]
+pub struct Policy {
+    mode: Mode,
+    keys: Vec<String>,
+}
+impl Policy {
+    /// Empty input adds no keys. Nonempty lists require 1..64 ASCII key fragments,
+    /// each at most 128 bytes, using letters, digits, dot, underscore or hyphen.
+    pub fn new(mode: Mode, additional_keys: &str) -> Result<Self, &'static str> {
+        let mut keys = Vec::new();
+        if !additional_keys.trim().is_empty() {
+            for value in additional_keys.split(',') {
+                let value = value.trim();
+                if keys.len() >= 64
+                    || value.is_empty()
+                    || value.len() > 128
+                    || !value
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+                {
+                    return Err("invalid additional redaction keys");
+                }
+                keys.push(value.to_ascii_lowercase());
+            }
+        }
+        Ok(Self { mode, keys })
+    }
+}
+
 #[derive(Debug)]
 pub struct RedactingExporter<E> {
     pub(crate) inner: E,
-    pub(crate) mode: Mode,
+    pub(crate) policy: Policy,
 }
 
-fn redact(attributes: &mut [KeyValue], mode: &Mode) {
+fn redact(attributes: &mut [KeyValue], policy: &Policy) {
     for attribute in attributes {
         let key = attribute.key.as_str().to_ascii_lowercase();
         let sensitive = key.contains("email")
             || key.contains("api_key")
             || key.contains("password")
-            || key.contains("token");
-        if matches!(mode, Mode::Strict) || (matches!(mode, Mode::Public) && sensitive) {
+            || key.contains("token")
+            || policy.keys.iter().any(|fragment| key.contains(fragment));
+        if matches!(policy.mode, Mode::Strict) || (matches!(policy.mode, Mode::Public) && sensitive)
+        {
             attribute.value = "[REDACTED]".into();
         }
     }
@@ -36,12 +68,12 @@ fn redact(attributes: &mut [KeyValue], mode: &Mode) {
 impl<E: SpanExporter> SpanExporter for RedactingExporter<E> {
     async fn export(&self, mut batch: Vec<SpanData>) -> OTelSdkResult {
         for span in &mut batch {
-            redact(&mut span.attributes, &self.mode);
+            redact(&mut span.attributes, &self.policy);
             for event in &mut span.events.events {
-                redact(&mut event.attributes, &self.mode);
+                redact(&mut event.attributes, &self.policy);
             }
             for link in &mut span.links.links {
-                redact(&mut link.attributes, &self.mode);
+                redact(&mut link.attributes, &self.policy);
             }
         }
         self.inner.export(batch).await
@@ -67,7 +99,7 @@ mod tests {
                 KeyValue::new("customer_email", "fixture-secret"),
                 KeyValue::new("API_KEY", "fixture-secret"),
             ];
-            redact(&mut attributes, &mode);
+            redact(&mut attributes, &Policy::new(mode, "").unwrap());
             assert!(
                 attributes
                     .iter()
@@ -78,9 +110,9 @@ mod tests {
     #[test]
     fn off_is_explicit_and_public_retains_non_sensitive_fields() {
         let mut attributes = vec![KeyValue::new("outcome", "next")];
-        redact(&mut attributes, &Mode::Public);
+        redact(&mut attributes, &Policy::new(Mode::Public, "").unwrap());
         assert_eq!(attributes[0].value.to_string(), "next");
-        redact(&mut attributes, &Mode::Off);
+        redact(&mut attributes, &Policy::new(Mode::Off, "").unwrap());
         assert_eq!(attributes[0].value.to_string(), "next");
     }
     #[derive(Clone, Debug, Default)]
@@ -102,12 +134,13 @@ mod tests {
             let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
                 .with_simple_exporter(RedactingExporter {
                     inner: capture.clone(),
-                    mode,
+                    policy: Policy::new(mode, "account_number").unwrap(),
                 })
                 .build();
             let tracer = provider.tracer("test");
             let mut span = tracer.start("fixture");
             span.set_attribute(KeyValue::new("customer_email", "fixture-secret"));
+            span.set_attribute(KeyValue::new("ACCOUNT_NUMBER", "custom-secret"));
             span.add_event("event", vec![KeyValue::new("api_key", "fixture-secret")]);
             span.add_link(
                 SpanContext::new(
@@ -127,6 +160,7 @@ mod tests {
             assert_eq!(spans[0].links.links.len(), 1);
             let payload = format!("{spans:?}");
             assert_eq!(payload.contains("fixture-secret"), !protected);
+            assert_eq!(payload.contains("custom-secret"), !protected);
             assert_eq!(payload.contains("[REDACTED]"), protected);
         }
     }
