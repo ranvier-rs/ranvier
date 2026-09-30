@@ -114,6 +114,7 @@ impl CheckedSum for f64 {
 }
 struct Summing<'a, T> {
     groups: std::sync::Mutex<Vec<(Vec<KeyValue>, T)>>,
+    originals: std::sync::Mutex<Vec<Vec<KeyValue>>>,
     policy: &'a Policy,
     state: &'a MetricState,
 }
@@ -126,12 +127,28 @@ impl<T: CheckedSum> AsyncInstrument<T> for Summing<'_, T> {
             self.state.fail();
             return;
         }
-        let mut attributes = self.policy.metric_attributes(attributes.to_vec());
-        attributes.sort_by(|a, b| a.key.as_str().cmp(b.key.as_str()));
-        if attributes.windows(2).any(|pair| pair[0].key == pair[1].key) {
+        let mut original = attributes.to_vec();
+        original.sort_by(|a, b| a.key.as_str().cmp(b.key.as_str()));
+        if original.windows(2).any(|pair| pair[0].key == pair[1].key) {
             self.state.fail();
             return;
         }
+        // Bounded collection-local originals distinguish duplicates from masked collisions.
+        let Ok(mut originals) = self.originals.lock() else {
+            self.state.fail();
+            return;
+        };
+        if self.state.failed() {
+            return;
+        }
+        if originals.iter().any(|labels| *labels == original)
+            || originals.len() >= MAX_OBSERVABLE_GROUPS
+        {
+            self.state.fail();
+            return;
+        }
+        let attributes = self.policy.metric_attributes(original.clone());
+        originals.push(original);
         let Ok(mut groups) = self.groups.lock() else {
             self.state.fail();
             return;
@@ -246,6 +263,7 @@ macro_rules! asynchronous_sum {
                 .with_callback(move |inner| {
                     let observations = Summing {
                         groups: std::sync::Mutex::new(Vec::new()),
+                        originals: std::sync::Mutex::new(Vec::new()),
                         policy: &policy,
                         state: &state,
                     };
@@ -296,6 +314,7 @@ mod tests {
         let state = MetricState::default();
         let observations = Summing {
             groups: std::sync::Mutex::new(Vec::new()),
+            originals: std::sync::Mutex::new(Vec::new()),
             policy: &policy,
             state: &state,
         };
@@ -303,9 +322,9 @@ mod tests {
             for index in 0..8 {
                 let observations = &observations;
                 scope.spawn(move || {
-                    for _ in 0..10 {
+                    for observation in 0..10 {
                         let mut labels = vec![
-                            KeyValue::new("email", format!("synthetic-{index}")),
+                            KeyValue::new("email", format!("synthetic-{index}-{observation}")),
                             KeyValue::new("safe", "same"),
                         ];
                         if index % 2 == 0 {
@@ -328,6 +347,7 @@ mod tests {
         let state = MetricState::default();
         let observations = Summing {
             groups: std::sync::Mutex::new(Vec::new()),
+            originals: std::sync::Mutex::new(Vec::new()),
             policy: &policy,
             state: &state,
         };
@@ -348,14 +368,13 @@ mod tests {
         let state = MetricState::default();
         let observations = Summing {
             groups: std::sync::Mutex::new(Vec::new()),
+            originals: std::sync::Mutex::new(Vec::new()),
             policy: &policy,
             state: &state,
         };
         for index in 0..MAX_OBSERVABLE_GROUPS {
             observations.observe(1_u64, &[KeyValue::new("index", index as i64)]);
         }
-        assert!(!state.failed());
-        observations.observe(1, &[KeyValue::new("index", 0_i64)]);
         assert!(!state.failed());
         observations.observe(1, &[KeyValue::new("index", MAX_OBSERVABLE_GROUPS as i64)]);
         assert!(state.failed());
@@ -430,6 +449,7 @@ mod tests {
         let state = MetricState::default();
         let observations = Summing {
             groups: std::sync::Mutex::new(Vec::new()),
+            originals: std::sync::Mutex::new(Vec::new()),
             policy: &policy,
             state: &state,
         };
@@ -440,6 +460,7 @@ mod tests {
         let state = MetricState::default();
         let observations = Summing {
             groups: std::sync::Mutex::new(Vec::new()),
+            originals: std::sync::Mutex::new(Vec::new()),
             policy: &policy,
             state: &state,
         };
