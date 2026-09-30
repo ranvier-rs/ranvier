@@ -1,4 +1,4 @@
-//! Trace attribute policy. Resource attributes and metric labels are separate gates.
+//! Trace and resource attribute policy. Metric data labels remain a separate gate.
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::{
     Resource,
@@ -45,6 +45,21 @@ impl Policy {
         }
         Ok(Self { mode, keys })
     }
+
+    pub(crate) fn resource(&self, resource: &Resource) -> Resource {
+        if matches!(self.mode, Mode::Off) {
+            return resource.clone();
+        }
+        let mut attributes: Vec<KeyValue> = resource
+            .iter()
+            .map(|(key, value)| KeyValue::new(key.clone(), value.clone()))
+            .collect();
+        redact(&mut attributes, self);
+        // Do not rerun environment/default detectors or forward an arbitrary schema URL.
+        Resource::builder_empty()
+            .with_attributes(attributes)
+            .build()
+    }
 }
 
 #[derive(Debug)]
@@ -88,7 +103,7 @@ impl<E: SpanExporter> SpanExporter for RedactingExporter<E> {
         self.inner.force_flush()
     }
     fn set_resource(&mut self, resource: &Resource) {
-        self.inner.set_resource(resource);
+        self.inner.set_resource(&self.policy.resource(resource));
     }
 }
 

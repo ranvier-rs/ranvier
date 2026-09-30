@@ -91,9 +91,9 @@ pub mod otlp {
     }
     /// Caller-owned providers; no process-global provider is installed.
     pub struct Providers {
-        /// Trace provider: redacts span/event/link attributes only; names and resource data are not filtered.
+        /// Trace provider: redacts span/event/link/resource attributes; names are not filtered.
         pub traces: SdkTracerProvider,
-        /// Metric provider: attribute redaction is not yet implemented; callers must supply safe labels.
+        /// Metric provider: resource attributes are filtered; callers must supply safe data labels.
         pub metrics: SdkMeterProvider,
         trace_export_failed: Arc<AtomicBool>,
     }
@@ -163,9 +163,11 @@ pub mod otlp {
                         .build()?,
                 ),
             };
-            let resource = Resource::builder()
-                .with_service_name(service.to_owned())
-                .build();
+            let resource = redaction.resource(
+                &Resource::builder()
+                    .with_service_name(service.to_owned())
+                    .build(),
+            );
             let trace_export_failed = Arc::new(AtomicBool::new(false));
             Ok(Self {
                 traces: SdkTracerProvider::builder()
