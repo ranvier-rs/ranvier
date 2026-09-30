@@ -266,11 +266,9 @@ impl Transition<FetchAllInput, Vec<UserSummary>> for ListUsersTransition {
 async fn main() -> Result<()> {
     println!("=== M132 SeaORM Reference Demo ===");
 
-    let db_path = "target/m132_seaorm_demo.sqlite";
-    if std::path::Path::new(db_path).exists() {
-        let _ = std::fs::remove_file(db_path);
-    }
-    let db = Database::connect(format!("sqlite://{}?mode=rwc", db_path)).await?;
+    // This finite CRUD fixture owns no persistent file and is safe to repeat.
+    // Durable database migration/recovery acceptance is a separate gate.
+    let db = Database::connect("sqlite::memory:").await?;
     Migrator::up(&db, None).await?;
     let resources = AppResources { db };
     let mut bus = Bus::new();
