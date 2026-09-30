@@ -118,7 +118,7 @@ try {
         $env:RANVIER_OTLP_PROTOCOL = "grpc"
         $env:RUST_LOG = "info"
 
-        cargo run --locked -p otel-demo *>&1 | Tee-Object -FilePath $appLog | Out-Null
+        cargo run --locked -p ranvier-observe --example otlp_smoke --features otlp *>&1 | Tee-Object -FilePath $appLog | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "OTel demo failed." }
     } finally {
         Pop-Location
