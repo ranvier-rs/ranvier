@@ -1,10 +1,10 @@
-param([string]$EvidenceDir = 'D:\ranvier-m427-jaeger-safety-20260930')
+param([string]$EvidenceDir = 'D:\ranvier-m427-jaeger-safety-20260930', [switch]$Tempo)
 $ErrorActionPreference='Stop'
 New-Item -ItemType Directory -Force $EvidenceDir | Out-Null
 $config=Join-Path $EvidenceDir 'config.yaml'
 'receivers: {}' | Set-Content $config
 function global:Start-Sleep { param($Seconds) }
-function global:Invoke-RestMethod { param($Uri,$Method,$TimeoutSec); @{data=@('otel-demo')} }
+function global:Invoke-RestMethod { param($Uri,$Method,$TimeoutSec); @{data=@('otel-demo');tagValues=@('otel-demo')} }
 function global:cargo { $global:LASTEXITCODE=0; 'mock' }
 function global:podman {
     $a=@($args); $global:jaegerCalls.Add(($a -join ' ')); $global:LASTEXITCODE=0
@@ -28,11 +28,13 @@ function global:podman {
     if($a[0] -eq 'network' -and $a[1] -eq 'rm'){return}
     throw 'Unexpected command'
 }
+$fixture = if($Tempo){'../otel_collector_tempo_smoke_podman.ps1'}else{'../otel_collector_jaeger_smoke_podman.ps1'}
+$configArgs = if($Tempo){@{CollectorConfigPath=$config;TempoConfigPath=$config}}else{@{ConfigPath=$config}}
 try {
     foreach($case in @('present','query-error','network-error','network-inspect-error','second-start','invalid-id','logs-error','cleanup-error','logs-cleanup-error','success')) {
         $global:jaegerCase=$case; $global:jaegerCalls=[Collections.Generic.List[string]]::new(); $global:jaegerRuns=0
         $failure=$null
-        try{ & (Join-Path $PSScriptRoot '../otel_collector_jaeger_smoke_podman.ps1') -ConfigPath $config -EvidenceDir (Join-Path $EvidenceDir $case) -StartupWaitSeconds 0 }catch{$failure=$_}
+        try{ & (Join-Path $PSScriptRoot $fixture) @configArgs -EvidenceDir (Join-Path $EvidenceDir $case) -StartupWaitSeconds 0 }catch{$failure=$_}
         if(($case -eq 'success') -eq [bool]$failure){throw "Wrong outcome: $case"}
         $count=if($case -eq 'second-start'){1}elseif($case -in @('logs-error','cleanup-error','logs-cleanup-error','success')){2}else{0}
         if(@($global:jaegerCalls|Where-Object {$_ -like 'rm *'}).Count -ne $count){throw "Wrong container cleanup: $case"}
