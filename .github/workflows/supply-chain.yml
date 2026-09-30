@@ -59,6 +59,10 @@ jobs:
         run: node scripts/publish_boundary.mjs --check
       - name: Negative policy self-test
         run: node scripts/supply_chain_gate.mjs --self-test --output target/supply-chain/self-test-and-live.json
+      - name: Check optional observe adapter dependencies
+        run: |
+          mkdir -p target/supply-chain
+          cargo deny --manifest-path extensions/observe/Cargo.toml --all-features --format json check advisories licenses sources > target/supply-chain/observe-stdout.jsonl 2> target/supply-chain/observe-stderr.jsonl
       - name: Validate maintenance handoff record
         run: node scripts/maintenance_handoff_gate.mjs --self-test --output target/supply-chain/handoff.json
       - name: Upload machine evidence
@@ -66,5 +70,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: supply-chain-${{ github.run_id }}
-          path: target/supply-chain/*.json
+          path: |
+            target/supply-chain/*.json
+            target/supply-chain/*.jsonl
           retention-days: 30
