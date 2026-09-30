@@ -1,0 +1,45 @@
+param([string]$EvidenceDir = 'D:\ranvier-m427-jaeger-safety-20260930')
+$ErrorActionPreference='Stop'
+New-Item -ItemType Directory -Force $EvidenceDir | Out-Null
+$config=Join-Path $EvidenceDir 'config.yaml'
+'receivers: {}' | Set-Content $config
+function global:Start-Sleep { param($Seconds) }
+function global:Invoke-RestMethod { param($Uri,$Method,$TimeoutSec); @{data=@('otel-demo')} }
+function global:cargo { $global:LASTEXITCODE=0; 'mock' }
+function global:podman {
+    $a=@($args); $global:jaegerCalls.Add(($a -join ' ')); $global:LASTEXITCODE=0
+    if($a[0] -eq 'container' -or ($a[0] -eq 'network' -and $a[1] -eq 'exists')) {
+        $global:LASTEXITCODE=if($global:jaegerCase -eq 'present'){0}elseif($global:jaegerCase -eq 'query-error'){125}else{1}; return
+    }
+    if($a[0] -eq 'network' -and $a[1] -eq 'create') {
+        if($global:jaegerCase -eq 'network-error'){$global:LASTEXITCODE=125}else{'c'*64}; return
+    }
+    if($a[0] -eq 'run') {
+        $global:jaegerRuns++
+        if($global:jaegerCase -eq 'second-start' -and $global:jaegerRuns -eq 2){$global:LASTEXITCODE=125}
+        elseif($global:jaegerCase -eq 'invalid-id'){'bad'}
+        else{if($global:jaegerRuns -eq 1){'a'*64}else{'b'*64}}; return
+    }
+    if($a[0] -eq 'logs') {
+        if($global:jaegerCase -in @('logs-error','logs-cleanup-error')){$global:LASTEXITCODE=125}else{'service.name: Str(otel-demo)';'ResourceSpans'}; return
+    }
+    if($a[0] -eq 'rm') {if($global:jaegerCase -in @('cleanup-error','logs-cleanup-error')){throw 'mock cleanup failure'};return}
+    if($a[0] -eq 'network' -and $a[1] -eq 'rm'){return}
+    throw 'Unexpected command'
+}
+try {
+    foreach($case in @('present','query-error','network-error','second-start','invalid-id','logs-error','cleanup-error','logs-cleanup-error','success')) {
+        $global:jaegerCase=$case; $global:jaegerCalls=[Collections.Generic.List[string]]::new(); $global:jaegerRuns=0
+        $failure=$null
+        try{ & (Join-Path $PSScriptRoot '../otel_collector_jaeger_smoke_podman.ps1') -ConfigPath $config -EvidenceDir (Join-Path $EvidenceDir $case) -StartupWaitSeconds 0 }catch{$failure=$_}
+        if(($case -eq 'success') -eq [bool]$failure){throw "Wrong outcome: $case"}
+        $count=if($case -eq 'second-start'){1}elseif($case -in @('logs-error','cleanup-error','logs-cleanup-error','success')){2}else{0}
+        if(@($global:jaegerCalls|Where-Object {$_ -like 'rm *'}).Count -ne $count){throw "Wrong container cleanup: $case"}
+        $network=$case -notin @('present','query-error','network-error')
+        if(@($global:jaegerCalls|Where-Object {$_ -like 'network rm *'}).Count -ne [int]$network){throw "Wrong network cleanup: $case"}
+        if($case -eq 'logs-cleanup-error' -and $failure.Exception.Message -ne 'Collector logs failed.'){throw 'Primary error lost'}
+        foreach($call in @($global:jaegerCalls|Where-Object {$_ -like 'rm *' -or $_ -like 'network rm *'})){if($call -notmatch '[a-c]{64}$'){throw 'Unowned cleanup'}}
+        Write-Host "PASS: $case"
+    }
+} finally { Remove-Item Function:\podman,Function:\cargo,Function:\Start-Sleep,Function:\Invoke-RestMethod }
+Write-Host 'PASS: 9 mocked Jaeger ownership cases; no live runtime executed.'

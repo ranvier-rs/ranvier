@@ -1,34 +1,36 @@
 param(
-    [string]$NetworkName = "ranvier-otel-net",
-    [string]$CollectorContainerName = "ranvier-otel-collector",
-    [string]$JaegerContainerName = "ranvier-otel-jaeger",
-    [int]$StartupWaitSeconds = 8,
+    [string]$NetworkName = ("ranvier-otel-net-" + [Guid]::NewGuid().ToString("N")),
+    [string]$CollectorContainerName = ("ranvier-otel-collector-" + [Guid]::NewGuid().ToString("N")),
+    [string]$JaegerContainerName = ("ranvier-otel-jaeger-" + [Guid]::NewGuid().ToString("N")),
+    [ValidateRange(0, 300)][int]$StartupWaitSeconds = 8,
+    [string]$EvidenceDir = "",
     [string]$ConfigPath = ""
 )
 
 $ErrorActionPreference = "Stop"
 
-function Stop-ContainerIfExists {
-    param([string]$Name)
-
-    $existing = podman ps -a --format "{{.Names}}" | Select-String -Pattern "^$Name$"
-    if ($existing) {
-        podman rm -f $Name | Out-Null
-    }
+$PSNativeCommandUseErrorActionPreference = $false
+$ownedIds = [Collections.Generic.List[string]]::new()
+$ownedNetworkId = $null
+$primaryFailure = $null
+$savedEnvironment = @{}
+foreach ($name in @('RANVIER_OTLP_ENDPOINT','RANVIER_OTLP_PROTOCOL','RUST_LOG')) {
+    $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
 }
-
-function Ensure-Network {
-    param([string]$Name)
-
-    $existing = podman network ls --format "{{.Name}}" | Select-String -Pattern "^$Name$"
-    if (-not $existing) {
-        podman network create $Name | Out-Null
-        return $true
-    }
-
-    return $false
+function Assert-NewFixture {
+    param([string]$Kind, [string]$Name)
+    podman $Kind exists $Name | Out-Null
+    $code = $LASTEXITCODE
+    if ($code -eq 0) { throw "Existing $Kind preserved: $Name" }
+    if ($code -ne 1) { throw "Fixture query failed ($code): $Name" }
 }
-
+function Get-OwnedId {
+    param([object[]]$Output, [int]$Code)
+    if ($Code -ne 0) { throw 'Fixture creation failed.' }
+    $id = ($Output -join '').Trim()
+    if ($id -notmatch '^[a-f0-9]{64}$') { throw 'Invalid owned fixture ID; resource preserved.' }
+    return $id
+}
 if (-not (Get-Command podman -ErrorAction SilentlyContinue)) {
     throw "podman is not installed or not in PATH."
 }
@@ -50,7 +52,10 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $configPath = (Resolve-Path $ConfigPath).Path
 }
 
-$evidenceDir = Join-Path $workspaceRoot "docs/05_dev_plans/evidence"
+if ([string]::IsNullOrWhiteSpace($EvidenceDir)) {
+    $EvidenceDir = Join-Path ([IO.Path]::GetTempPath()) ('ranvier-jaeger-' + [Guid]::NewGuid().ToString('N'))
+}
+$evidenceDir = [IO.Path]::GetFullPath($EvidenceDir)
 New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
 
 $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -59,26 +64,29 @@ $collectorLog = Join-Path $evidenceDir ("otel_demo_jaeger_smoke_collector_" + $s
 $jaegerLog = Join-Path $evidenceDir ("otel_demo_jaeger_smoke_jaeger_" + $stamp + ".log")
 $servicesLog = Join-Path $evidenceDir ("otel_demo_jaeger_smoke_services_" + $stamp + ".log")
 
-$createdNetwork = $false
+
 
 try {
-    Stop-ContainerIfExists -Name $CollectorContainerName
-    Stop-ContainerIfExists -Name $JaegerContainerName
-
-    $createdNetwork = Ensure-Network -Name $NetworkName
-
-    podman run -d --name $JaegerContainerName `
-        --network $NetworkName `
-        -p 16686:16686 `
+    Assert-NewFixture container $CollectorContainerName
+    Assert-NewFixture container $JaegerContainerName
+    Assert-NewFixture network $NetworkName
+    $created = @(podman network create $NetworkName)
+    $ownedNetworkId = Get-OwnedId $created $LASTEXITCODE
+     $created = @(podman run -d --rm --name $JaegerContainerName `
+        --network $ownedNetworkId `
+        --network-alias ranvier-otel-jaeger `
+        -p 127.0.0.1:16686:16686 `
         -e COLLECTOR_OTLP_ENABLED=true `
-        jaegertracing/all-in-one:1.60.0 | Out-Null
+        docker.io/jaegertracing/all-in-one:1.60.0)
+    $ownedIds.Add((Get-OwnedId $created $LASTEXITCODE))
 
-    podman run -d --name $CollectorContainerName `
-        --network $NetworkName `
-        -p 4317:4317 `
-        -p 4318:4318 `
+     $created = @(podman run -d --rm --name $CollectorContainerName `
+        --network $ownedNetworkId `
+        -p 127.0.0.1:4317:4317 `
+        -p 127.0.0.1:4318:4318 `
         -v "${configPath}:/etc/otelcol-contrib/config.yaml" `
-        otel/opentelemetry-collector-contrib:latest | Out-Null
+        docker.io/otel/opentelemetry-collector-contrib:latest)
+    $ownedIds.Add((Get-OwnedId $created $LASTEXITCODE))
 
     Start-Sleep -Seconds $StartupWaitSeconds
 
@@ -88,14 +96,17 @@ try {
         $env:RANVIER_OTLP_PROTOCOL = "grpc"
         $env:RUST_LOG = "info"
 
-        cargo run -p otel-demo *>&1 | Tee-Object -FilePath $appLog | Out-Null
+        cargo run --locked -p otel-demo *>&1 | Tee-Object -FilePath $appLog | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "OTel demo failed." }
     } finally {
         Pop-Location
     }
 
     Start-Sleep -Seconds 5
-    podman logs $CollectorContainerName *> $collectorLog
-    podman logs $JaegerContainerName *> $jaegerLog
+    podman logs $ownedIds[1] *> $collectorLog
+    if ($LASTEXITCODE -ne 0) { throw "Collector logs failed." }
+    podman logs $ownedIds[0] *> $jaegerLog
+    if ($LASTEXITCODE -ne 0) { throw "Jaeger logs failed." }
 
     $serviceMatch = Select-String -Path $collectorLog -Pattern "service.name: Str(otel-demo)" -SimpleMatch
     $spansMatch = Select-String -Path $collectorLog -Pattern "ResourceSpans" -SimpleMatch
@@ -113,7 +124,7 @@ try {
         throw "App log contains OpenTelemetry trace error."
     }
 
-    $servicesResponse = Invoke-RestMethod -Uri "http://localhost:16686/api/services" -Method GET
+    $servicesResponse = Invoke-RestMethod -Uri "http://localhost:16686/api/services" -Method GET -TimeoutSec 10
     $services = @($servicesResponse.data)
     ("SERVICES=" + ($services -join ",")) | Set-Content -Path $servicesLog -Encoding UTF8
 
@@ -121,16 +132,34 @@ try {
         throw "Jaeger service list does not include otel-demo."
     }
 
-    Write-Host "OTel Jaeger smoke passed."
-    Write-Host "APP_LOG=$appLog"
-    Write-Host "COLLECTOR_LOG=$collectorLog"
-    Write-Host "JAEGER_LOG=$jaegerLog"
-    Write-Host "SERVICES_LOG=$servicesLog"
+} catch {
+    $primaryFailure = $_
+    throw
 } finally {
-    Stop-ContainerIfExists -Name $CollectorContainerName
-    Stop-ContainerIfExists -Name $JaegerContainerName
-
-    if ($createdNetwork) {
-        podman network rm $NetworkName | Out-Null
+    foreach ($name in $savedEnvironment.Keys) {
+        if ($null -eq $savedEnvironment[$name]) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+        else { [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name]) }
+    }
+    $cleanupFailures = [Collections.Generic.List[string]]::new()
+    foreach ($id in $ownedIds) {
+        try {
+            podman rm -f $id | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Container cleanup failed: $id" }
+        } catch { $cleanupFailures.Add($_.Exception.Message) }
+    }
+    if ($ownedNetworkId) {
+        try {
+            podman network rm $ownedNetworkId | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Owned network cleanup failed.' }
+        } catch { $cleanupFailures.Add($_.Exception.Message) }
+    }
+    if ($cleanupFailures.Count) {
+        if ($primaryFailure) { Write-Warning ($cleanupFailures -join '; ') }
+        else { throw ($cleanupFailures -join '; ') }
     }
 }
+Write-Host 'OTel Jaeger smoke passed; owned fixtures removed.'
+Write-Host "APP_LOG=$appLog"
+Write-Host "COLLECTOR_LOG=$collectorLog"
+Write-Host "JAEGER_LOG=$jaegerLog"
+Write-Host "SERVICES_LOG=$servicesLog"
