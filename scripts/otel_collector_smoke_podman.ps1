@@ -121,10 +121,12 @@ try {
         else { [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name]) }
     }
     if ($ownedId) {
-        podman rm -f $ownedId | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            if ($primaryFailure) { Write-Warning 'Owned collector cleanup failed.' }
-            else { throw 'Owned collector cleanup failed.' }
+        try {
+            podman rm -f $ownedId | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Owned collector cleanup failed.' }
+        } catch {
+            if ($primaryFailure) { Write-Warning $_.Exception.Message }
+            else { throw }
         }
     }
 }
