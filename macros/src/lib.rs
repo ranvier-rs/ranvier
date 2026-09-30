@@ -1,7 +1,4 @@
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{ItemFn, parse_macro_input};
-
 mod config;
 mod crate_path;
 mod diagnostic;
@@ -18,77 +15,6 @@ pub fn transition(attr: TokenStream, item: TokenStream) -> TokenStream {
         .and_then(|core_path| expansion::expand_transition(core_path, attr.into(), item.into()))
         .map(TokenStream::from)
         .unwrap_or_else(diagnostic::compile_error)
-}
-
-/// Attribute macro for HTTP route registration.
-#[proc_macro_attribute]
-pub fn route(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let input_fn = parse_macro_input!(item as ItemFn);
-    let original_ident = input_fn.sig.ident.clone();
-    let vis = &input_fn.vis;
-
-    let parser = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
-    let attr_args = parse_macro_input!(attr with parser);
-
-    if attr_args.len() < 2 {
-        return TokenStream::from(
-            quote! { compile_error!("route attribute requires method and path"); },
-        );
-    }
-
-    let method = &attr_args[0];
-    let path = &attr_args[1];
-
-    // For routes, we keep the function name for the function, and use a prefix for the metadata struct.
-    let struct_name = quote::format_ident!("Route_{}", original_ident);
-
-    let expanded = quote! {
-        #input_fn
-
-        #[allow(non_camel_case_types)]
-        #vis struct #struct_name;
-
-        impl #struct_name {
-            pub const METHOD: &'static str = stringify!(#method);
-            pub const PATH: &'static str = #path;
-        }
-    };
-
-    TokenStream::from(expanded)
-}
-
-/// Macro to build a router from a list of circuit functions annotated with `#[route]`.
-#[proc_macro]
-pub fn ranvier_router(input: TokenStream) -> TokenStream {
-    let parser = syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated;
-    let idents = parse_macro_input!(input with parser);
-
-    let mut registrations = quote! {};
-
-    for ident in idents {
-        let route_struct = quote::format_ident!("Route_{}", ident);
-        registrations.extend(quote! {
-            let method_str = #route_struct::METHOD;
-            let method = match method_str {
-                "GET" => http::Method::GET,
-                "POST" => http::Method::POST,
-                "PUT" => http::Method::PUT,
-                "DELETE" => http::Method::DELETE,
-                _ => http::Method::GET,
-            };
-            ingress = ingress.route_method(method, #route_struct::PATH, #ident().await);
-        });
-    }
-
-    let expanded = quote! {
-        {
-            let mut ingress = ranvier_http::HttpIngress::new();
-            #registrations
-            ingress
-        }
-    };
-
-    TokenStream::from(expanded)
 }
 
 /// Attribute macro to transform an async function into a `StreamingTransition` implementation.

@@ -1,6 +1,6 @@
 # Ranvier Macros (`ranvier-macros`)
 
-Procedural macros for transition wiring and router integration in Ranvier.
+Procedural macros for defining Ranvier transitions.
 
 ## `#[transition(schema)]`
 

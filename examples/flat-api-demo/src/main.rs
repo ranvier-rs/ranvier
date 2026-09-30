@@ -1,6 +1,6 @@
 //! # Flat API Macro Demo
 //!
-//! Demonstrates declarative routing and transitions using Ranvier's macro system.
+//! Demonstrates named transitions using `#[transition]` and explicit HTTP routing.
 //!
 //! ## Run
 //! ```bash
@@ -9,12 +9,13 @@
 //!
 //! ## Key Concepts
 //! - `#[transition]` macro for concise transition definitions
-//! - `#[route]` and `ranvier_router!` for automatic router generation
+//! - `Ranvier::http().get(...)` for explicit HTTP route registration
 //! - Resource injection pattern with custom resource types
 
 use anyhow::Result;
 use ranvier_core::prelude::*;
-use ranvier_macros::{ranvier_router, route, transition};
+use ranvier_http::prelude::*;
+use ranvier_macros::transition;
 use ranvier_runtime::Axon;
 
 // 1. Define Resources
@@ -49,8 +50,7 @@ async fn to_string(input: i32) -> Outcome<String, String> {
     Outcome::Next(input.to_string())
 }
 
-// 3. Define Circuits with Routes
-#[route(GET, "/math")]
+// 3. Define the circuit; route metadata stays in the HTTP builder.
 async fn math_circuit() -> Axon<(), String, String, MyResources> {
     Axon::<(), (), String, MyResources>::new("MathCircuit")
         .then(init_state)
@@ -64,9 +64,9 @@ async fn math_circuit() -> Axon<(), String, String, MyResources> {
 async fn main() -> Result<()> {
     println!("=== Flat API Final Macro Demo ===");
 
-    // 4. Build Router automatically
-    let _ingress = ranvier_router!(math_circuit);
-    println!("Router built successfully.");
+    // 4. Register the circuit with an explicit GET builder.
+    let _ingress = Ranvier::http::<MyResources>().get("/math", math_circuit().await);
+    println!("HTTP ingress built successfully.");
 
     // 5. Verify the math_circuit logic
     let axon = math_circuit().await;

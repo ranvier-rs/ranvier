@@ -6,6 +6,9 @@ The format is based on Keep a Changelog, and this project follows SemVer pre-1.0
 
 ## [Unreleased]
 
+### Removed
+- Removed the `route` and `ranvier_router!` HTTP routing macros. Use the explicit `Ranvier::http()` builder methods.
+
 ## [0.10.0] - 2026-02-24
 
 ### Added

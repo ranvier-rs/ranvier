@@ -72,7 +72,7 @@
     {
       "name": "flat-api-demo",
       "tier": "B",
-      "description": "Flat API structure with @transition and @ranvier_router",
+      "description": "Flat API structure with named transitions and explicit HTTP builders",
       "tags": [
         "http",
         "api"

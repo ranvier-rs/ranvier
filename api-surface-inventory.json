@@ -22,16 +22,16 @@
     "guard/Cargo.toml": "ef7800a506abbb9c6415f5a6f56e25cac68c3065965deb774f7d51b07b593e34",
     "http/Cargo.toml": "11b4eb0c6cccef466a8c57415a12dee56ad4ef4f57032bebb6b3a6d839746ada",
     "kit/Cargo.toml": "45da8cf9b47f04d0b8e47620df42e724139d065f692383b0cd6b45a359c4c1e1",
-    "macros/Cargo.toml": "be904850d65e445c3ac6d766a499b779d2b482117a8b229537f4635aa1aead83",
+    "macros/Cargo.toml": "1b947a14aab9f0e1d8d20a012c9d3b1421211a5e36662a4880dcc38eed54340d",
     "runtime/Cargo.toml": "05a8f3fb172f2c0e0f918162a9f1b5708cbc12b81bae63f2ed5edd85ffb8e85a",
     "std/Cargo.toml": "593d63ae77471e9e7a1af5dcc57f387c89a7347040008c18c038edf3f9deceaf",
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2600,
+  "public_item_count": 2598,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2409,
+    "Experimental": 2407,
     "Stable Candidate": 183
   },
   "crates": [
@@ -28521,14 +28521,13 @@
       "features": [
         "streaming"
       ],
-      "public_item_count": 5,
+      "public_item_count": 3,
       "counts_by_kind": {
-        "macro": 1,
         "module": 1,
-        "proc_attribute": 3
+        "proc_attribute": 2
       },
       "counts_by_stability": {
-        "Experimental": 3,
+        "Experimental": 1,
         "Stable Candidate": 2
       },
       "facade_reexport_count": 0,
@@ -28537,34 +28536,6 @@
         {
           "path": "ranvier_macros",
           "kind": "module",
-          "origin": "direct",
-          "target": null,
-          "stability": "Experimental",
-          "owner": "developer-tooling",
-          "boundary": null,
-          "deprecated": false,
-          "deprecation": null,
-          "source": {
-            "file": "macros/src/lib.rs"
-          }
-        },
-        {
-          "path": "ranvier_macros::ranvier_router",
-          "kind": "macro",
-          "origin": "direct",
-          "target": null,
-          "stability": "Experimental",
-          "owner": "developer-tooling",
-          "boundary": null,
-          "deprecated": false,
-          "deprecation": null,
-          "source": {
-            "file": "macros/src/lib.rs"
-          }
-        },
-        {
-          "path": "ranvier_macros::route",
-          "kind": "proc_attribute",
           "origin": "direct",
           "target": null,
           "stability": "Experimental",
