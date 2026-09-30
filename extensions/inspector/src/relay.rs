@@ -39,7 +39,7 @@ impl RelayConfig {
         concurrency: Option<&str>,
     ) -> Result<Self, RelayConfigError> {
         let config = Self {
-            target_url: target_url.into(),
+            target_url,
             timeout_ms: parse_budget(timeout, 30000)?,
             max_concurrent: usize::try_from(parse_budget(concurrency, 10)?)
                 .map_err(|_| RelayConfigError::InvalidBudget)?,
