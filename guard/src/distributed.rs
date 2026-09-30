@@ -690,14 +690,9 @@ mod tests {
     // Run with: REDIS_URL=redis://127.0.0.1:6379 cargo test -p ranvier-guard --features distributed
 
     #[tokio::test]
+    #[ignore = "requires an isolated Redis instance and REDIS_URL"]
     async fn distributed_guard_connects_and_rate_limits() {
-        let redis_url = match std::env::var("REDIS_URL") {
-            Ok(url) => url,
-            Err(_) => {
-                eprintln!("REDIS_URL not set, skipping distributed rate limit test");
-                return;
-            }
-        };
+        let redis_url = std::env::var("REDIS_URL").expect("explicit Redis test requires REDIS_URL");
 
         let guard = DistributedRateLimitGuard::<String>::new(
             &redis_url,
@@ -721,11 +716,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires an isolated Redis instance and REDIS_URL"]
     async fn denied_requests_do_not_grow_the_redis_window() {
-        let redis_url = match std::env::var("REDIS_URL") {
-            Ok(url) => url,
-            Err(_) => return,
-        };
+        let redis_url = std::env::var("REDIS_URL").expect("explicit Redis test requires REDIS_URL");
         let suffix = uuid::Uuid::new_v4().to_string();
         let key_prefix = format!("ranvier:test:ratelimit:{suffix}:");
         let client_id = "bounded-client";
@@ -768,11 +761,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires an isolated Redis instance and REDIS_URL"]
     async fn distributed_guard_recovers_after_connection_outage() {
-        let redis_url = match std::env::var("REDIS_URL") {
-            Ok(url) => url,
-            Err(_) => return,
-        };
+        let redis_url = std::env::var("REDIS_URL").expect("explicit Redis test requires REDIS_URL");
         let guard = DistributedRateLimitGuard::<String>::connect(
             DistributedRateLimitConfig::new(
                 redis_url.clone(),
