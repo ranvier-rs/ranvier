@@ -38,6 +38,7 @@ members = [
     "examples/typed-state-tree",
     "examples/persistence-production-demo",
     "examples/otel-ops-demo",
+    "extensions/observe",
     "extensions/openapi",
     "extensions/inspector",
     "extensions/audit",

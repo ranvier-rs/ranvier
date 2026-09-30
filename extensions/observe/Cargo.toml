@@ -1,0 +1,18 @@
+[package]
+name = "ranvier-observe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+otlp = ["dep:opentelemetry-otlp", "dep:opentelemetry_sdk"]
+
+[dependencies]
+opentelemetry-otlp = { version = "=0.32.0", optional = true, default-features = false, features = ["trace", "metrics", "grpc-tonic", "http-proto", "reqwest-blocking-client"] }
+opentelemetry_sdk = { version = "=0.32.0", optional = true, default-features = false, features = ["trace", "metrics"] }
+
+[lints]
+workspace = true
