@@ -80,7 +80,7 @@ $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $appLog = Join-Path $evidenceDir ("otel_demo_tempo_smoke_app_" + $stamp + ".log")
 $collectorLog = Join-Path $evidenceDir ("otel_demo_tempo_smoke_collector_" + $stamp + ".log")
 $tempoLog = Join-Path $evidenceDir ("otel_demo_tempo_smoke_tempo_" + $stamp + ".log")
-$tagValuesLog = Join-Path $evidenceDir ("otel_demo_tempo_smoke_tag_values_" + $stamp + ".log")
+$tagValuesLog = Join-Path $evidenceDir ("otel_demo_tempo_smoke_tag_values_" + $stamp + ".json")
 
 
 
@@ -124,7 +124,7 @@ try {
         Pop-Location
     }
 
-    Start-Sleep -Seconds 5
+    Start-Sleep -Seconds 12
     podman logs $ownedIds[1] *> $collectorLog
     if ($LASTEXITCODE -ne 0) { throw "Collector logs failed." }
     podman logs $ownedIds[0] *> $tempoLog
@@ -206,5 +206,5 @@ try {
 Write-Host 'OTel Tempo smoke passed; owned fixtures removed.'
 Write-Host "APP_LOG=$appLog"
 Write-Host "COLLECTOR_LOG=$collectorLog"
-Write-Host "JAEGER_LOG=$tempoLog"
+Write-Host "TEMPO_LOG=$tempoLog"
 Write-Host "TAG_VALUES_LOG=$tagValuesLog"

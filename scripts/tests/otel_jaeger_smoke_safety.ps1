@@ -4,7 +4,7 @@ New-Item -ItemType Directory -Force $EvidenceDir | Out-Null
 $config=Join-Path $EvidenceDir 'config.yaml'
 'receivers: {}' | Set-Content $config
 function global:Start-Sleep { param($Seconds) }
-function global:Invoke-RestMethod { param($Uri,$Method,$TimeoutSec); @{data=@('otel-demo');tagValues=@('otel-demo')} }
+function global:Invoke-RestMethod { param($Uri,$Method,$TimeoutSec); if($TimeoutSec -ne 10){throw 'HTTP timeout missing'}; if($global:jaegerCase -eq 'missing-service'){@{data=@();tagValues=@()}}else{@{data=@('otel-demo');tagValues=@('otel-demo')}} }
 function global:cargo { $global:LASTEXITCODE=0; 'mock' }
 function global:podman {
     $a=@($args); $global:jaegerCalls.Add(($a -join ' ')); $global:LASTEXITCODE=0
@@ -31,12 +31,12 @@ function global:podman {
 $fixture = if($Tempo){'../otel_collector_tempo_smoke_podman.ps1'}else{'../otel_collector_jaeger_smoke_podman.ps1'}
 $configArgs = if($Tempo){@{CollectorConfigPath=$config;TempoConfigPath=$config}}else{@{ConfigPath=$config}}
 try {
-    foreach($case in @('present','query-error','network-error','network-inspect-error','second-start','invalid-id','logs-error','cleanup-error','logs-cleanup-error','success')) {
+    foreach($case in @('present','query-error','network-error','network-inspect-error','second-start','invalid-id','logs-error','cleanup-error','logs-cleanup-error','missing-service','success')) {
         $global:jaegerCase=$case; $global:jaegerCalls=[Collections.Generic.List[string]]::new(); $global:jaegerRuns=0
         $failure=$null
         try{ & (Join-Path $PSScriptRoot $fixture) @configArgs -EvidenceDir (Join-Path $EvidenceDir $case) -StartupWaitSeconds 0 }catch{$failure=$_}
         if(($case -eq 'success') -eq [bool]$failure){throw "Wrong outcome: $case"}
-        $count=if($case -eq 'second-start'){1}elseif($case -in @('logs-error','cleanup-error','logs-cleanup-error','success')){2}else{0}
+        $count=if($case -eq 'second-start'){1}elseif($case -in @('logs-error','cleanup-error','logs-cleanup-error','missing-service','success')){2}else{0}
         if(@($global:jaegerCalls|Where-Object {$_ -like 'rm *'}).Count -ne $count){throw "Wrong container cleanup: $case"}
         $network=$case -notin @('present','query-error','network-error','network-inspect-error')
         if(@($global:jaegerCalls|Where-Object {$_ -like 'network rm *'}).Count -ne [int]$network){throw "Wrong network cleanup: $case"}
@@ -45,4 +45,4 @@ try {
         Write-Host "PASS: $case"
     }
 } finally { Remove-Item Function:\podman,Function:\cargo,Function:\Start-Sleep,Function:\Invoke-RestMethod }
-Write-Host 'PASS: 10 mocked Jaeger ownership cases; no live runtime executed.'
+Write-Host 'PASS: 11 mocked backend ownership cases; no live runtime executed.'
