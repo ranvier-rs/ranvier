@@ -8,7 +8,10 @@ pub mod otlp {
     use std::time::Duration;
 
     /// Explicit transport selection; there is no fallback on invalid input.
-    pub enum Protocol { Grpc, HttpProtobuf }
+    pub enum Protocol {
+        Grpc,
+        HttpProtobuf,
+    }
 
     /// Caller-owned providers; no process-global provider is installed.
     pub struct Providers {
@@ -17,48 +20,91 @@ pub mod otlp {
     }
 
     fn validate(service: &str, endpoint: &str, timeout: Duration) -> Result<(), &'static str> {
-            if service.trim().is_empty() || timeout.is_zero() {
-                return Err("service identity and nonzero export timeout required");
-            }
-            let url = url::Url::parse(endpoint).map_err(|_| "invalid OTLP endpoint")?;
-            if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none()
-                || !url.username().is_empty() || url.password().is_some()
-                || url.query().is_some() || url.fragment().is_some()
-            {
-                return Err("OTLP endpoint must be HTTP(S) without credentials, query or fragment");
-            }
+        if service.trim().is_empty() || service.chars().any(char::is_control) || timeout.is_zero() {
+            return Err("service identity and nonzero export timeout required");
+        }
+        if endpoint.trim() != endpoint || endpoint.chars().any(char::is_control) {
+            return Err("invalid OTLP endpoint");
+        }
+        let url = url::Url::parse(endpoint).map_err(|_| "invalid OTLP endpoint")?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err("OTLP endpoint must be HTTP(S) without credentials, query or fragment");
+        }
         Ok(())
     }
 
     impl Providers {
-        pub fn build(service: &str, endpoint: &str, protocol: Protocol, timeout: Duration)
-            -> Result<Self, Box<dyn std::error::Error + Send + Sync>>
-        {
+        pub fn build(
+            service: &str,
+            endpoint: &str,
+            protocol: Protocol,
+            timeout: Duration,
+        ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
             validate(service, endpoint, timeout)?;
             // No endpoint or credentials are included in our validation errors.
             let (traces, metrics) = match protocol {
                 Protocol::Grpc => (
-                    opentelemetry_otlp::SpanExporter::builder().with_tonic().with_endpoint(endpoint).with_timeout(timeout).build()?,
-                    opentelemetry_otlp::MetricExporter::builder().with_tonic().with_endpoint(endpoint).with_timeout(timeout).build()?,
+                    opentelemetry_otlp::SpanExporter::builder()
+                        .with_tonic()
+                        .with_endpoint(endpoint)
+                        .with_timeout(timeout)
+                        .build()?,
+                    opentelemetry_otlp::MetricExporter::builder()
+                        .with_tonic()
+                        .with_endpoint(endpoint)
+                        .with_timeout(timeout)
+                        .build()?,
                 ),
                 Protocol::HttpProtobuf => (
-                    opentelemetry_otlp::SpanExporter::builder().with_http().with_protocol(opentelemetry_otlp::Protocol::HttpBinary).with_endpoint(endpoint).with_timeout(timeout).build()?,
-                    opentelemetry_otlp::MetricExporter::builder().with_http().with_protocol(opentelemetry_otlp::Protocol::HttpBinary).with_endpoint(endpoint).with_timeout(timeout).build()?,
+                    opentelemetry_otlp::SpanExporter::builder()
+                        .with_http()
+                        .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
+                        .with_endpoint(endpoint)
+                        .with_timeout(timeout)
+                        .build()?,
+                    opentelemetry_otlp::MetricExporter::builder()
+                        .with_http()
+                        .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
+                        .with_endpoint(endpoint)
+                        .with_timeout(timeout)
+                        .build()?,
                 ),
             };
-            let resource = Resource::builder().with_service_name(service.to_owned()).build();
+            let resource = Resource::builder()
+                .with_service_name(service.to_owned())
+                .build();
             Ok(Self {
-                traces: SdkTracerProvider::builder().with_resource(resource.clone()).with_batch_exporter(traces).build(),
-                metrics: SdkMeterProvider::builder().with_resource(resource).with_periodic_exporter(metrics).build(),
+                traces: SdkTracerProvider::builder()
+                    .with_resource(resource.clone())
+                    .with_batch_exporter(traces)
+                    .build(),
+                metrics: SdkMeterProvider::builder()
+                    .with_resource(resource)
+                    .with_periodic_exporter(metrics)
+                    .build(),
             })
         }
 
         /// Attempts both providers even if the first shutdown fails.
         pub fn shutdown(&self) -> Result<(), Vec<String>> {
             let mut failures = Vec::new();
-            if let Err(error) = self.traces.shutdown() { failures.push(error.to_string()); }
-            if let Err(error) = self.metrics.shutdown() { failures.push(error.to_string()); }
-            if failures.is_empty() { Ok(()) } else { Err(failures) }
+            if let Err(error) = self.traces.shutdown() {
+                failures.push(error.to_string());
+            }
+            if let Err(error) = self.metrics.shutdown() {
+                failures.push(error.to_string());
+            }
+            if failures.is_empty() {
+                Ok(())
+            } else {
+                Err(failures)
+            }
         }
     }
     #[cfg(test)]
@@ -67,7 +113,15 @@ pub mod otlp {
         #[test]
         fn rejects_invalid_configuration_without_exporter_workers() {
             let timeout = Duration::from_secs(2);
-            for endpoint in ["not a URL", "file:///tmp/export", "http://user:secret@localhost:4317", "http://localhost:4317?secret=value", "http://localhost:4317#secret"] {
+            for endpoint in [
+                "not a URL",
+                " http://localhost:4317",
+                "http://localhost:4317\n",
+                "file:///tmp/export",
+                "http://user:secret@localhost:4317",
+                "http://localhost:4317?secret=value",
+                "http://localhost:4317#secret",
+            ] {
                 let error = validate("fixture", endpoint, timeout).unwrap_err();
                 assert!(!error.contains("secret"));
             }
