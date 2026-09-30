@@ -1,10 +1,6 @@
 //! Finite real OTLP fixture; service identity remains otel-demo for collector assertions.
 use async_trait::async_trait;
-use opentelemetry::{
-    KeyValue,
-    metrics::MeterProvider,
-    trace::{Span, Tracer, TracerProvider},
-};
+use opentelemetry::{KeyValue, metrics::MeterProvider};
 use ranvier_core::prelude::*;
 use ranvier_observe::{
     otlp::{Protocol, Providers, SampleRatio},
@@ -12,6 +8,8 @@ use ranvier_observe::{
 };
 use ranvier_runtime::Axon;
 use std::time::Duration;
+use tracing::{Instrument, instrument::WithSubscriber};
+use tracing_subscriber::prelude::*;
 
 #[derive(Clone)]
 struct AddOne;
@@ -53,15 +51,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         SampleRatio::new(1.0)?,
         Duration::from_secs(3),
     )?;
-    let tracer = providers.traces.tracer("ranvier-otlp-smoke");
-    let mut span = tracer.start("CalculationCircuit");
-    span.set_attribute(KeyValue::new("customer_email", "demo.user@example.com"));
-    span.set_attribute(KeyValue::new("api_key", "demo-api-key-123"));
-    let outcome = Axon::<i32, i32, String>::new("CalculationCircuit")
-        .then(AddOne)
-        .then(AddOne)
-        .execute(10, &(), &mut Bus::new())
-        .await;
+    let subscriber = tracing_subscriber::registry().with(providers.tracing_layer());
+    let dispatch = tracing::Dispatch::new(subscriber);
+    let outcome = async {
+        let span = tracing::info_span!(
+            "CalculationCircuit",
+            customer_email = "demo.user@example.com",
+            api_key = "demo-api-key-123"
+        );
+        Axon::<i32, i32, String>::new("CalculationCircuit")
+            .then(AddOne)
+            .then(AddOne)
+            .execute(10, &(), &mut Bus::new())
+            .instrument(span)
+            .await
+    }
+    .with_subscriber(dispatch.clone())
+    .await;
     let passed = matches!(outcome, Outcome::Next(12));
     let counter = providers
         .metrics
@@ -75,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             if passed { "next" } else { "fault" },
         )]),
     );
-    span.end();
+    drop(dispatch);
     let shutdown = tokio::task::spawn_blocking(move || providers.shutdown()).await?;
     shutdown.map_err(|signals| format!("OTLP provider shutdown failed: {signals:?}"))?;
     if !passed {

@@ -3,7 +3,7 @@ pub mod metrics;
 #[cfg(feature = "otlp")]
 pub mod redaction;
 // Optional OTLP adapter. Provider ownership stays with the caller.
-// Subscriber composition and redaction must be supplied before production use.
+// The caller composes the layer and owns shutdown; no global installation occurs.
 
 #[cfg(feature = "otlp")]
 pub mod otlp {
@@ -127,6 +127,19 @@ pub mod otlp {
     }
 
     impl Providers {
+        /// Returns a layer for a caller-owned subscriber, without installing globals.
+        /// Keep that subscriber alive through execution, drop its spans, then shut down.
+        /// Other subscriber layers (including logging) have their own privacy policy.
+        pub fn tracing_layer<S>(
+            &self,
+        ) -> tracing_opentelemetry::OpenTelemetryLayer<S, opentelemetry_sdk::trace::SdkTracer>
+        where
+            S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+        {
+            use opentelemetry::trace::TracerProvider;
+            tracing_opentelemetry::layer().with_tracer(self.traces.tracer("ranvier-observe"))
+        }
+
         pub fn build(
             service: &str,
             endpoint: &str,
@@ -218,6 +231,66 @@ pub mod otlp {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[derive(Clone, Debug, Default)]
+        struct LayerCapture(Arc<std::sync::Mutex<Vec<SpanData>>>);
+        impl SpanExporter for LayerCapture {
+            async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
+                self.0.lock().unwrap().extend(batch);
+                Ok(())
+            }
+        }
+        #[test]
+        fn caller_owned_layer_preserves_parentage_and_filters_dynamic_fields() {
+            use crate::redaction::{Mode, Policy, RedactingExporter};
+            use tracing_subscriber::prelude::*;
+            for mode in [Mode::Off, Mode::Public, Mode::Strict] {
+                let capture = LayerCapture::default();
+                let policy = Policy::new(mode, "private_key").unwrap();
+                let providers = Providers {
+                    traces: SdkTracerProvider::builder()
+                        .with_simple_exporter(RedactingExporter {
+                            inner: capture.clone(),
+                            policy: policy.clone(),
+                        })
+                        .build(),
+                    metrics: crate::metrics::ProtectedMeterProvider {
+                        inner: SdkMeterProvider::builder().build(),
+                        policy,
+                        state: Default::default(),
+                    },
+                    trace_export_failed: Default::default(),
+                };
+                let subscriber = tracing_subscriber::registry().with(providers.tracing_layer());
+                tracing::subscriber::with_default(subscriber, || {
+                    let root = tracing::info_span!("root", customer_email = tracing::field::Empty);
+                    root.record("customer_email", "layer.user@example.com");
+                    let _root_guard = root.enter();
+                    let child = tracing::info_span!("child", private_key = "layer-secret");
+                    let _child_guard = child.enter();
+                    tracing::info!(api_key = "event-secret", "safe-event");
+                });
+                assert_eq!(providers.shutdown(), Ok(()));
+                let spans = capture.0.lock().unwrap();
+                assert_eq!(spans.len(), 2);
+                let child = &spans[0];
+                let root = &spans[1];
+                assert_eq!(child.parent_span_id, root.span_context.span_id());
+                assert_eq!(child.span_context.trace_id(), root.span_context.trace_id());
+                assert_eq!(child.events.len(), 1);
+                let payload = format!("{spans:?}");
+                for secret in ["layer.user@example.com", "layer-secret", "event-secret"] {
+                    assert_eq!(payload.contains(secret), mode == Mode::Off);
+                }
+                assert_eq!(
+                    root.name,
+                    if mode == Mode::Strict {
+                        "[REDACTED]"
+                    } else {
+                        "root"
+                    }
+                );
+            }
+        }
         struct SuccessfulMetricExporter(Arc<std::sync::atomic::AtomicUsize>);
         #[test]
         fn callback_unwind_is_classified_and_exporter_cleanup_completes() {

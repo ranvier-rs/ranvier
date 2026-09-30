@@ -8,7 +8,7 @@ publish = false
 
 [features]
 default = []
-otlp = ["dep:opentelemetry-otlp", "dep:opentelemetry_sdk", "dep:url", "dep:opentelemetry"]
+otlp = ["dep:opentelemetry-otlp", "dep:opentelemetry_sdk", "dep:url", "dep:opentelemetry", "dep:tracing", "dep:tracing-subscriber", "dep:tracing-opentelemetry"]
 
 [dependencies]
 opentelemetry-otlp = { version = "=0.32.0", optional = true, default-features = false, features = ["trace", "metrics", "grpc-tonic", "http-proto", "reqwest-blocking-client"] }
@@ -17,6 +17,9 @@ opentelemetry_sdk = { version = "=0.32.0", optional = true, default-features = f
 url = { version = "2", optional = true }
 
 opentelemetry = { version = "=0.32.0", optional = true, default-features = false, features = ["trace"] }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+tracing-opentelemetry = { version = "=0.33.0", optional = true, default-features = false }
 
 [lints]
 workspace = true
