@@ -128,10 +128,18 @@ impl<T: CheckedSum> AsyncInstrument<T> for Summing<'_, T> {
         }
         let mut attributes = self.policy.metric_attributes(attributes.to_vec());
         attributes.sort_by(|a, b| a.key.as_str().cmp(b.key.as_str()));
+        if attributes.windows(2).any(|pair| pair[0].key == pair[1].key) {
+            self.state.fail();
+            return;
+        }
         let Ok(mut groups) = self.groups.lock() else {
             self.state.fail();
             return;
         };
+        // Recheck after waiting for a concurrent observer that may have failed.
+        if self.state.failed() {
+            return;
+        }
         if let Some((_, total)) = groups.iter_mut().find(|(labels, _)| *labels == attributes) {
             if let Some(sum) = total.checked_sum(value) {
                 *total = sum;
@@ -282,6 +290,58 @@ impl InstrumentProvider for ProtectedInstruments {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn concurrent_observers_normalize_key_order_without_losing_sums() {
+        let policy = Policy::new(crate::redaction::Mode::Public, "").unwrap();
+        let state = MetricState::default();
+        let observations = Summing {
+            groups: std::sync::Mutex::new(Vec::new()),
+            policy: &policy,
+            state: &state,
+        };
+        std::thread::scope(|scope| {
+            for index in 0..8 {
+                let observations = &observations;
+                scope.spawn(move || {
+                    for _ in 0..10 {
+                        let mut labels = vec![
+                            KeyValue::new("email", format!("synthetic-{index}")),
+                            KeyValue::new("safe", "same"),
+                        ];
+                        if index % 2 == 0 {
+                            labels.reverse();
+                        }
+                        observations.observe(1_u64, &labels);
+                    }
+                });
+            }
+        });
+        assert!(!state.failed());
+        let groups = observations.groups.into_inner().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].1, 80);
+        assert_eq!(groups[0].0[0].key.as_str(), "email");
+    }
+    #[test]
+    fn duplicate_attribute_keys_fail_before_creating_groups() {
+        let policy = Policy::new(crate::redaction::Mode::Off, "").unwrap();
+        let state = MetricState::default();
+        let observations = Summing {
+            groups: std::sync::Mutex::new(Vec::new()),
+            policy: &policy,
+            state: &state,
+        };
+        observations.observe(
+            1_u64,
+            &[
+                KeyValue::new("same", "a"),
+                KeyValue::new("other", "b"),
+                KeyValue::new("same", "c"),
+            ],
+        );
+        assert!(state.failed());
+        assert!(observations.groups.into_inner().unwrap().is_empty());
+    }
     #[test]
     fn observable_collection_limits_fail_before_growing_storage() {
         let policy = Policy::new(crate::redaction::Mode::Off, "").unwrap();
