@@ -1,4 +1,6 @@
 #[cfg(feature = "otlp")]
+pub mod metrics;
+#[cfg(feature = "otlp")]
 pub mod redaction;
 // Optional OTLP adapter. Provider ownership stays with the caller.
 // Subscriber composition and redaction must be supplied before production use.
@@ -94,7 +96,7 @@ pub mod otlp {
         /// Trace provider: redacts span/event/link/resource attributes; names are not filtered.
         pub traces: SdkTracerProvider,
         /// Metric provider: resource attributes are filtered; callers must supply safe data labels.
-        pub metrics: SdkMeterProvider,
+        pub metrics: crate::metrics::ProtectedMeterProvider,
         trace_export_failed: Arc<AtomicBool>,
     }
 
@@ -178,14 +180,17 @@ pub mod otlp {
                             inner: traces,
                             failed: trace_export_failed.clone(),
                         },
-                        policy: redaction,
+                        policy: redaction.clone(),
                     })
                     .build(),
                 trace_export_failed,
-                metrics: SdkMeterProvider::builder()
-                    .with_resource(resource)
-                    .with_periodic_exporter(metrics)
-                    .build(),
+                metrics: crate::metrics::ProtectedMeterProvider {
+                    inner: SdkMeterProvider::builder()
+                        .with_resource(resource)
+                        .with_periodic_exporter(metrics)
+                        .build(),
+                    policy: redaction,
+                },
             })
         }
 
@@ -199,7 +204,7 @@ pub mod otlp {
                     let shutdown_ok = self.traces.shutdown().is_ok();
                     shutdown_ok && !self.trace_export_failed.load(Ordering::Acquire)
                 },
-                || self.metrics.shutdown().is_ok(),
+                || self.metrics.inner.shutdown().is_ok(),
             )
         }
     }
