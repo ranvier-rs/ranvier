@@ -28,10 +28,10 @@
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2598,
+  "public_item_count": 2603,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2407,
+    "Experimental": 2412,
     "Stable Candidate": 183
   },
   "crates": [
@@ -24348,19 +24348,19 @@
       "default_stability": "Experimental",
       "owner": "security-ops",
       "features": [],
-      "public_item_count": 296,
+      "public_item_count": 301,
       "counts_by_kind": {
         "constant": 1,
-        "enum": 3,
+        "enum": 4,
         "function": 102,
         "module": 13,
         "struct": 39,
         "struct_field": 125,
         "trait": 3,
-        "variant": 10
+        "variant": 14
       },
       "counts_by_stability": {
-        "Experimental": 296
+        "Experimental": 301
       },
       "facade_reexport_count": 0,
       "boundary_item_count": 0,
@@ -26776,6 +26776,76 @@
         {
           "path": "ranvier_inspector::relay::RelayConfig::timeout_ms",
           "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/relay.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::relay::RelayConfigError",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/relay.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::relay::RelayConfigError::ClientBuild",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/relay.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::relay::RelayConfigError::InvalidBudget",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/relay.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::relay::RelayConfigError::InvalidEnvironment",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "security-ops",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "extensions/inspector/src/relay.rs"
+          }
+        },
+        {
+          "path": "ranvier_inspector::relay::RelayConfigError::InvalidTarget",
+          "kind": "variant",
           "origin": "direct",
           "target": null,
           "stability": "Experimental",
