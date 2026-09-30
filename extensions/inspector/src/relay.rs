@@ -244,6 +244,14 @@ pub async fn execute_relay(
     let mut builder = relay.client.request(method, &url);
 
     if let Some(headers) = &req.headers {
+        let bytes = headers.iter().try_fold(0usize, |total, (key, value)| {
+            total
+                .checked_add(key.len())
+                .and_then(|total| total.checked_add(value.len()))
+        });
+        if headers.len() > 64 || bytes.is_none_or(|bytes| bytes > 8192) {
+            return Err(invalid_header());
+        }
         for (key, value) in headers {
             let name = key
                 .parse::<reqwest::header::HeaderName>()
@@ -345,6 +353,44 @@ fn append_response_chunk(bytes: &mut Vec<u8>, chunk: &[u8]) -> Result<(), RelayE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn malformed_or_oversized_headers_fail_before_network_and_release_permit() {
+        let relay = RelayState::new(RelayConfig {
+            target_url: "http://127.0.0.1:1".into(),
+            timeout_ms: 100,
+            max_concurrent: 1,
+        })
+        .unwrap();
+        let cases = [
+            std::collections::HashMap::from([("bad name".into(), "SENTINEL".into())]),
+            std::collections::HashMap::from([(
+                "x-test".into(),
+                "SENTINEL\r\ninjected: value".into(),
+            )]),
+            std::collections::HashMap::from([("x-test".into(), "x".repeat(8192))]),
+            (0..65)
+                .map(|index| (format!("x-{index}"), "value".into()))
+                .collect(),
+        ];
+        for headers in cases {
+            let error = execute_relay(
+                &relay,
+                RelayRequest {
+                    method: "GET".into(),
+                    path: "/".into(),
+                    headers: Some(headers),
+                    body: None,
+                },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.status_code(), axum::http::StatusCode::BAD_REQUEST);
+            assert_eq!(error.message, "Invalid relay header");
+            assert!(!serde_json::to_string(&error).unwrap().contains("SENTINEL"));
+            assert_eq!(relay.semaphore.available_permits(), 1);
+        }
+    }
 
     #[test]
     fn relay_http_error_statuses_distinguish_operation_failures() {
