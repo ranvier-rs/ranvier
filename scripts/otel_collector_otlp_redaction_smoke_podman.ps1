@@ -99,6 +99,7 @@ try {
         if (-not (Select-String -Path $collectorLog -Pattern "demo.user@example.com" -SimpleMatch)) {
             throw "Expected raw email attribute in collector log when RedactMode=off."
         }
+        if (-not $rawApiKeyLeak) { throw "Expected raw api_key attribute when RedactMode=off." }
     } else {
         if (-not $redactedEmail) {
             throw "Collector log does not contain redacted customer_email attribute."
@@ -117,6 +118,7 @@ try {
         }
     }
 
+    if (Select-String -Path $appLog -Pattern "OpenTelemetry metrics error" -SimpleMatch) { throw "App log contains OpenTelemetry metrics error." }
     if ($appErrorMatch) {
         throw "App log contains OpenTelemetry trace error."
     }
