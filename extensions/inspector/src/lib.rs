@@ -839,9 +839,9 @@ impl Inspector {
 
         if surface_policy.expose_internal {
             app = app
-                .route("/debug/resume/:trace_id", get(debug_resume))
-                .route("/debug/step/:trace_id", get(debug_step))
-                .route("/debug/pause/:trace_id", get(debug_pause))
+                .route("/debug/resume/:trace_id", axum::routing::post(debug_resume))
+                .route("/debug/step/:trace_id", axum::routing::post(debug_step))
+                .route("/debug/pause/:trace_id", axum::routing::post(debug_pause))
                 .route("/api/v1/state/:trace_id", get(api_get_state))
                 .route(
                     "/api/v1/state/:trace_id/resume",
@@ -4068,17 +4068,17 @@ expires_on = "2099-01-02"
                 reqwest::StatusCode::OK,
             ),
             (
-                reqwest::Method::GET,
+                reqwest::Method::POST,
                 "/debug/resume/auth-test-resume",
                 reqwest::StatusCode::OK,
             ),
             (
-                reqwest::Method::GET,
+                reqwest::Method::POST,
                 "/debug/step/auth-test-step",
                 reqwest::StatusCode::OK,
             ),
             (
-                reqwest::Method::GET,
+                reqwest::Method::POST,
                 "/debug/pause/auth-test-pause",
                 reqwest::StatusCode::OK,
             ),
@@ -4124,6 +4124,33 @@ expires_on = "2099-01-02"
 
         for (method, path, allowed_status) in routes {
             let url = format!("http://127.0.0.1:{port}{path}");
+            if path.starts_with("/debug/") {
+                for retired_method in [reqwest::Method::GET, reqwest::Method::HEAD] {
+                    let response = send_state_route_request(
+                        &client,
+                        retired_method,
+                        &url,
+                        Some("state-test-token"),
+                        Some("operator"),
+                        Some("team-a"),
+                    )
+                    .await;
+                    assert_eq!(response.status(), reqwest::StatusCode::METHOD_NOT_ALLOWED);
+                    match path {
+                        "/debug/resume/auth-test-resume" => {
+                            assert!(resume_control.should_pause("auth-test-node"));
+                            resume_control.pause();
+                        }
+                        "/debug/step/auth-test-step" => {
+                            assert!(!step_control.should_pause("auth-test-node"))
+                        }
+                        "/debug/pause/auth-test-pause" => {
+                            assert!(!pause_control.should_pause("auth-test-node"))
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
             for (case, token, role, tenant, expected_status) in denied_cases {
                 let response =
                     send_state_route_request(&client, method.clone(), &url, token, role, tenant)
