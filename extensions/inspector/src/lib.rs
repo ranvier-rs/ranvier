@@ -3011,6 +3011,44 @@ async fn api_get_trace_diff(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn socket_lifecycle_join_waits_for_every_reserved_lease() {
+        let lifecycle = std::sync::Arc::new(super::SocketLifecycle::new(None));
+        let first = lifecycle.acquire();
+        let second = lifecycle.acquire();
+        let owner = lifecycle.clone();
+        let joined = tokio::spawn(async move { owner.join().await });
+        tokio::task::yield_now().await;
+        assert!(!joined.is_finished());
+        drop(first);
+        tokio::task::yield_now().await;
+        assert!(!joined.is_finished());
+        drop(second);
+        tokio::time::timeout(std::time::Duration::from_secs(1), joined)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(*lifecycle.active.borrow(), 0);
+    }
+
+    #[tokio::test]
+    async fn socket_lifecycle_observes_existing_and_future_parent_cancellation() {
+        let token = ranvier_core::cancellation::CancellationToken::new();
+        let lifecycle = super::SocketLifecycle::new(Some(token.child_token()));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(5), lifecycle.cancelled())
+                .await
+                .is_err()
+        );
+        token.cancel(ranvier_core::cancellation::CancellationReason::OperatorShutdown);
+        tokio::time::timeout(std::time::Duration::from_secs(1), lifecycle.cancelled())
+            .await
+            .unwrap();
+        let late = super::SocketLifecycle::new(Some(token.child_token()));
+        tokio::time::timeout(std::time::Duration::from_secs(1), late.cancelled())
+            .await
+            .unwrap();
+    }
     use super::*;
     use async_trait::async_trait;
     use ranvier_core::schematic::Schematic;
