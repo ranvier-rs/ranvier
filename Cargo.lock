@@ -6075,8 +6075,6 @@ version = "0.1.0"
 dependencies = [
  "async-stream",
  "async-trait",
- "futures-core",
- "futures-util",
  "ranvier-core",
  "ranvier-guard",
  "ranvier-http",
