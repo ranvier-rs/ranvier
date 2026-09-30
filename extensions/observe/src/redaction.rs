@@ -110,6 +110,56 @@ impl<E: SpanExporter> SpanExporter for RedactingExporter<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Debug)]
+    struct ResourceCapture(std::sync::Arc<std::sync::Mutex<Option<Resource>>>);
+    impl SpanExporter for ResourceCapture {
+        async fn export(&self, _: Vec<SpanData>) -> OTelSdkResult {
+            Ok(())
+        }
+        fn set_resource(&mut self, resource: &Resource) {
+            *self.0.lock().unwrap() = Some(resource.clone());
+        }
+    }
+    #[test]
+    fn exporter_resource_boundary_filters_builtin_custom_and_strict_values() {
+        let input = Resource::builder_empty()
+            .with_schema_url(
+                [
+                    KeyValue::new("email", "builtin-secret"),
+                    KeyValue::new("account_number", "custom-secret"),
+                    KeyValue::new("service.name", "fixture-service"),
+                ],
+                "https://fixture.example/schema-secret",
+            )
+            .build();
+        for mode in [Mode::Public, Mode::Strict, Mode::Off] {
+            let off = matches!(mode, Mode::Off);
+            let strict = matches!(mode, Mode::Strict);
+            let capture = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let policy = Policy::new(mode, "account_number").unwrap();
+            let filtered = policy.resource(&input);
+            // Repeated policy application is safe (provider resource and exporter boundary).
+            let repeated = policy.resource(&filtered);
+            assert_eq!(repeated.len(), filtered.len());
+            assert_eq!(repeated.schema_url(), filtered.schema_url());
+            for (key, value) in filtered.iter() {
+                assert_eq!(repeated.get(key).as_ref(), Some(value));
+            }
+            let mut exporter = RedactingExporter {
+                inner: ResourceCapture(capture.clone()),
+                policy,
+            };
+            exporter.set_resource(&input);
+            let value = capture.lock().unwrap();
+            let resource = value.as_ref().unwrap();
+            assert_eq!(resource.len(), 3);
+            let payload = format!("{resource:?}");
+            assert_eq!(payload.contains("builtin-secret"), off);
+            assert_eq!(payload.contains("custom-secret"), off);
+            assert_eq!(payload.contains("fixture-service"), !strict);
+            assert_eq!(payload.contains("schema-secret"), off);
+        }
+    }
     #[test]
     fn custom_keys_are_additive_case_insensitive_and_bounded() {
         let policy = Policy::new(Mode::Public, " ACCOUNT_NUMBER, private.id ").unwrap();
