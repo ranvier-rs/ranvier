@@ -4,10 +4,11 @@ New-Item -ItemType Directory -Force $EvidenceDir | Out-Null
 $config=Join-Path $EvidenceDir 'config.yaml'
 'receivers: {}' | Set-Content $config
 function global:Start-Sleep { param($Seconds) }
-function global:Invoke-RestMethod { param($Uri,$Method,$TimeoutSec); if($TimeoutSec -ne 10){throw 'HTTP timeout missing'}; if($global:jaegerCase -eq 'missing-service'){@{data=@();tagValues=@()}}else{@{data=@('otel-demo');tagValues=@('otel-demo')}} }
-function global:cargo { $global:LASTEXITCODE=0; 'mock' }
+function global:Invoke-RestMethod { param($Uri,$Method,$TimeoutSec); if($TimeoutSec -ne 10){throw 'HTTP timeout missing'}; if($Uri -match '/api/traces') { if($global:jaegerCase -eq 'missing-trace') { @{data=@()} } else { @{data=@(@{spans=@(@{operationName='CalculationCircuit'},@{operationName='Circuit'},@{operationName='Node'},@{operationName='Node'})})} }; return }; if($global:jaegerCase -eq 'missing-service'){@{data=@();tagValues=@()}}else{@{data=@('otel-demo');tagValues=@('otel-demo')}} }
+function global:cargo { $global:LASTEXITCODE=0; 'mock'; 'OTLP_SMOKE_EXPORTED outcome=12' }
 function global:podman {
     $a=@($args); $global:jaegerCalls.Add(($a -join ' ')); $global:LASTEXITCODE=0
+    if($a[0] -eq 'container' -and $a[1] -eq 'inspect') { 'd'*64; return }
     if($a[0] -eq 'container' -or ($a[0] -eq 'network' -and $a[1] -eq 'exists')) {
         $global:LASTEXITCODE=if($global:jaegerCase -eq 'present'){0}elseif($global:jaegerCase -eq 'query-error'){125}else{1}; return
     }
@@ -33,12 +34,13 @@ $configArgs = if($Datadog){@{EdgeConfigPath=$config;BackendConfigPath=$config}}e
 try {
     $cases = @('present','query-error','network-error','network-inspect-error','second-start','invalid-id','logs-error','cleanup-error','logs-cleanup-error','missing-service','success')
     if($Datadog){$cases += @('backend-missing','export-error')}
+    if(-not $Datadog -and -not $Tempo){$cases += 'missing-trace'}
     foreach($case in $cases) {
         $global:jaegerCase=$case; $global:jaegerCalls=[Collections.Generic.List[string]]::new(); $global:jaegerRuns=0
         $failure=$null
         try{ & (Join-Path $PSScriptRoot $fixture) @configArgs -EvidenceDir (Join-Path $EvidenceDir $case) -StartupWaitSeconds 0 }catch{$failure=$_}
         if(($case -eq 'success') -eq [bool]$failure){throw "Wrong outcome: $case"}
-        $count=if($case -eq 'second-start'){1}elseif($case -in @('logs-error','cleanup-error','logs-cleanup-error','missing-service','success','backend-missing','export-error')){2}else{0}
+        $count=if($case -eq 'second-start'){1}elseif($case -in @('logs-error','cleanup-error','logs-cleanup-error','missing-service','success','backend-missing','export-error','missing-trace')){2}else{0}
         if(@($global:jaegerCalls|Where-Object {$_ -like 'rm *'}).Count -ne $count){throw "Wrong container cleanup: $case"}
         $network=$case -notin @('present','query-error','network-error','network-inspect-error')
         if(@($global:jaegerCalls|Where-Object {$_ -like 'network rm *'}).Count -ne [int]$network){throw "Wrong network cleanup: $case"}
