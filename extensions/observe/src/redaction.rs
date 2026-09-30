@@ -21,6 +21,32 @@ pub struct Policy {
     keys: Vec<String>,
 }
 impl Policy {
+    pub(crate) fn scope(
+        &self,
+        scope: &opentelemetry::InstrumentationScope,
+    ) -> opentelemetry::InstrumentationScope {
+        if matches!(self.mode, Mode::Off) {
+            return scope.clone();
+        }
+        let mut attributes: Vec<_> = scope.attributes().cloned().collect();
+        redact(&mut attributes, self);
+        let strict = matches!(self.mode, Mode::Strict);
+        let mut builder = opentelemetry::InstrumentationScope::builder(if strict {
+            "[REDACTED]".to_owned()
+        } else {
+            scope.name().to_owned()
+        })
+        .with_attributes(attributes);
+        if let Some(version) = scope.version() {
+            builder = builder.with_version(if strict {
+                "[REDACTED]".to_owned()
+            } else {
+                version.to_owned()
+            });
+        }
+        // Arbitrary schema text is not forwarded in protected modes.
+        builder.build()
+    }
     /// Filters data-point labels before SDK aggregation. Callers must use this for
     /// every record/observe operation; raw SDK instrument handles bypass it.
     /// Masked labels merge formerly distinct time series; apply consistently from

@@ -63,7 +63,7 @@ pub struct ProtectedMeterProvider {
 impl MeterProvider for ProtectedMeterProvider {
     fn meter_with_scope(&self, scope: InstrumentationScope) -> Meter {
         Meter::new(Arc::new(ProtectedInstruments {
-            inner: self.inner.meter_with_scope(scope),
+            inner: self.inner.meter_with_scope(self.policy.scope(&scope)),
             policy: self.policy.clone(),
             state: self.state.clone(),
         }))
