@@ -4535,6 +4535,8 @@ dependencies = [
  "async-trait",
  "axum 0.7.9",
  "futures",
+ "hyper",
+ "hyper-util",
  "rand 0.9.5",
  "ranvier-core",
  "reqwest 0.12.28",

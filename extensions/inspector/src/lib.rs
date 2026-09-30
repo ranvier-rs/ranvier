@@ -2483,9 +2483,15 @@ async fn ws_handler(
     if let Err(err) = ensure_internal_access(&headers, &state.auth_policy) {
         return err.into_response();
     }
+    reserve_socket_upgrade(ws, state.sockets)
+}
+
+fn reserve_socket_upgrade<F>(ws: WebSocketUpgrade<F>, lifecycle: Arc<SocketLifecycle>) -> Response
+where
+    F: axum::extract::ws::OnFailedUpgrade,
+{
     // Reserve ownership before the upgrade response, covering late upgrade and
     // failed-upgrade races while the managed server is draining.
-    let lifecycle = state.sockets;
     let lease = lifecycle.acquire();
     ws.on_upgrade(move |socket| async move {
         let _lease = lease;
@@ -3011,6 +3017,115 @@ async fn api_get_trace_diff(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn failed_actual_upgrade_releases_reserved_socket_ownership() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let cancellation = CancellationToken::new();
+        let lifecycle = Arc::new(SocketLifecycle::new(Some(cancellation.child_token())));
+        let failures = Arc::new(AtomicUsize::new(0));
+        let failed = Arc::new(tokio::sync::Notify::new());
+        let reserved = Arc::new(AtomicUsize::new(0));
+        struct RefuseResponse(hyper_util::rt::TokioIo<tokio::net::TcpStream>);
+        impl hyper::rt::Read for RefuseResponse {
+            fn poll_read(
+                self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+                buf: hyper::rt::ReadBufCursor<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                hyper::rt::Read::poll_read(std::pin::Pin::new(&mut self.get_mut().0), cx, buf)
+            }
+        }
+        impl hyper::rt::Write for RefuseResponse {
+            fn poll_write(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+                _: &[u8],
+            ) -> std::task::Poll<std::io::Result<usize>> {
+                std::task::Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "fixture response write refused",
+                )))
+            }
+            fn poll_flush(
+                self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                hyper::rt::Write::poll_flush(std::pin::Pin::new(&mut self.get_mut().0), cx)
+            }
+            fn poll_shutdown(
+                self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                hyper::rt::Write::poll_shutdown(std::pin::Pin::new(&mut self.get_mut().0), cx)
+            }
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn({
+            let lifecycle = lifecycle.clone();
+            let failures = failures.clone();
+            let failed = failed.clone();
+            let reserved = reserved.clone();
+            async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let service = hyper::service::service_fn(
+                    move |request: hyper::Request<hyper::body::Incoming>| {
+                        let lifecycle = lifecycle.clone();
+                        let failures = failures.clone();
+                        let failed = failed.clone();
+                        let reserved = reserved.clone();
+                        async move {
+                            let (mut parts, _) = request.into_parts();
+                            let ws = WebSocketUpgrade::from_request_parts(&mut parts, &())
+                                .await
+                                .unwrap();
+                            let response = reserve_socket_upgrade(
+                                ws.on_failed_upgrade(move |_| {
+                                    failures.fetch_add(1, Ordering::SeqCst);
+                                    failed.notify_one();
+                                }),
+                                lifecycle.clone(),
+                            );
+                            reserved.store(*lifecycle.active.borrow(), Ordering::SeqCst);
+                            Ok::<_, std::convert::Infallible>(response)
+                        }
+                    },
+                );
+                hyper::server::conn::http1::Builder::new()
+                    .serve_connection(
+                        RefuseResponse(hyper_util::rt::TokioIo::new(stream)),
+                        service,
+                    )
+                    .with_upgrades()
+                    .await
+            }
+        });
+        let response = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/events"))
+            .header(header::CONNECTION, "upgrade")
+            .header(header::UPGRADE, "websocket")
+            .header("Sec-WebSocket-Version", "13")
+            .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .send()
+            .await;
+        let failure = tokio::time::timeout(Duration::from_secs(2), failed.notified()).await;
+        let drained = tokio::time::timeout(Duration::from_secs(2), lifecycle.join()).await;
+        cancellation.cancel(CancellationReason::OperatorShutdown);
+        let joined = tokio::time::timeout(Duration::from_secs(2), server).await;
+        assert!(
+            response.is_err(),
+            "response writer must fail before upgrade"
+        );
+        failure.expect("actual failed-upgrade callback required");
+        drained.expect("failed upgrade must release its reserved lease");
+        assert!(joined.unwrap().unwrap().is_err());
+        assert_eq!(reserved.load(Ordering::SeqCst), 1);
+        assert_eq!(failures.load(Ordering::SeqCst), 1);
+        assert_eq!(*lifecycle.active.borrow(), 0);
+    }
     #[tokio::test]
     async fn socket_lifecycle_join_waits_for_every_reserved_lease() {
         let lifecycle = std::sync::Arc::new(super::SocketLifecycle::new(None));
