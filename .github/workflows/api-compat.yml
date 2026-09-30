@@ -13,6 +13,8 @@ on:
       - 'api-surface-inventory.json'
       - 'api-stable-candidate-baseline.json'
       - 'scripts/api_surface_inventory.mjs'
+      - 'scripts/optional_api_contract.mjs'
+      - 'scripts/tests/optional_api_contract.test.mjs'
       - 'scripts/tests/optional_observe_api_workflow.test.mjs'
       - 'scripts/candidate_api_*.mjs'
       - 'scripts/candidate_compile_contract.mjs'
@@ -29,6 +31,8 @@ on:
       - 'api-surface-inventory.json'
       - 'api-stable-candidate-baseline.json'
       - 'scripts/api_surface_inventory.mjs'
+      - 'scripts/optional_api_contract.mjs'
+      - 'scripts/tests/optional_api_contract.test.mjs'
       - 'scripts/tests/optional_observe_api_workflow.test.mjs'
       - 'scripts/candidate_api_*.mjs'
       - 'scripts/candidate_compile_contract.mjs'
@@ -55,7 +59,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: optional-observe-api-1.95.0
-      - run: node --test scripts/tests/optional_observe_api_workflow.test.mjs
+      - run: node --test scripts/tests/optional_observe_api_workflow.test.mjs scripts/tests/optional_api_contract.test.mjs
       - run: node scripts/api_surface_inventory.mjs --check --optional-observe
 
   candidate-api:

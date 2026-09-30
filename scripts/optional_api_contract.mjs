@@ -1,6 +1,9 @@
 // The optional adapter is a separate release surface, never an empty success.
 export function validateObserveProducts(products) {
-  if (products.length !== 1 || products[0].pkg.name !== 'ranvier-observe') {
+  const product = products[0];
+  if (products.length !== 1 || product?.pkg.name !== 'ranvier-observe'
+      || !Array.isArray(product.pkg.publish) || product.pkg.publish.length !== 0
+      || !product.target?.kind.includes('lib')) {
     throw new Error('optional API inventory requires exactly one unpublished ranvier-observe library');
   }
 }

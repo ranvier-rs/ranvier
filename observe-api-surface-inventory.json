@@ -19,7 +19,8 @@
     "extensions/observe/src/lib.rs": "87a149cbbb6d190cb0f61342487424d23655216e878f160908cebbd45547b2c5",
     "extensions/observe/src/metrics.rs": "3a413bd63554065a05387dd310cded59fd5e97b898ff1f55b9701d79b8a773cc",
     "extensions/observe/src/redaction.rs": "ac9c9168f61bad8f1a07f284664f60abdeb008694707461edee5cd7792ce5b6f",
-    "scripts/api_surface_inventory.mjs": "468e0d2246d38eeaf0dc10017b597762cde630709b637cc451cd9165adb6220d"
+    "scripts/api_surface_inventory.mjs": "c8b6bfaa9bda625a0ea7bc93c8aceffacb469bc5f7531f3dada008e8a5c086ce",
+    "scripts/optional_api_contract.mjs": "3766d992956ee312207f7c00b71bfcd053c1313aca7ac0125861cc8b98371a48"
   },
   "product_crate_count": 1,
   "public_item_count": 37,
