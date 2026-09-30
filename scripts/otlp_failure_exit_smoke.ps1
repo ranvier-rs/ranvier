@@ -62,7 +62,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $destination 'stderr.log'), $stderr)
     $passed = $naturalExit -and $process.ExitCode -ne 0 -and
         $stdout -notmatch 'OTLP_SMOKE_EXPORTED' -and
-        $stderr -match 'OTLP provider shutdown failed:.*Traces.*Metrics' -and
+        $stderr -match 'OTLP provider shutdown failed: \[(Traces, )?Metrics\]' -and
         ($Scenario -ne 'stalled' -or $pendingConnection)
     [ordered]@{
         source = $source; executable_sha256 = (Get-FileHash -LiteralPath $executable).Hash
