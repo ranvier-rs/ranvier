@@ -4,7 +4,9 @@ param(
     [ValidateRange(1, 65535)][int]$RedisPort = 6389,
     [string]$EvidenceDir = '',
     [ValidateSet('adapters','dependency-recovery','otel','otel-redaction')][string]$Scenario = 'adapters',
-    [string]$CollectorImage = 'docker.io/otel/opentelemetry-collector-contrib:latest'
+    [string]$CollectorImage = 'docker.io/otel/opentelemetry-collector-contrib:latest',
+    [ValidateSet('grpc','http/protobuf')][string]$OtlpProtocol = 'grpc',
+    [ValidateSet('off','public','strict')][string]$RedactMode = 'public'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -79,7 +81,9 @@ try {
         ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $EvidenceDir 'ssh-tunnel-identity.json')
     if ($Scenario -in @('otel','otel-redaction')) {
         $helper = if ($Scenario -eq 'otel') { 'otel_collector_smoke_podman.ps1' } else { 'otel_collector_otlp_redaction_smoke_podman.ps1' }
-        & (Join-Path $PSScriptRoot $helper) -EvidenceDir $EvidenceDir -CollectorImage $CollectorImage -GrpcPort $PostgresPort -HttpPort $RedisPort
+        $helperArgs = @{ EvidenceDir=$EvidenceDir; CollectorImage=$CollectorImage; GrpcPort=$PostgresPort; HttpPort=$RedisPort; Protocol=$OtlpProtocol }
+        if ($Scenario -eq 'otel-redaction') { $helperArgs.RedactMode = $RedactMode }
+        & (Join-Path $PSScriptRoot $helper) @helperArgs
     } elseif ($Scenario -eq 'dependency-recovery') {
         & (Join-Path $PSScriptRoot 'dependency_failure_smoke_podman.ps1') -PostgresPort $PostgresPort -RedisPort $RedisPort -SummaryPath (Join-Path $EvidenceDir 'dependency-recovery-summary.md') -ForwarderProcess $tunnel
     } else {
