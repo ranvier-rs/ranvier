@@ -207,6 +207,7 @@ mod tests {
                 .build();
             provider.inner.force_flush().unwrap();
             let mut values = captured.lock().unwrap().clone();
+            assert_eq!(values.len(), 4);
             for points in values.values_mut() {
                 points.sort();
             }
@@ -226,6 +227,13 @@ mod tests {
                 values.get("observable_changes"),
                 Some(&if off { vec![2, 8] } else { vec![8] })
             );
+            // A second collection must not add absolute observable values again.
+            provider.inner.force_flush().unwrap();
+            let mut second = captured.lock().unwrap().clone();
+            for points in second.values_mut() {
+                points.sort();
+            }
+            assert_eq!(second, values);
             provider.inner.shutdown().unwrap();
         }
     }
