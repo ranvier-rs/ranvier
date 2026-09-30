@@ -252,10 +252,29 @@ pub async fn execute_relay(
         if headers.len() > 64 || bytes.is_none_or(|bytes| bytes > 8192) {
             return Err(invalid_header());
         }
+        let mut names = std::collections::HashSet::new();
         for (key, value) in headers {
             let name = key
                 .parse::<reqwest::header::HeaderName>()
                 .map_err(|_| invalid_header())?;
+            if !names.insert(name.clone())
+                || matches!(
+                    name.as_str(),
+                    "host"
+                        | "connection"
+                        | "content-length"
+                        | "transfer-encoding"
+                        | "keep-alive"
+                        | "proxy-connection"
+                        | "proxy-authenticate"
+                        | "proxy-authorization"
+                        | "te"
+                        | "trailer"
+                        | "upgrade"
+                )
+            {
+                return Err(invalid_header());
+            }
             let value = value
                 .parse::<reqwest::header::HeaderValue>()
                 .map_err(|_| invalid_header())?;
