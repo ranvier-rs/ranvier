@@ -1,6 +1,6 @@
 #![cfg(feature = "persistence-postgres")]
 use ranvier_runtime::persistence::{
-    CompletionState, PersistenceEnvelope, PersistenceStore, PostgresPersistenceStore,
+    CompletionState, Intervention, PersistenceEnvelope, PersistenceStore, PostgresPersistenceStore,
 };
 
 fn event(trace: &str, step: u64, version: &str) -> PersistenceEnvelope {
@@ -176,6 +176,7 @@ async fn postgres_load_reads_one_snapshot_across_concurrent_append() {
         .await
         .unwrap();
     let reader = PostgresPersistenceStore::with_table_prefix(reader_pool.clone(), &reader_prefix);
+    let subsequent_reader = reader.clone();
     let mut holder = pool.acquire().await.unwrap();
     sqlx::query("SELECT pg_advisory_lock($1)")
         .bind(key)
@@ -198,6 +199,18 @@ async fn postgres_load_reads_one_snapshot_across_concurrent_append() {
             "reader did not reach actual state-query barrier"
         ))
     };
+    let intervention = Intervention {
+        target_node: "review-node".into(),
+        payload_override: Some(serde_json::json!({"case": "snapshot-review", "approved": false})),
+        timestamp_ms: 1001,
+    };
+    let intervened = if appended.is_ok() {
+        writer
+            .save_intervention("snapshot", intervention.clone())
+            .await
+    } else {
+        Err(anyhow::anyhow!("append failed before intervention fixture"))
+    };
     sqlx::query("SELECT pg_advisory_unlock($1)")
         .bind(key)
         .execute(&mut *holder)
@@ -209,11 +222,21 @@ async fn postgres_load_reads_one_snapshot_across_concurrent_append() {
         loading.abort();
         let _ = loading.await;
     }
+    let next = subsequent_reader.load("snapshot").await;
+    let absent = subsequent_reader.load("missing").await;
     reader_pool.close().await;
     let after = writer.load("snapshot").await.unwrap().unwrap();
     pool.close().await;
     waiting.expect("actual reader advisory-lock wait required");
     appended.unwrap();
+    intervened.unwrap();
+    assert_eq!(
+        next.unwrap(),
+        Some(after.clone()),
+        "next load must take a fresh snapshot"
+    );
+    assert!(absent.unwrap().is_none());
+    assert_eq!(after.interventions, vec![intervention]);
     assert_eq!(after.schematic_version, "new-version");
     assert_eq!(after.events.len(), 2);
     assert_eq!(
@@ -221,5 +244,7 @@ async fn postgres_load_reads_one_snapshot_across_concurrent_append() {
         before,
         "one load must not mix pre-append state with post-append events"
     );
-    println!("POSTGRES_SNAPSHOT_PASS actual-state-query-barrier concurrent-append one-snapshot");
+    println!(
+        "POSTGRES_SNAPSHOT_PASS actual-state-query-barrier concurrent-append intervention fresh-load absent one-snapshot"
+    );
 }

@@ -617,6 +617,7 @@ struct PostgresStateRow {
 #[cfg(feature = "persistence-postgres")]
 #[derive(sqlx::FromRow)]
 struct PostgresInterventionRow {
+    #[sqlx(rename = "trace_id")]
     _trace_id: String,
     target_node: String,
     payload_override: Option<serde_json::Value>,
