@@ -2739,7 +2739,7 @@ async fn api_post_relay(
 
     match relay::execute_relay(relay_state, body).await {
         Ok(response) => Ok(inspector_envelope(
-            "inspector.relay.v1",
+            "inspector.relay.v2",
             serde_json::to_value(&response).unwrap_or(Value::Null),
         )),
         Err(err) => Err((
@@ -3490,7 +3490,7 @@ expires_on = "2099-01-02"
             match case {
                 "success" => {
                     assert_eq!(status, reqwest::StatusCode::OK);
-                    assert_eq!(body["kind"], "inspector.relay.v1");
+                    assert_eq!(body["kind"], "inspector.relay.v2");
                     assert_eq!(body["data"]["status"], 409);
                     assert_eq!(body["data"]["body"]["reason"], "conflict");
                 }
