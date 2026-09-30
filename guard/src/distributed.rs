@@ -709,7 +709,10 @@ mod tests {
 
         // Test a single request
         let mut bus = Bus::new();
-        bus.insert(ClientIdentity("test-distributed".into()));
+        bus.insert(ClientIdentity(format!(
+            "test-distributed-{}",
+            uuid::Uuid::new_v4()
+        )));
         let result = guard.run("ok".into(), &(), &mut bus).await;
         assert!(matches!(result, Outcome::Next(_)));
         assert_eq!(guard.stats().allowed_requests(), 1);
