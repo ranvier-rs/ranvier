@@ -1,11 +1,12 @@
-param([string]$EvidenceDir = 'D:\ranvier-m427-otel-safety-20260930')
+param([string]$EvidenceDir = 'D:\ranvier-m427-otel-safety-20260930', [switch]$Redaction)
 $ErrorActionPreference = 'Stop'
 New-Item -ItemType Directory -Force $EvidenceDir | Out-Null
 $config = Join-Path $EvidenceDir 'config.yaml'
 'receivers: {}' | Set-Content $config
-$fixture = Join-Path $PSScriptRoot '../otel_collector_smoke_podman.ps1'
+$fixtureName = if ($Redaction) { '../otel_collector_otlp_redaction_smoke_podman.ps1' } else { '../otel_collector_smoke_podman.ps1' }
+$fixture = Join-Path $PSScriptRoot $fixtureName
 $original = @{}
-foreach ($name in @('RANVIER_OTLP_ENDPOINT','RANVIER_OTLP_PROTOCOL','RUST_LOG')) { $original[$name] = [Environment]::GetEnvironmentVariable($name) }
+foreach ($name in @('RANVIER_OTLP_ENDPOINT','RANVIER_OTLP_PROTOCOL','RUST_LOG','RANVIER_TELEMETRY_REDACT_MODE','RANVIER_TELEMETRY_REDACT_KEYS')) { $original[$name] = [Environment]::GetEnvironmentVariable($name) }
 function global:Start-Sleep { param($Seconds) }
 function global:podman {
     $call = @($args)
@@ -14,7 +15,7 @@ function global:podman {
     switch ($call[0]) {
         'container' { $global:LASTEXITCODE = if($global:otelCase -eq 'present'){0}elseif($global:otelCase -eq 'query-error'){125}else{1} }
         'run' { if($global:otelCase -eq 'run-error'){$global:LASTEXITCODE=125}elseif($global:otelCase -eq 'invalid-id'){'bad'}else{'a'*64} }
-        'logs' { if($global:otelCase -eq 'logs-error'){$global:LASTEXITCODE=125}else{'service.name: Str(otel-demo)'; 'ResourceSpans'; 'ResourceMetrics'} }
+        'logs' { if($global:otelCase -eq 'logs-error'){$global:LASTEXITCODE=125}else{'service.name: Str(otel-demo)'; 'ResourceSpans'; 'ResourceMetrics'; 'customer_email: Str([REDACTED])'; 'api_key: Str([REDACTED])'} }
         'rm' { if($global:otelCase -eq 'cargo-and-cleanup-throw'){throw 'mock cleanup invocation error'}; if($global:otelCase -in @('cleanup-error','cargo-and-cleanup-error')){$global:LASTEXITCODE=125} }
         default { throw 'Unexpected Podman command' }
     }

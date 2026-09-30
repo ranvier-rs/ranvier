@@ -1,24 +1,22 @@
 param(
-    [string]$ContainerName = "ranvier-otel-redaction-smoke",
-    [int]$StartupWaitSeconds = 4,
+    [string]$ContainerName = ("ranvier-otel-redaction-smoke-" + [Guid]::NewGuid().ToString("N")),
+    [ValidateRange(0, 300)][int]$StartupWaitSeconds = 4,
+    [string]$EvidenceDir = "",
     [string]$ConfigPath = "",
     [ValidateSet("grpc", "http/protobuf")]
     [string]$Protocol = "grpc",
-    [ValidateSet("off", "public", "strict")]
-    [string]$RedactMode = "public"
+    [ValidateSet("off", "public", "strict")][string]$RedactMode = "public"
 )
 
 $ErrorActionPreference = "Stop"
 
-function Stop-ContainerIfExists {
-    param([string]$Name)
-
-    $existing = podman ps -a --format "{{.Names}}" | Select-String -Pattern "^$Name$"
-    if ($existing) {
-        podman rm -f $Name | Out-Null
-    }
+$PSNativeCommandUseErrorActionPreference = $false
+$ownedId = $null
+$primaryFailure = $null
+$savedEnvironment = @{}
+foreach ($name in @('RANVIER_OTLP_ENDPOINT', 'RANVIER_OTLP_PROTOCOL', 'RUST_LOG', 'RANVIER_TELEMETRY_REDACT_MODE', 'RANVIER_TELEMETRY_REDACT_KEYS')) {
+    $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
 }
-
 if (-not (Get-Command podman -ErrorAction SilentlyContinue)) {
     throw "podman is not installed or not in PATH."
 }
@@ -32,15 +30,17 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     if (-not (Test-Path $defaultConfig)) {
         throw "Collector config not found. Provide -ConfigPath or restore docs/03_guides/otel_collector_smoke_config.yaml."
     }
-    $collectorConfig = (Resolve-Path $defaultConfig).Path
+    $configPath = (Resolve-Path $defaultConfig).Path
 } else {
     if (-not (Test-Path $ConfigPath)) {
         throw "Provided -ConfigPath does not exist: $ConfigPath"
     }
-    $collectorConfig = (Resolve-Path $ConfigPath).Path
+    $configPath = (Resolve-Path $ConfigPath).Path
 }
-
-$evidenceDir = Join-Path $workspaceRoot "docs/05_dev_plans/evidence"
+if ([string]::IsNullOrWhiteSpace($EvidenceDir)) {
+    $EvidenceDir = Join-Path ([IO.Path]::GetTempPath()) ('ranvier-otel-' + [Guid]::NewGuid().ToString('N'))
+}
+$evidenceDir = [IO.Path]::GetFullPath($EvidenceDir)
 New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
 
 $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -48,13 +48,20 @@ $appLog = Join-Path $evidenceDir ("otel_demo_redaction_smoke_app_" + $stamp + ".
 $collectorLog = Join-Path $evidenceDir ("otel_demo_redaction_smoke_collector_" + $stamp + ".log")
 
 try {
-    Stop-ContainerIfExists -Name $ContainerName
+    podman container exists $ContainerName | Out-Null
+    $queryExit = $LASTEXITCODE
+    if ($queryExit -eq 0) { throw 'Container name already exists; existing resource preserved.' }
+    if ($queryExit -ne 1) { throw "Container query failed ($queryExit); existing resources preserved." }
 
-    podman run -d --name $ContainerName `
-        -p 4317:4317 `
-        -p 4318:4318 `
-        -v "${collectorConfig}:/etc/otelcol-contrib/config.yaml" `
-        otel/opentelemetry-collector-contrib:latest | Out-Null
+    $created = @(podman run -d --rm --name $ContainerName `
+        -p 127.0.0.1:4317:4317 `
+        -p 127.0.0.1:4318:4318 `
+        -v "${configPath}:/etc/otelcol-contrib/config.yaml" `
+        docker.io/otel/opentelemetry-collector-contrib:latest)
+    if ($LASTEXITCODE -ne 0) { throw 'Collector creation failed.' }
+    $createdId = ($created -join '').Trim()
+    if ($createdId -notmatch '^[a-f0-9]{64}$') { throw 'Invalid owned container ID; resource preserved.' }
+    $ownedId = $createdId
 
     Start-Sleep -Seconds $StartupWaitSeconds
 
@@ -72,13 +79,15 @@ try {
         $env:RANVIER_TELEMETRY_REDACT_KEYS = "email,api_key"
         $env:RUST_LOG = "info"
 
-        cargo run -p otel-demo *>&1 | Tee-Object -FilePath $appLog | Out-Null
+        cargo run --locked -p otel-demo *>&1 | Tee-Object -FilePath $appLog | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "OTel demo failed." }
     } finally {
         Pop-Location
     }
 
-    Start-Sleep -Seconds 4
-    podman logs $ContainerName *> $collectorLog
+    Start-Sleep -Seconds 3
+    podman logs $ownedId *> $collectorLog
+    if ($LASTEXITCODE -ne 0) { throw "Collector log capture failed." }
 
     $redactedEmail = Select-String -Path $collectorLog -Pattern "customer_email: Str([REDACTED])" -SimpleMatch
     $redactedApiKey = Select-String -Path $collectorLog -Pattern "api_key: Str([REDACTED])" -SimpleMatch
@@ -112,9 +121,24 @@ try {
         throw "App log contains OpenTelemetry trace error."
     }
 
-    Write-Host "OTel OTLP redaction smoke passed."
-    Write-Host "APP_LOG=$appLog"
-    Write-Host "COLLECTOR_LOG=$collectorLog"
+} catch {
+    $primaryFailure = $_
+    throw
 } finally {
-    Stop-ContainerIfExists -Name $ContainerName
+    foreach ($name in $savedEnvironment.Keys) {
+        if ($null -eq $savedEnvironment[$name]) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+        else { [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name]) }
+    }
+    if ($ownedId) {
+        try {
+            podman rm -f $ownedId | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Owned collector cleanup failed.' }
+        } catch {
+            if ($primaryFailure) { Write-Warning $_.Exception.Message }
+            else { throw }
+        }
+    }
 }
+Write-Host 'OTel OTLP redaction smoke passed; owned collector removed.'
+Write-Host "APP_LOG=$appLog"
+Write-Host "COLLECTOR_LOG=$collectorLog"
