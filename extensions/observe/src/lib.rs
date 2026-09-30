@@ -216,6 +216,46 @@ pub mod otlp {
     mod tests {
         use super::*;
         struct SuccessfulMetricExporter(Arc<std::sync::atomic::AtomicUsize>);
+        #[test]
+        fn callback_unwind_is_classified_and_exporter_cleanup_completes() {
+            use opentelemetry::metrics::MeterProvider;
+            for gauge in [false, true] {
+                let shutdowns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let providers = Providers {
+                    traces: SdkTracerProvider::builder().build(),
+                    metrics: crate::metrics::ProtectedMeterProvider {
+                        inner: SdkMeterProvider::builder()
+                            .with_reader(
+                                opentelemetry_sdk::metrics::PeriodicReader::builder(
+                                    SuccessfulMetricExporter(shutdowns.clone()),
+                                )
+                                .with_interval(Duration::from_secs(3600))
+                                .build(),
+                            )
+                            .build(),
+                        policy: crate::redaction::Policy::new(crate::redaction::Mode::Public, "")
+                            .unwrap(),
+                        state: Default::default(),
+                    },
+                    trace_export_failed: Arc::new(AtomicBool::new(false)),
+                };
+                let meter = providers.metrics.meter("panic-fixture");
+                if gauge {
+                    let _instrument = meter
+                        .u64_observable_gauge("gauge")
+                        .with_callback(|_| panic!("synthetic callback panic"))
+                        .build();
+                    assert_eq!(providers.shutdown(), Err(vec![ShutdownSignal::Metrics]));
+                } else {
+                    let _instrument = meter
+                        .u64_observable_counter("counter")
+                        .with_callback(|_| panic!("synthetic callback panic"))
+                        .build();
+                    assert_eq!(providers.shutdown(), Err(vec![ShutdownSignal::Metrics]));
+                }
+                assert_eq!(shutdowns.load(Ordering::Acquire), 1);
+            }
+        }
         impl opentelemetry_sdk::metrics::exporter::PushMetricExporter for SuccessfulMetricExporter {
             async fn export(
                 &self,
