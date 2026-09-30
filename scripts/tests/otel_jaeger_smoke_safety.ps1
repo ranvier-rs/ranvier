@@ -1,4 +1,4 @@
-param([string]$EvidenceDir = 'D:\ranvier-m427-jaeger-safety-20260930', [switch]$Tempo)
+param([string]$EvidenceDir = 'D:\ranvier-m427-jaeger-safety-20260930', [switch]$Tempo, [switch]$Datadog)
 $ErrorActionPreference='Stop'
 New-Item -ItemType Directory -Force $EvidenceDir | Out-Null
 $config=Join-Path $EvidenceDir 'config.yaml'
@@ -22,14 +22,14 @@ function global:podman {
         else{if($global:jaegerRuns -eq 1){'a'*64}else{'b'*64}}; return
     }
     if($a[0] -eq 'logs') {
-        if($global:jaegerCase -in @('logs-error','logs-cleanup-error')){$global:LASTEXITCODE=125}else{'service.name: Str(otel-demo)';'ResourceSpans'}; return
+        if($global:jaegerCase -in @('logs-error','logs-cleanup-error')){$global:LASTEXITCODE=125}elseif($global:jaegerCase -eq 'missing-service'){'empty'}else{'service.name: Str(otel-demo)';'ResourceSpans'}; return
     }
     if($a[0] -eq 'rm') {if($global:jaegerCase -in @('cleanup-error','logs-cleanup-error')){throw 'mock cleanup failure'};return}
     if($a[0] -eq 'network' -and $a[1] -eq 'rm'){return}
     throw 'Unexpected command'
 }
-$fixture = if($Tempo){'../otel_collector_tempo_smoke_podman.ps1'}else{'../otel_collector_jaeger_smoke_podman.ps1'}
-$configArgs = if($Tempo){@{CollectorConfigPath=$config;TempoConfigPath=$config}}else{@{ConfigPath=$config}}
+$fixture = if($Datadog){'../otel_collector_datadog_class_smoke_podman.ps1'}elseif($Tempo){'../otel_collector_tempo_smoke_podman.ps1'}else{'../otel_collector_jaeger_smoke_podman.ps1'}
+$configArgs = if($Datadog){@{EdgeConfigPath=$config;BackendConfigPath=$config}}elseif($Tempo){@{CollectorConfigPath=$config;TempoConfigPath=$config}}else{@{ConfigPath=$config}}
 try {
     foreach($case in @('present','query-error','network-error','network-inspect-error','second-start','invalid-id','logs-error','cleanup-error','logs-cleanup-error','missing-service','success')) {
         $global:jaegerCase=$case; $global:jaegerCalls=[Collections.Generic.List[string]]::new(); $global:jaegerRuns=0
@@ -40,7 +40,7 @@ try {
         if(@($global:jaegerCalls|Where-Object {$_ -like 'rm *'}).Count -ne $count){throw "Wrong container cleanup: $case"}
         $network=$case -notin @('present','query-error','network-error','network-inspect-error')
         if(@($global:jaegerCalls|Where-Object {$_ -like 'network rm *'}).Count -ne [int]$network){throw "Wrong network cleanup: $case"}
-        if($case -eq 'logs-cleanup-error' -and $failure.Exception.Message -ne 'Collector logs failed.'){throw 'Primary error lost'}
+        if($case -eq 'logs-cleanup-error' -and $failure.Exception.Message -ne ($(if($Datadog){'Edge collector logs failed.'}else{'Collector logs failed.'}))){throw 'Primary error lost'}
         foreach($call in @($global:jaegerCalls|Where-Object {$_ -like 'rm *' -or $_ -like 'network rm *'})){if($call -notmatch '[a-c]{64}$'){throw 'Unowned cleanup'}}
         Write-Host "PASS: $case"
     }
