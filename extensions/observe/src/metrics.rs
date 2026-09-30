@@ -56,7 +56,7 @@ impl MetricState {
     pub(crate) fn failed(&self) -> bool {
         self.0.load(std::sync::atomic::Ordering::Acquire)
     }
-    fn register_sum(&self, scope: &InstrumentationScope, name: &str) -> bool {
+    fn register_observable(&self, scope: &InstrumentationScope, name: &str) -> bool {
         let Ok(mut registered) = self.1.lock() else {
             self.fail();
             return false;
@@ -240,6 +240,9 @@ macro_rules! asynchronous {
             &self,
             builder: AsyncInstrumentBuilder<'_, $kind<$number>, $number>,
         ) -> $kind<$number> {
+            if !self.state.register_observable(&self.scope, &builder.name) {
+                return $kind::new();
+            }
             let mut delegated = self.inner.$method(builder.name);
             if let Some(value) = self.policy.metric_description(builder.description) {
                 delegated = delegated.with_description(value);
@@ -276,7 +279,7 @@ macro_rules! asynchronous_sum {
             &self,
             builder: AsyncInstrumentBuilder<'_, $kind<$number>, $number>,
         ) -> $kind<$number> {
-            if !self.state.register_sum(&self.scope, &builder.name) {
+            if !self.state.register_observable(&self.scope, &builder.name) {
                 return $kind::new();
             }
             let mut delegated = self.inner.$method(builder.name);
