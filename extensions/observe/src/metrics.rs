@@ -143,6 +143,7 @@ mod tests {
         histogram_count: u64,
         histogram_series: usize,
         buckets: Vec<u64>,
+        unexpected_data: bool,
     }
     struct NumericCapture(Arc<Mutex<Totals>>);
     impl PushMetricExporter for NumericCapture {
@@ -164,20 +165,22 @@ mod tests {
                                     totals.histogram_sum += point.sum();
                                     totals.histogram_count += point.count();
                                     totals.histogram_series += 1;
-                                    assert_eq!(point.bounds().collect::<Vec<_>>(), vec![5.0]);
+                                    totals.unexpected_data |=
+                                        point.bounds().collect::<Vec<_>>() != vec![5.0];
                                     let buckets = point.bucket_counts().collect::<Vec<_>>();
                                     if totals.buckets.is_empty() {
                                         totals.buckets.resize(buckets.len(), 0);
                                     }
+                                    totals.unexpected_data |= totals.buckets.len() != buckets.len();
                                     for (total, count) in totals.buckets.iter_mut().zip(buckets) {
                                         *total += count;
                                     }
                                 }
                             }
-                            _ => panic!("unexpected aggregation"),
+                            _ => totals.unexpected_data = true,
                         }
                     } else {
-                        panic!("unexpected numeric type");
+                        totals.unexpected_data = true;
                     }
                 }
             }
@@ -234,6 +237,7 @@ mod tests {
                     histogram_count: 2,
                     histogram_series: if off { 2 } else { 1 },
                     buckets: vec![1, 1],
+                    unexpected_data: false,
                 }
             );
             provider.inner.shutdown().unwrap();
