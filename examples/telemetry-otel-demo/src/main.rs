@@ -3,7 +3,7 @@
 //! Demonstrates Ranvier's built-in telemetry configuration:
 //!
 //! 1. **RanvierConfig**: 4-layer config loading (defaults → file → profile → env)
-//! 2. **TelemetryConfig**: OTLP endpoint auto-initialization
+//! 2. **TelemetryConfig**: OTLP destination configuration (exporter initialization is separate)
 //! 3. **Structured Logging**: JSON/pretty/compact log formats
 //! 4. **Config-driven HttpIngress**: `.config()` applies server settings + telemetry
 //!
@@ -37,31 +37,31 @@ use ranvier_runtime::Axon;
 // ── Transitions ──────────────────────────────────────────────────────────
 
 #[transition]
-async fn greet(_state: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, String> {
+async fn greet(_state: (), _resources: &RanvierConfig, _bus: &mut Bus) -> Outcome<String, String> {
     tracing::info!("Processing greet request");
     Outcome::Next("Hello from Ranvier with telemetry!".to_string())
 }
 
 #[transition]
-async fn health_info(_state: (), _resources: &(), _bus: &mut Bus) -> Outcome<String, String> {
-    let config = RanvierConfig::default();
+async fn health_info(_state: (), _resources: &RanvierConfig, _bus: &mut Bus) -> Outcome<String, String> {
+    let config = _resources;
     let info = serde_json::json!({
         "service": config.telemetry.service_name,
-        "otlp_endpoint": config.telemetry.otlp_endpoint,
+        "otlp_endpoint_configured": config.telemetry.otlp_endpoint.is_some(),
         "sample_ratio": config.telemetry.sample_ratio,
         "log_format": format!("{:?}", config.logging.format),
     });
-    Outcome::Next(serde_json::to_string_pretty(&info).unwrap_or_default())
+    Outcome::Next(info.to_string())
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 1. Load configuration from 4-layer system:
     //    defaults → ranvier.toml → profile overrides → env vars
     //    Falls back to defaults if no ranvier.toml is found.
-    let config = RanvierConfig::load().unwrap_or_default();
+    let config = RanvierConfig::load()?;
 
     // 2. Initialize structured logging based on config
     //    Supports: json (production), pretty (development), compact
@@ -70,7 +70,7 @@ async fn main() {
     // 3. Display the active telemetry configuration
     tracing::info!(
         service_name = %config.telemetry.service_name,
-        otlp_endpoint = ?config.telemetry.otlp_endpoint,
+        otlp_endpoint_configured = config.telemetry.otlp_endpoint.is_some(),
         sample_ratio = config.telemetry.sample_ratio,
         otlp_protocol = ?config.telemetry.otlp_protocol,
         "Telemetry configuration loaded"
@@ -89,10 +89,10 @@ async fn main() {
         .health_endpoint("/health")
         .readiness_liveness_default()
         .request_id_layer()
-        .route("/", Axon::simple::<String>("Greet").then(greet))
+        .route("/", Axon::<(), (), String, RanvierConfig>::new("Greet").then(greet))
         .route(
             "/telemetry-info",
-            Axon::simple::<String>("TelemetryInfo").then(health_info),
+            Axon::<(), (), String, RanvierConfig>::new("TelemetryInfo").then(health_info),
         );
 
     tracing::info!(
@@ -100,7 +100,6 @@ async fn main() {
         "Starting server"
     );
 
-    if let Err(e) = app.run(()).await {
-        tracing::error!(error = %e, "Server error");
-    }
+    app.run(config).await?;
+    Ok(())
 }

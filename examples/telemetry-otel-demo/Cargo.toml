@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
-description = "M245: TelemetryConfig + OTLP auto-init, structured logging, RanvierConfig"
+description = "M245: TelemetryConfig + OTLP destination configuration, structured logging, RanvierConfig"
 
 [dependencies]
 ranvier-core = { workspace = true }
