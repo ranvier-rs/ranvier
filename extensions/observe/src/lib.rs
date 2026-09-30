@@ -212,10 +212,7 @@ pub mod otlp {
                     .with_service_name(service.to_owned())
                     .build(),
             );
-            let _validated_stream = opentelemetry_sdk::metrics::Stream::builder()
-                .with_cardinality_limit(crate::metrics::MAX_STREAM_SERIES)
-                .build()
-                .map_err(|_| "invalid metric cardinality budget")?;
+            let metric_builder = crate::metrics::bounded_meter_builder()?;
             let trace_export_failed = Arc::new(AtomicBool::new(false));
             Ok(Self {
                 traces: SdkTracerProvider::builder()
@@ -231,14 +228,8 @@ pub mod otlp {
                     .build(),
                 trace_export_failed,
                 metrics: crate::metrics::ProtectedMeterProvider {
-                    inner: SdkMeterProvider::builder()
+                    inner: metric_builder
                         .with_resource(resource)
-                        .with_view(move |_| {
-                            opentelemetry_sdk::metrics::Stream::builder()
-                                .with_cardinality_limit(crate::metrics::MAX_STREAM_SERIES)
-                                .build()
-                                .ok()
-                        })
                         .with_periodic_exporter(metrics)
                         .build(),
                     policy: redaction,

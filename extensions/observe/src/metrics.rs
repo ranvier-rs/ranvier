@@ -15,6 +15,23 @@ pub const MAX_HISTOGRAM_BOUNDARIES: usize = 128;
 /// SDK per-stream cardinality budget; overflow uses a separate aggregation point.
 pub const MAX_STREAM_SERIES: usize = 1024;
 
+/// Shared production/test SDK configuration; no aggregation override, so caller
+/// histogram boundaries and SDK instrument-specific aggregation stay intact.
+pub(crate) fn bounded_meter_builder()
+-> Result<opentelemetry_sdk::metrics::MeterProviderBuilder, &'static str> {
+    opentelemetry_sdk::metrics::Stream::builder()
+        .with_cardinality_limit(MAX_STREAM_SERIES)
+        .build()
+        .map_err(|_| "invalid metric cardinality budget")?;
+    Ok(SdkMeterProvider::builder().with_view(|_| {
+        // Only the validated constant is used; matching cannot introduce a new
+        // stream validation failure from caller metadata.
+        opentelemetry_sdk::metrics::Stream::builder()
+            .with_cardinality_limit(MAX_STREAM_SERIES)
+            .build()
+            .ok()
+    }))
+}
 #[derive(Hash, Eq, PartialEq)]
 struct InstrumentIdentity {
     scope: InstrumentationScope,
