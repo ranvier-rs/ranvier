@@ -97,6 +97,9 @@ impl MetricState {
             self.fail();
             return false;
         };
+        if self.failed() {
+            return false;
+        }
         if scopes.contains(scope) {
             return true;
         }
@@ -146,6 +149,9 @@ impl MetricState {
             self.fail();
             return false;
         };
+        if self.failed() {
+            return false;
+        }
         if instruments.contains(&identity) {
             return true;
         }
@@ -555,10 +561,32 @@ mod tests {
         }
     }
     #[test]
+    fn concurrent_meter_registration_stays_within_provider_budget() {
+        let state = MetricState::default();
+        std::thread::scope(|threads| {
+            for worker in 0..8 {
+                let state = state.clone();
+                threads.spawn(move || {
+                    for index in 0..32 {
+                        state.register_meter(
+                            &InstrumentationScope::builder(format!("scope-{worker}-{index}"))
+                                .build(),
+                        );
+                    }
+                });
+            }
+        });
+        assert!(state.failed());
+        assert_eq!(state.2.lock().unwrap().len(), MAX_METERS);
+        assert!(!state.register_meter(&InstrumentationScope::builder("after-failure").build()));
+    }
+
+    #[test]
     fn provider_meter_and_instrument_capacity_accepts_reuse_and_rejects_growth() {
         let provider = capacity_provider(crate::redaction::Mode::Public);
         for index in 0..MAX_METERS {
-            provider.meter(format!("scope-{index}"));
+            provider
+                .meter_with_scope(InstrumentationScope::builder(format!("scope-{index}")).build());
         }
         provider.meter("scope-0");
         assert!(!provider.state.failed());
