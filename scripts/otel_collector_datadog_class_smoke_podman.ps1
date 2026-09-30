@@ -5,7 +5,10 @@ param(
     [ValidateRange(0,300)][int]$StartupWaitSeconds = 10,
     [string]$EvidenceDir = "",
     [string]$EdgeConfigPath = "",
-    [string]$BackendConfigPath = ""
+    [string]$BackendConfigPath = "",
+    [ValidateRange(1,65535)][int]$GrpcPort = 4317,
+    [ValidateRange(1,65535)][int]$HttpPort = 4318,
+    [string]$CollectorImage = 'docker.io/otel/opentelemetry-collector-contrib:latest'
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,7 +18,7 @@ $ownedIds = [Collections.Generic.List[string]]::new()
 $ownedNetworkId = $null
 $primaryFailure = $null
 $savedEnvironment = @{}
-foreach ($name in @('RANVIER_OTLP_ENDPOINT','RANVIER_OTLP_PROTOCOL','RUST_LOG')) {
+foreach ($name in @('RANVIER_OTLP_ENDPOINT','RANVIER_OTLP_PROTOCOL','RUST_LOG','RANVIER_TELEMETRY_REDACT_MODE','RANVIER_TELEMETRY_REDACT_KEYS')) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
 }
 function Assert-NewFixture {
@@ -94,24 +97,35 @@ try {
         --network $ownedNetworkId `
         --network-alias ranvier-otel-dd-backend `
         -v "${backendConfig}:/etc/otelcol-contrib/config.yaml" `
-        docker.io/otel/opentelemetry-collector-contrib:latest)
+        $CollectorImage)
     $ownedIds.Add((Get-OwnedId $created $LASTEXITCODE))
 
      $created = @(podman run -d --rm --name $EdgeContainerName `
         --network $ownedNetworkId `
-        -p 127.0.0.1:4317:4317 `
-        -p 127.0.0.1:4318:4318 `
+        -p "127.0.0.1:${GrpcPort}:4317" `
+        -p "127.0.0.1:${HttpPort}:4318" `
         -v "${edgeConfig}:/etc/otelcol-contrib/config.yaml" `
-        docker.io/otel/opentelemetry-collector-contrib:latest)
+        $CollectorImage)
     $ownedIds.Add((Get-OwnedId $created $LASTEXITCODE))
 
     Start-Sleep -Seconds $StartupWaitSeconds
+    $images = @()
+    foreach ($id in $ownedIds) {
+        $image = @(podman container inspect $id --format '{{.Image}}')
+        $images += Get-OwnedId $image $LASTEXITCODE
+    }
+    [ordered]@{ network_id=$ownedNetworkId; container_ids=@($ownedIds); image_ids=$images;
+        edge_config_sha256=(Get-FileHash -LiteralPath $edgeConfig).Hash;
+        backend_config_sha256=(Get-FileHash -LiteralPath $backendConfig).Hash } |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidenceDir 'backend-runtime-identity.json') -Encoding utf8
 
     Push-Location $ranvierRoot
     try {
-        $env:RANVIER_OTLP_ENDPOINT = "http://localhost:4318"
+        $env:RANVIER_OTLP_ENDPOINT = "http://127.0.0.1:$HttpPort"
         $env:RANVIER_OTLP_PROTOCOL = "http/protobuf"
         $env:RUST_LOG = "info"
+        $env:RANVIER_TELEMETRY_REDACT_MODE = 'public'
+        $env:RANVIER_TELEMETRY_REDACT_KEYS = ''
 
         cargo run --locked -p ranvier-observe --example otlp_smoke --features otlp *>&1 | Tee-Object -FilePath $appLog | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "OTel demo failed." }
@@ -155,6 +169,21 @@ try {
     if ($appErrorMatch) {
         throw "App log contains OpenTelemetry trace error."
     }
+    if (-not (Select-String -LiteralPath $appLog -SimpleMatch 'OTLP_SMOKE_EXPORTED outcome=12')) { throw 'Finite export marker missing.' }
+    $traceIds = @()
+    foreach ($log in @($edgeCollectorLog, $backendCollectorLog)) {
+        foreach ($entry in @(@('CalculationCircuit',1),@('Circuit',1),@('Node',2))) {
+            $pattern = '^\s*Name\s+: ' + [regex]::Escape($entry[0]) + '\s*$'
+            if (@(Select-String -LiteralPath $log -Pattern $pattern).Count -ne $entry[1]) { throw 'Forwarded runtime span receipt mismatch.' }
+        }
+        foreach ($receipt in @('ResourceMetrics', 'ranvier_demo_runs_total')) {
+            if (-not (Select-String -LiteralPath $log -SimpleMatch $receipt)) { throw 'Forwarded metric receipt missing.' }
+        }
+        $ids = @([regex]::Matches((Get-Content -LiteralPath $log -Raw), 'Trace ID\s+: ([a-f0-9]{32})') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+        if ($ids.Count -ne 1) { throw 'Expected one forwarded trace identity.' }
+        $traceIds += $ids[0]
+    }
+    if ($traceIds[0] -ne $traceIds[1]) { throw 'Edge/backend trace identity mismatch.' }
 
 } catch {
     $primaryFailure = $_

@@ -3,7 +3,7 @@ param(
     [ValidateRange(1, 65535)][int]$PostgresPort = 54329,
     [ValidateRange(1, 65535)][int]$RedisPort = 6389,
     [string]$EvidenceDir = '',
-    [ValidateSet('adapters','dependency-recovery','otel','otel-redaction','jaeger','tempo')][string]$Scenario = 'adapters',
+    [ValidateSet('adapters','dependency-recovery','otel','otel-redaction','jaeger','tempo','datadog-class')][string]$Scenario = 'adapters',
     [string]$TempoImage = 'docker.io/grafana/tempo:2.6.1',
     [ValidateRange(1,65535)][int]$BackendPort = 16686,
     [string]$JaegerImage = 'docker.io/jaegertracing/all-in-one:1.60.0',
@@ -86,7 +86,9 @@ try {
     if ($tunnel.HasExited) { throw 'SSH loopback tunnel exited during startup; inspect ssh-stderr.log.' }
     [ordered]@{ machine = $MachineName; default_connection = $connection.Name; ssh_port = $uri.Port; process_id = $tunnel.Id; known_hosts_sha256 = (Get-FileHash $knownHosts).Hash } |
         ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $EvidenceDir 'ssh-tunnel-identity.json')
-    if ($Scenario -eq 'tempo') {
+    if ($Scenario -eq 'datadog-class') {
+        & (Join-Path $PSScriptRoot 'otel_collector_datadog_class_smoke_podman.ps1') -EvidenceDir $EvidenceDir -CollectorImage $CollectorImage -GrpcPort $PostgresPort -HttpPort $RedisPort
+    } elseif ($Scenario -eq 'tempo') {
         & (Join-Path $PSScriptRoot 'otel_collector_tempo_smoke_podman.ps1') -EvidenceDir $EvidenceDir -CollectorImage $CollectorImage -TempoImage $TempoImage -GrpcPort $PostgresPort -HttpPort $RedisPort -TempoPort $BackendPort
     } elseif ($Scenario -eq 'jaeger') {
         & (Join-Path $PSScriptRoot 'otel_collector_jaeger_smoke_podman.ps1') -EvidenceDir $EvidenceDir -CollectorImage $CollectorImage -JaegerImage $JaegerImage -GrpcPort $PostgresPort -HttpPort $RedisPort -JaegerPort $BackendPort
