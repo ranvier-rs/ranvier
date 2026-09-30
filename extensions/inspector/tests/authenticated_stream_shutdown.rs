@@ -29,7 +29,7 @@ async fn verify_managed_shutdown(count: usize) {
         .with_require_tenant_for_internal(false);
     let cancellation = CancellationToken::new();
     let server_token = cancellation.clone();
-    let server = tokio::spawn(async move {
+    let mut server = tokio::spawn(async move {
         inspector
             .serve_with_listener_and_cancellation(listener, server_token)
             .await
@@ -55,20 +55,30 @@ async fn verify_managed_shutdown(count: usize) {
         Ok(child) => child,
         Err(_) => {
             cancellation.cancel(CancellationReason::OperatorShutdown);
-            let _ = tokio::time::timeout(Duration::from_secs(3), server).await;
+            if tokio::time::timeout(Duration::from_secs(3), &mut server)
+                .await
+                .is_err()
+            {
+                server.abort();
+                let _ = server.await;
+            }
             panic!("shutdown verifier spawn failed");
         }
     };
     let mut lines = BufReader::new(child.stdout.take().unwrap().take(16384)).lines();
     let stderr = child.stderr.take().unwrap();
-    let errors = tokio::spawn(async move {
+    let mut errors = tokio::spawn(async move {
         let mut bytes = Vec::new();
         stderr.take(65536).read_to_end(&mut bytes).await.unwrap();
         bytes
     });
     let ready = tokio::time::timeout(Duration::from_secs(7), lines.next_line()).await;
     cancellation.cancel(CancellationReason::OperatorShutdown);
-    let shutdown = tokio::time::timeout(Duration::from_secs(3), server).await;
+    let shutdown = tokio::time::timeout(Duration::from_secs(3), &mut server).await;
+    if shutdown.is_err() {
+        server.abort();
+        let _ = server.await;
+    }
     let closed = tokio::time::timeout(Duration::from_secs(3), lines.next_line()).await;
     if ready.is_err() || closed.is_err() {
         let _ = child.kill().await;
@@ -78,12 +88,16 @@ async fn verify_managed_shutdown(count: usize) {
         let _ = child.kill().await;
         let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
     }
-    let errors = tokio::time::timeout(Duration::from_secs(3), errors).await;
+    let error_result = tokio::time::timeout(Duration::from_secs(3), &mut errors).await;
+    if error_result.is_err() {
+        errors.abort();
+        let _ = errors.await;
+    }
     assert_eq!(ready.unwrap().unwrap().as_deref(), Some("SHUTDOWN_READY"));
     shutdown.expect("managed server deadline").unwrap().unwrap();
     assert_eq!(
         closed.unwrap().unwrap().as_deref(),
-        Some("SHUTDOWN_DONE 1001")
+        Some(format!("SHUTDOWN_DONE 1001 {count}").as_str())
     );
     assert!(
         status
@@ -91,6 +105,6 @@ async fn verify_managed_shutdown(count: usize) {
             .unwrap()
             .success()
     );
-    assert!(errors.unwrap().unwrap().is_empty());
+    assert!(error_result.unwrap().unwrap().is_empty());
     println!("{count} active idle sockets each received 1001; managed server and verifier joined");
 }
