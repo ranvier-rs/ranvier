@@ -517,8 +517,6 @@ impl PersistenceStore for InMemoryPersistenceStore {
                 completion: None,
             });
 
-        entry.schematic_version = envelope.schematic_version.clone();
-
         if entry.circuit != envelope.circuit {
             return Err(anyhow!(
                 "trace_id {} already exists for circuit {}, got {}",
@@ -533,6 +531,7 @@ impl PersistenceStore for InMemoryPersistenceStore {
                 envelope.trace_id
             ));
         }
+        entry.schematic_version = envelope.schematic_version.clone();
         entry.events.push(envelope);
         entry.events.sort_by_key(|e| e.step);
         Ok(())
@@ -1069,6 +1068,57 @@ mod tests {
             payload_hash: Some(format!("hash-{}", step)),
             payload: None,
         }
+    }
+
+    #[tokio::test]
+    async fn rejected_append_preserves_existing_trace_snapshot() {
+        let store = InMemoryPersistenceStore::new();
+        store.append(envelope(1, "Next")).await.unwrap();
+        let before = store.load("trace-1").await.unwrap();
+        let mut wrong_circuit = envelope(2, "Next");
+        wrong_circuit.circuit = "AnotherCircuit".into();
+        wrong_circuit.schematic_version = "rejected-version".into();
+        assert!(store.append(wrong_circuit).await.is_err());
+        assert_eq!(store.load("trace-1").await.unwrap(), before);
+        store
+            .complete("trace-1", CompletionState::Success)
+            .await
+            .unwrap();
+        let completed = store.load("trace-1").await.unwrap();
+        let mut late = envelope(3, "Next");
+        late.schematic_version = "late-rejected-version".into();
+        assert!(store.append(late).await.is_err());
+        assert_eq!(store.load("trace-1").await.unwrap(), completed);
+    }
+
+    #[tokio::test]
+    async fn barrier_concurrent_memory_appends_preserve_both_events() {
+        let store = InMemoryPersistenceStore::new();
+        store.append(envelope(0, "Enter")).await.unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let mut tasks = Vec::new();
+        for step in [1, 2] {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                let snapshot = store.load("trace-1").await.unwrap().unwrap();
+                assert_eq!(snapshot.events.len(), 1);
+                barrier.wait().await;
+                store.append(envelope(step, "Next")).await
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap().unwrap();
+        }
+        let trace = store.load("trace-1").await.unwrap().unwrap();
+        assert_eq!(
+            trace.events,
+            vec![
+                envelope(0, "Enter"),
+                envelope(1, "Next"),
+                envelope(2, "Next")
+            ]
+        );
     }
 
     #[tokio::test]
