@@ -33,6 +33,48 @@ struct Observing<'a, T> {
     inner: &'a dyn AsyncInstrument<T>,
     policy: &'a Policy,
 }
+trait CheckedSum: Copy + Send {
+    fn checked_sum(self, other: Self) -> Option<Self>;
+}
+impl CheckedSum for u64 {
+    fn checked_sum(self, other: Self) -> Option<Self> {
+        self.checked_add(other)
+    }
+}
+impl CheckedSum for i64 {
+    fn checked_sum(self, other: Self) -> Option<Self> {
+        self.checked_add(other)
+    }
+}
+impl CheckedSum for f64 {
+    fn checked_sum(self, other: Self) -> Option<Self> {
+        let sum = self + other;
+        sum.is_finite().then_some(sum)
+    }
+}
+struct Summing<'a, T> {
+    groups: std::sync::Mutex<Vec<(Vec<KeyValue>, T)>>,
+    policy: &'a Policy,
+}
+impl<T: CheckedSum> AsyncInstrument<T> for Summing<'_, T> {
+    fn observe(&self, value: T, attributes: &[KeyValue]) {
+        let mut attributes = self.policy.metric_attributes(attributes.to_vec());
+        attributes.sort_by(|a, b| a.key.as_str().cmp(b.key.as_str()));
+        let Ok(mut groups) = self.groups.lock() else {
+            self.policy.fail_metric();
+            return;
+        };
+        if let Some((_, total)) = groups.iter_mut().find(|(labels, _)| *labels == attributes) {
+            if let Some(sum) = total.checked_sum(value) {
+                *total = sum;
+            } else {
+                self.policy.fail_metric();
+            }
+        } else {
+            groups.push((attributes, value));
+        }
+    }
+}
 impl<T> AsyncInstrument<T> for Observing<'_, T> {
     fn observe(&self, value: T, attributes: &[KeyValue]) {
         self.inner
@@ -104,6 +146,46 @@ macro_rules! asynchronous {
         }
     };
 }
+macro_rules! asynchronous_sum {
+    ($method:ident, $kind:ident, $number:ty) => {
+        fn $method(
+            &self,
+            builder: AsyncInstrumentBuilder<'_, $kind<$number>, $number>,
+        ) -> $kind<$number> {
+            let mut delegated = self.inner.$method(builder.name);
+            if let Some(value) = builder.description {
+                delegated = delegated.with_description(value);
+            }
+            if let Some(value) = builder.unit {
+                delegated = delegated.with_unit(value);
+            }
+            let policy = self.policy.clone();
+            let callbacks = builder.callbacks;
+            delegated
+                .with_callback(move |inner| {
+                    let observations = Summing {
+                        groups: std::sync::Mutex::new(Vec::new()),
+                        policy: &policy,
+                    };
+                    for callback in &callbacks {
+                        callback(&observations);
+                    }
+                    if policy.metric_failed() {
+                        return;
+                    }
+                    match observations.groups.into_inner() {
+                        Ok(groups) => {
+                            for (attributes, value) in groups {
+                                inner.observe(value, &attributes);
+                            }
+                        }
+                        Err(_) => policy.fail_metric(),
+                    }
+                })
+                .build()
+        }
+    };
+}
 impl InstrumentProvider for ProtectedInstruments {
     sync_instrument!(u64_counter, Counter, u64, add);
     sync_instrument!(f64_counter, Counter, f64, add);
@@ -114,10 +196,10 @@ impl InstrumentProvider for ProtectedInstruments {
     sync_instrument!(f64_gauge, Gauge, f64, record);
     histogram!(u64_histogram, u64);
     histogram!(f64_histogram, f64);
-    asynchronous!(u64_observable_counter, ObservableCounter, u64);
-    asynchronous!(f64_observable_counter, ObservableCounter, f64);
-    asynchronous!(i64_observable_up_down_counter, ObservableUpDownCounter, i64);
-    asynchronous!(f64_observable_up_down_counter, ObservableUpDownCounter, f64);
+    asynchronous_sum!(u64_observable_counter, ObservableCounter, u64);
+    asynchronous_sum!(f64_observable_counter, ObservableCounter, f64);
+    asynchronous_sum!(i64_observable_up_down_counter, ObservableUpDownCounter, i64);
+    asynchronous_sum!(f64_observable_up_down_counter, ObservableUpDownCounter, f64);
     asynchronous!(u64_observable_gauge, ObservableGauge, u64);
     asynchronous!(i64_observable_gauge, ObservableGauge, i64);
     asynchronous!(f64_observable_gauge, ObservableGauge, f64);
@@ -225,7 +307,7 @@ mod tests {
             );
             assert_eq!(
                 values.get("observable_changes"),
-                Some(&if off { vec![2, 8] } else { vec![8] })
+                Some(&if off { vec![2, 8] } else { vec![10] })
             );
             // A second collection must not add absolute observable values again.
             provider.inner.force_flush().unwrap();

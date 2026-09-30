@@ -204,7 +204,10 @@ pub mod otlp {
                     let shutdown_ok = self.traces.shutdown().is_ok();
                     shutdown_ok && !self.trace_export_failed.load(Ordering::Acquire)
                 },
-                || self.metrics.inner.shutdown().is_ok(),
+                || {
+                    let shutdown_ok = self.metrics.inner.shutdown().is_ok();
+                    shutdown_ok && !self.metrics.policy.metric_failed()
+                },
             )
         }
     }
