@@ -787,9 +787,19 @@ where
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// let outcome = pipeline.execute_simple(input, &mut bus).await;
-    /// // equivalent to: pipeline.execute(input, &(), &mut bus).await
+    /// ```rust
+    /// use ranvier_core::{bus::Bus, outcome::Outcome};
+    /// use ranvier_runtime::Axon;
+    /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+    /// let axon = Axon::<u32, u32, String>::new("identity");
+    /// let mut bus = Bus::new();
+    /// let outcome = axon.execute_simple(7, &mut bus).await;
+    /// assert!(matches!(outcome, Outcome::Next(7)));
+    /// // Explicit resources give the same result, using a new request bus.
+    /// let mut explicit_bus = Bus::new();
+    /// let explicit = axon.execute(7, &(), &mut explicit_bus).await;
+    /// assert!(matches!(explicit, Outcome::Next(7)));
+    /// # });
     /// ```
     pub async fn execute_simple(&self, input: In, bus: &mut Bus) -> Outcome<Out, E> {
         self.execute(input, &(), bus).await
