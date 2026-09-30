@@ -1,8 +1,8 @@
 param(
-    [string]$PostgresContainer = "ranvier-rq8-postgres",
-    [string]$RedisContainer = "ranvier-rq8-redis",
-    [string]$PostgresImage = "postgres:16-alpine",
-    [string]$RedisImage = "redis:7-alpine",
+    [string]$PostgresContainer = ("ranvier-rq8-postgres-" + [Guid]::NewGuid().ToString("N")),
+    [string]$RedisContainer = ("ranvier-rq8-redis-" + [Guid]::NewGuid().ToString("N")),
+    [string]$PostgresImage = "docker.io/library/postgres:16-alpine",
+    [string]$RedisImage = "docker.io/library/redis:7-alpine",
     [int]$PostgresPort = 54329,
     [int]$RedisPort = 6389,
     [string]$SummaryPath = ""
@@ -11,18 +11,26 @@ param(
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $false
 
-function Stop-ContainerIfExists {
-    param([string]$Name)
-
-    $existing = podman ps -a --format "{{.Names}}" | Where-Object { $_ -eq $Name }
-    if ($existing) {
-        podman rm -f $Name | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to remove existing container: $Name"
-        }
-    }
+$ownedPostgres = $null
+$ownedRedis = $null
+$primaryFailure = $null
+$savedEnvironment = @{}
+foreach ($name in @('RANVIER_PERSISTENCE_POSTGRES_URL','RANVIER_PERSISTENCE_REDIS_URL','REDIS_URL')) {
+    $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
 }
-
+function Assert-NewContainer {
+    param([string]$Name)
+    podman container exists $Name | Out-Null
+    if ($LASTEXITCODE -eq 0) { throw 'Existing container preserved.' }
+    if ($LASTEXITCODE -ne 1) { throw 'Container query failed; resources preserved.' }
+}
+function Get-OwnedContainer {
+    param([object[]]$Output, [int]$Code)
+    if ($Code -ne 0) { throw 'Container creation failed.' }
+    $id = ($Output -join '').Trim()
+    if ($id -notmatch '^[a-f0-9]{64}$') { throw 'Invalid owned container ID; resource preserved.' }
+    return $id
+}
 function Wait-PostgresReady {
     param([string]$ContainerName, [int]$MaxAttempts = 20)
 
@@ -123,15 +131,15 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ranvierRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $workspaceRoot = (Resolve-Path (Join-Path $ranvierRoot "..")).Path
-$evidenceDir = Join-Path $workspaceRoot "docs/05_dev_plans/evidence"
+$evidenceDir = Join-Path ([IO.Path]::GetTempPath()) ("ranvier-dependency-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
 
 if ([string]::IsNullOrWhiteSpace($SummaryPath)) {
-    $SummaryPath = Join-Path $evidenceDir "m419_rq8_dependency_failure_20260716.md"
+    $SummaryPath = Join-Path $evidenceDir "dependency_failure_summary.md"
 }
 
 $runId = Get-Date -Format "yyyyMMdd_HHmmss"
-$controlRoot = Join-Path $ranvierRoot "target/rq8-dependency-$runId"
+$controlRoot = Join-Path $evidenceDir "control"
 $postgresControl = Join-Path $controlRoot "postgres"
 $redisControl = Join-Path $controlRoot "redis"
 New-Item -ItemType Directory -Path $postgresControl, $redisControl -Force | Out-Null
@@ -141,7 +149,8 @@ $probeName = if ($IsWindows -or $env:OS -eq "Windows_NT") {
 } else {
     "dependency_recovery_probe"
 }
-$probe = Join-Path $ranvierRoot "target/debug/examples/$probeName"
+$targetRoot = if ($env:CARGO_TARGET_DIR) { [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) } else { Join-Path $ranvierRoot "target" }
+$probe = Join-Path $targetRoot "debug/examples/$probeName"
 $runtimeLog = Join-Path $controlRoot "runtime-persistence-tests.log"
 $guardLog = Join-Path $controlRoot "guard-distributed-tests.log"
 $postgresOut = Join-Path $controlRoot "postgres-live.stdout.log"
@@ -156,28 +165,24 @@ $redisProbe = $null
 $startedAt = Get-Date
 
 try {
-    Stop-ContainerIfExists -Name $PostgresContainer
-    Stop-ContainerIfExists -Name $RedisContainer
+    Assert-NewContainer $PostgresContainer
+    Assert-NewContainer $RedisContainer
 
-    podman run -d --name $PostgresContainer `
+    $created = @(podman run -d --name $PostgresContainer `
         -e POSTGRES_USER=ranvier `
         -e POSTGRES_PASSWORD=ranvier `
         -e POSTGRES_DB=ranvier `
-        -p "${PostgresPort}:5432" `
-        $PostgresImage | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to start PostgreSQL fixture."
-    }
+        -p "127.0.0.1:${PostgresPort}:5432" `
+        $PostgresImage)
+    $ownedPostgres = Get-OwnedContainer $created $LASTEXITCODE
 
-    podman run -d --name $RedisContainer `
-        -p "${RedisPort}:6379" `
-        $RedisImage | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to start Redis fixture."
-    }
+    $created = @(podman run -d --name $RedisContainer `
+        -p "127.0.0.1:${RedisPort}:6379" `
+        $RedisImage)
+    $ownedRedis = Get-OwnedContainer $created $LASTEXITCODE
 
-    $postgresInitialReady = Wait-PostgresReady -ContainerName $PostgresContainer
-    $redisInitialReady = Wait-RedisReady -ContainerName $RedisContainer
+    $postgresInitialReady = Wait-PostgresReady -ContainerName $ownedPostgres
+    $redisInitialReady = Wait-RedisReady -ContainerName $ownedRedis
 
     $env:RANVIER_PERSISTENCE_POSTGRES_URL = "postgres://ranvier:ranvier@127.0.0.1:${PostgresPort}/ranvier"
     $env:RANVIER_PERSISTENCE_REDIS_URL = "redis://127.0.0.1:${RedisPort}"
@@ -212,18 +217,18 @@ try {
         -StdoutPath $postgresOut -StderrPath $postgresErr
     $postgresReadyMarker = Wait-ProbeMarker -Process $postgresProbe `
         -Path (Join-Path $postgresControl "ready") -Phase "PostgreSQL ready"
-    podman stop --time 0 $PostgresContainer | Out-Null
+    podman stop --time 0 $ownedPostgres | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to stop PostgreSQL fixture for outage injection."
     }
     New-Item -ItemType File -Path (Join-Path $postgresControl "inject-outage") -Force | Out-Null
     $postgresOutageMarker = Wait-ProbeMarker -Process $postgresProbe `
         -Path (Join-Path $postgresControl "outage-observed") -Phase "PostgreSQL outage"
-    podman start $PostgresContainer | Out-Null
+    podman start $ownedPostgres | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to restart PostgreSQL fixture."
     }
-    $postgresRestartReady = Wait-PostgresReady -ContainerName $PostgresContainer
+    $postgresRestartReady = Wait-PostgresReady -ContainerName $ownedPostgres
     New-Item -ItemType File -Path (Join-Path $postgresControl "inject-recovery") -Force | Out-Null
     $postgresRecoveryMarker = Wait-ProbeMarker -Process $postgresProbe `
         -Path (Join-Path $postgresControl "recovered") -Phase "PostgreSQL recovery"
@@ -235,18 +240,18 @@ try {
         -StdoutPath $redisOut -StderrPath $redisErr
     $redisReadyMarker = Wait-ProbeMarker -Process $redisProbe `
         -Path (Join-Path $redisControl "ready") -Phase "Redis ready"
-    podman stop --time 0 $RedisContainer | Out-Null
+    podman stop --time 0 $ownedRedis | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to stop Redis fixture for outage injection."
     }
     New-Item -ItemType File -Path (Join-Path $redisControl "inject-outage") -Force | Out-Null
     $redisOutageMarker = Wait-ProbeMarker -Process $redisProbe `
         -Path (Join-Path $redisControl "outage-observed") -Phase "Redis outage"
-    podman start $RedisContainer | Out-Null
+    podman start $ownedRedis | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to restart Redis fixture."
     }
-    $redisRestartReady = Wait-RedisReady -ContainerName $RedisContainer
+    $redisRestartReady = Wait-RedisReady -ContainerName $ownedRedis
     New-Item -ItemType File -Path (Join-Path $redisControl "inject-recovery") -Force | Out-Null
     $redisRecoveryMarker = Wait-ProbeMarker -Process $redisProbe `
         -Path (Join-Path $redisControl "recovered") -Phase "Redis recovery"
@@ -351,16 +356,29 @@ being inferred from this external-dependency harness.
 "@
     Set-Content -LiteralPath $SummaryPath -Value $summary -Encoding utf8
 
-    Write-Host "M419-RQ8 dependency failure smoke passed."
-    Write-Host "SUMMARY=$SummaryPath"
-    Write-Host "LOCAL_LOG_DIR=$controlRoot"
+} catch {
+    $primaryFailure = $_
+    throw
 } finally {
-    if ($postgresProbe -and -not $postgresProbe.HasExited) {
-        $postgresProbe.Kill($true)
+    foreach ($name in $savedEnvironment.Keys) {
+        if ($null -eq $savedEnvironment[$name]) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+        else { [Environment]::SetEnvironmentVariable($name,$savedEnvironment[$name]) }
     }
-    if ($redisProbe -and -not $redisProbe.HasExited) {
-        $redisProbe.Kill($true)
+    $cleanupErrors = [Collections.Generic.List[string]]::new()
+    foreach ($process in @($postgresProbe,$redisProbe)) {
+        try { if ($process -and -not $process.HasExited) { $process.Kill($true); $process.WaitForExit(5000) | Out-Null } }
+        catch { $cleanupErrors.Add($_.Exception.Message) }
     }
-    Stop-ContainerIfExists -Name $PostgresContainer
-    Stop-ContainerIfExists -Name $RedisContainer
+    foreach ($id in @($ownedPostgres,$ownedRedis)) {
+        if (-not $id) { continue }
+        try { podman rm -f -v $id | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'Owned container cleanup failed.' } }
+        catch { $cleanupErrors.Add($_.Exception.Message) }
+    }
+    if ($cleanupErrors.Count) {
+        if ($primaryFailure) { Write-Warning ($cleanupErrors -join '; ') }
+        else { throw ($cleanupErrors -join '; ') }
+    }
 }
+Write-Host 'Dependency failure smoke passed; owned resources removed.'
+Write-Host "SUMMARY=$SummaryPath"
+Write-Host "LOCAL_LOG_DIR=$controlRoot"
