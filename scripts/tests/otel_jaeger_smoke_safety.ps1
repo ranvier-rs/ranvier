@@ -4,7 +4,7 @@ New-Item -ItemType Directory -Force $EvidenceDir | Out-Null
 $config=Join-Path $EvidenceDir 'config.yaml'
 'receivers: {}' | Set-Content $config
 function global:Start-Sleep { param($Seconds) }
-function global:Invoke-RestMethod { param($Uri,$Method,$TimeoutSec); if($TimeoutSec -ne 10){throw 'HTTP timeout missing'}; if($Uri -match '/api/traces') { if($global:jaegerCase -eq 'missing-trace') { @{data=@()} } else { @{data=@(@{spans=@(@{operationName='CalculationCircuit'},@{operationName='Circuit'},@{operationName='Node'},@{operationName='Node'})})} }; return }; if($global:jaegerCase -eq 'missing-service'){@{data=@();tagValues=@()}}else{@{data=@('otel-demo');tagValues=@('otel-demo')}} }
+function global:Invoke-RestMethod { param($Uri,$Method,$TimeoutSec); if($TimeoutSec -ne 10){throw 'HTTP timeout missing'}; if($Uri -match '/api/traces') { if($global:jaegerCase -eq 'missing-trace') { @{data=@()} } else { if($Uri -match '\?service=') { @{data=@(@{spans=@(@{operationName='CalculationCircuit'},@{operationName='Circuit'},@{operationName='Node'},@{operationName='Node'})})} } else { @{batches=@(@{scopeSpans=@(@{spans=@(@{name='CalculationCircuit'},@{name='Circuit'},@{name='Node'},@{name='Node'})})})} } }; return }; if($global:jaegerCase -eq 'missing-service'){@{data=@();tagValues=@()}}else{@{data=@('otel-demo');tagValues=@('otel-demo')}} }
 function global:cargo { $global:LASTEXITCODE=0; 'mock'; 'OTLP_SMOKE_EXPORTED outcome=12' }
 function global:podman {
     $a=@($args); $global:jaegerCalls.Add(($a -join ' ')); $global:LASTEXITCODE=0
@@ -23,7 +23,7 @@ function global:podman {
         else{if($global:jaegerRuns -eq 1){'a'*64}else{'b'*64}}; return
     }
     if($a[0] -eq 'logs') {
-        if($global:jaegerCase -in @('logs-error','logs-cleanup-error')){$global:LASTEXITCODE=125}elseif($global:jaegerCase -eq 'backend-missing' -and $a[1] -eq ('a'*64)){'empty'}elseif($global:jaegerCase -eq 'missing-service'){'empty'}else{'service.name: Str(otel-demo)';'ResourceSpans'; if($global:jaegerCase -eq 'export-error'){'Exporting failed'}}; return
+        if($global:jaegerCase -in @('logs-error','logs-cleanup-error')){$global:LASTEXITCODE=125}elseif($global:jaegerCase -eq 'backend-missing' -and $a[1] -eq ('a'*64)){'empty'}elseif($global:jaegerCase -eq 'missing-service'){'empty'}else{'service.name: Str(otel-demo)';'ResourceSpans'; 'Trace ID : 11111111111111111111111111111111'; if($global:jaegerCase -eq 'export-error'){'Exporting failed'}}; return
     }
     if($a[0] -eq 'rm') {if($global:jaegerCase -in @('cleanup-error','logs-cleanup-error')){throw 'mock cleanup failure'};return}
     if($a[0] -eq 'network' -and $a[1] -eq 'rm'){return}
@@ -34,7 +34,7 @@ $configArgs = if($Datadog){@{EdgeConfigPath=$config;BackendConfigPath=$config}}e
 try {
     $cases = @('present','query-error','network-error','network-inspect-error','second-start','invalid-id','logs-error','cleanup-error','logs-cleanup-error','missing-service','success')
     if($Datadog){$cases += @('backend-missing','export-error')}
-    if(-not $Datadog -and -not $Tempo){$cases += 'missing-trace'}
+    if(-not $Datadog){$cases += 'missing-trace'}
     foreach($case in $cases) {
         $global:jaegerCase=$case; $global:jaegerCalls=[Collections.Generic.List[string]]::new(); $global:jaegerRuns=0
         $failure=$null

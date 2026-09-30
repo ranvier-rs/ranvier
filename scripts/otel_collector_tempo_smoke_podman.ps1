@@ -116,6 +116,15 @@ try {
     $ownedIds.Add((Get-OwnedId $created $LASTEXITCODE))
 
     Start-Sleep -Seconds $StartupWaitSeconds
+    $images = @()
+    foreach ($id in $ownedIds) {
+        $image = @(podman container inspect $id --format '{{.Image}}')
+        $images += Get-OwnedId $image $LASTEXITCODE
+    }
+    [ordered]@{ network_id=$ownedNetworkId; container_ids=@($ownedIds); image_ids=$images;
+        collector_config_sha256=(Get-FileHash -LiteralPath $collectorConfig).Hash;
+        tempo_config_sha256=(Get-FileHash -LiteralPath $tempoConfig).Hash } |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $evidenceDir 'backend-runtime-identity.json') -Encoding utf8
 
     Push-Location $ranvierRoot
     try {
