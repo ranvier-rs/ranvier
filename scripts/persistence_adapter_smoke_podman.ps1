@@ -1,13 +1,14 @@
 param(
     [string]$PostgresContainer = "",
     [string]$RedisContainer = "",
-    [int]$PostgresPort = 54329,
-    [int]$RedisPort = 6389,
+    [ValidateRange(1, 65535)][int]$PostgresPort = 54329,
+    [ValidateRange(1, 65535)][int]$RedisPort = 6389,
     [ValidateRange(0, 60)][int]$StartupWaitSeconds = 6,
     [string]$EvidenceDir = ""
 )
 
 $ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $false
 
 function Assert-ContainerAbsent {
     param([string]$Name)
@@ -74,6 +75,9 @@ if ([string]::IsNullOrWhiteSpace($EvidenceDir)) {
 $evidenceDir = [System.IO.Path]::GetFullPath($EvidenceDir)
 $postgresOwnedId = $null
 $redisOwnedId = $null
+$primaryFailure = $null
+$originalPostgresUrl = [Environment]::GetEnvironmentVariable("RANVIER_PERSISTENCE_POSTGRES_URL")
+$originalRedisUrl = [Environment]::GetEnvironmentVariable("RANVIER_PERSISTENCE_REDIS_URL")
 New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
 
 $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -85,7 +89,7 @@ try {
     Assert-ContainerAbsent -Name $PostgresContainer
     Assert-ContainerAbsent -Name $RedisContainer
 
-    $created = @(podman run -d --name $PostgresContainer `
+    $created = @(podman run -d --rm --name $PostgresContainer `
         -e POSTGRES_USER=ranvier `
         -e POSTGRES_PASSWORD=ranvier `
         -e POSTGRES_DB=ranvier `
@@ -93,14 +97,14 @@ try {
         postgres:16-alpine)
     $postgresOwnedId = Read-CreatedContainerId -Output $created -ExitCode $LASTEXITCODE
 
-    $created = @(podman run -d --name $RedisContainer `
+    $created = @(podman run -d --rm --name $RedisContainer `
         -p "127.0.0.1:${RedisPort}:6379" `
         redis:7-alpine)
     $redisOwnedId = Read-CreatedContainerId -Output $created -ExitCode $LASTEXITCODE
 
     Start-Sleep -Seconds $StartupWaitSeconds
-    Wait-PostgresReady -ContainerName $PostgresContainer
-    Wait-RedisReady -ContainerName $RedisContainer
+    Wait-PostgresReady -ContainerName $postgresOwnedId
+    Wait-RedisReady -ContainerName $redisOwnedId
 
     $env:RANVIER_PERSISTENCE_POSTGRES_URL = "postgres://ranvier:ranvier@127.0.0.1:${PostgresPort}/ranvier"
     $env:RANVIER_PERSISTENCE_REDIS_URL = "redis://127.0.0.1:${RedisPort}"
@@ -115,8 +119,10 @@ try {
         Pop-Location
     }
 
-    podman logs $PostgresContainer *> $postgresLog
-    podman logs $RedisContainer *> $redisLog
+    podman logs $postgresOwnedId *> $postgresLog
+    if ($LASTEXITCODE -ne 0) { throw "PostgreSQL smoke log capture failed." }
+    podman logs $redisOwnedId *> $redisLog
+    if ($LASTEXITCODE -ne 0) { throw "Redis smoke log capture failed." }
 
     $postgresTestOk = Select-String -Path $testLog -Pattern "postgres_store_roundtrip_when_configured ... ok" -SimpleMatch
     $redisTestOk = Select-String -Path $testLog -Pattern "redis_store_roundtrip_when_configured ... ok" -SimpleMatch
@@ -144,15 +150,28 @@ try {
         throw "Missing Redis idempotency TTL test success marker in smoke log."
     }
 
-    Write-Host "Persistence adapter smoke passed."
-    Write-Host "TEST_LOG=$testLog"
-    Write-Host "POSTGRES_LOG=$postgresLog"
-    Write-Host "REDIS_LOG=$redisLog"
+ } catch {
+    $primaryFailure = $_
+    throw
 } finally {
+    [Environment]::SetEnvironmentVariable("RANVIER_PERSISTENCE_POSTGRES_URL", $originalPostgresUrl)
+    [Environment]::SetEnvironmentVariable("RANVIER_PERSISTENCE_REDIS_URL", $originalRedisUrl)
+    $cleanupFailures = @()
     foreach ($ownedId in @($postgresOwnedId, $redisOwnedId)) {
         if ($ownedId) {
-            podman rm -f $ownedId | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "Owned smoke container cleanup failed: $ownedId" }
+            try {
+                podman rm -f $ownedId | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "Owned smoke container cleanup failed: $ownedId" }
+            } catch { $cleanupFailures += $_.Exception.Message }
         }
     }
+    if ($cleanupFailures.Count) {
+        if ($primaryFailure) { Write-Warning ($cleanupFailures -join "; ") }
+        else { throw ($cleanupFailures -join "; ") }
+    }
 }
+
+Write-Host "Persistence adapter smoke passed."
+Write-Host "TEST_LOG=$testLog"
+Write-Host "POSTGRES_LOG=$postgresLog"
+Write-Host "REDIS_LOG=$redisLog"
