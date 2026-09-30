@@ -4,6 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
+/// Initial response budget aligned with the workspace HTTP body limit.
+pub const MAX_RELAY_RESPONSE_BYTES: usize = 1024 * 1024;
+
 /// Configuration for the Inspector relay proxy.
 #[derive(Clone)]
 pub struct RelayConfig {
@@ -210,7 +213,7 @@ pub async fn execute_relay(
     let method = req
         .method
         .parse::<reqwest::Method>()
-        .map_err(|e| RelayError::internal(format!("Invalid method: {e}")))?;
+        .map_err(|_| RelayError::internal("Invalid relay method"))?;
 
     let url = format!(
         "{}{}",
@@ -242,17 +245,16 @@ pub async fn execute_relay(
             .json(body);
     }
 
-    let response = builder.send().await.map_err(|e| {
+    let mut response = builder.send().await.map_err(|e| {
         if e.is_timeout() {
             RelayError::timeout(relay.config.timeout_ms)
         } else if e.is_connect() {
-            RelayError::connection_refused(&url)
+            RelayError::connection_refused("configured relay target")
         } else {
-            RelayError::internal(format!("Request failed: {e}"))
+            RelayError::internal("Relay request failed")
         }
     })?;
 
-    let duration_ms = start.elapsed().as_millis() as u64;
     let status = response.status().as_u16();
 
     let mut resp_headers = std::collections::HashMap::new();
@@ -269,7 +271,29 @@ pub async fn execute_relay(
         }
     }
 
-    let body = response.json::<Value>().await.unwrap_or(Value::Null);
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_RELAY_RESPONSE_BYTES as u64)
+    {
+        return Err(response_too_large());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        if error.is_timeout() {
+            RelayError::timeout(relay.config.timeout_ms)
+        } else {
+            RelayError::internal("Relay response read failed")
+        }
+    })? {
+        append_response_chunk(&mut bytes, &chunk)?;
+    }
+    let body = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes)
+            .map_err(|_| RelayError::internal("Relay response is not valid JSON"))?
+    };
+    let duration_ms = start.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
     Ok(RelayResponse {
         status,
@@ -278,6 +302,21 @@ pub async fn execute_relay(
         duration_ms,
         trace_id,
     })
+}
+
+fn response_too_large() -> RelayError {
+    RelayError {
+        error: "response_too_large".into(),
+        message: "Relay response exceeds body budget".into(),
+        details: None,
+    }
+}
+fn append_response_chunk(bytes: &mut Vec<u8>, chunk: &[u8]) -> Result<(), RelayError> {
+    if chunk.len() > MAX_RELAY_RESPONSE_BYTES.saturating_sub(bytes.len()) {
+        return Err(response_too_large());
+    }
+    bytes.extend_from_slice(chunk);
+    Ok(())
 }
 
 #[cfg(test)]
