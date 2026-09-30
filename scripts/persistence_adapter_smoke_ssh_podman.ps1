@@ -46,14 +46,27 @@ if ($hostKey -notmatch '^ssh-ed25519 [A-Za-z0-9+/]+={0,3}(?: [^\r\n]*)?$') { thr
 $knownHosts = Join-Path $EvidenceDir 'ssh-known-hosts'
 "[127.0.0.1]:$($uri.Port) $hostKey" | Set-Content -Encoding ascii $knownHosts
 $ssh = (Get-Command ssh -ErrorAction Stop).Source
-$sshArguments = @(
-    '-N', '-T', '-o', 'BatchMode=yes', '-o', 'ExitOnForwardFailure=yes',
-    '-o', 'StrictHostKeyChecking=yes', '-o', ('UserKnownHostsFile="{0}"' -f $knownHosts),
-    '-o', 'ConnectTimeout=5', '-i', ('"{0}"' -f $identity), '-p', "$($uri.Port)",
-    '-L', "127.0.0.1:${PostgresPort}:127.0.0.1:${PostgresPort}",
-    '-L', "127.0.0.1:${RedisPort}:127.0.0.1:${RedisPort}",
-    "$($machine.SSHConfig.RemoteUsername)@127.0.0.1"
-)
+# A config file preserves quoted paths through Windows process argument parsing.
+$configPath = Join-Path $EvidenceDir 'ssh-config'
+$identityConfig = $identity.Replace('\', '/')
+$knownHostsConfig = $knownHosts.Replace('\', '/')
+if ($identityConfig -match '["\r\n]' -or $knownHostsConfig -match '["\r\n]') { throw 'Invalid SSH configuration path.' }
+$configText = @"
+Host ranvier-smoke
+    HostName 127.0.0.1
+    User $($machine.SSHConfig.RemoteUsername)
+    Port $($uri.Port)
+    IdentityFile "$identityConfig"
+    UserKnownHostsFile "$knownHostsConfig"
+    BatchMode yes
+    ExitOnForwardFailure yes
+    StrictHostKeyChecking yes
+    ConnectTimeout 5
+    LocalForward 127.0.0.1:$PostgresPort 127.0.0.1:$PostgresPort
+    LocalForward 127.0.0.1:$RedisPort 127.0.0.1:$RedisPort
+"@
+[IO.File]::WriteAllText($configPath, $configText, [Text.UTF8Encoding]::new($false))
+$sshArguments = @('-N', '-T', '-F', ('"{0}"' -f $configPath), 'ranvier-smoke')
 $tunnel = $null
 $primaryFailure = $null
 try {
