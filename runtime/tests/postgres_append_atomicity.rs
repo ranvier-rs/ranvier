@@ -115,6 +115,12 @@ async fn postgres_killed_waiting_process_preserves_seed_and_allows_fresh_writer(
     let killed_label = format!("killed_client_{}", uuid::Uuid::new_v4().simple());
     let mut child = FixtureProcess::start(&prefix, &killed_label, 1);
     let waited = wait_for_row_lock(&pool, &killed_label, "transactionid", &state_table).await;
+    let backend_pid: i32 =
+        sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE application_name = $1")
+            .bind(&killed_label)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     let child_pid = child.0.id();
     let killed = child.0.kill();
     let exit = child.finish().await;
@@ -124,10 +130,20 @@ async fn postgres_killed_waiting_process_preserves_seed_and_allows_fresh_writer(
     let disappeared = wait_for_backend_exit(&pool, &killed_label).await;
     waited.unwrap();
     killed.unwrap();
+    let exit = exit.unwrap();
     assert!(
-        !exit.unwrap().success(),
+        !exit.success(),
         "killed child must not report successful append"
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(
+            exit.signal(),
+            Some(9),
+            "must observe actual SIGKILL, not worker assertion failure"
+        );
+    }
     released.unwrap();
     disappeared.unwrap();
     assert_eq!(store.load("processes").await.unwrap(), Some(seed.clone()));
@@ -142,7 +158,7 @@ async fn postgres_killed_waiting_process_preserves_seed_and_allows_fresh_writer(
     expected.events.push(event("processes", 1, "concurrent"));
     assert_eq!(store.load("processes").await.unwrap(), Some(expected));
     pool.close().await;
-    println!("POSTGRES_KILLED_PID child={child_pid}");
+    println!("POSTGRES_KILLED_PID child={child_pid} backend={backend_pid} status={exit}");
     println!(
         "POSTGRES_KILL_PASS observed-row-wait killed-reaped backend-gone seed-intact fresh-process-append"
     );
