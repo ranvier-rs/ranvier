@@ -959,12 +959,37 @@ impl RedisPersistenceStore {
         format!("{}:{}", self.key_prefix, trace_id)
     }
 
-    async fn write_trace(&self, trace: &PersistedTrace) -> Result<()> {
+    async fn read_trace(&self, trace_id: &str) -> Result<(Option<String>, Option<PersistedTrace>)> {
         use redis::AsyncCommands;
+        let mut conn = self.manager.clone();
+        let payload: Option<String> = conn.get(self.key(trace_id)).await?;
+        let trace = payload
+            .as_deref()
+            .map(serde_json::from_str::<PersistedTrace>)
+            .transpose()?;
+        Ok((payload, trace))
+    }
+
+    async fn write_trace(&self, trace: &PersistedTrace, expected: Option<&str>) -> Result<()> {
         let key = self.key(&trace.trace_id);
         let payload = serde_json::to_string(trace)?;
         let mut conn = self.manager.clone();
-        conn.set::<_, _, ()>(key, payload).await?;
+        // Compare opaque JSON bytes: Lua must not round u64 payloads via cjson.
+        let updated: i64 = redis::cmd("EVAL")
+            .arg("local current = redis.call('GET', KEYS[1]); if ARGV[1] == '1' then if current ~= ARGV[2] then return 0 end else if current then return 0 end end; redis.call('SET', KEYS[1], ARGV[3]); return 1")
+            .arg(1)
+            .arg(key)
+            .arg(if expected.is_some() { "1" } else { "0" })
+            .arg(expected.unwrap_or_default())
+            .arg(payload)
+            .query_async(&mut conn)
+            .await?;
+        if updated != 1 {
+            return Err(anyhow!(
+                "concurrent persistence update for trace_id {}",
+                trace.trace_id
+            ));
+        }
         Ok(())
     }
 }
@@ -973,20 +998,16 @@ impl RedisPersistenceStore {
 #[async_trait]
 impl PersistenceStore for RedisPersistenceStore {
     async fn append(&self, envelope: PersistenceEnvelope) -> Result<()> {
-        let mut trace = self
-            .load(&envelope.trace_id)
-            .await?
-            .unwrap_or_else(|| PersistedTrace {
-                trace_id: envelope.trace_id.clone(),
-                circuit: envelope.circuit.clone(),
-                schematic_version: envelope.schematic_version.clone(),
-                events: Vec::new(),
-                interventions: Vec::new(),
-                resumed_from_step: None,
-                completion: None,
-            });
-
-        trace.schematic_version = envelope.schematic_version.clone();
+        let (previous, loaded) = self.read_trace(&envelope.trace_id).await?;
+        let mut trace = loaded.unwrap_or_else(|| PersistedTrace {
+            trace_id: envelope.trace_id.clone(),
+            circuit: envelope.circuit.clone(),
+            schematic_version: envelope.schematic_version.clone(),
+            events: Vec::new(),
+            interventions: Vec::new(),
+            resumed_from_step: None,
+            completion: None,
+        });
 
         if trace.circuit != envelope.circuit {
             return Err(anyhow!(
@@ -1003,28 +1024,20 @@ impl PersistenceStore for RedisPersistenceStore {
             ));
         }
 
+        trace.schematic_version = envelope.schematic_version.clone();
         trace.events.push(envelope);
         trace.events.sort_by_key(|event| event.step);
-        self.write_trace(&trace).await?;
+        self.write_trace(&trace, previous.as_deref()).await?;
         Ok(())
     }
 
     async fn load(&self, trace_id: &str) -> Result<Option<PersistedTrace>> {
-        use redis::AsyncCommands;
-        let key = self.key(trace_id);
-        let mut conn = self.manager.clone();
-        let payload: Option<String> = conn.get(key).await?;
-        let trace = payload
-            .map(|raw| serde_json::from_str::<PersistedTrace>(&raw))
-            .transpose()?;
-        Ok(trace)
+        Ok(self.read_trace(trace_id).await?.1)
     }
 
     async fn resume(&self, trace_id: &str, resume_from_step: u64) -> Result<ResumeCursor> {
-        let mut trace = self
-            .load(trace_id)
-            .await?
-            .ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
+        let (previous, loaded) = self.read_trace(trace_id).await?;
+        let mut trace = loaded.ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
         if trace.completion.is_some() {
             return Err(anyhow!(
                 "trace_id {} is already completed and cannot be resumed",
@@ -1032,7 +1045,7 @@ impl PersistenceStore for RedisPersistenceStore {
             ));
         }
         trace.resumed_from_step = Some(resume_from_step);
-        self.write_trace(&trace).await?;
+        self.write_trace(&trace, previous.as_deref()).await?;
         Ok(ResumeCursor {
             trace_id: trace_id.to_string(),
             next_step: resume_from_step.saturating_add(1),
@@ -1040,22 +1053,18 @@ impl PersistenceStore for RedisPersistenceStore {
     }
 
     async fn complete(&self, trace_id: &str, completion: CompletionState) -> Result<()> {
-        let mut trace = self
-            .load(trace_id)
-            .await?
-            .ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
+        let (previous, loaded) = self.read_trace(trace_id).await?;
+        let mut trace = loaded.ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
         trace.completion = Some(completion);
-        self.write_trace(&trace).await?;
+        self.write_trace(&trace, previous.as_deref()).await?;
         Ok(())
     }
 
     async fn save_intervention(&self, trace_id: &str, intervention: Intervention) -> Result<()> {
-        let mut trace = self
-            .load(trace_id)
-            .await?
-            .ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
+        let (previous, loaded) = self.read_trace(trace_id).await?;
+        let mut trace = loaded.ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
         trace.interventions.push(intervention);
-        self.write_trace(&trace).await?;
+        self.write_trace(&trace, previous.as_deref()).await?;
         Ok(())
     }
 }
@@ -1285,6 +1294,54 @@ mod tests {
             .unwrap();
         sqlx::query(&drop_events).execute(&pool).await.unwrap();
         sqlx::query(&drop_state).execute(&pool).await.unwrap();
+    }
+
+    #[cfg(feature = "persistence-redis")]
+    #[tokio::test]
+    #[ignore = "requires explicitly isolated Redis fixture URL"]
+    async fn redis_stale_write_must_not_erase_acknowledged_event() {
+        let url =
+            std::env::var("RANVIER_ATOMICITY_REDIS_URL").expect("explicit isolated Redis required");
+        let store = RedisPersistenceStore::connect(&url).await.unwrap();
+        let trace_id = format!("stale-{}", Uuid::new_v4().simple());
+        let mut seed = envelope(0, "Next");
+        seed.trace_id = trace_id.clone();
+        store.append(seed.clone()).await.unwrap();
+        let (previous, before) = store.read_trace(&trace_id).await.unwrap();
+        let before = before.unwrap();
+        let (other_previous, other_before) = store.read_trace(&trace_id).await.unwrap();
+        assert_eq!(previous, other_previous);
+        assert_eq!(Some(before.clone()), other_before);
+        let mut first = before.clone();
+        let mut second = before.clone();
+        let mut event_one = seed.clone();
+        event_one.step = 1;
+        let mut event_two = seed;
+        event_two.step = 2;
+        first.events.push(event_one.clone());
+        second.events.push(event_two.clone());
+        store
+            .write_trace(&first, previous.as_deref())
+            .await
+            .unwrap();
+        let second_result = store.write_trace(&second, other_previous.as_deref()).await;
+        let loaded = store.load(&trace_id).await.unwrap().unwrap();
+        assert!(
+            loaded.events.contains(&event_one),
+            "successful first write must remain acknowledged"
+        );
+        if second_result.is_ok() {
+            assert!(
+                loaded.events.contains(&event_two),
+                "successful second write must remain acknowledged"
+            );
+        } else {
+            assert_eq!(
+                loaded, first,
+                "rejected stale write must preserve entire winning snapshot"
+            );
+        }
+        println!("REDIS_STALE_WRITE_PASS acknowledged-write-preserved stale-write-rejected");
     }
 
     #[cfg(feature = "persistence-redis")]
