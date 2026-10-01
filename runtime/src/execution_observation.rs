@@ -414,6 +414,12 @@ impl Session {
             }
         }
         .with_cleanup(cleanup);
+        self.restore(bus);
+        report
+    }
+
+    fn restore(self, bus: &mut Bus) {
+        bus.clear_access_policy();
         if let Some(original) = self.original {
             bus.insert(original);
         }
@@ -437,6 +443,42 @@ impl Session {
         } else {
             let _ = bus.remove::<ActiveObservation>();
         }
-        report
+    }
+}
+
+/// Owns the Bus borrow until the executor future and its child borrows are dropped.
+pub(crate) struct InvocationOwner<'a> {
+    bus: &'a mut Bus,
+    session: Option<Session>,
+    token: Option<ranvier_core::cancellation::CancellationToken>,
+}
+
+impl<'a> InvocationOwner<'a> {
+    pub(crate) fn begin(bus: &'a mut Bus) -> Self {
+        let token = bus.cancellation_token().cloned();
+        let session = Session::begin(bus);
+        Self {
+            bus,
+            session: Some(session),
+            token,
+        }
+    }
+    pub(crate) fn bus(&mut self) -> &mut Bus {
+        self.bus
+    }
+    pub(crate) fn finish<T>(mut self, result: T) -> ExecutionReport<T> {
+        match self.session.take() {
+            Some(session) => session.finish(self.bus, result),
+            None => unreachable!("invocation session is consumed only by finish"),
+        }
+    }
+}
+
+impl Drop for InvocationOwner<'_> {
+    fn drop(&mut self) {
+        if let Some(session) = self.session.take() {
+            session.restore(self.bus);
+        }
+        self.bus.replace_cancellation_token(self.token.take());
     }
 }

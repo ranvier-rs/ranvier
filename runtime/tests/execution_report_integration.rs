@@ -76,7 +76,7 @@ impl Transition<u32, u32> for PendingInvocation {
 }
 
 #[tokio::test]
-async fn external_future_drop_leaves_observed_handle_and_token_installed() {
+async fn external_future_drop_restores_handle_and_token() {
     use futures_util::FutureExt;
     let backing = InMemoryPersistenceStore::new();
     let mut bus = Bus::new();
@@ -92,12 +92,12 @@ async fn external_future_drop_leaves_observed_handle_and_token_installed() {
             .now_or_never()
             .is_none()
     );
-    assert!(!Arc::ptr_eq(
+    assert!(Arc::ptr_eq(
         &original,
         &bus.read::<PersistenceHandle>().unwrap().store()
     ));
     child.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
-    assert!(bus.cancellation_token().unwrap().is_cancelled());
+    assert!(!bus.cancellation_token().unwrap().is_cancelled());
     assert!(!parent.is_cancelled());
 }
 

@@ -42,8 +42,9 @@ where
         bus: &mut Bus,
         token: CancellationToken,
     ) -> crate::ExecutionReport<ExecutionTerminal<Out, E>> {
-        let session = crate::execution_observation::Session::begin(bus);
-        let previous_token = bus.replace_cancellation_token(Some(token.clone()));
+        let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
+        let bus = owner.bus();
+        bus.set_cancellation_token(token.clone());
         // Session owns InvocationTrace for both execution and cancellation
         // cleanup. Do not promote its generated identity to caller-owned
         // PersistenceTraceId: that would leak into later uses of this Bus.
@@ -80,8 +81,7 @@ where
             }
             Ok(outcome) => ExecutionTerminal::Outcome(outcome),
         };
-        bus.replace_cancellation_token(previous_token);
-        session.finish(bus, terminal)
+        owner.finish(terminal)
     }
 
     /// Execute the Axon with the given input and resources.
@@ -91,9 +91,9 @@ where
         resources: &Res,
         bus: &mut Bus,
     ) -> crate::ExecutionReport<Outcome<Out, E>> {
-        let session = crate::execution_observation::Session::begin(bus);
-        let outcome = self.execute_domain(input, resources, bus).await;
-        session.finish(bus, outcome)
+        let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
+        let outcome = self.execute_domain(input, resources, owner.bus()).await;
+        owner.finish(outcome)
     }
 
     async fn execute_domain(&self, input: In, resources: &Res, bus: &mut Bus) -> Outcome<Out, E> {
