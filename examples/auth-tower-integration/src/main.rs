@@ -39,9 +39,13 @@ mod adapter;
 mod auth;
 mod tower_auth;
 
-use ranvier_core::{Bus, Outcome};
+#[cfg(test)]
+use ranvier_core::Bus;
+use ranvier_core::Outcome;
 use ranvier_macros::transition;
-use ranvier_runtime::{Axon, ExecutionReport};
+use ranvier_runtime::Axon;
+#[cfg(test)]
+use ranvier_runtime::ExecutionReport;
 use serde::{Deserialize, Serialize};
 use std::env;
 use tower::{Layer, Service};

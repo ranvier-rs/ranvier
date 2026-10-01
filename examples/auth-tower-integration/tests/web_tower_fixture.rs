@@ -23,6 +23,9 @@ fn reply(status: StatusCode, body: String) -> Response<String> {
     *response.status_mut() = status;
     response.headers_mut().insert(http::header::CACHE_CONTROL, http::HeaderValue::from_static("no-store"));
     response.headers_mut().insert(http::header::CONTENT_TYPE, http::HeaderValue::from_static("text/plain; charset=utf-8"));
+    if status == StatusCode::UNAUTHORIZED {
+        response.headers_mut().insert(http::header::WWW_AUTHENTICATE, http::HeaderValue::from_static("Bearer"));
+    }
     response
 }
 
@@ -40,21 +43,29 @@ fn build_bearer_app(configured_bearer: &str) -> Result<
         return Err("Invalid bearer configuration");
     }
     let axon = Axon::<String, String, String>::new("tower-business").then(business_logic);
+    let credential = configured_bearer.to_owned();
     Ok(ServiceBuilder::new()
-        .layer(ValidateRequestHeaderLayer::bearer(configured_bearer))
+        .layer(ValidateRequestHeaderLayer::custom(move |request: &mut Request<String>| {
+            let mut headers = request.headers().get_all(http::header::AUTHORIZATION).iter();
+            let accepted = headers.next().and_then(|header| header.to_str().ok())
+                .and_then(|header| header.split_once(' '))
+                .is_some_and(|(scheme, token)| scheme.eq_ignore_ascii_case("Bearer") && token == credential);
+            if !accepted || headers.next().is_some() {
+                Err(reply(StatusCode::UNAUTHORIZED, "Unauthorized".into()))
+            } else {
+                Ok(())
+            }
+        }))
         .service(service_fn(move |request: Request<String>| {
             let axon = axon.clone();
             async move {
-                if request.headers().get_all(http::header::AUTHORIZATION).iter().count() != 1 {
-                    return Ok::<_, Infallible>(reply(StatusCode::UNAUTHORIZED, "Unauthorized".into()));
-                }
                 let mut bus = Bus::new();
                 let report = axon.execute(request.into_body(), &(), &mut bus).await;
                 if report.cleanup().is_some_and(|cleanup| !cleanup.is_complete()) {
                     return Ok(reply(StatusCode::SERVICE_UNAVAILABLE, "Reconciliation required".into()));
                 }
                 // This local example accepts only unpersisted execution.
-                Ok(match report {
+                Ok::<_, Infallible>(match report {
                     ExecutionReport::Unpersisted { result: Outcome::Next(body), .. } => reply(StatusCode::OK, body),
                     ExecutionReport::Unpersisted { result: Outcome::Fault(_), .. } => reply(StatusCode::BAD_REQUEST, "Request rejected".into()),
                     ExecutionReport::Unpersisted { .. } => reply(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".into()),
@@ -71,9 +82,10 @@ async fn actual_public_tower_service_handles_success_fault_and_denial() {
     }
     let mut app = build_bearer_app("fixture-secret").unwrap();
     for (credential, body, expected, expected_body) in [
-        (None, "private-input", StatusCode::UNAUTHORIZED, ""),
-        (Some("Bearer wrong"), "private-input", StatusCode::UNAUTHORIZED, ""),
+        (None, "private-input", StatusCode::UNAUTHORIZED, "Unauthorized"),
+        (Some("Bearer wrong"), "private-input", StatusCode::UNAUTHORIZED, "Unauthorized"),
         (Some("Bearer fixture-secret"), "owned-input", StatusCode::OK, "owned-input"),
+        (Some("bearer fixture-secret"), "second-input", StatusCode::OK, "second-input"),
         (Some("Bearer fixture-secret"), " ", StatusCode::BAD_REQUEST, "Request rejected"),
     ] {
         let mut request = Request::new(body.to_owned());
@@ -82,6 +94,8 @@ async fn actual_public_tower_service_handles_success_fault_and_denial() {
         let response = app.call(request).await.unwrap();
         assert_eq!(response.status(), expected);
         assert_eq!(response.body(), expected_body);
+        assert_eq!(response.headers()[http::header::CACHE_CONTROL], "no-store");
+        if expected == StatusCode::UNAUTHORIZED { assert_eq!(response.headers()[http::header::WWW_AUTHENTICATE], "Bearer"); }
     }
     let mut duplicate = Request::new("private-input".to_owned());
     for _ in 0..2 { duplicate.headers_mut().append(http::header::AUTHORIZATION, http::HeaderValue::from_static("Bearer fixture-secret")); }
