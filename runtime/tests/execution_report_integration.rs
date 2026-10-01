@@ -64,6 +64,43 @@ struct IdentityStore {
     keys: std::sync::Mutex<Vec<String>>,
 }
 
+#[derive(Clone)]
+struct PendingInvocation;
+#[async_trait::async_trait]
+impl Transition<u32, u32> for PendingInvocation {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: u32, _: &(), _: &mut Bus) -> Outcome<u32, String> {
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn external_future_drop_leaves_observed_handle_and_token_installed() {
+    use futures_util::FutureExt;
+    let backing = InMemoryPersistenceStore::new();
+    let mut bus = Bus::new();
+    bus.insert(PersistenceHandle::from_store(backing));
+    let original = bus.read::<PersistenceHandle>().unwrap().store();
+    let parent = ranvier_core::cancellation::CancellationToken::new();
+    bus.set_cancellation_token(parent.clone());
+    let child = ranvier_core::cancellation::CancellationToken::new();
+    let axon = Axon::<u32, u32, String>::new("external-drop").then(PendingInvocation);
+    // Poll once through the first suspended transition, then drop the owned future.
+    assert!(
+        axon.execute_cancellable(1, &(), &mut bus, child.clone())
+            .now_or_never()
+            .is_none()
+    );
+    assert!(!Arc::ptr_eq(
+        &original,
+        &bus.read::<PersistenceHandle>().unwrap().store()
+    ));
+    child.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
+    assert!(bus.cancellation_token().unwrap().is_cancelled());
+    assert!(!parent.is_cancelled());
+}
+
 #[async_trait::async_trait]
 impl PersistenceStore for IdentityStore {
     async fn append(&self, event: PersistenceEnvelope) -> anyhow::Result<()> {
