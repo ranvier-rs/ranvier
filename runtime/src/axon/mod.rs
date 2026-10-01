@@ -3366,6 +3366,83 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct NotifyRetryFault {
+        calls: Arc<std::sync::atomic::AtomicU32>,
+        ran: Arc<tokio::sync::Notify>,
+    }
+    #[async_trait]
+    impl Transition<i32, i32> for NotifyRetryFault {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, _: i32, _: &(), _: &mut Bus) -> Outcome<i32, String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.ran.notify_one();
+            Outcome::Fault("known_simulated_failure".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_cancel_during_backoff_does_not_invoke_or_send_dlq() {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let ran = Arc::new(tokio::sync::Notify::new());
+        let sink = MockDlqSink {
+            letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
+        let axon = Axon::<i32, i32, String>::start("cancel-retry-backoff")
+            .then_with_retry(
+                NotifyRetryFault {
+                    calls: calls.clone(),
+                    ran: ran.clone(),
+                },
+                crate::RetryPolicy::fixed(3, std::time::Duration::from_secs(60)),
+            )
+            .with_dlq_policy(DlqPolicy::RetryThenDlq {
+                max_attempts: 5,
+                backoff_ms: 0,
+            })
+            .with_dlq_sink(sink.clone());
+        let mut bus = Bus::new();
+        bus.insert(Timeline::new());
+        {
+            let mut execution = Box::pin(axon.execute(7, &(), &mut bus));
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                tokio::select! {
+                    _ = ran.notified() => {},
+                    _ = &mut execution => panic!("execution finished before scheduled backoff"),
+                }
+            })
+            .await
+            .unwrap();
+            // Drop the actual execution future while its retry timer is pending.
+            drop(execution);
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(sink.letters.lock().await.is_empty());
+        let timeline = bus.read::<Timeline>().unwrap();
+        assert_eq!(
+            timeline
+                .events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    TimelineEvent::NodeRetry {
+                        backoff_ms: 60_000,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert!(
+            !timeline
+                .events
+                .iter()
+                .any(|event| matches!(event, TimelineEvent::DlqExhausted { .. }))
+        );
+        assert!(bus.read::<super::PersistenceTraceId>().is_none());
+    }
+
     #[tokio::test]
     async fn retry_then_dlq_retries_and_succeeds_before_exhaustion() {
         // Fail 2 times, succeed on 3rd attempt. Policy allows 5 attempts.
