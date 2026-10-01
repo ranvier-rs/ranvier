@@ -12,15 +12,20 @@ struct AppliedAwaitingAck {
     backing: InMemoryPersistenceStore,
     calls: AtomicUsize,
     block_at: usize,
+    apply_blocked: bool,
     applied: Arc<tokio::sync::Notify>,
 }
 #[async_trait::async_trait]
 impl PersistenceStore for AppliedAwaitingAck {
     async fn append(&self, event: PersistenceEnvelope) -> anyhow::Result<()> {
-        self.backing.append(event).await?;
         if self.calls.fetch_add(1, Ordering::SeqCst) + 1 == self.block_at {
+            if self.apply_blocked {
+                self.backing.append(event).await?;
+            }
             self.applied.notify_one();
             std::future::pending::<()>().await;
+        } else {
+            self.backing.append(event).await?;
         }
         Ok(())
     }
@@ -80,6 +85,7 @@ async fn verify_cancelled_write(
         backing: backing.clone(),
         calls: AtomicUsize::new(0),
         block_at,
+        apply_blocked: true,
         applied: applied.clone(),
     }));
     let token = CancellationToken::new();
@@ -397,6 +403,12 @@ impl Transition<u32, ()> for RecordUndo {
 
 #[tokio::test]
 async fn compensated_result_ack_cancellation_retains_undo_and_uncertainty() {
+    for apply_blocked in [false, true] {
+        verify_compensated_result_ack_cancellation(apply_blocked).await;
+    }
+}
+
+async fn verify_compensated_result_ack_cancellation(apply_blocked: bool) {
     use ranvier_core::cancellation::{CancellationReason, CancellationToken};
     use ranvier_core::saga::SagaPolicy;
     let backing = InMemoryPersistenceStore::new();
@@ -408,6 +420,7 @@ async fn compensated_result_ack_cancellation_retains_undo_and_uncertainty() {
         backing: backing.clone(),
         calls: AtomicUsize::new(0),
         block_at: 2,
+        apply_blocked,
         applied: applied.clone(),
     });
     let mut bus = Bus::new();
@@ -451,11 +464,15 @@ async fn compensated_result_ack_cancellation_retains_undo_and_uncertainty() {
         .iter()
         .filter(|event| event.outcome_kind == "Next")
         .collect();
-    assert_eq!(result_events.len(), 1);
-    assert_eq!(
-        result_events[0].payload,
-        Some(Outcome::<u32, String>::Next(42).to_json_value())
-    );
+    assert_eq!(result_events.len(), usize::from(apply_blocked));
+    if apply_blocked {
+        assert_eq!(
+            result_events[0].payload,
+            Some(Outcome::<u32, String>::Next(42).to_json_value())
+        );
+    }
+    assert_eq!(trace.events.first().unwrap().outcome_kind, "Enter");
+    assert_eq!(trace.events.last().unwrap().outcome_kind, "Cancelled");
     assert_eq!(trace.completion, Some(CompletionState::Cancelled));
     assert!(Arc::ptr_eq(
         &original,
