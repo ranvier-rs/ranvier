@@ -190,7 +190,7 @@ impl Transition<UpdateEmailInput, UserSummary> for UpdateUserEmailTransition {
         let mut active: user::ActiveModel = model.into();
         active.email = Set(input.email);
 
-        let updated = local_demo_outcome(active
+        let updated = active
             .update(&resources.db)
             .await
             .map_err(|e| e.to_string());
@@ -232,7 +232,7 @@ impl Transition<DeleteUserInput, i32> for DeleteUserTransition {
         };
 
         let deleted_id = model.id;
-        let deleted = local_demo_outcome(model.delete(&resources.db).await.map_err(|e| e.to_string());
+        let deleted = model.delete(&resources.db).await.map_err(|e| e.to_string());
 
         match deleted {
             Ok(_) => Outcome::Next(deleted_id),
@@ -277,8 +277,7 @@ impl Transition<FetchAllInput, Vec<UserSummary>> for ListUsersTransition {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+async fn run_demo() -> Result<()> {
     println!("=== M132 SeaORM Reference Demo ===");
 
     // This finite CRUD fixture owns no persistent file and is safe to repeat.
@@ -286,7 +285,6 @@ async fn main() -> Result<()> {
     let db = Database::connect("sqlite::memory:").await?;
     Migrator::up(&db, None).await?;
     let resources = AppResources { db };
-    let mut bus = Bus::new();
 
     let create =
         Axon::<CreateUserInput, CreateUserInput, String, AppResources>::new("seaorm.create_user")
@@ -304,26 +302,30 @@ async fn main() -> Result<()> {
         Axon::<DeleteUserInput, DeleteUserInput, String, AppResources>::new("seaorm.delete_user")
             .then(DeleteUserTransition);
 
-    let alice = local_demo_outcome(create
-        .execute(
-            CreateUserInput {
-                username: "alice".to_string(),
-                email: "alice@demo.local".to_string(),
-            },
-            &resources,
-            &mut bus,
-        )
-        .await)?;
-    let bob = local_demo_outcome(create
-        .execute(
-            CreateUserInput {
-                username: "bob".to_string(),
-                email: "bob@demo.local".to_string(),
-            },
-            &resources,
-            &mut bus,
-        )
-        .await)?;
+    let alice = local_demo_outcome(
+        create
+            .execute(
+                CreateUserInput {
+                    username: "alice".to_string(),
+                    email: "alice@demo.local".to_string(),
+                },
+                &resources,
+                &mut Bus::new(),
+            )
+            .await,
+    )?;
+    let bob = local_demo_outcome(
+        create
+            .execute(
+                CreateUserInput {
+                    username: "bob".to_string(),
+                    email: "bob@demo.local".to_string(),
+                },
+                &resources,
+                &mut Bus::new(),
+            )
+            .await,
+    )?;
 
     let (alice_id, bob_id) = match (&alice, &bob) {
         (Outcome::Next(a), Outcome::Next(b)) => {
@@ -339,23 +341,27 @@ async fn main() -> Result<()> {
         }
     };
 
-    let before: Outcome<Vec<UserSummary>, String> =
-        list.execute(FetchAllInput, &resources, &mut bus).await)?;
+    let before: Outcome<Vec<UserSummary>, String> = local_demo_outcome(
+        list.execute(FetchAllInput, &resources, &mut Bus::new())
+            .await,
+    )?;
     match &before {
         Outcome::Next(users) if users.len() == 2 => println!("list(before): {} users", users.len()),
         _ => return Err(anyhow::anyhow!("initial list outcome mismatch")),
     }
 
-    let updated = update
-        .execute(
-            UpdateEmailInput {
-                id: alice_id,
-                email: "alice+updated@demo.local".to_string(),
-            },
-            &resources,
-            &mut bus,
-        )
-        .await)?;
+    let updated = local_demo_outcome(
+        update
+            .execute(
+                UpdateEmailInput {
+                    id: alice_id,
+                    email: "alice+updated@demo.local".to_string(),
+                },
+                &resources,
+                &mut Bus::new(),
+            )
+            .await,
+    )?;
     match &updated {
         Outcome::Next(user) if user.id == alice_id && user.email == "alice+updated@demo.local" => {
             println!("updated: {} -> {}", user.username, user.email)
@@ -363,16 +369,20 @@ async fn main() -> Result<()> {
         _ => return Err(anyhow::anyhow!("update outcome mismatch")),
     }
 
-    let deleted = delete
-        .execute(DeleteUserInput { id: bob_id }, &resources, &mut bus)
-        .await;
+    let deleted = local_demo_outcome(
+        delete
+            .execute(DeleteUserInput { id: bob_id }, &resources, &mut Bus::new())
+            .await,
+    )?;
     match &deleted {
         Outcome::Next(id) if *id == bob_id => println!("deleted id={}", id),
         _ => return Err(anyhow::anyhow!("delete outcome mismatch")),
     }
 
-    let after: Outcome<Vec<UserSummary>, String> =
-        local_demo_outcome(list.execute(FetchAllInput, &resources, &mut bus).await)?;
+    let after: Outcome<Vec<UserSummary>, String> = local_demo_outcome(
+        list.execute(FetchAllInput, &resources, &mut Bus::new())
+            .await,
+    )?;
     match after {
         Outcome::Next(users)
             if users.len() == 1
@@ -394,4 +404,17 @@ async fn main() -> Result<()> {
 
     println!("done");
     Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    run_demo().await
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn actual_sqlite_crud() {
+        run_demo().await.unwrap();
+    }
 }
