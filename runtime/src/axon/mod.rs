@@ -4338,6 +4338,143 @@ mod tests {
             }
         }
 
+        #[derive(Clone)]
+        struct ParentTokenVerifier;
+        #[async_trait]
+        impl IamVerifier for ParentTokenVerifier {
+            async fn verify(&self, token: &str) -> Result<IamIdentity, IamError> {
+                if token == "parent-fixture-token" {
+                    Ok(IamIdentity::new("verified-parent"))
+                } else {
+                    Err(IamError::InvalidToken("fixture rejection".into()))
+                }
+            }
+        }
+        #[derive(Clone)]
+        struct ChangeChildToken {
+            remove: bool,
+        }
+        #[async_trait]
+        impl Transition<i32, i32> for ChangeChildToken {
+            type Error = String;
+            type Resources = ();
+            async fn run(&self, input: i32, _: &(), bus: &mut Bus) -> Outcome<i32, String> {
+                if self.remove {
+                    bus.remove::<IamToken>();
+                } else {
+                    bus.insert(IamToken("child-fixture-token".into()));
+                }
+                Outcome::Next(input)
+            }
+        }
+        #[derive(Clone)]
+        struct NestedTokenParent {
+            present: bool,
+            remove: bool,
+            explicit_none: bool,
+        }
+        #[async_trait]
+        impl Transition<i32, i32> for NestedTokenParent {
+            type Error = String;
+            type Resources = ();
+            async fn run(&self, input: i32, _: &(), bus: &mut Bus) -> Outcome<i32, String> {
+                let before = bus.read::<IamToken>().map(|t| t.0.clone());
+                let mut child = Axon::<i32, i32, String>::start("child-token-change");
+                if self.explicit_none {
+                    child = child.with_iam(
+                        IamPolicy::None,
+                        MockVerifier {
+                            identity: IamIdentity::new("must-not-verify"),
+                            should_fail: true,
+                        },
+                    );
+                }
+                let report = child
+                    .then(ChangeChildToken {
+                        remove: self.remove,
+                    })
+                    .execute(input, &(), bus)
+                    .await;
+                assert!(matches!(
+                    report,
+                    crate::ExecutionReport::Unpersisted {
+                        result: Outcome::Next(_),
+                        ..
+                    }
+                ));
+                if bus.read::<IamToken>().map(|t| t.0.clone()) != before {
+                    return Outcome::Fault("parent_token_scope_lost".into());
+                }
+                let effects = Arc::new(std::sync::atomic::AtomicU32::new(0));
+                let report = Axon::<i32, i32, String>::start("following-parent-auth")
+                    .with_iam(IamPolicy::RequireIdentity, ParentTokenVerifier)
+                    .then(CountCombinedRetry {
+                        calls: effects.clone(),
+                        failures: 0,
+                    })
+                    .execute(input, &(), bus)
+                    .await;
+                if self.present {
+                    assert!(matches!(
+                        report,
+                        crate::ExecutionReport::Unpersisted {
+                            result: Outcome::Next(_),
+                            ..
+                        }
+                    ));
+                } else {
+                    assert!(
+                        matches!(report, crate::ExecutionReport::Unpersisted { result: Outcome::Emit(label, None), .. } if label == "iam.missing_token")
+                    );
+                }
+                assert_eq!(
+                    effects.load(std::sync::atomic::Ordering::SeqCst),
+                    u32::from(self.present)
+                );
+                Outcome::Next(input)
+            }
+        }
+        #[tokio::test]
+        async fn nested_token_changes_do_not_reauthorize_following_parent_work() {
+            for present in [false, true] {
+                for remove in [false, true] {
+                    for explicit_none in [false, true] {
+                        let mut bus = Bus::new();
+                        if present {
+                            bus.insert(IamToken("parent-fixture-token".into()));
+                        }
+                        let report = Axon::<i32, i32, String>::start("parent-token-scope")
+                            .then(NestedTokenParent {
+                                present,
+                                remove,
+                                explicit_none,
+                            })
+                            .execute(7, &(), &mut bus)
+                            .await;
+                        assert!(
+                            matches!(
+                                report,
+                                crate::ExecutionReport::Unpersisted {
+                                    result: Outcome::Next(7),
+                                    ..
+                                }
+                            ),
+                            "nested token ownership failed (present={present}, remove={remove}, explicit_none={explicit_none})"
+                        );
+                        assert_eq!(
+                            bus.read::<IamToken>().map(|t| t.0.as_str()),
+                            if present {
+                                Some("parent-fixture-token")
+                            } else {
+                                None
+                            }
+                        );
+                        assert!(bus.read::<IamIdentity>().is_none());
+                    }
+                }
+            }
+        }
+
         #[tokio::test]
         async fn iam_rejected_requests_clear_previous_identity_without_effect() {
             for (policy, fail, token, expected) in [
