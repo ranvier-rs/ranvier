@@ -25,6 +25,7 @@ async fn public_branch_pattern_handles_encoding_failure() {
     for (total, reject_encoding) in [(100, true), (20000, false), (20000, true)] {
         let mut bus = Bus::new();
         let outcome = route_order.run(Order { total, reject_encoding }, &(), &mut bus).await;
+        assert!(!format!("{outcome:?}").contains("private-branch-sentinel"));
         match outcome {
             Outcome::Next(order) => assert_eq!(order.total, 100),
             Outcome::Branch(target, payload) => { assert_eq!(total, 20000); assert!(!reject_encoding); assert_eq!(target, "high_value"); assert_eq!(payload, Some(serde_json::json!(20000))); }
@@ -32,4 +33,8 @@ async fn public_branch_pattern_handles_encoding_failure() {
             _ => panic!("unexpected branch outcome"),
         }
     }
+    let axon = Axon::<Order, Order, OrderError>::new("public-branch").then(route_order);
+    let report = axon.execute(Order { total: 20000, reject_encoding: true }, &(), &mut Bus::new()).await;
+    assert!(matches!(report, ExecutionReport::Unpersisted { result: Outcome::Fault(OrderError::EncodingFailed), .. }));
+    assert!(!format!("{report:?}").contains("private-branch-sentinel"));
 }
