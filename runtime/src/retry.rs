@@ -166,6 +166,25 @@ mod tests {
     }
 
     #[test]
+    fn exponential_extreme_duration_and_shrinking_multiplier_are_bounded() {
+        let extreme = RetryPolicy::exponential(3, Duration::MAX, 2.0, Duration::MAX);
+        assert_eq!(extreme.delay_for_attempt(0), Duration::MAX);
+        assert_eq!(extreme.delay_for_attempt(u32::MAX), Duration::MAX);
+        let shrinking = RetryPolicy::exponential(
+            3,
+            Duration::from_nanos(500),
+            0.5,
+            Duration::from_nanos(1_000),
+        );
+        assert_eq!(shrinking.delay_for_attempt(1), Duration::from_nanos(250));
+        assert_eq!(shrinking.delay_for_attempt(2), Duration::from_nanos(125));
+        assert_eq!(shrinking.delay_for_attempt(u32::MAX), Duration::ZERO);
+        let zero_cap = RetryPolicy::exponential(3, Duration::from_secs(1), 2.0, Duration::ZERO);
+        assert_eq!(zero_cap.delay_for_attempt(0), Duration::ZERO);
+        assert_eq!(zero_cap.delay_for_attempt(u32::MAX), Duration::ZERO);
+    }
+
+    #[test]
     fn default_exponential_starts_correctly() {
         let policy = RetryPolicy::exponential_default(3, 100);
         assert_eq!(policy.max_retries, 3);
