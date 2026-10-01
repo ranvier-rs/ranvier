@@ -292,27 +292,42 @@ async fn compensated_step_records_fault_before_automatic_compensation() {
 }
 
 #[derive(Clone)]
-struct FaultUndo;
+struct FaultUndo(Outcome<(), String>);
 #[async_trait]
 impl Transition<SagaState, ()> for FaultUndo {
     type Error = String;
     type Resources = ();
     async fn run(&self, _: SagaState, _: &(), _: &mut Bus) -> Outcome<(), String> {
-        Outcome::fault("Undo failed".to_string())
+        self.0.clone()
     }
 }
 
 #[tokio::test]
 async fn failed_automatic_compensation_does_not_claim_success() {
+    for result in [
+        Outcome::Fault("Undo failed".to_string()),
+        Outcome::Emit(
+            "undo.deferred".into(),
+            Some(serde_json::json!({"ticket": 7})),
+        ),
+        Outcome::Branch("undo.branch".into(), None),
+        Outcome::Jump(uuid::Uuid::nil(), None),
+    ] {
+        verify_incomplete_automatic_compensation(result).await;
+    }
+}
+
+async fn verify_incomplete_automatic_compensation(compensation_result: Outcome<(), String>) {
     use ranvier_runtime::persistence::*;
     use ranvier_runtime::{CompletionConfirmation, ExecutionReport};
     let store = Arc::new(InMemoryPersistenceStore::new());
     let axon = Axon::<SagaState, SagaState, String>::new("FailedAutomaticUndo")
         .with_saga_policy(SagaPolicy::Enabled)
-        .then_compensated(FailStep, FaultUndo);
+        .then_compensated(FailStep, FaultUndo(compensation_result.clone()));
     let mut bus = Bus::new();
     bus.insert(PersistenceHandle::from_arc(store.clone()));
     bus.insert(PersistenceTraceId::new("failed-automatic-undo"));
+    bus.insert(ranvier_core::timeline::Timeline::new());
     let report = axon
         .execute(
             SagaState {
@@ -340,8 +355,33 @@ async fn failed_automatic_compensation_does_not_claim_success() {
         .filter(|event| event.outcome_kind == "CompensationIncomplete")
         .collect();
     assert_eq!(incomplete.len(), 1);
+    let compensation_node = incomplete[0].node_id.as_ref().unwrap();
+    let timeline = bus.read::<ranvier_core::timeline::Timeline>().unwrap();
+    let exits: Vec<_> = timeline
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            ranvier_core::timeline::TimelineEvent::NodeExit {
+                node_id,
+                outcome_type,
+                ..
+            } if node_id == compensation_node => Some(outcome_type.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(exits.len(), 1);
+    assert_ne!(exits[0], "Compensated");
+    let expected_type = match &compensation_result {
+        Outcome::Fault(_) => "Fault".to_string(),
+        Outcome::Emit(name, _) => format!("Emit:{name}"),
+        Outcome::Branch(name, _) => format!("Branch:{name}"),
+        Outcome::Jump(id, _) => format!("Jump:{id}"),
+        Outcome::Next(_) => unreachable!("fixture only supplies incomplete control outcomes"),
+    };
+    assert_eq!(exits[0], expected_type);
+
     assert_eq!(
         incomplete[0].payload,
-        Some(Outcome::<(), String>::Fault("Undo failed".into()).to_json_value())
+        Some(compensation_result.to_json_value())
     );
 }
