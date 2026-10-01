@@ -16,6 +16,17 @@ use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+// Local integration fixtures must assert durability and cleanup independently.
+fn local_result<T>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, String>>,
+) -> Outcome<T, String> {
+    assert!(report.cleanup().is_none_or(|cleanup| cleanup.is_complete()));
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => result,
+        _ => panic!("Local integration fixture unexpectedly used persistence"),
+    }
+}
+
 // ── Test domain types ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,7 +128,7 @@ async fn test_audit_pipeline_integration() {
     };
 
     let result = axon.execute(input, &(), &mut bus).await;
-    assert!(matches!(result, Outcome::Next(_)));
+    assert!(matches!(local_result(result), Outcome::Next(_)));
 
     // Verify audit event was recorded
     let events = sink.get_events().await;
@@ -215,7 +226,7 @@ async fn test_access_log_guard_pipeline() {
     };
 
     let result = axon.execute(input, &(), &mut bus).await;
-    assert!(matches!(result, Outcome::Next(_)));
+    assert!(matches!(local_result(result), Outcome::Next(_)));
 
     // Verify AccessLogEntry was written and downstream transition saw it
     assert!(bus.read::<AccessLogEntry>().is_some());
@@ -244,7 +255,7 @@ async fn test_access_log_redaction_in_pipeline() {
     };
 
     let result = axon.execute(input, &(), &mut bus).await;
-    assert!(matches!(result, Outcome::Next(_)));
+    assert!(matches!(local_result(result), Outcome::Next(_)));
 
     let entry = bus.read::<AccessLogEntry>().unwrap();
     assert_eq!(entry.path, "[redacted]");
@@ -340,7 +351,7 @@ async fn test_full_operations_pipeline() {
     };
 
     let result = axon.execute(input, &(), &mut bus).await;
-    assert!(matches!(result, Outcome::Next(_)));
+    assert!(matches!(local_result(result), Outcome::Next(_)));
 
     // Verify access log was written
     let entry = bus.read::<AccessLogEntry>().unwrap();
@@ -382,7 +393,8 @@ async fn test_audit_query_across_executions() {
             email: format!("{user}@example.com"),
             action: action.to_string(),
         };
-        axon.execute(input, &(), &mut bus).await;
+        let report = axon.execute(input, &(), &mut bus).await;
+        assert!(matches!(local_result(report), Outcome::Next(_)));
     }
 
     // Verify all events recorded
