@@ -403,4 +403,40 @@ mod tests {
     async fn actual_sqlite_crud() {
         run_demo().await.unwrap();
     }
+    #[tokio::test]
+    async fn concurrent_delete_has_only_one_success() {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        Migrator::up(&db, None).await.unwrap();
+        let resources = AppResources { db };
+        let created = CreateUserTransition
+            .run(
+                CreateUserInput {
+                    username: "owned".into(),
+                    email: "owned@local".into(),
+                },
+                &resources,
+                &mut Bus::new(),
+            )
+            .await;
+        let id = match created {
+            Outcome::Next(user) => user.id,
+            _ => panic!("create failed"),
+        };
+        let mut a = Bus::new();
+        let mut b = Bus::new();
+        let (first, second) = tokio::join!(
+            DeleteUserTransition.run(DeleteUserInput { id }, &resources, &mut a),
+            DeleteUserTransition.run(DeleteUserInput { id }, &resources, &mut b)
+        );
+        assert_eq!(
+            [&first, &second]
+                .iter()
+                .filter(|outcome| matches!(outcome, Outcome::Next(_)))
+                .count(),
+            1
+        );
+        assert!(
+            matches!(UpdateUserEmailTransition.run(UpdateEmailInput { id, email: "missing@local".into() }, &resources, &mut Bus::new()).await, Outcome::Fault(error) if error == "User not found")
+        );
+    }
 }
