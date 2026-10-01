@@ -4028,46 +4028,120 @@ mod tests {
                 .finish();
             {
                 let _guard = tracing::subscriber::set_default(subscriber);
-                for (policy, fail, token, expected) in [
-                    (IamPolicy::RequireIdentity, false, None, "iam.missing_token"),
-                    (
-                        IamPolicy::RequireIdentity,
-                        true,
-                        Some("private-token-marker"),
-                        "iam.verification_failed",
-                    ),
-                    (
-                        IamPolicy::RequireRole("private-role-marker".into()),
-                        false,
-                        Some("private-token-marker"),
-                        "iam.policy_denied",
-                    ),
-                ] {
-                    let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
-                    let axon = Axon::<i32, i32, String>::start("iam-private-context")
-                        .with_iam(
-                            policy,
-                            MockVerifier {
-                                identity: IamIdentity::new("private-subject-marker")
-                                    .with_role("private-claim-marker"),
-                                should_fail: fail,
-                            },
-                        )
-                        .then(CountCombinedRetry {
-                            calls: calls.clone(),
-                            failures: 0,
-                        });
-                    let mut bus = Bus::new();
-                    bus.insert(IamIdentity::new("private-old-subject-marker"));
-                    if let Some(token) = token {
-                        bus.insert(IamToken(token.into()));
+                for cancellable in [false, true] {
+                    for (policy, fail, token, shared, inherited, expected) in [
+                        (
+                            IamPolicy::RequireIdentity,
+                            false,
+                            None,
+                            false,
+                            false,
+                            "iam.missing_token",
+                        ),
+                        (
+                            IamPolicy::RequireIdentity,
+                            true,
+                            Some("private-token-marker"),
+                            false,
+                            false,
+                            "iam.verification_failed",
+                        ),
+                        (
+                            IamPolicy::RequireRole("private-role-marker".into()),
+                            false,
+                            Some("private-token-marker"),
+                            false,
+                            false,
+                            "iam.policy_denied",
+                        ),
+                        (
+                            IamPolicy::RequireIdentity,
+                            false,
+                            Some("private-token-marker"),
+                            true,
+                            false,
+                            "iam.context_clear_failed",
+                        ),
+                        (
+                            IamPolicy::RequireIdentity,
+                            false,
+                            Some("private-token-marker"),
+                            true,
+                            true,
+                            "iam.context_clear_failed",
+                        ),
+                    ] {
+                        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+                        let axon = Axon::<i32, i32, String>::start("iam-private-context")
+                            .with_iam(
+                                policy,
+                                MockVerifier {
+                                    identity: IamIdentity::new("private-subject-marker")
+                                        .with_role("private-claim-marker"),
+                                    should_fail: fail,
+                                },
+                            )
+                            .then(CountCombinedRetry {
+                                calls: calls.clone(),
+                                failures: 0,
+                            });
+                        let mut parent = Bus::new();
+                        let old = IamIdentity::new("private-old-subject-marker");
+                        if shared {
+                            parent.insert_shared(old);
+                        } else {
+                            parent.insert(old);
+                        }
+                        let mut fork = if shared {
+                            Some(parent.fork_for_parallel())
+                        } else {
+                            None
+                        };
+                        let bus = if inherited {
+                            fork.as_mut().unwrap()
+                        } else {
+                            &mut parent
+                        };
+                        if let Some(token) = token {
+                            bus.insert(IamToken(token.into()));
+                        }
+                        if cancellable {
+                            let report = axon
+                                .execute_cancellable(
+                                    7,
+                                    &(),
+                                    bus,
+                                    ranvier_core::cancellation::CancellationToken::new(),
+                                )
+                                .await;
+                            assert!(matches!(report, crate::ExecutionReport::Unpersisted {
+                                result: crate::ExecutionTerminal::Outcome(Outcome::Emit(label, None)), ..
+                            } if label == expected));
+                            assert!(bus.cancellation_token().is_none());
+                        } else {
+                            let report = axon.execute(7, &(), bus).await;
+                            assert!(matches!(report, crate::ExecutionReport::Unpersisted {
+                                result: Outcome::Emit(label, None), ..
+                            } if label == expected));
+                        }
+                        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+                        if shared {
+                            assert_eq!(
+                                parent.read::<IamIdentity>().unwrap().subject,
+                                "private-old-subject-marker"
+                            );
+                            assert_eq!(
+                                fork.as_ref()
+                                    .unwrap()
+                                    .read::<IamIdentity>()
+                                    .unwrap()
+                                    .subject,
+                                "private-old-subject-marker"
+                            );
+                        } else {
+                            assert!(parent.read::<IamIdentity>().is_none());
+                        }
                     }
-                    let report = axon.execute(7, &(), &mut bus).await;
-                    assert!(matches!(report, crate::ExecutionReport::Unpersisted {
-                        result: Outcome::Emit(label, None), ..
-                    } if label == expected));
-                    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-                    assert!(bus.read::<IamIdentity>().is_none());
                 }
             }
             let output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
