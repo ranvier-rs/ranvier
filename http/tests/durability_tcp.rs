@@ -408,25 +408,31 @@ async fn output_encoding_failure_over_tcp_does_not_prove_recoverable_completion(
             Axon::<(), (), String>::new("broken-output-http").then(BrokenBusiness(effects.clone()));
         let (status, body) = request_with_store(axon, persisted.then(|| store.clone())).await;
         assert_eq!(status, http::StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(body["error"], "JSON response could not be encoded");
-        assert_eq!(effects.load(Ordering::SeqCst), 1);
         assert_eq!(
-            store.completions.load(Ordering::SeqCst),
-            usize::from(persisted)
+            body["error"],
+            if persisted {
+                "Execution report could not be encoded"
+            } else {
+                "JSON response could not be encoded"
+            }
         );
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert_eq!(store.completions.load(Ordering::SeqCst), 0);
         if persisted {
-            // Characterize the current recovery defect explicitly: acknowledged
-            // completion does not prove a usable serialized result exists.
             let trace = store
                 .backing
                 .load("http-report-fixture")
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(trace.completion, Some(CompletionState::Success));
-            assert!(trace.events.iter().any(|event| {
-                event.outcome_kind == "Next" && event.payload == Some(serde_json::Value::Null)
-            }));
+            assert_eq!(trace.completion, None);
+            assert!(
+                trace
+                    .events
+                    .iter()
+                    .all(|event| event.outcome_kind != "Next")
+            );
+            assert_eq!(body["reconciliation_required"], true);
         } else {
             assert_eq!(store.writes.load(Ordering::SeqCst), 0);
             assert!(

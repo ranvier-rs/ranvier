@@ -446,7 +446,7 @@ fn compensation_retry_policy(bus: &Bus) -> CompensationRetryPolicy {
 
 /// Unwrap the Outcome enum layer from a persisted event payload.
 ///
-/// Events are stored with `outcome.to_json_value()` which serializes the full
+/// Events serialize the full
 /// Outcome enum, e.g. `{"Next": {"order_id": "1001", ...}}`. The resumption
 /// handler expects the raw inner value, so we extract it here.
 fn unwrap_outcome_payload(payload: Option<&serde_json::Value>) -> Option<serde_json::Value> {
@@ -764,7 +764,7 @@ where
             .map(|s| s.schema_version.clone())
             .unwrap_or_default();
 
-        persist_execution_event(
+        persist_encoded_execution_event(
             handle,
             &trace_id,
             &circuit,
@@ -772,7 +772,8 @@ where
             step_idx,
             Some(node_id.to_string()),
             outcome_kind_name(&result),
-            Some(result.to_json_value()),
+            serde_json::to_value(&result).map(Some),
+            bus,
         )
         .await;
     }
@@ -929,7 +930,7 @@ where
             .map(|s| s.schema_version.clone())
             .unwrap_or_default();
 
-        persist_execution_event(
+        persist_encoded_execution_event(
             handle,
             &trace_id,
             &circuit,
@@ -937,7 +938,8 @@ where
             step_idx,
             Some(node_id.to_string()),
             outcome_kind_name(&result),
-            Some(result.to_json_value()),
+            serde_json::to_value(&result).map(Some),
+            bus,
         )
         .await;
     }
@@ -1024,7 +1026,7 @@ where
                     .map(|s| s.schema_version.clone())
                     .unwrap_or_default();
 
-                persist_execution_event(
+                persist_encoded_execution_event(
                     handle,
                     &trace_id,
                     &circuit,
@@ -1033,13 +1035,14 @@ where
                     Some(comp_node_id.to_string()),
                     compensation_kind,
                     if compensation_kind == "Compensated" {
-                        None
+                        Ok(None)
                     } else {
-                        Some(match &compensation_result {
-                            Ok(outcome) => outcome.to_json_value(),
-                            Err(_) => serde_json::json!({"status": "panicked"}),
-                        })
+                        match &compensation_result {
+                            Ok(outcome) => serde_json::to_value(outcome).map(Some),
+                            Err(_) => Ok(Some(serde_json::json!({"status": "panicked"}))),
+                        }
                     },
+                    bus,
                 )
                 .await;
             }
@@ -1071,6 +1074,51 @@ where
     }
 
     result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn persist_encoded_execution_event(
+    handle: &PersistenceHandle,
+    trace_id: &str,
+    circuit: &str,
+    schematic_version: &str,
+    step: u64,
+    node_id: Option<String>,
+    outcome_kind: &str,
+    payload: Result<Option<serde_json::Value>, serde_json::Error>,
+    bus: &Bus,
+) -> crate::execution_report::StoreConfirmation {
+    let payload = match payload {
+        Ok(payload) => payload,
+        Err(_) => {
+            if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>() {
+                active.0.encoding_failed(if node_id.is_none() {
+                    crate::execution_report::PersistenceOperation::Terminal
+                } else {
+                    crate::execution_report::PersistenceOperation::Result
+                });
+            }
+            // No append was attempted. Do not fabricate a null recovery value
+            // or expose the serializer's private error text.
+            return crate::execution_report::StoreConfirmation::Unconfirmed;
+        }
+    };
+    persist_execution_event(
+        handle,
+        trace_id,
+        circuit,
+        schematic_version,
+        step,
+        node_id,
+        outcome_kind,
+        payload,
+    )
+    .await
+}
+
+fn persistence_encoding_failed(bus: &Bus) -> bool {
+    bus.read::<crate::execution_observation::ActiveObservation>()
+        .is_some_and(|active| active.0.has_encoding_failure())
 }
 
 #[allow(clippy::too_many_arguments)]

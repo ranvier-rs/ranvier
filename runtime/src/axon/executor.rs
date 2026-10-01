@@ -567,7 +567,7 @@ where
 
         if let Some(handle) = persistence_handle.as_ref() {
             let fault_step = persistence_start_step.map(|s| s + 1).unwrap_or(1);
-            persist_execution_event(
+            persist_encoded_execution_event(
                 handle,
                 &trace_id,
                 &label,
@@ -575,7 +575,8 @@ where
                 fault_step,
                 None, // Outcome-level events might not have a single node_id context here
                 outcome_kind_name(&outcome),
-                Some(outcome.to_json_value()),
+                serde_json::to_value(&outcome).map(Some),
+                bus,
             )
             .await;
 
@@ -617,7 +618,7 @@ where
                 }
             }
 
-            if persistence_auto_complete(bus) {
+            if persistence_auto_complete(bus) && !persistence_encoding_failed(bus) {
                 persist_completion(handle, &trace_id, completion).await;
             }
         }
@@ -844,7 +845,7 @@ where
         if let Some(handle) = persistence_handle.as_ref()
             && persistence_writable
         {
-            if persistence_auto_complete(bus) {
+            if persistence_auto_complete(bus) && !persistence_encoding_failed(bus) {
                 persist_completion(handle, &trace_id, completion).await;
             }
         }

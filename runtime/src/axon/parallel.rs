@@ -450,7 +450,7 @@ where
                             .map(|s| s.schema_version.clone())
                             .unwrap_or_default();
 
-                        persist_execution_event(
+                        persist_encoded_execution_event(
                             handle,
                             &trace_id,
                             &circuit,
@@ -458,7 +458,8 @@ where
                             step_idx,
                             Some(fanin_id.clone()),
                             outcome_kind_name(&combined),
-                            Some(combined.to_json_value()),
+                            serde_json::to_value(&combined).map(Some),
+                            bus,
                         )
                         .await;
                     }

@@ -15,6 +15,7 @@ pub(crate) struct Observation {
     attempted_write: AtomicBool,
     completed: AtomicBool,
     blocked: AtomicBool,
+    encoding_failed: AtomicBool,
 }
 
 #[cfg(test)]
@@ -133,6 +134,13 @@ mod tests {
 }
 
 impl Observation {
+    pub(crate) fn encoding_failed(&self, operation: PersistenceOperation) {
+        self.encoding_failed.store(true, Ordering::SeqCst);
+        self.failed(operation);
+    }
+    pub(crate) fn has_encoding_failure(&self) -> bool {
+        self.encoding_failed.load(Ordering::SeqCst)
+    }
     fn failed(&self, operation: PersistenceOperation) {
         let mut failure = self
             .failure
