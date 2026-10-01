@@ -33,6 +33,21 @@ use ranvier_guard::prelude::*;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 // ============================================================================
 // Domain Types
 // ============================================================================
@@ -142,17 +157,19 @@ async fn main() -> anyhow::Result<()> {
         bus.insert(ClientIdentity("user-alice".into()));
         bus.insert(ClientIp("127.0.0.1".into()));
 
-        let result = pipeline
-            .execute(
-                HttpRequest {
-                    method: "GET".into(),
-                    path: "/api/data".into(),
-                    body: String::new(),
-                },
-                &(),
-                &mut bus,
-            )
-            .await;
+        let result = local_demo_outcome(
+            pipeline
+                .execute(
+                    HttpRequest {
+                        method: "GET".into(),
+                        path: "/api/data".into(),
+                        body: String::new(),
+                    },
+                    &(),
+                    &mut bus,
+                )
+                .await,
+        )?;
 
         match &result {
             Outcome::Next(resp) => println!("  [200] {}\n", resp.body),
@@ -170,17 +187,19 @@ async fn main() -> anyhow::Result<()> {
         bus.insert(ClientIdentity("attacker".into()));
         bus.insert(ClientIp("127.0.0.1".into()));
 
-        let result = pipeline
-            .execute(
-                HttpRequest {
-                    method: "POST".into(),
-                    path: "/api/data".into(),
-                    body: "malicious".into(),
-                },
-                &(),
-                &mut bus,
-            )
-            .await;
+        let result = local_demo_outcome(
+            pipeline
+                .execute(
+                    HttpRequest {
+                        method: "POST".into(),
+                        path: "/api/data".into(),
+                        body: "malicious".into(),
+                    },
+                    &(),
+                    &mut bus,
+                )
+                .await,
+        )?;
 
         match &result {
             Outcome::Fault(e) => println!("  [BLOCKED] {}\n", e),
@@ -197,17 +216,19 @@ async fn main() -> anyhow::Result<()> {
         bus.insert(ClientIdentity("remote-user".into()));
         bus.insert(ClientIp("192.168.1.100".into()));
 
-        let result = pipeline
-            .execute(
-                HttpRequest {
-                    method: "GET".into(),
-                    path: "/api/admin".into(),
-                    body: String::new(),
-                },
-                &(),
-                &mut bus,
-            )
-            .await;
+        let result = local_demo_outcome(
+            pipeline
+                .execute(
+                    HttpRequest {
+                        method: "GET".into(),
+                        path: "/api/admin".into(),
+                        body: String::new(),
+                    },
+                    &(),
+                    &mut bus,
+                )
+                .await,
+        )?;
 
         match &result {
             Outcome::Fault(e) => println!("  [BLOCKED] {}\n", e),
@@ -225,17 +246,19 @@ async fn main() -> anyhow::Result<()> {
             bus.insert(ClientIdentity("user-bob".into()));
             bus.insert(ClientIp("127.0.0.1".into()));
 
-            let result = pipeline
-                .execute(
-                    HttpRequest {
-                        method: "GET".into(),
-                        path: format!("/api/item/{}", i),
-                        body: String::new(),
-                    },
-                    &(),
-                    &mut bus,
-                )
-                .await;
+            let result = local_demo_outcome(
+                pipeline
+                    .execute(
+                        HttpRequest {
+                            method: "GET".into(),
+                            path: format!("/api/item/{}", i),
+                            body: String::new(),
+                        },
+                        &(),
+                        &mut bus,
+                    )
+                    .await,
+            )?;
 
             match &result {
                 Outcome::Next(resp) => println!("  Request {}: [200] {}", i, resp.body),
@@ -258,17 +281,19 @@ async fn main() -> anyhow::Result<()> {
         // Denied IP
         let mut bus = Bus::new();
         bus.insert(ClientIp("10.0.0.99".into()));
-        let result = deny_pipeline
-            .execute(
-                HttpRequest {
-                    method: "GET".into(),
-                    path: "/".into(),
-                    body: String::new(),
-                },
-                &(),
-                &mut bus,
-            )
-            .await;
+        let result = local_demo_outcome(
+            deny_pipeline
+                .execute(
+                    HttpRequest {
+                        method: "GET".into(),
+                        path: "/".into(),
+                        body: String::new(),
+                    },
+                    &(),
+                    &mut bus,
+                )
+                .await,
+        )?;
         match &result {
             Outcome::Fault(e) => println!("  Denied IP 10.0.0.99: [BLOCKED] {}", e),
             other => println!("  Denied IP 10.0.0.99: [UNEXPECTED] {:?}", other),
@@ -277,17 +302,19 @@ async fn main() -> anyhow::Result<()> {
         // Allowed IP
         let mut bus = Bus::new();
         bus.insert(ClientIp("172.16.0.5".into()));
-        let result = deny_pipeline
-            .execute(
-                HttpRequest {
-                    method: "GET".into(),
-                    path: "/".into(),
-                    body: String::new(),
-                },
-                &(),
-                &mut bus,
-            )
-            .await;
+        let result = local_demo_outcome(
+            deny_pipeline
+                .execute(
+                    HttpRequest {
+                        method: "GET".into(),
+                        path: "/".into(),
+                        body: String::new(),
+                    },
+                    &(),
+                    &mut bus,
+                )
+                .await,
+        )?;
         match &result {
             Outcome::Next(resp) => println!("  Allowed IP 172.16.0.5: [200] {}", resp.body),
             other => println!("  Allowed IP 172.16.0.5: [UNEXPECTED] {:?}", other),
