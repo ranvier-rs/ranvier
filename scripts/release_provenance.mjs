@@ -1,3 +1,4 @@
+import { packageCohortArgs } from './release_provenance_package_args.mjs';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
@@ -213,8 +214,7 @@ const commands = [];
 const artifacts = [];
 // Package the selected cohort together so Cargo resolves unpublished workspace
 // dependencies against this cohort rather than older same-version registry crates.
-const packageArgs = ['package', '--locked', '--no-verify'];
-for (const pkg of publishable) packageArgs.push('-p', pkg.name);
+const packageArgs = packageCohortArgs(publishable.map(pkg => pkg.name));
 const packageCommand = run('cargo', packageArgs);
 commands.push(packageCommand.command);
 for (const pkg of publishable) {

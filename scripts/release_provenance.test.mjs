@@ -1,3 +1,4 @@
+import { packageCohortArgs } from './release_provenance_package_args.mjs';
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -44,4 +45,20 @@ test('guard CI uses readonly scope and attestation is excluded from PR events', 
   assert.match(top, /pull_request:/);
   assert.match(workflow, /if: github.event_name != 'pull_request'/);
   assert.match(workflow, /needs: provenance-guards/);
+});
+
+test('one package command selects exactly the policy cohort', () => {
+  const policy = JSON.parse(readFileSync(new URL('../.ranvier-supply-chain-policy.json', import.meta.url), 'utf8'));
+  const names = policy.provenance.publishable_crates;
+  const args = packageCohortArgs(names);
+  assert.equal(names.length, 12);
+  assert.deepEqual(args.slice(0, 3), ['package', '--locked', '--no-verify']);
+  assert.deepEqual(args.slice(3), names.flatMap(name => ['-p', name]));
+  assert.equal(args.filter(value => value === 'package').length, 1);
+  assert.deepEqual(packageCohortArgs(['fixture-core', 'fixture-macros']), ['package', '--locked', '--no-verify', '-p', 'fixture-core', '-p', 'fixture-macros']);
+});
+test('invalid package selections fail before Cargo', () => {
+  for (const names of [null, [], ['a', 'a'], ['--workspace'], [''], [undefined]]) {
+    assert.throws(() => packageCohortArgs(names), /unique nonempty/);
+  }
 });
