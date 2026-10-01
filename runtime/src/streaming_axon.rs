@@ -149,7 +149,9 @@ where
     ///
     /// The prefix Axon steps run first, then the streaming transition
     /// produces a `Stream`. If timeout is configured, the stream is
-    /// wrapped with timeout enforcement.
+    /// wrapped with timeout enforcement. Caller access policy and cancellation
+    /// token are restored when initialization returns or its future is dropped.
+    /// This control scope does not establish prefix persistence/report support.
     pub async fn execute(
         &self,
         input: In,
@@ -177,6 +179,8 @@ where
     /// Cancellation can win during initialization and is checked between
     /// emitted items. Mid-stream cancellation ends the returned stream; the
     /// supplied token retains the structured terminal context for the owner.
+    /// Initialization suspends and restores the caller access policy and Bus
+    /// token; the returned stream retains the supplied token independently.
     pub async fn execute_cancellable(
         &self,
         input: In,
