@@ -48,6 +48,14 @@ async fn blocked_read(_state: (), bus: &mut Bus) -> Outcome<(), String> {
     }
 }
 
+#[transition(bus_allow = [i32], bus_deny = [String])]
+async fn blocked_write(_state: (), bus: &mut Bus) -> Outcome<(), String> {
+    match bus.try_insert("attempted-private-value".to_string()) {
+        Ok(()) => Outcome::Next(()),
+        Err(_) => Outcome::Fault("bus_write_denied".into()),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), String> {
     let mut bus = Bus::new();
@@ -141,6 +149,18 @@ mod tests {
             }
         }
     }
+    #[tokio::test]
+    async fn fallible_macro_write_reports_fault_without_replacing_value() {
+        let mut bus = Bus::new();
+        bus.insert("original".to_string());
+        let axon = Axon::simple::<String>("fallible-write").then(blocked_write);
+        assert!(
+            matches!(local_demo_outcome(axon.execute((), &(), &mut bus).await).unwrap(),
+            Outcome::Fault(error) if error == "bus_write_denied")
+        );
+        assert_eq!(bus.get::<String>().unwrap(), "original");
+    }
+
     #[tokio::test]
     async fn missing_allowed_capability_is_fault() {
         let axon = Axon::simple::<String>("missing").then(allowed_read);
