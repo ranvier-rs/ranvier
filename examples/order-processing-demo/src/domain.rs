@@ -20,6 +20,7 @@ pub struct OrderRequest {
 // Internal handoff: client totals never reach the payment adapter directly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidatedOrder {
+    pub reservation_owner: String,
     pub request: OrderRequest,
     pub catalog_prices: Vec<u32>,
     pub payable_amount: u32,

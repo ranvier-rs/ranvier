@@ -35,6 +35,7 @@ impl Transition<OrderRequest, ValidatedOrder> for ValidateOrder {
         match resources.inventory.quote(&request.items) {
             Ok((catalog_prices, payable_amount)) if payable_amount == request.total_amount => {
                 Outcome::Next(ValidatedOrder {
+                    reservation_owner: uuid::Uuid::new_v4().to_string(),
                     request,
                     catalog_prices,
                     payable_amount,
@@ -86,10 +87,46 @@ impl Transition<ValidatedOrder, ValidatedOrder> for ProcessPayment {
     ) -> Outcome<ValidatedOrder, Self::Error> {
         println!("\x1b[1m[Node]\x1b[0m Processing Payment...");
 
+        if let Err(error) = resources.inventory.begin_payment(&request) {
+            return Outcome::Fault(error);
+        }
+
         match resources.payment.call(request.payable_amount).await {
-            Ok(true) => Outcome::Next(request),
-            Ok(false) => Outcome::Branch("payment_declined".into(), None),
+            Ok(true) => match resources.inventory.confirm_payment(&request, true) {
+                Ok(()) => Outcome::Next(request),
+                Err(error) => Outcome::Fault(error),
+            },
+            Ok(false) => {
+                if let Err(error) = resources
+                    .inventory
+                    .confirm_payment(&request, false)
+                    .and_then(|()| resources.inventory.release(&request))
+                {
+                    return Outcome::Fault(error);
+                }
+                Outcome::Branch("payment_declined".into(), None)
+            }
             Err(e) => Outcome::Fault(e),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ReleaseInventory;
+
+#[async_trait]
+impl Transition<ValidatedOrder, ()> for ReleaseInventory {
+    type Error = String;
+    type Resources = OrderResources;
+    async fn run(
+        &self,
+        order: ValidatedOrder,
+        resources: &OrderResources,
+        _: &mut Bus,
+    ) -> Outcome<(), String> {
+        match resources.inventory.release(&order) {
+            Ok(()) => Outcome::Next(()),
+            Err(error) => Outcome::Fault(error),
         }
     }
 }
@@ -134,17 +171,15 @@ mod price_tests {
 
     fn resources(price: u32) -> OrderResources {
         OrderResources {
-            inventory: InventorySynapse {
-                inventory: Arc::new(Mutex::new(HashMap::from([(
-                    "p".into(),
-                    Product {
-                        id: "p".into(),
-                        name: "fixture".into(),
-                        price,
-                        stock: 5,
-                    },
-                )]))),
-            },
+            inventory: InventorySynapse::new(Arc::new(Mutex::new(HashMap::from([(
+                "p".into(),
+                Product {
+                    id: "p".into(),
+                    name: "fixture".into(),
+                    price,
+                    stock: 5,
+                },
+            )])))),
             payment: PaymentSynapse::default(),
             shipping: ShippingSynapse,
         }

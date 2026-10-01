@@ -10,9 +10,112 @@ use tokio::time::{Duration, sleep};
 pub struct InventorySynapse {
     // In-memory mock database
     pub inventory: Arc<Mutex<HashMap<String, Product>>>,
+    reservations: Mutex<HashMap<String, Reservation>>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum PaymentState {
+    NotAttempted,
+    Pending,
+    Approved,
+    Declined,
+}
+struct Reservation {
+    owner: String,
+    counts: HashMap<String, u32>,
+    amount: u32,
+    released: bool,
+    payment: PaymentState,
 }
 
 impl InventorySynapse {
+    pub fn new(inventory: Arc<Mutex<HashMap<String, Product>>>) -> Self {
+        Self {
+            inventory,
+            reservations: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn begin_payment(&self, order: &ValidatedOrder) -> Result<(), String> {
+        let mut ledger = self
+            .reservations
+            .lock()
+            .map_err(|_| "Reservation ledger unavailable".to_owned())?;
+        let record = ledger
+            .get_mut(&order.request.order_id)
+            .ok_or_else(|| "Reservation missing".to_owned())?;
+        if record.owner != order.reservation_owner
+            || record.amount != order.payable_amount
+            || record.released
+            || record.payment != PaymentState::NotAttempted
+        {
+            return Err("Payment requires reconciliation".into());
+        }
+        record.payment = PaymentState::Pending;
+        Ok(())
+    }
+
+    pub fn confirm_payment(&self, order: &ValidatedOrder, approved: bool) -> Result<(), String> {
+        let mut ledger = self
+            .reservations
+            .lock()
+            .map_err(|_| "Reservation ledger unavailable".to_owned())?;
+        let record = ledger
+            .get_mut(&order.request.order_id)
+            .ok_or_else(|| "Reservation missing".to_owned())?;
+        if record.owner != order.reservation_owner || record.payment != PaymentState::Pending {
+            return Err("Payment requires reconciliation".into());
+        }
+        record.payment = if approved {
+            PaymentState::Approved
+        } else {
+            PaymentState::Declined
+        };
+        Ok(())
+    }
+
+    pub fn release(&self, order: &ValidatedOrder) -> Result<(), String> {
+        // All operations touching both stores acquire inventory before ledger.
+        let mut db = self
+            .inventory
+            .lock()
+            .map_err(|_| "Inventory unavailable".to_owned())?;
+        let mut ledger = self
+            .reservations
+            .lock()
+            .map_err(|_| "Reservation ledger unavailable".to_owned())?;
+        let Some(record) = ledger.get_mut(&order.request.order_id) else {
+            return Ok(());
+        };
+        if record.owner != order.reservation_owner {
+            return Err("Reservation owner mismatch".into());
+        }
+        if record.released {
+            return Ok(());
+        }
+        if matches!(
+            record.payment,
+            PaymentState::Pending | PaymentState::Approved
+        ) {
+            return Err("Payment requires reconciliation before release".into());
+        }
+        // Check every restoration first, including overflow/missing product.
+        for (id, count) in &record.counts {
+            db.get(id)
+                .ok_or_else(|| "Reserved product missing".to_owned())?
+                .stock
+                .checked_add(*count)
+                .ok_or_else(|| "Inventory restoration overflow".to_owned())?;
+        }
+        for (id, count) in &record.counts {
+            let product = db
+                .get_mut(id)
+                .ok_or_else(|| "Reserved product missing".to_owned())?;
+            product.stock += count;
+        }
+        record.released = true;
+        Ok(())
+    }
     pub fn quote(&self, items: &[String]) -> Result<(Vec<u32>, u32), String> {
         let db = self
             .inventory
@@ -79,6 +182,13 @@ impl Synapse for InventorySynapse {
         {
             return Err("Catalog changed before reservation".into());
         }
+        let mut ledger = self
+            .reservations
+            .lock()
+            .map_err(|_| "Reservation ledger unavailable".to_owned())?;
+        if ledger.contains_key(&order.request.order_id) || ledger.len() >= 1000 {
+            return Err("Reservation requires reconciliation".into());
+        }
         // Validate the whole cart before mutation under the same lock.
         for (id, count) in &counts {
             let product = db.get(id).ok_or_else(|| "Product not found".to_owned())?;
@@ -86,12 +196,22 @@ impl Synapse for InventorySynapse {
                 return Ok(false);
             }
         }
-        for (id, count) in counts {
+        for (id, count) in &counts {
             let product = db
-                .get_mut(&id)
+                .get_mut(id)
                 .ok_or_else(|| "Inventory changed".to_owned())?;
-            product.stock -= count;
+            product.stock -= *count;
         }
+        ledger.insert(
+            order.request.order_id,
+            Reservation {
+                owner: order.reservation_owner,
+                counts,
+                amount: order.payable_amount,
+                released: false,
+                payment: PaymentState::NotAttempted,
+            },
+        );
         Ok(true)
     }
 }
@@ -158,27 +278,26 @@ mod tests {
     fn order(items: Vec<String>) -> ValidatedOrder {
         let amount = items.len() as u32 * 10;
         ValidatedOrder {
+            reservation_owner: uuid::Uuid::new_v4().to_string(),
             catalog_prices: vec![10; items.len()],
             payable_amount: amount,
             request: crate::domain::OrderRequest {
-                order_id: "test".into(),
+                order_id: uuid::Uuid::new_v4().to_string(),
                 items,
                 total_amount: amount,
             },
         }
     }
     fn inventory(stock: u32) -> InventorySynapse {
-        InventorySynapse {
-            inventory: Arc::new(Mutex::new(HashMap::from([(
-                "p".into(),
-                Product {
-                    id: "p".into(),
-                    name: "fixture".into(),
-                    price: 10,
-                    stock,
-                },
-            )]))),
-        }
+        InventorySynapse::new(Arc::new(Mutex::new(HashMap::from([(
+            "p".into(),
+            Product {
+                id: "p".into(),
+                name: "fixture".into(),
+                price: 10,
+                stock,
+            },
+        )]))))
     }
     #[tokio::test]
     async fn failed_carts_do_not_partially_consume_stock() {

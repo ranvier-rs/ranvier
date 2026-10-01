@@ -17,7 +17,7 @@ mod nodes;
 mod synapses;
 
 use crate::domain::{OrderRequest, OrderResources, Product};
-use crate::nodes::{ProcessPayment, ReserveInventory, ShipOrder, ValidateOrder};
+use crate::nodes::{ProcessPayment, ReleaseInventory, ReserveInventory, ShipOrder, ValidateOrder};
 use crate::synapses::{InventorySynapse, PaymentSynapse, ShippingSynapse};
 use anyhow::Result;
 use ranvier_core::prelude::*;
@@ -67,17 +67,16 @@ async fn main() -> Result<()> {
     ]);
     let inventory_db = Arc::new(Mutex::new(products));
     let resources = OrderResources {
-        inventory: InventorySynapse {
-            inventory: inventory_db,
-        },
+        inventory: InventorySynapse::new(inventory_db),
         payment: PaymentSynapse::default(),
         shipping: ShippingSynapse,
     };
 
     // 2) Build Axon execution chain
     let axon = Axon::<OrderRequest, OrderRequest, String, OrderResources>::new("OrderProcessing")
+        .with_saga_policy(SagaPolicy::Enabled)
         .then(ValidateOrder)
-        .then(ReserveInventory)
+        .then_compensated(ReserveInventory, ReleaseInventory)
         .then(ProcessPayment)
         .then(ShipOrder);
 
