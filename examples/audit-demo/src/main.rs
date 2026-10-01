@@ -28,6 +28,22 @@ use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+type DemoError = Box<dyn std::error::Error + Send + Sync>;
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> Result<Outcome<T, E>, DemoError> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        return Err("Execution requires reconciliation before retry".into());
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => Err("Execution requires reconciliation before retry".into()),
+    }
+}
+
 // ── Domain types ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,7 +183,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut bus = Bus::new();
         bus.insert(logger.clone());
 
-        let result = axon.execute(action, &(), &mut bus).await;
+        let result = local_demo_outcome(axon.execute(action, &(), &mut bus).await)?;
         match result {
             Outcome::Next(r) => println!("  [OK] {desc} -> {}", r.message),
             Outcome::Fault(e) => println!("  [ERR] {desc} -> {e}"),
