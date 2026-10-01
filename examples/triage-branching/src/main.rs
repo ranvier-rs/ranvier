@@ -213,6 +213,23 @@ impl Transition<Patient, Patient> for RouteToDepartment {
 // Main — Demonstrate Triage Branching
 // ============================================================================
 
+// Explicit local-demo policy: neither persisted nor incomplete cleanup results
+// may be converted into ordinary domain success or automatic retry permission.
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     println!("=== Triage Branching Pattern ===");
@@ -287,7 +304,7 @@ async fn main() -> anyhow::Result<()> {
         println!("--- Scenario {}: {} ---\n", i + 1, label);
         let mut bus = Bus::new();
 
-        match triage.execute(patient, &(), &mut bus).await {
+        match local_demo_outcome(triage.execute(patient, &(), &mut bus).await)? {
             Outcome::Branch(dept, payload) => {
                 println!("\n  Routed to: {}", dept);
                 if let Some(p) = payload {
