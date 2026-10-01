@@ -201,8 +201,7 @@ fn print_trace(label: &str, trace: &ranvier_runtime::PersistedTrace) {
 // Main
 // ============================================================================
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn run_demo() -> anyhow::Result<()> {
     println!("=== State Persistence & Recovery Demo ===\n");
 
     let store_impl = Arc::new(InMemoryPersistenceStore::new());
@@ -227,6 +226,9 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let outcome = recorded_outcome(axon.execute(input, &(), &mut bus).await, false)?;
+    if !matches!(&outcome, Outcome::Fault(error) if error == "payment_declined") {
+        anyhow::bail!("Initial payment fault missing");
+    }
     match &outcome {
         Outcome::Fault(e) => println!("  Outcome: FAULT — {}", e),
         Outcome::Next(t) => println!("  Outcome: SUCCESS — {}", t),
@@ -270,6 +272,9 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let outcome = recorded_outcome(axon.execute(input, &(), &mut bus).await, true)?;
+    if !matches!(&outcome, Outcome::Next(value) if value == "TRACK-5001") {
+        anyhow::bail!("Checkpoint resume did not complete expected order");
+    }
     match &outcome {
         Outcome::Next(tracking) => println!("  Outcome: SUCCESS — {}", tracking),
         Outcome::Fault(e) => println!("  Outcome: FAULT — {}", e),
@@ -303,6 +308,9 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let outcome = recorded_outcome(axon.execute(input, &(), &mut bus).await, true)?;
+    if !matches!(&outcome, Outcome::Fault(error) if error == "payment_declined") {
+        anyhow::bail!("Compensation scenario fault missing");
+    }
     match &outcome {
         Outcome::Fault(e) => println!("  Outcome: FAULT — {} (compensation executed)", e),
         _ => println!("  Outcome: unexpected"),
@@ -316,4 +324,17 @@ async fn main() -> anyhow::Result<()> {
 
     println!("\ndone");
     Ok(())
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    run_demo().await
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn actual_persistence_phases() {
+        run_demo().await.unwrap();
+    }
 }
