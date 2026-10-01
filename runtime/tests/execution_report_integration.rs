@@ -552,6 +552,7 @@ async fn dropped_persistence_ack_restores_owner_without_rewriting_history() {
                     assert!(axon.execute(1, &(), &mut bus).now_or_never().is_none());
                 }
                 assert_eq!(store.calls.load(Ordering::SeqCst), block_at);
+                assert_eq!(bus.read::<PersistenceTraceId>().unwrap().0, "drop-ack");
                 assert_eq!(effects.load(Ordering::SeqCst), usize::from(block_at > 1));
                 assert!(Arc::ptr_eq(
                     &original,
