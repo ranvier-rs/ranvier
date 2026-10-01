@@ -358,7 +358,7 @@ async fn main() -> anyhow::Result<()> {
 
         match local_demo_outcome(pipeline.execute(ticket, &(), &mut bus).await)? {
             Outcome::Next(response) => println!("  Result: {}\n", response),
-            other => println!("  Unexpected: {:?}\n", other),
+            _ => anyhow::bail!("Unexpected domain control flow in local demo"),
         }
     }
 
@@ -382,7 +382,7 @@ async fn main() -> anyhow::Result<()> {
 
         match local_demo_outcome(pipeline.execute(bad_ticket, &(), &mut bus).await)? {
             Outcome::Fault(err) => println!("  Fault caught: {}\n", err),
-            other => println!("  Unexpected: {:?}\n", other),
+            _ => anyhow::bail!("Unexpected domain control flow in local demo"),
         }
     }
 
@@ -411,7 +411,7 @@ async fn main() -> anyhow::Result<()> {
                     println!("  Payload: {}", p);
                 }
             }
-            other => println!("  Unexpected: {:?}", other),
+            _ => anyhow::bail!("Unexpected domain control flow in local demo"),
         }
 
         // 3b: General ticket -> Next (continues normally)
@@ -428,7 +428,7 @@ async fn main() -> anyhow::Result<()> {
             Outcome::Next(ticket) => {
                 println!("  General ticket #{} continued in flow", ticket.id)
             }
-            other => println!("  Unexpected: {:?}", other),
+            _ => anyhow::bail!("Unexpected domain control flow in local demo"),
         }
         println!();
     }
@@ -456,9 +456,11 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(p) = payload {
                     println!("  Context: {}", p);
                 }
-                println!("  (In production, Axon would re-route to the target node)");
+                println!(
+                    "  (Nil UUID is an external signal here; no internal rerouting is demonstrated)"
+                );
             }
-            other => println!("  Unexpected: {:?}", other),
+            _ => anyhow::bail!("Unexpected domain control flow in local demo"),
         }
         println!();
     }
@@ -484,13 +486,10 @@ async fn main() -> anyhow::Result<()> {
             Outcome::Emit(event_type, payload) => {
                 println!("  Event emitted: {}", event_type);
                 if let Some(p) = payload {
-                    println!(
-                        "  Payload: {}",
-                        serde_json::to_string_pretty(&p).unwrap_or_default()
-                    );
+                    println!("  Payload: {}", serde_json::to_string_pretty(&p)?);
                 }
             }
-            other => println!("  Unexpected: {:?}", other),
+            _ => anyhow::bail!("Unexpected domain control flow in local demo"),
         }
         println!();
     }
@@ -504,4 +503,93 @@ async fn main() -> anyhow::Result<()> {
     println!("  Emit(event, data) -> Stop chain, signal side-effect");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod execution_contract_tests {
+    use super::*;
+    use ranvier_runtime::{
+        CompletionConfirmation, EffectBoundary, ExecutionReport, PersistenceOperation,
+        SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep,
+    };
+
+    #[test]
+    fn declared_demo_scenarios_run_through_the_report_policy() {
+        main().unwrap();
+    }
+
+    #[test]
+    fn local_report_policy_preserves_faults_and_rejects_uncertain_or_incomplete_execution() {
+        let next = || Outcome::<u32, String>::Next(7);
+        let reports = [
+            ExecutionReport::NotRequested {
+                result: next(),
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::Confirmed,
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::NotRequested,
+                cleanup: None,
+            },
+            ExecutionReport::Unconfirmed {
+                result: next(),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::NotInvoked,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+        ];
+        for report in reports {
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        for (finished, outcome) in [
+            (false, SagaRollbackOutcome::Completed),
+            (true, SagaRollbackOutcome::Fault),
+            (true, SagaRollbackOutcome::InProgress),
+        ] {
+            let report = ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: Some(SagaRollbackReport {
+                    trace_id: "private-trace".into(),
+                    finished,
+                    steps: vec![SagaRollbackStep {
+                        node_id: "private-node".into(),
+                        outcome,
+                    }],
+                }),
+            };
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        assert!(matches!(
+            local_demo_outcome(ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: None
+            })
+            .unwrap(),
+            Outcome::Next(7)
+        ));
+        assert!(
+            matches!(local_demo_outcome(ExecutionReport::Unpersisted { result: Outcome::<u32, String>::Fault("expected-domain-failure".into()), cleanup: None }).unwrap(), Outcome::Fault(error) if error == "expected-domain-failure")
+        );
+    }
 }

@@ -295,7 +295,7 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             Outcome::Fault(err) => println!("\n  Failed after retries: {}", err),
-            other => println!("\n  Unexpected: {:?}", other),
+            _ => anyhow::bail!("Unexpected domain control flow in local demo"),
         }
     }
 
@@ -325,7 +325,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("  Result: status={}, body={}", resp.status, resp.body);
             }
             Outcome::Fault(err) => println!("  Timeout: {}", err),
-            other => println!("  Unexpected: {:?}", other),
+            _ => anyhow::bail!("Unexpected domain control flow in local demo"),
         }
     }
 
@@ -355,7 +355,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("  Result: status={}, body={}", resp.status, resp.body);
             }
             Outcome::Fault(err) => println!("  Fault caught: {}", err),
-            other => println!("  Unexpected: {:?}", other),
+            _ => anyhow::bail!("Unexpected domain control flow in local demo"),
         }
     }
 
@@ -393,7 +393,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("  Result: status={}, body={}", resp.status, resp.body);
             }
             Outcome::Fault(err) => println!("  Final fault: {}", err),
-            other => println!("  Unexpected: {:?}", other),
+            _ => anyhow::bail!("Unexpected domain control flow in local demo"),
         }
     }
 
@@ -402,14 +402,161 @@ async fn main() -> anyhow::Result<()> {
     // ── Summary ───────────────────────────────────────────────────
     println!("=== API Reference ===");
     println!("  then_with_retry(transition, policy)");
-    println!("    -> Retries on Fault with configurable backoff");
+    println!("    -> Retries simulated, effect-free failures with configurable backoff");
+    println!("    -> Real effects require explicit idempotency and reconciliation contracts");
     println!("    -> RetryPolicy::fixed(max, delay)");
     println!("    -> RetryPolicy::exponential(max, initial, multiplier, cap)");
     println!("    -> RetryPolicy::exponential_default(max, initial_ms)");
     println!();
     println!("  then_with_timeout(transition, duration, error_factory)");
-    println!("    -> Cancels execution if duration exceeded");
+    println!("    -> Drops the local transition future when duration is exceeded");
+    println!("    -> Does not prove remote effect cancellation or rollback");
     println!("    -> Returns Fault with user-provided error on timeout");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod execution_contract_tests {
+    use super::*;
+    #[tokio::test]
+    async fn retry_attempt_budget_is_observed_for_success_and_exhaustion() {
+        for (fail_until, expected_success) in [(2, true), (10, false)] {
+            let transition = FlakyApiCall::new(fail_until);
+            let calls = transition.fail_count.clone();
+            let pipeline = Axon::<ApiRequest, ApiRequest, String>::new("retry-budget")
+                .then_with_retry(transition, RetryPolicy::fixed(2, Duration::from_millis(1)));
+            let mut bus = Bus::new();
+            let outcome = local_demo_outcome(
+                pipeline
+                    .execute(
+                        ApiRequest {
+                            endpoint: "/fixture".into(),
+                            payload: "{}".into(),
+                        },
+                        &(),
+                        &mut bus,
+                    )
+                    .await,
+            )
+            .unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 3);
+            if expected_success {
+                assert!(matches!(outcome, Outcome::Next(response) if response.attempts == 3));
+            } else {
+                assert!(matches!(outcome, Outcome::Fault(_)));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn timeout_returns_the_owned_fault_through_the_report_policy() {
+        let pipeline = Axon::<ApiRequest, ApiRequest, String>::new("bounded-timeout")
+            .then_with_timeout(
+                SlowApiCall {
+                    delay: Duration::from_secs(60),
+                },
+                Duration::from_millis(10),
+                || "fixture-timeout".into(),
+            );
+        let mut bus = Bus::new();
+        let outcome = local_demo_outcome(
+            pipeline
+                .execute(
+                    ApiRequest {
+                        endpoint: "/fixture".into(),
+                        payload: "{}".into(),
+                    },
+                    &(),
+                    &mut bus,
+                )
+                .await,
+        )
+        .unwrap();
+        assert!(matches!(outcome, Outcome::Fault(error) if error == "fixture-timeout"));
+    }
+    use ranvier_runtime::{
+        CompletionConfirmation, EffectBoundary, ExecutionReport, PersistenceOperation,
+        SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep,
+    };
+
+    #[test]
+    fn declared_demo_scenarios_run_through_the_report_policy() {
+        main().unwrap();
+    }
+
+    #[test]
+    fn local_report_policy_preserves_faults_and_rejects_uncertain_or_incomplete_execution() {
+        let next = || Outcome::<u32, String>::Next(7);
+        let reports = [
+            ExecutionReport::NotRequested {
+                result: next(),
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::Confirmed,
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::NotRequested,
+                cleanup: None,
+            },
+            ExecutionReport::Unconfirmed {
+                result: next(),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::NotInvoked,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+        ];
+        for report in reports {
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        for (finished, outcome) in [
+            (false, SagaRollbackOutcome::Completed),
+            (true, SagaRollbackOutcome::Fault),
+            (true, SagaRollbackOutcome::InProgress),
+        ] {
+            let report = ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: Some(SagaRollbackReport {
+                    trace_id: "private-trace".into(),
+                    finished,
+                    steps: vec![SagaRollbackStep {
+                        node_id: "private-node".into(),
+                        outcome,
+                    }],
+                }),
+            };
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        assert!(matches!(
+            local_demo_outcome(ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: None
+            })
+            .unwrap(),
+            Outcome::Next(7)
+        ));
+        assert!(
+            matches!(local_demo_outcome(ExecutionReport::Unpersisted { result: Outcome::<u32, String>::Fault("expected-domain-failure".into()), cleanup: None }).unwrap(), Outcome::Fault(error) if error == "expected-domain-failure")
+        );
+    }
 }
