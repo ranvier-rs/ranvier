@@ -34,6 +34,21 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::Mutex;
 
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 // ============================================================================
 // Domain Types
 // ============================================================================
@@ -376,7 +391,7 @@ async fn main() -> anyhow::Result<()> {
         order_id: "ORD-001".into(),
         amount: 49.99,
     };
-    let result = axon.execute(request, &(), &mut bus).await;
+    let result = local_demo_outcome(axon.execute(request, &(), &mut bus).await)?;
     match &result {
         Outcome::Next(r) => println!("  Result: {} ({})", r.status, r.order_id),
         Outcome::Fault(e) => println!("  Result: FAULT — {}", e),
@@ -401,7 +416,7 @@ async fn main() -> anyhow::Result<()> {
         order_id: "ORD-002".into(),
         amount: 99.99,
     };
-    let result = axon.execute(request, &(), &mut bus).await;
+    let result = local_demo_outcome(axon.execute(request, &(), &mut bus).await)?;
     match &result {
         Outcome::Fault(e) => println!("  Result: FAULT — {}", e),
         _ => println!("  Result: unexpected"),
@@ -423,7 +438,7 @@ async fn main() -> anyhow::Result<()> {
         order_id: "ORD-003".into(),
         amount: 25.00,
     };
-    let result = axon.execute(request, &(), &mut bus).await;
+    let result = local_demo_outcome(axon.execute(request, &(), &mut bus).await)?;
     match &result {
         Outcome::Fault(e) => println!("  Result: FAULT — {}", e),
         Outcome::Next(_) => println!("  Result: unexpected success"),
@@ -441,7 +456,7 @@ async fn main() -> anyhow::Result<()> {
         order_id: "ORD-004".into(),
         amount: 25.00,
     };
-    let result = axon.execute(request, &(), &mut bus).await;
+    let result = local_demo_outcome(axon.execute(request, &(), &mut bus).await)?;
     match &result {
         Outcome::Next(r) => println!("  Result: validated ({})", r.order_id),
         Outcome::Fault(e) => println!("  Result: FAULT — {}", e),
@@ -466,7 +481,7 @@ async fn main() -> anyhow::Result<()> {
         };
 
         println!("  Request #{}", i);
-        let result = axon.execute(request, &(), &mut bus).await;
+        let result = local_demo_outcome(axon.execute(request, &(), &mut bus).await)?;
         match &result {
             Outcome::Next(r) => println!("    -> {} ({})", r.status, r.order_id),
             Outcome::Fault(e) => println!("    -> FAULT: {}", e),
