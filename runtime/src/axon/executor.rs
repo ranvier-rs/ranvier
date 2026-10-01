@@ -669,17 +669,11 @@ where
                     outcome,
                 });
                 match result {
-                    Outcome::Fault(error) => {
-                        tracing::error!(trace_id = %trace_id, node_id = %task.node_id, "Saga compensation FAILED: {:?}", error);
+                    Outcome::Fault(_) => {
+                        tracing::error!(trace_id = %trace_id, node_id = %task.node_id, "Saga compensation returned a fault");
                     }
-                    Outcome::Emit(event_type, payload) => {
-                        tracing::warn!(
-                            trace_id = %trace_id,
-                            node_id = %task.node_id,
-                            event_type = %event_type,
-                            payload = ?payload,
-                            "Saga compensation emitted a non-fatal event"
-                        );
+                    Outcome::Emit(_, _) => {
+                        tracing::warn!(trace_id = %trace_id, node_id = %task.node_id, "Saga compensation emitted an incomplete outcome");
                     }
                     _ => {}
                 }

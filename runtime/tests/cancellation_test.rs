@@ -655,6 +655,11 @@ async fn cancellation_rolls_back_completed_saga_steps_in_lifo_order() {
         rollback_order.lock().expect("saga result lock").as_slice(),
         ["undo-2", "undo-1"]
     );
+    let cleanup = bus
+        .read::<ranvier_runtime::saga_report::SagaRollbackReport>()
+        .unwrap();
+    assert!(cleanup.is_complete());
+    assert_eq!(cleanup.steps.len(), 2);
     assert_eq!(cleanup_tokens.load(Ordering::SeqCst), 2);
     assert!(
         bus.cancellation_token()

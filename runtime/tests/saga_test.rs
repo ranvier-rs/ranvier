@@ -147,6 +147,27 @@ async fn test_saga_automated_rollback_with_state_mapping() {
 
     assert_eq!(final_results[0], "Comp_2:1");
     assert_eq!(final_results[1], "Comp_1:0");
+    drop(final_results);
+    let cleanup = bus
+        .read::<ranvier_runtime::saga_report::SagaRollbackReport>()
+        .unwrap();
+    assert!(cleanup.is_complete());
+    assert_eq!(cleanup.steps.len(), 2);
+    let next = Axon::<SagaState, SagaState, String>::new("ReusedBus");
+    let _report = next
+        .execute(
+            SagaState {
+                cnt: 0,
+                log: vec![],
+            },
+            &(),
+            &mut bus,
+        )
+        .await;
+    assert!(
+        bus.read::<ranvier_runtime::saga_report::SagaRollbackReport>()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -397,4 +418,59 @@ async fn verify_incomplete_automatic_compensation(compensation_result: Outcome<(
         incomplete[0].payload,
         Some(compensation_result.to_json_value())
     );
+}
+
+#[tokio::test]
+async fn saga_rollback_classifies_incomplete_hooks_without_replacing_business_fault() {
+    use ranvier_runtime::saga_report::{SagaRollbackOutcome, SagaRollbackReport};
+    for (outcome, expected) in [
+        (
+            Outcome::Fault("private-cleanup-error".to_string()),
+            SagaRollbackOutcome::Fault,
+        ),
+        (
+            Outcome::Emit(
+                "private-event".into(),
+                Some(serde_json::json!({"secret": "private-payload"})),
+            ),
+            SagaRollbackOutcome::Emitted,
+        ),
+        (
+            Outcome::Branch("branch".into(), None),
+            SagaRollbackOutcome::Branched,
+        ),
+        (
+            Outcome::Jump(uuid::Uuid::nil(), None),
+            SagaRollbackOutcome::Jumped,
+        ),
+    ] {
+        let axon = Axon::<SagaState, SagaState, String>::new("IncompleteRollback")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(SuccStep { id: "one".into() }, FaultUndo(outcome))
+            .then(FailStep);
+        let mut bus = Bus::new();
+        let result = axon
+            .execute(
+                SagaState {
+                    cnt: 0,
+                    log: vec![],
+                },
+                &(),
+                &mut bus,
+            )
+            .await;
+        assert!(
+            matches!(result, ranvier_runtime::ExecutionReport::Unpersisted { result: Outcome::Fault(ref error) } if error == "Planned SAGA Failure")
+        );
+        let report = bus.read::<SagaRollbackReport>().unwrap();
+        assert!(!report.is_complete());
+        assert_eq!(report.steps.len(), 1);
+        assert_eq!(report.steps[0].outcome, expected);
+        let json = serde_json::to_string(report).unwrap();
+        assert!(!json.contains("private-"));
+        assert_eq!(
+            serde_json::from_str::<SagaRollbackReport>(&json).unwrap(),
+            *report
+        );
+    }
 }
