@@ -382,6 +382,8 @@ impl RedisCompensationIdempotencyStore {
         Self {
             manager,
             key_prefix: key_prefix.into(),
+            #[cfg(test)]
+            write_gate: None,
             ttl_seconds: None,
         }
     }
@@ -915,11 +917,20 @@ impl PersistenceStore for PostgresPersistenceStore {
     }
 }
 
+#[cfg(all(test, feature = "persistence-redis"))]
+struct RedisWriteGate {
+    ready: tokio::sync::Semaphore,
+    release: tokio::sync::Semaphore,
+    expected: tokio::sync::Mutex<Option<String>>,
+}
+
 #[cfg(feature = "persistence-redis")]
 #[derive(Clone)]
 pub struct RedisPersistenceStore {
     manager: redis::aio::ConnectionManager,
     key_prefix: String,
+    #[cfg(test)]
+    write_gate: Option<std::sync::Arc<RedisWriteGate>>,
 }
 
 #[cfg(feature = "persistence-redis")]
@@ -942,6 +953,8 @@ impl RedisPersistenceStore {
         Ok(Self {
             manager,
             key_prefix: "ranvier:persistence".to_string(),
+            #[cfg(test)]
+            write_gate: None,
         })
     }
 
@@ -980,6 +993,12 @@ impl RedisPersistenceStore {
         let key = self.key(&trace.trace_id);
         let payload = serde_json::to_string(trace)?;
         let mut conn = self.manager.clone();
+        #[cfg(test)]
+        if let Some(gate) = &self.write_gate {
+            *gate.expected.lock().await = expected.map(str::to_owned);
+            gate.ready.add_permits(1);
+            gate.release.acquire().await?.forget();
+        }
         // Compare opaque JSON bytes: Lua must not round u64 payloads via cjson.
         let updated: i64 = redis::cmd("EVAL")
             .arg("local current = redis.call('GET', KEYS[1]); if ARGV[1] == '1' then if current ~= ARGV[2] then return 0 end else if current then return 0 end end; redis.call('SET', KEYS[1], ARGV[3]); return 1")
@@ -1500,6 +1519,109 @@ mod tests {
             "Redis clients: accepted={} conflicts={conflicts}",
             accepted.len() - 1
         );
+    }
+
+    #[cfg(feature = "persistence-redis")]
+    #[tokio::test]
+    #[ignore = "requires explicitly isolated Redis fixture URL"]
+    async fn redis_public_append_complete_controlled_orders() {
+        use std::sync::Arc;
+        use tokio::{
+            sync::Semaphore,
+            task::JoinSet,
+            time::{Duration, timeout},
+        };
+        let url = std::env::var("RANVIER_ATOMICITY_REDIS_URL").expect("explicit Redis fixture");
+        for completion_first in [true, false] {
+            let observer = RedisPersistenceStore::connect(&url).await.unwrap();
+            let trace_id = format!("order-{}", Uuid::new_v4().simple());
+            let mut seed = envelope(0, "Next");
+            seed.trace_id = trace_id.clone();
+            observer.append(seed).await.unwrap();
+            let mut expected = observer.load(&trace_id).await.unwrap().unwrap();
+            let original = observer.read_trace(&trace_id).await.unwrap().0;
+            let gate = || {
+                Arc::new(RedisWriteGate {
+                    ready: Semaphore::new(0),
+                    release: Semaphore::new(0),
+                    expected: tokio::sync::Mutex::new(None),
+                })
+            };
+            let append_gate = gate();
+            let complete_gate = gate();
+            let mut appender = RedisPersistenceStore::connect(&url).await.unwrap();
+            let mut completer = RedisPersistenceStore::connect(&url).await.unwrap();
+            appender.write_gate = Some(append_gate.clone());
+            completer.write_gate = Some(complete_gate.clone());
+            let mut event = envelope(1, "Next");
+            event.trace_id = trace_id.clone();
+            let event_copy = event.clone();
+            let id = trace_id.clone();
+            let mut workers = JoinSet::new();
+            workers.spawn(async move { (false, appender.append(event_copy).await) });
+            workers.spawn(async move {
+                (
+                    true,
+                    completer.complete(&id, CompletionState::Success).await,
+                )
+            });
+            let result = timeout(Duration::from_secs(10), async {
+                append_gate.ready.acquire().await.unwrap().forget();
+                complete_gate.ready.acquire().await.unwrap().forget();
+                assert_eq!(*append_gate.expected.lock().await, original);
+                assert_eq!(*complete_gate.expected.lock().await, original);
+                let (first, second) = if completion_first {
+                    (&complete_gate, &append_gate)
+                } else {
+                    (&append_gate, &complete_gate)
+                };
+                first.release.add_permits(1);
+                let (kind, outcome) = workers.join_next().await.unwrap().unwrap();
+                assert_eq!(kind, completion_first);
+                outcome.unwrap();
+                if completion_first {
+                    expected.completion = Some(CompletionState::Success);
+                } else {
+                    expected.events.push(event.clone());
+                }
+                assert_eq!(observer.load(&trace_id).await.unwrap().unwrap(), expected);
+                second.release.add_permits(1);
+                let (kind, outcome) = workers.join_next().await.unwrap().unwrap();
+                assert_eq!(kind, !completion_first);
+                assert!(
+                    outcome
+                        .unwrap_err()
+                        .to_string()
+                        .contains("concurrent persistence update")
+                );
+                assert_eq!(observer.load(&trace_id).await.unwrap().unwrap(), expected);
+                if !completion_first {
+                    observer
+                        .complete(&trace_id, CompletionState::Success)
+                        .await
+                        .unwrap();
+                    expected.completion = Some(CompletionState::Success);
+                }
+                let mut late = envelope(2, "Next");
+                late.trace_id = trace_id.clone();
+                assert!(
+                    observer
+                        .append(late)
+                        .await
+                        .unwrap_err()
+                        .to_string()
+                        .contains("already completed")
+                );
+                assert_eq!(observer.load(&trace_id).await.unwrap().unwrap(), expected);
+            })
+            .await;
+            workers.abort_all();
+            while workers.join_next().await.is_some() {}
+            result.expect("bounded public-method order fixture");
+            println!(
+                "REDIS_ORDER_PASS completion_first={completion_first} same-read controlled-writes exact-snapshot"
+            );
+        }
     }
 
     #[cfg(feature = "persistence-redis")]
