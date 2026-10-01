@@ -400,7 +400,7 @@ impl Transition<(), BrokenOutput> for BrokenBusiness {
 }
 
 #[tokio::test]
-async fn output_encoding_failure_after_effect_is_safe_over_tcp() {
+async fn output_encoding_failure_over_tcp_does_not_prove_recoverable_completion() {
     for persisted in [false, true] {
         let store = store(Failure::None, false);
         let effects = Arc::new(AtomicUsize::new(0));
@@ -427,6 +427,16 @@ async fn output_encoding_failure_after_effect_is_safe_over_tcp() {
             assert!(trace.events.iter().any(|event| {
                 event.outcome_kind == "Next" && event.payload == Some(serde_json::Value::Null)
             }));
+        } else {
+            assert_eq!(store.writes.load(Ordering::SeqCst), 0);
+            assert!(
+                store
+                    .backing
+                    .load("http-report-fixture")
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
         }
     }
 }
