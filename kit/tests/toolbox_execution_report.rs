@@ -1,5 +1,36 @@
 use ranvier::prelude::*;
 
+#[derive(Clone, serde::Deserialize)]
+struct BranchRequest {
+    category: String,
+}
+
+impl serde::Serialize for BranchRequest {
+    fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+        Err(serde::ser::Error::custom("private-toolbox-serializer"))
+    }
+}
+
+#[transition]
+async fn route_by_type(input: BranchRequest) -> Outcome<String, String> {
+    match input.category.as_str() {
+        "urgent" => match serde_json::to_value(&input) {
+            Ok(payload) => Outcome::Branch("urgent_path".into(), Some(payload)),
+            Err(_) => Outcome::Fault("Branch input could not be encoded".to_string()),
+        },
+        "normal" => Outcome::Next(input.category),
+        _ => Outcome::Fault("Unknown category".into()),
+    }
+}
+
+#[tokio::test]
+async fn toolbox_branch_encoding_failure_is_explicit_fault() {
+    let mut bus = Bus::new();
+    let outcome = route_by_type.run(BranchRequest { category: "urgent".into() }, &(), &mut bus).await;
+    assert!(matches!(outcome, Outcome::Fault(ref error) if error == "Branch input could not be encoded"));
+    assert!(!format!("{outcome:?}").contains("private-toolbox-serializer"));
+}
+
 #[transition]
 async fn validate(input: String) -> Outcome<String, String> {
     Outcome::Next(input)
