@@ -4198,6 +4198,99 @@ mod tests {
             }
         }
 
+        #[derive(Clone)]
+        struct NestedIamParent {
+            present: bool,
+            reject: bool,
+        }
+        #[async_trait]
+        impl Transition<i32, i32> for NestedIamParent {
+            type Error = String;
+            type Resources = ();
+            async fn run(&self, input: i32, _: &(), bus: &mut Bus) -> Outcome<i32, String> {
+                let before = bus
+                    .read::<IamIdentity>()
+                    .map(|v| serde_json::to_value(v).unwrap());
+                assert_eq!(before.is_some(), self.present);
+                let child = Axon::<i32, i32, String>::start("nested-iam-child")
+                    .with_iam(
+                        IamPolicy::RequireIdentity,
+                        MockVerifier {
+                            identity: IamIdentity::new("verified-child").with_role("child"),
+                            should_fail: self.reject,
+                        },
+                    )
+                    .then(CountCombinedRetry {
+                        calls: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                        failures: 0,
+                    });
+                let report = child.execute(input, &(), bus).await;
+                if self.reject {
+                    assert!(matches!(report, crate::ExecutionReport::Unpersisted {
+                        result: Outcome::Emit(label, None), .. } if label == "iam.verification_failed"));
+                } else {
+                    assert!(matches!(
+                        report,
+                        crate::ExecutionReport::Unpersisted {
+                            result: Outcome::Next(_),
+                            ..
+                        }
+                    ));
+                }
+                let after = bus
+                    .read::<IamIdentity>()
+                    .map(|v| serde_json::to_value(v).unwrap());
+                if before != after {
+                    return Outcome::Fault("parent_identity_scope_lost".into());
+                }
+                Outcome::Next(input)
+            }
+        }
+        #[tokio::test]
+        async fn nested_iam_preserves_parent_identity_and_absence() {
+            for present in [true, false] {
+                for reject in [false, true] {
+                    let mut bus = Bus::new();
+                    bus.insert(IamToken("fixture-token".into()));
+                    let mut parent = Axon::<i32, i32, String>::start("nested-iam-parent");
+                    if present {
+                        parent = parent.with_iam(
+                            IamPolicy::RequireIdentity,
+                            MockVerifier {
+                                identity: IamIdentity::new("verified-parent")
+                                    .with_role("parent")
+                                    .with_issuer("fixture-issuer")
+                                    .with_claim("scope", serde_json::json!(["parent"])),
+                                should_fail: false,
+                            },
+                        );
+                    }
+                    let report = parent
+                        .then(NestedIamParent { present, reject })
+                        .execute(7, &(), &mut bus)
+                        .await;
+                    assert!(
+                        matches!(
+                            report,
+                            crate::ExecutionReport::Unpersisted {
+                                result: Outcome::Next(7),
+                                ..
+                            }
+                        ),
+                        "nested IAM must preserve parent context (present={present}, reject={reject})"
+                    );
+                    assert_eq!(
+                        bus.read::<IamIdentity>().map(|v| v.subject.as_str()),
+                        if present {
+                            Some("verified-parent")
+                        } else {
+                            None
+                        }
+                    );
+                }
+            }
+        }
+
         #[tokio::test]
         async fn iam_rejected_requests_clear_previous_identity_without_effect() {
             for (policy, fail, token, expected) in [
