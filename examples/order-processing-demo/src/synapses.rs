@@ -119,7 +119,11 @@ impl InventorySynapse {
         Ok(())
     }
 
-    pub fn settle_refund(&self, order: &ValidatedOrder, refunded: bool) -> Result<(), String> {
+    pub fn settle_refund(
+        &self,
+        order: &ValidatedOrder,
+        confirmation: RefundConfirmation,
+    ) -> Result<(), String> {
         let mut ledger = self
             .reservations
             .lock()
@@ -130,7 +134,13 @@ impl InventorySynapse {
         if record.owner != order.reservation_owner || record.amount != order.payable_amount {
             return Err("Refund owner or amount mismatch".into());
         }
-        if refunded {
+        if confirmation.order_id != order.request.order_id
+            || confirmation.owner != record.owner
+            || confirmation.amount != record.amount
+        {
+            return Err("Refund confirmation mismatch".into());
+        }
+        if confirmation.refunded && confirmation.receipt.is_some() {
             record.payment = PaymentState::Refunded;
             Ok(())
         } else if matches!(
@@ -250,7 +260,7 @@ pub struct PaymentSynapse {
     #[cfg(test)]
     pub refund_behavior: RefundBehavior,
 }
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum ReceiptState {
     Pending,
     Declined,
@@ -275,22 +285,55 @@ pub enum RefundBehavior {
     Uncertain,
 }
 
+pub struct RefundConfirmation {
+    order_id: String,
+    owner: String,
+    amount: u32,
+    refunded: bool,
+    receipt: Option<String>,
+}
+impl RefundConfirmation {
+    fn from_order(order: &ValidatedOrder, refunded: bool, receipt: Option<String>) -> Self {
+        Self {
+            order_id: order.request.order_id.clone(),
+            owner: order.reservation_owner.clone(),
+            amount: order.payable_amount,
+            refunded,
+            receipt,
+        }
+    }
+}
+
 impl PaymentSynapse {
-    pub fn refund(&self, order: &ValidatedOrder) -> Result<bool, String> {
+    #[cfg(test)]
+    pub fn test_balance(&self, id: &str) -> (u32, bool) {
+        let ledger = self.records.lock().unwrap();
+        let record = &ledger[id];
+        (record.outstanding, record.state == ReceiptState::Refunded)
+    }
+    pub fn refund(&self, order: &ValidatedOrder) -> Result<RefundConfirmation, String> {
         {
             let mut records = self
                 .records
                 .lock()
                 .map_err(|_| "Payment ledger unavailable".to_owned())?;
             let Some(record) = records.get_mut(&order.request.order_id) else {
-                return Ok(false);
+                return Ok(RefundConfirmation::from_order(order, false, None));
             };
             if record.owner != order.reservation_owner || record.amount != order.payable_amount {
                 return Err("Refund owner or amount mismatch".into());
             }
             match record.state {
-                ReceiptState::Declined => return Ok(false),
-                ReceiptState::Refunded => return Ok(true),
+                ReceiptState::Declined => {
+                    return Ok(RefundConfirmation::from_order(order, false, None));
+                }
+                ReceiptState::Refunded => {
+                    return Ok(RefundConfirmation::from_order(
+                        order,
+                        true,
+                        record.receipt.clone(),
+                    ));
+                }
                 ReceiptState::Approved
                     if record.receipt.is_some() && record.outstanding == record.amount => {}
                 _ => return Err("Refund requires reconciliation".into()),
@@ -314,7 +357,11 @@ impl PaymentSynapse {
             .ok_or_else(|| "Payment record missing".to_owned())?;
         record.outstanding = 0;
         record.state = ReceiptState::Refunded;
-        Ok(true)
+        Ok(RefundConfirmation::from_order(
+            order,
+            true,
+            record.receipt.clone(),
+        ))
     }
 }
 
@@ -495,5 +542,43 @@ mod tests {
         assert!(db.release(&reserved).is_err());
         assert_eq!(db.inventory.lock().unwrap()["p"].stock, 4);
         assert!(!db.reservations.lock().unwrap()[&reserved.request.order_id].released);
+    }
+
+    #[tokio::test]
+    async fn refund_binds_receipt_owner_amount_and_is_idempotent() {
+        let payment = PaymentSynapse::default();
+        let charged = order(vec!["p".into()]);
+        assert!(payment.call(charged.clone()).await.unwrap());
+        let mut stranger = charged.clone();
+        stranger.reservation_owner = "other".into();
+        assert!(payment.refund(&stranger).is_err());
+        stranger = charged.clone();
+        stranger.payable_amount += 1;
+        assert!(payment.refund(&stranger).is_err());
+        assert_eq!(payment.test_balance(&charged.request.order_id), (10, false));
+        let first = payment.refund(&charged).unwrap();
+        let second = payment.refund(&charged).unwrap();
+        assert!(first.refunded && second.refunded);
+        assert_eq!(first.receipt, second.receipt);
+        assert!(first.receipt.is_some());
+        assert_eq!(payment.test_balance(&charged.request.order_id), (0, true));
+        assert!(payment.call(charged).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn dropped_pending_payment_cannot_be_refunded_or_replayed() {
+        let payment = PaymentSynapse::default();
+        let charged = order(vec!["p".into()]);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), payment.call(charged.clone()))
+                .await
+                .is_err()
+        );
+        assert!(payment.refund(&charged).is_err());
+        assert!(payment.call(charged.clone()).await.is_err());
+        assert_eq!(
+            payment.records.lock().unwrap()[&charged.request.order_id].state,
+            ReceiptState::Pending
+        );
     }
 }

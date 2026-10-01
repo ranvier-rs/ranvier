@@ -411,4 +411,41 @@ mod price_tests {
         assert_eq!(res.inventory.inventory.lock().unwrap()["p"].stock, 4);
         assert_eq!(*res.payment.attempted_amounts.lock().unwrap(), vec![10]);
     }
+
+    #[tokio::test]
+    async fn actual_refund_hook_restores_only_after_confirmed_refund() {
+        use crate::synapses::RefundBehavior;
+        for (behavior, complete) in [
+            (RefundBehavior::Complete, true),
+            (RefundBehavior::Fault, false),
+            (RefundBehavior::Uncertain, false),
+            (RefundBehavior::Panic, false),
+        ] {
+            let mut res = resources(10);
+            res.payment.refund_behavior = behavior;
+            let axon =
+                Axon::<OrderRequest, OrderRequest, String, OrderResources>::new("refund-test")
+                    .with_saga_policy(SagaPolicy::Enabled)
+                    .then_compensated(ValidateOrder, ValidationNoEffect)
+                    .then_compensated(ReserveInventory, ReleaseInventory)
+                    .then_compensated(ProcessPayment, RefundPayment)
+                    .then_compensated(RejectDownstream, FailureNoEffect);
+            let report = axon
+                .execute(request(vec!["p".into()], 10), &res, &mut Bus::new())
+                .await;
+            assert_eq!(report.cleanup().unwrap().is_complete(), complete);
+            if complete {
+                assert!(matches!(
+                    crate::local_demo_outcome(report).unwrap(),
+                    Outcome::Fault(_)
+                ));
+                assert_eq!(res.inventory.inventory.lock().unwrap()["p"].stock, 5);
+                assert_eq!(res.payment.test_balance("fixture"), (0, true));
+            } else {
+                assert!(crate::local_demo_outcome(report).is_err());
+                assert_eq!(res.inventory.inventory.lock().unwrap()["p"].stock, 4);
+                assert_eq!(res.payment.test_balance("fixture"), (10, false));
+            }
+        }
+    }
 }

@@ -86,8 +86,8 @@ resume authority. The internal serialized type alone does not authorize replay
 or bypassing validation. Real catalog versions, ledger ownership, authentication,
 and idempotency require separate integration work.
 
-Payment records local attempted amounts for regression evidence. Both payment
-and shipping are simulated; this record is not a durable payment receipt.
+Payment records local attempts and owned simulated receipts with settled balance.
+Both payment and shipping are simulated; these are not remote payment receipts.
 Confirmed payment decline now releases the recorded reservation before returning
 the decline Branch. Runtime automatic Saga compensation runs on Fault, not
 Branch; the reservation step also has an explicit release hook for faults.
@@ -98,10 +98,19 @@ released IDs, cannot be reserved again in this ledger. The finite demo ledger
 retains at most 1000 records and then requires reconciliation.
 
 Payment starts in Pending before the simulated call. Pending or Approved payment
-prevents release: downstream failure after charge preserves reservation and
-returns incomplete cleanup, requiring reconciliation. Refund and terminal
-fulfillment records remain OPEN. Pending-state tests do not prove actual process
-crash/cancellation recovery. Real gateway/database recovery is not proven here.
+prevents release until refund is confirmed. The ProcessPayment compensation hook
+consults the actual local payment record and returns a confirmation bound to
+order, invocation owner, amount and receipt; only then can the reservation become
+Refunded and be released. Repeated refund returns the same receipt and cannot
+refund twice. Failed, panicked or uncertain refund retains the outstanding amount
+and reservation and returns incomplete cleanup, requiring reconciliation.
+
+Tests exercise a pure downstream rejection after charge with the real refund
+hook, including injected Fault/panic/uncertainty. Shipping itself currently always
+succeeds and has no reversal hook; real dispatch failure/ambiguity and terminal
+fulfillment records remain OPEN. A timeout test drops the local pending payment
+future and verifies replay/refund rejection, but does not prove process crash or
+whole-runtime cancellation recovery. Real gateway/database recovery is unproven.
 
 Use one OrderResources/InventorySynapse instance for this process-local fixture.
 Creating separate InventorySynapse instances over the same inventory Arc creates
