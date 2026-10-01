@@ -3,7 +3,7 @@
 mod en {
 use ranvier::prelude::*;
 use ranvier::{ExecutionReport, CompletionConfirmation};
-use ranvier::persistence::{InMemoryPersistenceStore, PersistenceHandle, PersistenceStore, PersistenceTraceId, PersistenceAutoComplete};
+use ranvier_runtime::persistence::{InMemoryPersistenceStore, PersistenceHandle, PersistenceStore, PersistenceTraceId, PersistenceAutoComplete};
 
 #[derive(Clone)]
 struct ValidateInput;
@@ -56,11 +56,10 @@ async fn explicit_completion_owner() {
     let handle = PersistenceHandle::from_store(store.clone());
     let input = "pattern".to_string();
     let axon = Axon::<String, String, String>::new("pattern").then(ValidateInput);
-let mut bus = ranvier_bus!(
-    handle.clone(),
-    PersistenceTraceId::new("trace-001"),
-    PersistenceAutoComplete(false),
-);
+let mut bus = Bus::new();
+bus.insert(handle.clone());
+bus.insert(PersistenceTraceId::new("trace-001"));
+bus.insert(PersistenceAutoComplete(false));
 let report = axon.execute(input, &(), &mut bus).await;
 // AutoComplete(false) records events without certifying terminal completion.
 let events_recorded = matches!(&report,
@@ -79,7 +78,7 @@ if !events_recorded {
 mod ko {
 use ranvier::prelude::*;
 use ranvier::{ExecutionReport, CompletionConfirmation};
-use ranvier::persistence::{InMemoryPersistenceStore, PersistenceHandle, PersistenceStore, PersistenceTraceId, PersistenceAutoComplete};
+use ranvier_runtime::persistence::{InMemoryPersistenceStore, PersistenceHandle, PersistenceStore, PersistenceTraceId, PersistenceAutoComplete};
 
 #[derive(Clone)]
 struct ValidateInput;
@@ -132,11 +131,10 @@ async fn explicit_completion_owner() {
     let handle = PersistenceHandle::from_store(store.clone());
     let input = "pattern".to_string();
     let axon = Axon::<String, String, String>::new("pattern").then(ValidateInput);
-let mut bus = ranvier_bus!(
-    handle.clone(),
-    PersistenceTraceId::new("trace-001"),
-    PersistenceAutoComplete(false),
-);
+let mut bus = Bus::new();
+bus.insert(handle.clone());
+bus.insert(PersistenceTraceId::new("trace-001"));
+bus.insert(PersistenceAutoComplete(false));
 let report = axon.execute(input, &(), &mut bus).await;
 // AutoComplete(false) records events without certifying terminal completion.
 let events_recorded = matches!(&report,
