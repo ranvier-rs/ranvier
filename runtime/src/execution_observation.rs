@@ -720,6 +720,7 @@ pub(crate) struct Session {
     previous: Option<ActiveObservation>,
     previous_trace: Option<InvocationTrace>,
     previous_identity: Option<ranvier_core::bus::BusResourceScope>,
+    previous_token: Option<ranvier_core::bus::BusResourceScope>,
     previous_dlq_policy: Option<ranvier_core::event::DlqPolicy>,
     previous_dlq_sink: Option<Arc<dyn ranvier_core::event::DlqSink>>,
     previous_schematic: Option<ranvier_core::schematic::Schematic>,
@@ -736,6 +737,9 @@ impl Session {
         let previous_identity = previous
             .as_ref()
             .map(|_| bus.begin_resource_scope::<ranvier_core::iam::IamIdentity>());
+        let previous_token = previous
+            .as_ref()
+            .map(|_| bus.begin_resource_scope::<ranvier_core::iam::IamToken>());
         let previous_dlq_policy = bus.read::<ranvier_core::event::DlqPolicy>().cloned();
         let previous_dlq_sink = bus.read::<Arc<dyn ranvier_core::event::DlqSink>>().cloned();
         let previous_schematic = bus.read::<ranvier_core::schematic::Schematic>().cloned();
@@ -767,6 +771,7 @@ impl Session {
             previous,
             previous_trace,
             previous_identity,
+            previous_token,
             previous_dlq_policy,
             previous_dlq_sink,
             previous_schematic,
@@ -816,6 +821,9 @@ impl Session {
         let _ = bus.remove::<InvocationTrace>();
         if let Some(trace) = self.previous_trace {
             bus.insert(trace);
+        }
+        if let Some(scope) = self.previous_token {
+            bus.restore_resource_scope(scope);
         }
         if let Some(scope) = self.previous_identity {
             bus.restore_resource_scope(scope);
