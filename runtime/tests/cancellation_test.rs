@@ -305,6 +305,67 @@ async fn pre_cancelled_execution_does_not_write_when_persistence_cursor_load_fai
 }
 
 #[tokio::test]
+async fn unknown_entry_cursor_blocks_normal_and_cancellable_execution() {
+    for cancellable in [false, true] {
+        let store = Arc::new(FailedCursorPersistenceStore::default());
+        let original: Arc<dyn PersistenceStore> = store.clone();
+        let calls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let axon = Axon::<i32, i32, String>::start("UnknownEntry").then(WaitForCancellation {
+            entered: Arc::new(Notify::new()),
+            observed_token: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(original.clone()));
+        bus.insert(PersistenceTraceId::new("unknown-entry"));
+        bus.insert(CompensationHandle::from_hook(RecordingCompensation {
+            calls: calls.clone(),
+        }));
+        let encoded = if cancellable {
+            let report = tokio::time::timeout(
+                Duration::from_secs(2),
+                axon.execute_cancellable(0, &(), &mut bus, CancellationToken::new()),
+            )
+            .await
+            .expect("unknown cursor must block before waiting transition");
+            assert!(matches!(
+                report,
+                ExecutionReport::BlockedBeforeEffect {
+                    operation: PersistenceOperation::Load,
+                    effect: EffectBoundary::NotInvoked,
+                }
+            ));
+            serde_json::to_value(report).unwrap()
+        } else {
+            let report =
+                tokio::time::timeout(Duration::from_secs(2), axon.execute(0, &(), &mut bus))
+                    .await
+                    .expect("unknown cursor must block before waiting transition");
+            assert!(matches!(
+                report,
+                ExecutionReport::BlockedBeforeEffect {
+                    operation: PersistenceOperation::Load,
+                    effect: EffectBoundary::NotInvoked,
+                }
+            ));
+            serde_json::to_value(report).unwrap()
+        };
+        assert!(
+            encoded.get("result").is_none(),
+            "no fabricated terminal outcome"
+        );
+        assert!(!encoded.to_string().contains("database cursor unavailable"));
+        assert_eq!(store.loads.load(Ordering::SeqCst), 1);
+        assert_eq!(store.appends.load(Ordering::SeqCst), 0);
+        assert_eq!(store.completions.load(Ordering::SeqCst), 0);
+        assert!(calls.lock().await.is_empty());
+        assert!(Arc::ptr_eq(
+            &bus.read::<PersistenceHandle>().unwrap().store(),
+            &original
+        ));
+    }
+}
+
+#[tokio::test]
 async fn pre_cancelled_persisted_execution_records_entry_before_terminal() {
     let observed = Arc::new(AtomicUsize::new(0));
     let store = Arc::new(InMemoryPersistenceStore::new());
