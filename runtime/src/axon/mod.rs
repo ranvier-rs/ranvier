@@ -1724,7 +1724,7 @@ mod tests {
             .append(crate::persistence::PersistenceEnvelope {
                 trace_id: trace_id.to_string(),
                 circuit: "AuditTest".to_string(),
-                schematic_version: "v1.0".to_string(),
+                schematic_version: axon.schematic.schema_version.clone(),
                 step: 0,
                 node_id: None,
                 outcome_kind: "Next".to_string(),
@@ -1741,7 +1741,13 @@ mod tests {
             .unwrap();
 
         // 2. Execute (should log ApplyIntervention)
-        axon.execute(10, &(), &mut bus).await;
+        assert!(matches!(
+            axon.execute(10, &(), &mut bus).await,
+            crate::ExecutionReport::Recorded {
+                result: Outcome::Next(11),
+                completion: crate::CompletionConfirmation::Confirmed,
+            }
+        ));
 
         let recorded = events.lock().await;
         assert_eq!(
