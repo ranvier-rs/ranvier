@@ -226,9 +226,9 @@ impl<T: Serialize> IntoResponse for Json<T> {
                     .header(CONTENT_TYPE, "application/json"),
                 boxed_body(bytes),
             ),
-            Err(e) => json_error_response(
+            Err(_) => json_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("JSON serialization failed: {e}"),
+                "JSON response could not be encoded",
             ),
         }
     }
@@ -243,9 +243,9 @@ impl<T: Serialize> IntoResponse for (StatusCode, Json<T>) {
                     .header(CONTENT_TYPE, "application/json"),
                 boxed_body(bytes),
             ),
-            Err(e) => json_error_response(
+            Err(_) => json_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("JSON serialization failed: {e}"),
+                "JSON response could not be encoded",
             ),
         }
     }
@@ -718,6 +718,31 @@ mod tests {
     }
 
     // ── outcome_to_json_response tests ──
+
+    #[tokio::test]
+    async fn json_encoding_failure_is_safe_for_both_response_forms() {
+        use http_body_util::BodyExt;
+
+        struct Broken;
+        impl serde::Serialize for Broken {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("private-serializer-probe"))
+            }
+        }
+
+        for response in [
+            Json(Broken).into_response(),
+            (StatusCode::CREATED, Json(Broken)).into_response(),
+            outcome_to_json_response::<_, String>(Outcome::Next(Broken)),
+        ] {
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(response.headers()[CONTENT_TYPE], "application/json");
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "JSON response could not be encoded");
+            assert!(!body.to_string().contains("private-serializer-probe"));
+        }
+    }
 
     #[test]
     fn outcome_to_json_response_serializes_struct() {
