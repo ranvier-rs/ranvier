@@ -69,7 +69,7 @@ pub struct TestAxon;
 impl TestAxon {
     /// Execute an Axon with the given input, resources, and pre-built Bus.
     ///
-    /// Returns the `Outcome` and the Bus (for post-execution inspection).
+    /// Returns the execution report and the Bus (for post-execution inspection).
     ///
     /// # Example
     ///
@@ -84,7 +84,7 @@ impl TestAxon {
         input: In,
         resources: &Res,
         test_bus: TestBus,
-    ) -> (Outcome<Out, E>, Bus)
+    ) -> (ranvier_runtime::ExecutionReport<Outcome<Out, E>>, Bus)
     where
         In: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         Out: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,

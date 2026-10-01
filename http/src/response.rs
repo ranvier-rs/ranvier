@@ -12,6 +12,38 @@ use crate::extract::Json;
 pub type HttpResponse = Response<BoxBody<Bytes, Infallible>>;
 pub type RanvierResponse = HttpResponse;
 
+/// Shared default rejection policy for an execution whose durability is unknown.
+/// Domain results stay in the report; backend/serialization error text is absent.
+pub(crate) fn durability_rejection<T: Serialize>(
+    report: &ranvier_runtime::ExecutionReport<T>,
+) -> Option<(StatusCode, serde_json::Value)> {
+    use ranvier_runtime::{EffectBoundary, ExecutionReport};
+    let (status, reconciliation) = match report {
+        ExecutionReport::Unconfirmed { .. } => (StatusCode::CONFLICT, true),
+        ExecutionReport::BlockedBeforeEffect { effect, .. } => {
+            if *effect == EffectBoundary::MayHaveRun {
+                (StatusCode::CONFLICT, true)
+            } else {
+                (StatusCode::SERVICE_UNAVAILABLE, false)
+            }
+        }
+        _ => return None,
+    };
+    match serde_json::to_value(report) {
+        Ok(mut payload) => {
+            payload["reconciliation_required"] = reconciliation.into();
+            Some((status, payload))
+        }
+        Err(_) => Some((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({
+                "error": "Execution report could not be encoded",
+                "reconciliation_required": true
+            }),
+        )),
+    }
+}
+
 pub trait IntoResponse {
     fn into_response(self) -> HttpResponse;
 }

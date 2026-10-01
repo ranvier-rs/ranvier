@@ -42,7 +42,10 @@ pub use ranvier_inspector::{Inspector, StateInspector};
 pub use ranvier_openapi::{OpenApiDocument, OpenApiGenerator, swagger_ui_html};
 #[cfg(feature = "streaming")]
 pub use ranvier_runtime::CancellableStreamingError;
-pub use ranvier_runtime::{Axon, ExecutionTerminal};
+pub use ranvier_runtime::{
+    Axon, CompletionConfirmation, EffectBoundary, ExecutionReport, ExecutionTerminal,
+    PersistenceOperation,
+};
 
 pub mod prelude {
     pub use ranvier_core::prelude::*;

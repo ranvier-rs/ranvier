@@ -12,15 +12,15 @@ use http::header::CONTENT_TYPE;
 use http::{Request, Response, StatusCode};
 use http_body_util::Full;
 use ranvier_core::prelude::*;
-use ranvier_runtime::Axon;
+use ranvier_runtime::{Axon, ExecutionReport};
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-/// Maps an Axon [`Outcome`] plus execution [`Bus`] into an HTTP response.
+/// Maps an Axon execution report plus execution [`Bus`] into an HTTP response.
 pub type ResponseMapper<Out, E> =
-    Arc<dyn Fn(Outcome<Out, E>, &Bus) -> Response<Full<Bytes>> + Send + Sync>;
+    Arc<dyn Fn(ExecutionReport<Outcome<Out, E>>, &Bus) -> Response<Full<Bytes>> + Send + Sync>;
 
 /// The foundational logic engine service.
 /// Adapts HTTP requests to Axon executions.
@@ -49,14 +49,17 @@ where
         }
     }
 
-    /// Override the default `Outcome -> HTTP` mapping.
+    /// Override the default `ExecutionReport -> HTTP` mapping.
     ///
     /// The low-level service keeps ingress conversion and egress conversion
     /// explicit: the converter builds the Axon input and Bus, while this mapper
     /// decides how each Outcome variant is represented at the protocol boundary.
     pub fn with_response_mapper<M>(mut self, mapper: M) -> Self
     where
-        M: Fn(Outcome<Out, E>, &Bus) -> Response<Full<Bytes>> + Send + Sync + 'static,
+        M: Fn(ExecutionReport<Outcome<Out, E>>, &Bus) -> Response<Full<Bytes>>
+            + Send
+            + Sync
+            + 'static,
     {
         self.response_mapper = Arc::new(mapper);
         self
@@ -99,7 +102,37 @@ where
     }
 }
 
-fn default_response_mapper<Out, E>(outcome: Outcome<Out, E>, _bus: &Bus) -> Response<Full<Bytes>>
+fn default_response_mapper<Out, E>(
+    report: ExecutionReport<Outcome<Out, E>>,
+    bus: &Bus,
+) -> Response<Full<Bytes>>
+where
+    Out: serde::Serialize,
+    E: serde::Serialize + std::fmt::Debug,
+{
+    if let Some((status, payload)) = crate::response::durability_rejection(&report) {
+        return json_value_response(status, payload);
+    }
+    let (outcome, durability) = match report {
+        ExecutionReport::Unpersisted { result } => (result, "unpersisted"),
+        ExecutionReport::NotRequested { result } => (result, "not_requested"),
+        ExecutionReport::Recorded { result, .. } => (result, "recorded"),
+        _ => {
+            return json_value_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({"error":"Execution durability requires reconciliation"}),
+            );
+        }
+    };
+    let mut response = domain_response_mapper(outcome, bus);
+    response.headers_mut().insert(
+        "ranvier-durability",
+        http::HeaderValue::from_static(durability),
+    );
+    response
+}
+
+fn domain_response_mapper<Out, E>(outcome: Outcome<Out, E>, _bus: &Bus) -> Response<Full<Bytes>>
 where
     Out: serde::Serialize,
     E: serde::Serialize + std::fmt::Debug,

@@ -169,10 +169,62 @@ where
         None => request_token,
     };
 
-    match circuit
+    let report = circuit
         .execute_cancellable(input, resources, bus, execution_token)
-        .await
-    {
+        .await;
+    // Keep cancellation metadata distinct from ordinary domain control flow.
+    let report = match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result }
+        | ranvier_runtime::ExecutionReport::NotRequested { result }
+        | ranvier_runtime::ExecutionReport::Recorded { result, .. } => result,
+        ranvier_runtime::ExecutionReport::Unconfirmed {
+            result,
+            operation,
+            effect,
+        } => {
+            let value = match result {
+                ExecutionTerminal::Outcome(outcome) => outcome.to_json_value(),
+                ExecutionTerminal::Cancelled(context) => serde_json::json!({"cancelled": context}),
+            };
+            let report = ranvier_runtime::ExecutionReport::Unconfirmed {
+                result: value,
+                operation,
+                effect,
+            };
+            if let Some((status, payload)) = crate::response::durability_rejection(&report) {
+                return Err(build_response(
+                    Response::builder()
+                        .status(status)
+                        .header("content-type", "application/json"),
+                    boxed_body(payload.to_string()),
+                ));
+            }
+            return Err(json_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Execution durability requires reconciliation",
+            ));
+        }
+        ranvier_runtime::ExecutionReport::BlockedBeforeEffect { operation, effect } => {
+            let report =
+                ranvier_runtime::ExecutionReport::<serde_json::Value>::BlockedBeforeEffect {
+                    operation,
+                    effect,
+                };
+            if let Some((status, payload)) = crate::response::durability_rejection(&report) {
+                return Err(build_response(
+                    Response::builder()
+                        .status(status)
+                        .header("content-type", "application/json"),
+                    boxed_body(payload.to_string()),
+                ));
+            }
+            return Err(json_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Execution durability requires reconciliation",
+            ));
+        }
+    };
+    match report {
         ExecutionTerminal::Outcome(outcome) => Ok(outcome),
         ExecutionTerminal::Cancelled(context) => Err(cancellation_http_response(&context)),
     }
