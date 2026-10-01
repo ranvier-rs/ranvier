@@ -1316,7 +1316,11 @@ mod tests {
     #[ignore = "requires explicitly isolated backend fixture URL"]
     async fn postgres_store_roundtrip_when_configured() {
         let url = std::env::var("RANVIER_PERSISTENCE_POSTGRES_URL")
-            .expect("explicit isolated backend fixture URL required");
+            .unwrap_or_else(|_| panic!("explicit isolated backend fixture URL required"));
+        assert!(
+            !url.trim().is_empty(),
+            "explicit backend fixture URL must not be empty"
+        );
 
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(5)
@@ -1809,7 +1813,11 @@ mod tests {
     #[ignore = "requires explicitly isolated backend fixture URL"]
     async fn redis_store_roundtrip_when_configured() {
         let url = std::env::var("RANVIER_PERSISTENCE_REDIS_URL")
-            .expect("explicit isolated backend fixture URL required");
+            .unwrap_or_else(|_| panic!("explicit isolated backend fixture URL required"));
+        assert!(
+            !url.trim().is_empty(),
+            "explicit backend fixture URL must not be empty"
+        );
 
         let base = RedisPersistenceStore::connect(&url).await.unwrap();
         let prefix = format!("ranvier:persistence:test:{}", Uuid::new_v4().simple());
@@ -1855,7 +1863,11 @@ mod tests {
     #[ignore = "requires explicitly isolated backend fixture URL"]
     async fn postgres_compensation_idempotency_roundtrip_when_configured() {
         let url = std::env::var("RANVIER_PERSISTENCE_POSTGRES_URL")
-            .expect("explicit isolated backend fixture URL required");
+            .unwrap_or_else(|_| panic!("explicit isolated backend fixture URL required"));
+        assert!(
+            !url.trim().is_empty(),
+            "explicit backend fixture URL must not be empty"
+        );
 
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(5)
@@ -1886,7 +1898,11 @@ mod tests {
     #[ignore = "requires explicitly isolated backend fixture URL"]
     async fn postgres_compensation_idempotency_purge_when_configured() {
         let url = std::env::var("RANVIER_PERSISTENCE_POSTGRES_URL")
-            .expect("explicit isolated backend fixture URL required");
+            .unwrap_or_else(|_| panic!("explicit isolated backend fixture URL required"));
+        assert!(
+            !url.trim().is_empty(),
+            "explicit backend fixture URL must not be empty"
+        );
 
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(5)
@@ -1932,7 +1948,11 @@ mod tests {
     #[ignore = "requires explicitly isolated backend fixture URL"]
     async fn redis_compensation_idempotency_roundtrip_when_configured() {
         let url = std::env::var("RANVIER_PERSISTENCE_REDIS_URL")
-            .expect("explicit isolated backend fixture URL required");
+            .unwrap_or_else(|_| panic!("explicit isolated backend fixture URL required"));
+        assert!(
+            !url.trim().is_empty(),
+            "explicit backend fixture URL must not be empty"
+        );
 
         let base = RedisCompensationIdempotencyStore::connect(&url)
             .await
@@ -1960,7 +1980,11 @@ mod tests {
     #[ignore = "requires explicitly isolated backend fixture URL"]
     async fn redis_compensation_idempotency_ttl_when_configured() {
         let url = std::env::var("RANVIER_PERSISTENCE_REDIS_URL")
-            .expect("explicit isolated backend fixture URL required");
+            .unwrap_or_else(|_| panic!("explicit isolated backend fixture URL required"));
+        assert!(
+            !url.trim().is_empty(),
+            "explicit backend fixture URL must not be empty"
+        );
 
         let base = RedisCompensationIdempotencyStore::connect(&url)
             .await
