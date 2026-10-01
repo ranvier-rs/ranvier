@@ -4016,6 +4016,86 @@ mod tests {
             }
         }
 
+        #[tokio::test(flavor = "current_thread")]
+        async fn iam_denial_logs_and_payloads_redact_private_context() {
+            let logs = Arc::new(StdMutex::new(Vec::new()));
+            let writer_logs = logs.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .without_time()
+                .with_ansi(false)
+                .with_target(false)
+                .with_writer(move || CapturedLogWriter(writer_logs.clone()))
+                .finish();
+            {
+                let _guard = tracing::subscriber::set_default(subscriber);
+                for (policy, fail, token, expected) in [
+                    (IamPolicy::RequireIdentity, false, None, "iam.missing_token"),
+                    (
+                        IamPolicy::RequireIdentity,
+                        true,
+                        Some("private-token-marker"),
+                        "iam.verification_failed",
+                    ),
+                    (
+                        IamPolicy::RequireRole("private-role-marker".into()),
+                        false,
+                        Some("private-token-marker"),
+                        "iam.policy_denied",
+                    ),
+                ] {
+                    let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+                    let axon = Axon::<i32, i32, String>::start("iam-private-context")
+                        .with_iam(
+                            policy,
+                            MockVerifier {
+                                identity: IamIdentity::new("private-subject-marker")
+                                    .with_role("private-claim-marker"),
+                                should_fail: fail,
+                            },
+                        )
+                        .then(CountCombinedRetry {
+                            calls: calls.clone(),
+                            failures: 0,
+                        });
+                    let mut bus = Bus::new();
+                    bus.insert(IamIdentity::new("private-old-subject-marker"));
+                    if let Some(token) = token {
+                        bus.insert(IamToken(token.into()));
+                    }
+                    let report = axon.execute(7, &(), &mut bus).await;
+                    assert!(matches!(report, crate::ExecutionReport::Unpersisted {
+                        result: Outcome::Emit(label, None), ..
+                    } if label == expected));
+                    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+                    assert!(bus.read::<IamIdentity>().is_none());
+                }
+            }
+            let output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+            for message in [
+                "IAM policy requires token",
+                "IAM token verification failed",
+                "IAM policy enforcement failed",
+            ] {
+                assert!(
+                    output.contains(message),
+                    "missing operational message: {message}"
+                );
+            }
+            for marker in [
+                "private-token-marker",
+                "private-role-marker",
+                "private-subject-marker",
+                "private-claim-marker",
+                "private-old-subject-marker",
+                "secret-verifier-detail",
+            ] {
+                assert!(
+                    !output.contains(marker),
+                    "private IAM marker leaked: {marker}"
+                );
+            }
+        }
+
         #[tokio::test]
         async fn iam_rejected_requests_clear_previous_identity_without_effect() {
             for (policy, fail, token, expected) in [
