@@ -78,7 +78,9 @@ let axon = Axon::<BalanceUpdate, BalanceUpdate, DbError, BalanceDb>::new("update
     // Two readers of one version: exactly one succeeds; the other is a conflict.
     let Outcome::Next(first) = FetchBalance.run(BalanceUpdate { account_id: 1, amount: 10 }, &db, &mut bus).await else { panic!("load") };
     let second = first.clone();
-    let (a, b) = tokio::join!(UpdateBalance.run(first, &db, &mut Bus::new()), UpdateBalance.run(second, &db, &mut Bus::new()));
+    let mut first_bus = Bus::new();
+    let mut second_bus = Bus::new();
+    let (a, b) = tokio::join!(UpdateBalance.run(first, &db, &mut first_bus), UpdateBalance.run(second, &db, &mut second_bus));
     assert_eq!([&a, &b].iter().filter(|value| matches!(value, Outcome::Next(_))).count(), 1);
     assert_eq!([&a, &b].iter().filter(|value| matches!(value, Outcome::Fault(DbError::Conflict))).count(), 1);
     // Balance changes and changes back, but the original version stays stale.
