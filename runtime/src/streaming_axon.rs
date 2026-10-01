@@ -372,6 +372,9 @@ where
                 Box::pin(async move {
                     let stream = match stream_executor(input, res, bus).await {
                         Ok(s) => s,
+                        Err(StreamingAxonError::IamRejected(event)) => {
+                            return Outcome::emit(event, None);
+                        }
                         Err(e) => return Outcome::Fault(format!("{}", e)),
                     };
 
