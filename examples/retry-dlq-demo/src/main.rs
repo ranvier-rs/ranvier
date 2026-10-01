@@ -66,6 +66,16 @@ struct PaymentResult {
     status: String,
 }
 
+impl PaymentRequest {
+    fn is_valid(&self) -> bool {
+        !self.order_id.trim().is_empty()
+            && self.order_id.len() <= 128
+            && !self.order_id.chars().any(char::is_control)
+            && self.amount.is_finite()
+            && self.amount > 0.0
+    }
+}
+
 // ============================================================================
 // In-Memory DLQ Sink
 // ============================================================================
@@ -143,6 +153,9 @@ impl Transition<PaymentRequest, PaymentResult> for TransientPaymentGateway {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<PaymentResult, Self::Error> {
+        if !input.is_valid() {
+            return Outcome::Fault("invalid_payment_request".into());
+        }
         let attempt = self.fail_count.fetch_add(1, Ordering::SeqCst);
         if attempt < self.failures_before_success {
             println!(
@@ -176,10 +189,13 @@ impl Transition<PaymentRequest, PaymentResult> for AlwaysFailGateway {
 
     async fn run(
         &self,
-        _input: PaymentRequest,
+        input: PaymentRequest,
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<PaymentResult, Self::Error> {
+        if !input.is_valid() {
+            return Outcome::Fault("invalid_payment_request".into());
+        }
         self.attempts.fetch_add(1, Ordering::SeqCst);
         Outcome::Fault("service_unavailable".to_string())
     }
@@ -233,6 +249,9 @@ impl Transition<PaymentRequest, PaymentResult> for CircuitBreakerGateway {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<PaymentResult, Self::Error> {
+        if !input.is_valid() {
+            return Outcome::Fault("invalid_payment_request".into());
+        }
         let mut state = self.state.lock().await;
 
         // Check circuit state
@@ -306,6 +325,9 @@ impl Transition<PaymentRequest, PaymentRequest> for SlowValidation {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<PaymentRequest, Self::Error> {
+        if !input.is_valid() {
+            return Outcome::Fault("invalid_payment_request".into());
+        }
         // Simulate a slow external validation call
         let timeout_duration = std::time::Duration::from_millis(100);
         let work = async {
@@ -334,6 +356,9 @@ impl Transition<PaymentRequest, PaymentRequest> for FastValidation {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<PaymentRequest, Self::Error> {
+        if !input.is_valid() {
+            return Outcome::Fault("invalid_payment_request".into());
+        }
         let timeout_duration = std::time::Duration::from_millis(100);
         let result = input.clone();
         let work = async {
@@ -622,6 +647,62 @@ mod tests {
         assert!(matches!(call_breaker(gateway.clone()).await,
             Outcome::Next(value) if value.status == "charged"));
         assert_eq!(gateway.inner_fail_count.load(Ordering::SeqCst), 5);
+    }
+
+    #[tokio::test]
+    async fn invalid_requests_do_not_invoke_gateways_or_change_breaker() {
+        let transient = TransientPaymentGateway::new(0);
+        let attempts = Arc::new(AtomicU32::new(0));
+        let always_fail = AlwaysFailGateway {
+            attempts: attempts.clone(),
+        };
+        let breaker = CircuitBreakerGateway::new(2, std::time::Duration::from_secs(60), 3);
+        let mut requests: Vec<_> = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0]
+            .into_iter()
+            .map(|amount| PaymentRequest {
+                order_id: "valid".into(),
+                amount,
+            })
+            .collect();
+        for order_id in [
+            "".into(),
+            " ".into(),
+            "x".repeat(129),
+            "bad\nidentifier".into(),
+        ] {
+            requests.push(PaymentRequest {
+                order_id,
+                amount: 1.0,
+            });
+        }
+        for request in requests {
+            let mut bus = Bus::new();
+            assert!(
+                matches!(transient.run(request.clone(), &(), &mut bus).await,
+                Outcome::Fault(error) if error == "invalid_payment_request")
+            );
+            assert!(
+                matches!(always_fail.run(request.clone(), &(), &mut bus).await,
+                Outcome::Fault(error) if error == "invalid_payment_request")
+            );
+            assert!(matches!(breaker.run(request.clone(), &(), &mut bus).await,
+                Outcome::Fault(error) if error == "invalid_payment_request"));
+            assert!(
+                matches!(SlowValidation.run(request.clone(), &(), &mut bus).await,
+                Outcome::Fault(error) if error == "invalid_payment_request")
+            );
+            assert!(matches!(FastValidation.run(request, &(), &mut bus).await,
+                Outcome::Fault(error) if error == "invalid_payment_request"));
+        }
+        assert_eq!(transient.fail_count.load(Ordering::SeqCst), 0);
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(breaker.inner_fail_count.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            &*breaker.state.lock().await,
+            CircuitState::Closed {
+                consecutive_failures: 0
+            }
+        ));
     }
 
     #[tokio::test]
