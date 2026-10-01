@@ -116,6 +116,22 @@ impl OwnedProcess {
             sleep(Duration::from_millis(10)).await;
         }
     }
+
+    #[cfg(unix)]
+    async fn kill_and_reap(&mut self) -> std::process::ExitStatus {
+        assert!(
+            self.0.try_wait().unwrap().is_none(),
+            "owned worker still live"
+        );
+        self.0.kill().unwrap();
+        loop {
+            if let Some(status) = self.0.try_wait().unwrap() {
+                // try_wait reaps the child and retains its terminal status.
+                return status;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    }
 }
 
 impl Drop for OwnedProcess {
@@ -219,4 +235,72 @@ async fn redis_independent_process_appends_preserve_acknowledged_write() {
             "REDIS_PROCESS_PASS first_step={first_step} independent-pids same-read exact-acknowledged-snapshot"
         );
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires explicitly isolated Redis fixture URL"]
+async fn redis_killed_pre_eval_process_preserves_seed_and_allows_fresh_writer() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let url = std::env::var("RANVIER_ATOMICITY_REDIS_URL").unwrap();
+    let observer = timeout(Duration::from_secs(5), RedisPersistenceStore::connect(&url))
+        .await
+        .unwrap()
+        .unwrap();
+    let trace = format!("killed-process-{}", uuid::Uuid::new_v4().simple());
+    observer.append(event(&trace, 0)).await.unwrap();
+    let mut expected = observer.load(&trace).await.unwrap().unwrap();
+    let original = observer.read_trace(&trace).await.unwrap().0.unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let token = uuid::Uuid::new_v4().to_string();
+    let mut killed = OwnedProcess::start(&trace, 1, address, &token);
+    let killed_pid = killed.0.id();
+    assert_ne!(killed_pid, std::process::id());
+    timeout(Duration::from_secs(20), async {
+        let (mut channel, _) = listener.accept().await.unwrap();
+        let ready = receive(&mut channel).await;
+        assert_eq!(ready["pid"], killed_pid);
+        assert_eq!(ready["step"], 1);
+        assert_eq!(ready["token"], token);
+        assert_eq!(ready["raw"], original);
+        // No release byte: public append has read its seed but cannot issue EVAL.
+        let status = killed.kill_and_reap().await;
+        assert_eq!(
+            status.signal(),
+            Some(9),
+            "actual SIGKILL, not assertion exit"
+        );
+        assert_eq!(killed.0.try_wait().unwrap(), Some(status));
+        drop(channel);
+        let fresh = RedisPersistenceStore::connect(&url).await.unwrap();
+        assert_eq!(fresh.load(&trace).await.unwrap().unwrap(), expected);
+        let mut writer = OwnedProcess::start(&trace, 2, address, &token);
+        let fresh_pid = writer.0.id();
+        assert_ne!(fresh_pid, std::process::id());
+        let (mut channel, _) = listener.accept().await.unwrap();
+        let ready = receive(&mut channel).await;
+        assert_eq!(ready["pid"], fresh_pid);
+        assert_eq!(ready["step"], 2);
+        assert_eq!(ready["token"], token);
+        assert_eq!(ready["raw"], original);
+        channel.write_u8(1).await.unwrap();
+        let outcome = receive(&mut channel).await;
+        assert_eq!(outcome["pid"], fresh_pid);
+        assert_eq!(outcome["step"], 2);
+        assert_eq!(outcome["outcome"], "ack");
+        writer.finish().await;
+        let accepted = event(&trace, 2);
+        expected.schematic_version = accepted.schematic_version.clone();
+        expected.events.push(accepted);
+        assert_eq!(fresh.load(&trace).await.unwrap().unwrap(), expected);
+        println!(
+            "Redis kill identities: parent={} killed={killed_pid} fresh={fresh_pid}",
+            std::process::id()
+        );
+    })
+    .await
+    .expect("bounded pre-EVAL kill/recovery fixture");
+    println!("REDIS_KILL_PASS pre-eval SIGKILL9 reaped unchanged-seed fresh-process-ack");
 }
