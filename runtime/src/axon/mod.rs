@@ -3614,6 +3614,7 @@ mod tests {
             Some(BusAccessPolicy::deny_only(vec![BusTypeRef::of::<String>()]))
         }
         async fn run(&self, input: i32, _: &(), bus: &mut Bus) -> Outcome<i32, String> {
+            let parent_sink = bus.read::<Arc<dyn DlqSink>>().unwrap().clone();
             let parent_trace = bus
                 .read::<crate::execution_observation::InvocationTrace>()
                 .unwrap()
@@ -3654,6 +3655,16 @@ mod tests {
                 matches!(bus.get::<String>(), Err(BusAccessError::Unauthorized { transition, .. })
                 if transition == "NestedTerminalParent")
             );
+            assert!(matches!(
+                bus.get_mut::<String>(),
+                Err(BusAccessError::Unauthorized { .. })
+            ));
+            assert!(bus.remove::<String>().is_none());
+            bus.insert("forbidden-overwrite".to_string());
+            assert!(Arc::ptr_eq(
+                bus.read::<Arc<dyn DlqSink>>().unwrap(),
+                &parent_sink
+            ));
             assert!(matches!(
                 bus.read::<DlqPolicy>(),
                 Some(DlqPolicy::SendToDlq)
@@ -3712,7 +3723,7 @@ mod tests {
             assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
             assert!(sink.letters.lock().await.is_empty());
             assert!(!token.is_cancelled());
-            assert!(bus.get::<String>().is_ok());
+            assert_eq!(bus.get::<String>().unwrap(), "private");
         }
     }
 
