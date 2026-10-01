@@ -266,6 +266,9 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 include!("web_catalog_fixture.rs");
+
+#[cfg(test)]
+include!("web_database_fixture.rs");
 #[cfg(test)]
 mod report_policy_tests {
     use super::*;
