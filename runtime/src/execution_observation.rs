@@ -97,6 +97,34 @@ mod tests {
     }
 
     #[test]
+    fn invocation_restores_caller_access_guard_after_finish_or_drop() {
+        use ranvier_core::{BusAccessError, BusAccessPolicy, BusTypeRef};
+        for finish in [false, true] {
+            let mut bus = Bus::new();
+            bus.insert("private".to_string());
+            bus.set_access_policy(
+                "caller",
+                Some(BusAccessPolicy::deny_only(vec![BusTypeRef::of::<String>()])),
+            );
+            {
+                let mut owner = InvocationOwner::begin(&mut bus);
+                assert!(owner.bus().get::<String>().is_ok());
+                owner
+                    .bus()
+                    .set_access_policy("child", Some(BusAccessPolicy::allow_only(vec![])));
+                if finish {
+                    let _ = owner.finish(());
+                }
+            }
+            assert!(
+                matches!(bus.get::<String>(), Err(BusAccessError::Unauthorized { transition, .. }) if transition == "caller")
+            );
+            bus.clear_access_policy();
+            assert!(bus.get::<String>().is_ok());
+        }
+    }
+
+    #[test]
     fn owner_restores_caller_jump_and_removes_invocation_jump() {
         for finish in [false, true] {
             let mut bus = Bus::new();
@@ -768,6 +796,7 @@ impl Session {
 pub(crate) struct InvocationOwner<'a> {
     bus: &'a mut Bus,
     session: Option<Session>,
+    access_scope: Option<ranvier_core::bus::BusAccessScope>,
     token: Option<ranvier_core::cancellation::CancellationToken>,
     caller_timeline: bool,
     start_step: Option<crate::axon::StartStep>,
@@ -777,6 +806,9 @@ pub(crate) struct InvocationOwner<'a> {
 
 impl<'a> InvocationOwner<'a> {
     pub(crate) fn begin(bus: &'a mut Bus) -> Self {
+        // Framework setup cannot run under a caller transition's guard. Own the
+        // exact suspended guard and restore it only after all framework cleanup.
+        let access_scope = bus.take_access_scope();
         let token = bus.cancellation_token().cloned();
         let caller_timeline = bus.read::<ranvier_core::timeline::Timeline>().is_some();
         let start_step = bus.remove::<crate::axon::StartStep>();
@@ -788,6 +820,7 @@ impl<'a> InvocationOwner<'a> {
         Self {
             bus,
             session: Some(session),
+            access_scope: Some(access_scope),
             token,
             caller_timeline,
             start_step,
@@ -830,6 +863,9 @@ impl Drop for InvocationOwner<'_> {
         }
         if !self.caller_timeline {
             let _ = self.bus.remove::<ranvier_core::timeline::Timeline>();
+        }
+        if let Some(scope) = self.access_scope.take() {
+            self.bus.restore_access_scope(scope);
         }
     }
 }

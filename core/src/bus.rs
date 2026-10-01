@@ -106,6 +106,13 @@ impl BusAccessGuard {
     }
 }
 
+/// Opaque transition access state owned by a framework invocation.
+/// Runtime entry may suspend a caller guard for framework work and must restore
+/// it after cleanup. This is not an authorization boundary against trusted Rust
+/// code, which already has explicit policy mutation methods.
+#[derive(Debug)]
+pub struct BusAccessScope(Option<BusAccessGuard>);
+
 /// Bus access error with policy context.
 #[derive(Debug, Clone)]
 pub enum BusAccessError {
@@ -550,6 +557,19 @@ impl Bus {
     ) {
         self.access_guard =
             policy.map(|policy| BusAccessGuard::from_policy(transition_label.into(), policy));
+    }
+
+    /// Suspend the current policy for framework-owned invocation setup.
+    /// Restore the returned scope after all framework cleanup.
+    #[doc(hidden)]
+    pub fn take_access_scope(&mut self) -> BusAccessScope {
+        BusAccessScope(self.access_guard.take())
+    }
+
+    /// Restore a previously suspended invocation policy, including absence.
+    #[doc(hidden)]
+    pub fn restore_access_scope(&mut self, scope: BusAccessScope) {
+        self.access_guard = scope.0;
     }
 
     /// Clear transition-scoped policy.
