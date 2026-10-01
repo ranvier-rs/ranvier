@@ -41,6 +41,9 @@ pub mod prelude {
     pub use crate::persistence::{RedisCompensationIdempotencyStore, RedisPersistenceStore};
     pub use crate::replay::ReplayEngine;
     pub use crate::retry::{BackoffStrategy, RetryPolicy};
+    pub use crate::saga_report::{
+        SagaRollbackJournal, SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep,
+    };
     #[cfg(feature = "streaming")]
     pub use crate::streaming_axon::{
         CancellableStreamingError, StreamTimeoutKind, StreamingAxon, StreamingAxonError,
@@ -85,6 +88,9 @@ pub use persistence::{PostgresCompensationIdempotencyStore, PostgresPersistenceS
 pub use persistence::{RedisCompensationIdempotencyStore, RedisPersistenceStore};
 pub use replay::ReplayEngine;
 pub use retry::{BackoffStrategy, RetryPolicy};
+pub use saga_report::{
+    SagaRollbackJournal, SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep,
+};
 #[cfg(feature = "streaming")]
 pub use streaming_axon::{
     CancellableStreamingError, StreamTimeoutKind, StreamingAxon, StreamingAxonError,

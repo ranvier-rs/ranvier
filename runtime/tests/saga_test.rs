@@ -130,6 +130,9 @@ async fn test_saga_automated_rollback_with_state_mapping() {
     };
     let mut bus = Bus::new();
     let outcome = axon.execute(initial_state, &(), &mut bus).await;
+    let owned_cleanup = outcome.cleanup().cloned().unwrap();
+    assert!(owned_cleanup.is_complete());
+    assert_eq!(owned_cleanup.steps.len(), 2);
     let ranvier_runtime::ExecutionReport::Unpersisted {
         result: outcome, ..
     } = outcome
@@ -171,6 +174,8 @@ async fn test_saga_automated_rollback_with_state_mapping() {
         bus.read::<ranvier_runtime::saga_report::SagaRollbackReport>()
             .is_none()
     );
+    assert!(owned_cleanup.is_complete());
+    assert_eq!(owned_cleanup.steps.len(), 2);
 }
 
 #[tokio::test]
@@ -467,6 +472,9 @@ async fn saga_rollback_classifies_incomplete_hooks_without_replacing_business_fa
                 &mut bus,
             )
             .await;
+        let owned_cleanup = result.cleanup().unwrap();
+        assert!(!owned_cleanup.is_complete());
+        assert_eq!(owned_cleanup.steps[0].outcome, expected);
         assert!(
             matches!(result, ranvier_runtime::ExecutionReport::Unpersisted { result: Outcome::Fault(ref error) , .. } if error == "Planned SAGA Failure")
         );

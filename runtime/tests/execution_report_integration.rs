@@ -448,6 +448,10 @@ async fn verify_compensated_result_ack_cancellation(apply_blocked: bool) {
     })
     .await
     .unwrap();
+    let owned_cleanup = report.cleanup().unwrap();
+    assert!(owned_cleanup.is_complete());
+    assert_eq!(owned_cleanup.steps.len(), 1);
+    assert_eq!(owned_cleanup.trace_id, "compensated-result-ack");
     assert!(matches!(
         report,
         ExecutionReport::Unconfirmed {

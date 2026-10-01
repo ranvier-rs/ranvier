@@ -650,6 +650,9 @@ async fn cancellation_rolls_back_completed_saga_steps_in_lifo_order() {
         .execute_cancellable(SagaState(0), &(), &mut bus, token)
         .await;
     trigger.await.expect("saga cancellation trigger");
+    let owned_cleanup = terminal.cleanup().unwrap();
+    assert!(owned_cleanup.is_complete());
+    assert_eq!(owned_cleanup.steps.len(), 2);
     assert!(matches!(
         terminal,
         ExecutionReport::Unpersisted {

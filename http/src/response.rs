@@ -496,6 +496,30 @@ mod tests {
     use ranvier_core::Outcome;
 
     #[test]
+    fn recorded_domain_fault_with_incomplete_cleanup_requires_reconciliation() {
+        use ranvier_runtime::saga_report::{
+            SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep,
+        };
+        let report = ranvier_runtime::ExecutionReport::Recorded {
+            result: Outcome::<u32, String>::Fault("business rejected".into()),
+            completion: ranvier_runtime::CompletionConfirmation::Confirmed,
+            cleanup: Some(SagaRollbackReport {
+                trace_id: "cleanup-trace".into(),
+                finished: true,
+                steps: vec![SagaRollbackStep {
+                    node_id: "undo-node".into(),
+                    outcome: SagaRollbackOutcome::Fault,
+                }],
+            }),
+        };
+        let (status, payload) = durability_rejection(&report).unwrap();
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(payload["durability"], "recorded");
+        assert_eq!(payload["result"]["Fault"], "business rejected");
+        assert_eq!(payload["cleanup"]["steps"][0]["outcome"], "fault");
+        assert_eq!(payload["reconciliation_required"], true);
+    }
+    #[test]
     fn unconfirmed_report_preserves_domain_and_requires_reconciliation() {
         let report = ranvier_runtime::ExecutionReport::Unconfirmed {
             result: Outcome::<u32, String>::Next(7),

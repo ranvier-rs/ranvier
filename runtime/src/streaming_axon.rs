@@ -563,7 +563,7 @@ mod tests {
         let axon = sa.collect_into_vec();
         let mut bus = Bus::new();
         let result = axon.execute((), &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result } = result else {
+        let crate::ExecutionReport::Unpersisted { result, .. } = result else {
             panic!("expected collected stream execution without persistence");
         };
         match result {

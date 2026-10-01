@@ -98,7 +98,11 @@ mod tests {
         child.finish();
         bus.insert(child.snapshot());
         bus.insert(child);
-        let _inner_result = inner.finish(&mut bus, "child-result");
+        let inner_result = inner.finish(&mut bus, "child-result");
+        let child_cleanup = inner_result.cleanup().unwrap();
+        assert_eq!(child_cleanup.trace_id, "child");
+        assert_eq!(child_cleanup.steps[0].outcome, SagaRollbackOutcome::Fault);
+        assert!(!child_cleanup.is_complete());
         assert_eq!(bus.read::<SagaRollbackReport>().unwrap(), &parent_snapshot);
         parent.settle(SagaRollbackOutcome::Completed);
         assert_eq!(
@@ -112,7 +116,9 @@ mod tests {
                 .trace_id,
             "parent"
         );
-        let _outer_result = outer.finish(&mut bus, "parent-result");
+        let outer_result = outer.finish(&mut bus, "parent-result");
+        assert_eq!(outer_result.cleanup().unwrap().trace_id, "parent");
+        assert_eq!(inner_result.cleanup().unwrap().trace_id, "child");
     }
 
     #[tokio::test]

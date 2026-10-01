@@ -207,4 +207,49 @@ mod tests {
             report
         );
     }
+    #[test]
+    fn cleanup_roundtrip_preserves_every_durability_variant() {
+        use crate::saga_report::{SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep};
+        let cleanup = SagaRollbackReport {
+            trace_id: "own-trace".into(),
+            finished: true,
+            steps: vec![SagaRollbackStep {
+                node_id: "undo".into(),
+                outcome: SagaRollbackOutcome::Fault,
+            }],
+        };
+        for report in [
+            ExecutionReport::Unpersisted {
+                result: 7,
+                cleanup: None,
+            },
+            ExecutionReport::NotRequested {
+                result: 7,
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: 7,
+                completion: CompletionConfirmation::Confirmed,
+                cleanup: None,
+            },
+            ExecutionReport::Unconfirmed {
+                result: 7,
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::NotInvoked,
+                cleanup: None,
+            },
+        ] {
+            let report = report.with_cleanup(Some(cleanup.clone()));
+            assert_eq!(report.cleanup(), Some(&cleanup));
+            let json = serde_json::to_value(&report).unwrap();
+            assert_eq!(json["cleanup"]["steps"][0]["outcome"], "fault");
+            let decoded: ExecutionReport<u32> = serde_json::from_value(json).unwrap();
+            assert_eq!(decoded, report);
+        }
+    }
 }

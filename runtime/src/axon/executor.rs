@@ -868,11 +868,11 @@ where
     /// let axon = Axon::<u32, u32, String>::new("identity");
     /// let mut bus = Bus::new();
     /// let outcome = axon.execute_simple(7, &mut bus).await;
-    /// assert!(matches!(outcome, ExecutionReport::Unpersisted { result: Outcome::Next(7) }));
+    /// assert!(matches!(outcome, ExecutionReport::Unpersisted { result: Outcome::Next(7), .. }));
     /// // Explicit resources give the same result, using a new request bus.
     /// let mut explicit_bus = Bus::new();
     /// let explicit = axon.execute(7, &(), &mut explicit_bus).await;
-    /// assert!(matches!(explicit, ExecutionReport::Unpersisted { result: Outcome::Next(7) }));
+    /// assert!(matches!(explicit, ExecutionReport::Unpersisted { result: Outcome::Next(7), .. }));
     /// # });
     /// ```
     pub async fn execute_simple(

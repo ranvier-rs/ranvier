@@ -44,7 +44,8 @@ pub use ranvier_openapi::{OpenApiDocument, OpenApiGenerator, swagger_ui_html};
 pub use ranvier_runtime::CancellableStreamingError;
 pub use ranvier_runtime::{
     Axon, CompletionConfirmation, EffectBoundary, ExecutionReport, ExecutionTerminal,
-    PersistenceOperation,
+    PersistenceOperation, SagaRollbackJournal, SagaRollbackOutcome, SagaRollbackReport,
+    SagaRollbackStep,
 };
 
 pub mod prelude {
