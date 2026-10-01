@@ -148,7 +148,7 @@ where
 
 // Exact framework IAM failure labels are reserved; ordinary application Emit
 // events retain their existing representation. Discard untrusted failure payloads.
-fn iam_failure_response(event: &str) -> Option<Response<Full<Bytes>>> {
+pub(crate) fn iam_failure_response(event: &str) -> Option<Response<Full<Bytes>>> {
     let (status, message) = match event {
         "iam.missing_token" => (StatusCode::UNAUTHORIZED, "Authentication required"),
         "iam.verification_failed" => (StatusCode::UNAUTHORIZED, "Authentication failed"),
