@@ -4,14 +4,38 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+  pull_request:
+    paths: ['scripts/release_provenance*', '.ranvier-supply-chain-policy.json', '.github/workflows/release-provenance.yml']
 
 permissions:
   contents: read
-  id-token: write
-  attestations: write
 
 jobs:
+  provenance-guards:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Verify provenance guards
+        run: node --test scripts/release_provenance.test.mjs 2>&1 | tee provenance-guards.log
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: provenance-guards
+          path: provenance-guards.log
   provenance:
+    if: github.event_name != 'pull_request'
+    needs: provenance-guards
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     name: Package, checksum, and attest release source
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -19,6 +43,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
