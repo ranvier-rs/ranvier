@@ -131,11 +131,8 @@ impl Transition<CreateItemRequest, CreateItemRequest> for ValidateTenantContext 
         bus: &mut Bus,
     ) -> Outcome<CreateItemRequest, Self::Error> {
         match bus.get_cloned::<TenantId>() {
-            Ok(id) => {
-                println!("  [Validate] Tenant context: {}", id.as_str());
-                Outcome::Next(input)
-            }
-            Err(_) => {
+            Ok(id) if valid_tenant(id.as_str()) => Outcome::Next(input),
+            _ => {
                 println!("  [Validate] No tenant context — rejecting");
                 Outcome::Fault("missing_tenant_id".to_string())
             }
@@ -158,18 +155,13 @@ impl Transition<CreateItemRequest, ItemCreated> for StoreItem {
         bus: &mut Bus,
     ) -> Outcome<ItemCreated, Self::Error> {
         let tenant_id = match bus.get_cloned::<TenantId>() {
-            Ok(id) => id.as_str().to_string(),
-            Err(_) => return Outcome::Fault("missing_tenant_id".to_string()),
+            Ok(id) if valid_tenant(id.as_str()) => id.as_str().to_string(),
+            _ => return Outcome::Fault("missing_tenant_id".to_string()),
         };
 
         resources
             .insert(&tenant_id, input.name.clone(), input.description.clone())
             .await;
-
-        println!(
-            "  [Store] Saved '{}' for tenant '{}'",
-            input.name, tenant_id
-        );
 
         Outcome::Next(ItemCreated {
             tenant: tenant_id,
@@ -191,8 +183,12 @@ impl Transition<String, TenantReport> for GenerateReport {
         &self,
         tenant_id: String,
         resources: &Self::Resources,
-        _bus: &mut Bus,
+        bus: &mut Bus,
     ) -> Outcome<TenantReport, Self::Error> {
+        match bus.get_cloned::<TenantId>() {
+            Ok(id) if valid_tenant(id.as_str()) && id.as_str() == tenant_id => {}
+            _ => return Outcome::Fault("tenant_scope_mismatch".into()),
+        }
         let records = resources.list(&tenant_id).await;
         let items: Vec<String> = records.iter().map(|r| r.key.clone()).collect();
         let report = TenantReport {
@@ -208,8 +204,7 @@ impl Transition<String, TenantReport> for GenerateReport {
 // Main
 // ============================================================================
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn run_demo() -> anyhow::Result<()> {
     println!("=== Multi-Tenancy Demo ===\n");
 
     let store = TenantStore::new();
@@ -242,12 +237,9 @@ async fn main() -> anyhow::Result<()> {
             .await,
         )?;
 
-        match &result {
-            Outcome::Next(created) => {
-                println!("    Created: {} (tenant={})", created.name, created.tenant)
-            }
-            Outcome::Fault(e) => println!("    Error: {}", e),
-            _ => {}
+        if !matches!(result, Outcome::Next(ref created) if created.tenant == "tenant-a" && created.name == name && created.description == desc)
+        {
+            anyhow::bail!("Created item did not match tenant scope");
         }
     }
 
@@ -270,12 +262,9 @@ async fn main() -> anyhow::Result<()> {
             .await,
         )?;
 
-        match &result {
-            Outcome::Next(created) => {
-                println!("    Created: {} (tenant={})", created.name, created.tenant)
-            }
-            Outcome::Fault(e) => println!("    Error: {}", e),
-            _ => {}
+        if !matches!(result, Outcome::Next(ref created) if created.tenant == "tenant-b" && created.name == name && created.description == desc)
+        {
+            anyhow::bail!("Created item did not match tenant scope");
         }
     }
 
@@ -295,9 +284,8 @@ async fn main() -> anyhow::Result<()> {
             .await,
         )?;
 
-        match &result {
-            Outcome::Fault(e) => println!("    Rejected: {}", e),
-            _ => println!("    Unexpected success"),
+        if !matches!(result, Outcome::Fault(ref error) if error == "missing_tenant_id") {
+            anyhow::bail!("Missing tenant was not rejected");
         }
     }
 
@@ -307,25 +295,77 @@ async fn main() -> anyhow::Result<()> {
     let report_axon =
         Axon::<String, String, String, TenantStore>::new("tenant.report").then(GenerateReport);
 
-    for tenant in ["tenant-a", "tenant-b", "tenant-c"] {
+    for (tenant, expected) in [
+        ("tenant-a", vec!["Widget", "Gadget"]),
+        ("tenant-b", vec!["Sprocket"]),
+        ("tenant-c", vec![]),
+    ] {
         let mut bus = Bus::new();
+        bus.insert(TenantId::new(tenant));
         let result = local_demo_outcome(
             report_axon
                 .execute(tenant.to_string(), &store, &mut bus)
                 .await,
         )?;
 
-        match &result {
-            Outcome::Next(report) => {
-                println!(
-                    "    {}: {} item(s) {:?}",
-                    report.tenant, report.item_count, report.items
-                );
-            }
-            _ => {}
+        if !matches!(result, Outcome::Next(ref report) if report.tenant == tenant && report.item_count == expected.len() && report.items == expected)
+        {
+            anyhow::bail!("Tenant report did not match isolated records");
         }
     }
 
     println!("\ndone");
     Ok(())
+}
+
+fn valid_tenant(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    run_demo().await
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn actual_create_and_scoped_reports() {
+        run_demo().await.unwrap();
+    }
+    #[tokio::test]
+    async fn foreign_report_and_invalid_context_are_rejected() {
+        let store = TenantStore::new();
+        store
+            .insert("tenant-b", "private".into(), "secret".into())
+            .await;
+        let flow = Axon::<String, String, String, TenantStore>::new("read").then(GenerateReport);
+        let mut bus = Bus::new();
+        bus.insert(TenantId::new("tenant-a"));
+        let result =
+            local_demo_outcome(flow.execute("tenant-b".into(), &store, &mut bus).await).unwrap();
+        assert!(matches!(result, Outcome::Fault(error) if error == "tenant_scope_mismatch"));
+        for tenant in ["", " ", "../tenant-b"] {
+            let mut bus = Bus::new();
+            bus.insert(TenantId::new(tenant));
+            assert!(matches!(
+                StoreItem
+                    .run(
+                        CreateItemRequest {
+                            name: "item".into(),
+                            description: "value".into()
+                        },
+                        &store,
+                        &mut bus
+                    )
+                    .await,
+                Outcome::Fault(_)
+            ));
+        }
+        assert_eq!(store.list("tenant-b").await.len(), 1);
+        assert!(store.list("").await.is_empty());
+    }
 }
