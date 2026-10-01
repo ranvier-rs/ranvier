@@ -16,6 +16,80 @@ pub(crate) struct Observation {
     completed: AtomicBool,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::FutureExt;
+
+    struct AppliedWithoutAck {
+        backing: InMemoryCompensationIdempotencyStore,
+        pending: bool,
+    }
+    #[async_trait::async_trait]
+    impl CompensationIdempotencyStore for AppliedWithoutAck {
+        async fn was_compensated(&self, key: &str) -> anyhow::Result<bool> {
+            self.backing.was_compensated(key).await
+        }
+        async fn mark_compensated(&self, key: &str) -> anyhow::Result<()> {
+            self.backing.mark_compensated(key).await?;
+            if self.pending {
+                std::future::pending::<()>().await;
+            }
+            Err(anyhow::anyhow!("private-error-sentinel"))
+        }
+    }
+
+    async fn check_applied_write(pending: bool) {
+        let backing = InMemoryCompensationIdempotencyStore::new();
+        let mut bus = Bus::new();
+        bus.insert(CompensationIdempotencyHandle::from_store(
+            AppliedWithoutAck {
+                backing: backing.clone(),
+                pending,
+            },
+        ));
+        let original = bus.read::<CompensationIdempotencyHandle>().unwrap().store();
+        let session = Session::begin(&mut bus);
+        session.observation.effect();
+        let store = bus.read::<CompensationIdempotencyHandle>().unwrap().store();
+        assert!(!store.was_compensated("key").await.unwrap());
+        if pending {
+            // Poll through the applied write once, then drop before any ACK.
+            assert!(store.mark_compensated("key").now_or_never().is_none());
+        } else {
+            assert!(store.mark_compensated("key").await.is_err());
+        }
+        let report = session.finish(&mut bus, "domain-result");
+        assert_eq!(
+            report,
+            ExecutionReport::Unconfirmed {
+                result: "domain-result",
+                operation: PersistenceOperation::CompensationWrite,
+                effect: EffectBoundary::MayHaveRun,
+            }
+        );
+        assert!(backing.was_compensated("key").await.unwrap());
+        let restored = bus.read::<CompensationIdempotencyHandle>().unwrap();
+        assert!(Arc::ptr_eq(&restored.store(), &original));
+        assert!(restored.store().was_compensated("key").await.unwrap());
+        assert!(
+            !serde_json::to_string(&report)
+                .unwrap()
+                .contains("private-error-sentinel")
+        );
+    }
+
+    #[tokio::test]
+    async fn applied_compensation_write_error_preserves_readback_and_report() {
+        check_applied_write(false).await;
+    }
+
+    #[tokio::test]
+    async fn dropped_compensation_write_preserves_readback_and_report() {
+        check_applied_write(true).await;
+    }
+}
+
 impl Observation {
     fn failed(&self, operation: PersistenceOperation) {
         let mut failure = self
