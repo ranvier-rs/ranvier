@@ -4,6 +4,7 @@ pub mod axon;
 pub mod closure_transition;
 pub mod cluster;
 pub mod distributed;
+pub mod execution_report;
 pub mod llm;
 pub mod persistence;
 pub mod replay;
@@ -20,6 +21,9 @@ pub mod prelude {
     pub use crate::cluster::{ClusterManager, LeaderElection, LockBasedElection};
     pub use crate::distributed::{
         DistributedError, DistributedLock, DistributedStore, Guard, LockOptions,
+    };
+    pub use crate::execution_report::{
+        CompletionConfirmation, EffectBoundary, ExecutionReport, PersistenceOperation,
     };
     pub use crate::llm::{LlmError, LlmProvider, LlmTemplateVars, LlmTransition, MockLlmConfig};
     pub use crate::persistence::{
@@ -62,6 +66,9 @@ pub use axon::{
 pub use closure_transition::ClosureTransition;
 pub use cluster::{ClusterManager, LeaderElection, LockBasedElection};
 pub use distributed::{DistributedError, DistributedLock, DistributedStore, Guard, LockOptions};
+pub use execution_report::{
+    CompletionConfirmation, EffectBoundary, ExecutionReport, PersistenceOperation,
+};
 pub use llm::{LlmError, LlmProvider, LlmTemplateVars, LlmTransition, MockLlmConfig};
 pub use persistence::{
     CompensationAutoTrigger, CompensationContext, CompensationHandle, CompensationHook,
