@@ -351,4 +351,37 @@ mod report_policy_tests {
             );
         }
     }
+
+    #[test]
+    fn local_policy_checks_every_cleanup_state() {
+        use ranvier_runtime::{SagaRollbackOutcome as O, SagaRollbackStep};
+        for finished in [false, true] {
+            for outcome in [
+                O::InProgress,
+                O::Panicked,
+                O::Completed,
+                O::Fault,
+                O::Emitted,
+                O::Branched,
+                O::Jumped,
+                O::MissingHandler,
+            ] {
+                let report = ExecutionReport::Unpersisted {
+                    result: Outcome::<u32, String>::Next(7),
+                    cleanup: Some(SagaRollbackReport {
+                        trace_id: "private".into(),
+                        finished,
+                        steps: vec![SagaRollbackStep {
+                            node_id: "private".into(),
+                            outcome,
+                        }],
+                    }),
+                };
+                assert_eq!(
+                    local_demo_outcome(report).is_ok(),
+                    finished && outcome == O::Completed
+                );
+            }
+        }
+    }
 }

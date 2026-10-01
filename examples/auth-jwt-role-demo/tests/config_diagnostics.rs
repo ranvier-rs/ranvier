@@ -4,6 +4,7 @@ use ranvier_core::iam::{IamError, IamVerifier};
 
 #[tokio::test]
 async fn verifier_configuration_and_safe_errors() {
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     assert!(auth::JwtVerifier::from_secret(b"").is_err());
     let verifier = auth::JwtVerifier::from_secret(b"owned-fixture-key").unwrap();
     let token = verifier
@@ -11,6 +12,20 @@ async fn verifier_configuration_and_safe_errors() {
         .unwrap();
     let identity = verifier.verify(&token).await.unwrap();
     assert_eq!(identity.subject, "fixture");
+    for (algorithm, exp) in [(Algorithm::HS256, 1), (Algorithm::HS384, 4102444800)] {
+        let rejected = encode(
+            &Header::new(algorithm),
+            &auth::Claims {
+                sub: "private-subject-marker".into(),
+                roles: vec!["admin".into()],
+                exp,
+            },
+            &EncodingKey::from_secret(b"owned-fixture-key"),
+        )
+        .unwrap();
+        assert!(matches!(verifier.verify(&rejected).await,
+            Err(IamError::InvalidToken(error)) if error == "Authentication failed"));
+    }
     let wrong = auth::JwtVerifier::from_secret(b"different-key").unwrap();
     for (owner, token) in [
         (&wrong, token.as_str()),
