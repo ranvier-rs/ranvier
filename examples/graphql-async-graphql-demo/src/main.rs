@@ -124,10 +124,23 @@ fn graphql_envelope(response: async_graphql::Response) -> Outcome<serde_json::Va
     };
     let mut envelope = serde_json::json!({ "data": data });
     if !response.errors.is_empty() {
-        // Do not expose resolver errors, request text or extensions.
-        envelope["errors"] = serde_json::json!([
-            { "message": "GraphQL request failed" }
-        ]);
+        // Preserve protocol paths/locations; redact messages and extensions.
+        envelope["errors"] = serde_json::Value::Array(
+            response
+                .errors
+                .into_iter()
+                .map(|error| {
+                    let mut safe = serde_json::json!({ "message": "GraphQL request failed" });
+                    if !error.locations.is_empty() {
+                        safe["locations"] = serde_json::json!(error.locations);
+                    }
+                    if !error.path.is_empty() {
+                        safe["path"] = serde_json::json!(error.path);
+                    }
+                    safe
+                })
+                .collect(),
+        );
     }
     Outcome::next(envelope)
 }
@@ -242,7 +255,12 @@ mod contract_tests {
             assert!(response.get("data").is_some());
             assert_eq!(response.get("errors").is_some(), errors);
             if errors {
-                assert_eq!(response["errors"], serde_json::json!([{ "message": "GraphQL request failed" }]));
+                let errors = response["errors"].as_array().unwrap();
+                assert!(!errors.is_empty());
+                for error in errors {
+                    assert_eq!(error["message"], "GraphQL request failed");
+                    assert!(error.get("extensions").is_none());
+                }
                 assert!(!response.to_string().contains("private"));
             }
         }
@@ -265,10 +283,18 @@ mod contract_tests {
         let mut response = async_graphql::Response::new(
             async_graphql::value!({ "safe": "public", "failed": null }),
         );
-        response.errors.push(async_graphql::ServerError::new(
+        let mut error = async_graphql::ServerError::new(
             "private-resolver-sentinel",
-            None,
-        ));
+            Some(async_graphql::Pos { line: 1, column: 2 }),
+        );
+        error.path = vec![
+            async_graphql::PathSegment::Field("failed".into()),
+            async_graphql::PathSegment::Index(0),
+        ];
+        let mut extensions = async_graphql::ErrorExtensionValues::default();
+        extensions.set("private", "private-extension-sentinel");
+        error.extensions = Some(extensions);
+        response.errors.push(error);
         let Outcome::Next(envelope) = graphql_envelope(response) else {
             panic!("expected envelope")
         };
@@ -278,9 +304,10 @@ mod contract_tests {
         );
         assert_eq!(
             envelope["errors"],
-            serde_json::json!([{ "message": "GraphQL request failed" }])
+            serde_json::json!([{ "message": "GraphQL request failed", "locations": [{ "line": 1, "column": 2 }], "path": ["failed", 0] }])
         );
         assert!(!envelope.to_string().contains("private-resolver-sentinel"));
+        assert!(!envelope.to_string().contains("private-extension-sentinel"));
     }
 
     #[test]
