@@ -3443,6 +3443,79 @@ mod tests {
         assert!(bus.read::<super::PersistenceTraceId>().is_none());
     }
 
+    #[derive(Clone)]
+    struct NestedRetryParent {
+        calls: Arc<std::sync::atomic::AtomicU32>,
+        child_calls: Arc<std::sync::atomic::AtomicU32>,
+        child_sink: MockDlqSink,
+    }
+    #[async_trait]
+    impl Transition<i32, i32> for NestedRetryParent {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, input: i32, _: &(), bus: &mut Bus) -> Outcome<i32, String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let child = Axon::<i32, i32, String>::start("nested-retry-child")
+                .then(CountCombinedRetry {
+                    calls: self.child_calls.clone(),
+                    failures: 2,
+                })
+                .with_dlq_policy(DlqPolicy::RetryThenDlq {
+                    max_attempts: 3,
+                    backoff_ms: 0,
+                })
+                .with_dlq_sink(self.child_sink.clone());
+            let report = child.execute(input, &(), bus).await;
+            assert!(matches!(
+                report,
+                crate::ExecutionReport::Unpersisted {
+                    result: Outcome::Next(_),
+                    ..
+                }
+            ));
+            assert!(matches!(
+                bus.read::<DlqPolicy>(),
+                Some(DlqPolicy::SendToDlq)
+            ));
+            assert_eq!(
+                bus.read::<ranvier_core::schematic::Schematic>()
+                    .unwrap()
+                    .name,
+                "nested-retry-parent"
+            );
+            Outcome::Fault("parent_failure".into())
+        }
+    }
+    #[tokio::test]
+    async fn retry_nested_child_restores_parent_policy_sink_and_attribution() {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let child_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let parent_sink = MockDlqSink {
+            letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
+        let child_sink = MockDlqSink {
+            letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
+        let axon = Axon::<i32, i32, String>::start("nested-retry-parent")
+            .then_with_retry(
+                NestedRetryParent {
+                    calls: calls.clone(),
+                    child_calls: child_calls.clone(),
+                    child_sink: child_sink.clone(),
+                },
+                crate::RetryPolicy::fixed(1, std::time::Duration::ZERO),
+            )
+            .with_dlq_policy(DlqPolicy::SendToDlq)
+            .with_dlq_sink(parent_sink.clone());
+        let report = axon.execute(7, &(), &mut Bus::new()).await;
+        assert!(matches!(report, crate::ExecutionReport::Unpersisted {
+            result: Outcome::Fault(error), .. } if error == "parent_failure"));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(child_calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+        assert_eq!(parent_sink.letters.lock().await.len(), 1);
+        assert!(child_sink.letters.lock().await.is_empty());
+    }
+
     #[tokio::test]
     async fn retry_then_dlq_retries_and_succeeds_before_exhaustion() {
         // Fail 2 times, succeed on 3rd attempt. Policy allows 5 attempts.
