@@ -27,6 +27,9 @@ async fn panic_in_transition_returns_fault_when_e_is_string() {
 
     let mut bus = Bus::new();
     let result = axon.execute("hello".to_string(), &(), &mut bus).await;
+    let ranvier_runtime::ExecutionReport::Unpersisted { result } = result else {
+        panic!("expected an execution without persistence");
+    };
 
     match result {
         Outcome::Fault(e) => {
@@ -65,6 +68,9 @@ async fn normal_transition_unaffected_by_catch_unwind() {
 
     let mut bus = Bus::new();
     let result = axon.execute("hello".to_string(), &(), &mut bus).await;
+    let ranvier_runtime::ExecutionReport::Unpersisted { result } = result else {
+        panic!("expected an execution without persistence");
+    };
 
     match result {
         Outcome::Next(val) => {
@@ -107,6 +113,9 @@ async fn panic_with_non_string_error_emits_panic_signal() {
 
     let mut bus = Bus::new();
     let result = axon.execute("hello".to_string(), &(), &mut bus).await;
+    let ranvier_runtime::ExecutionReport::Unpersisted { result } = result else {
+        panic!("expected an execution without persistence");
+    };
 
     // StructuredError can't deserialize from a plain string, so we get Emit fallback
     match result {
@@ -155,6 +164,9 @@ async fn panic_in_second_step_of_chain_returns_fault() {
 
     let mut bus = Bus::new();
     let result = axon.execute("hello".to_string(), &(), &mut bus).await;
+    let ranvier_runtime::ExecutionReport::Unpersisted { result } = result else {
+        panic!("expected an execution without persistence");
+    };
 
     match result {
         Outcome::Fault(e) => {

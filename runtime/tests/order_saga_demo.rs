@@ -269,6 +269,13 @@ async fn order_saga_encounters_failure_and_compensates_perfectly() {
 
     let order = OrderState::new("ORD-2027-001", 149.99);
     let outcome = axon.execute(order, &(), &mut bus).await;
+    let ranvier_runtime::ExecutionReport::Recorded {
+        result: outcome,
+        completion: ranvier_runtime::CompletionConfirmation::Confirmed,
+    } = outcome
+    else {
+        panic!("expected recorded execution and confirmed completion");
+    };
 
     // ━━━ Verification ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -379,6 +386,9 @@ async fn order_saga_succeeds_end_to_end_without_failure() {
     let mut bus = Bus::new();
     let order = OrderState::new("ORD-SUCCESS", 99.99);
     let outcome = axon.execute(order, &(), &mut bus).await;
+    let ranvier_runtime::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        panic!("expected an execution without persistence");
+    };
 
     // Should succeed through all 3 steps
     match &outcome {

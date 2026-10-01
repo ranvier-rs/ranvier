@@ -130,6 +130,9 @@ async fn test_saga_automated_rollback_with_state_mapping() {
     };
     let mut bus = Bus::new();
     let outcome = axon.execute(initial_state, &(), &mut bus).await;
+    let ranvier_runtime::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        panic!("expected an execution without persistence");
+    };
 
     // 1. Verify it failed
     assert!(matches!(outcome, Outcome::Fault(_)));
@@ -169,6 +172,9 @@ async fn saga_compensation_snapshot_mismatch_does_not_panic() {
     };
     let mut bus = Bus::new();
     let outcome = axon.execute(initial_state, &(), &mut bus).await;
+    let ranvier_runtime::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        panic!("expected an execution without persistence");
+    };
 
     assert!(matches!(outcome, Outcome::Fault(_)));
     assert!(
