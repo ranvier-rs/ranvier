@@ -382,8 +382,6 @@ impl RedisCompensationIdempotencyStore {
         Self {
             manager,
             key_prefix: key_prefix.into(),
-            #[cfg(test)]
-            write_gate: None,
             ttl_seconds: None,
         }
     }
@@ -965,6 +963,8 @@ impl RedisPersistenceStore {
         Self {
             manager,
             key_prefix: key_prefix.into(),
+            #[cfg(test)]
+            write_gate: None,
         }
     }
 
@@ -1532,8 +1532,9 @@ mod tests {
             time::{Duration, timeout},
         };
         let url = std::env::var("RANVIER_ATOMICITY_REDIS_URL").expect("explicit Redis fixture");
+        let connect = || timeout(Duration::from_secs(5), RedisPersistenceStore::connect(&url));
         for completion_first in [true, false] {
-            let observer = RedisPersistenceStore::connect(&url).await.unwrap();
+            let observer = connect().await.unwrap().unwrap();
             let trace_id = format!("order-{}", Uuid::new_v4().simple());
             let mut seed = envelope(0, "Next");
             seed.trace_id = trace_id.clone();
@@ -1549,8 +1550,8 @@ mod tests {
             };
             let append_gate = gate();
             let complete_gate = gate();
-            let mut appender = RedisPersistenceStore::connect(&url).await.unwrap();
-            let mut completer = RedisPersistenceStore::connect(&url).await.unwrap();
+            let mut appender = connect().await.unwrap().unwrap();
+            let mut completer = connect().await.unwrap().unwrap();
             appender.write_gate = Some(append_gate.clone());
             completer.write_gate = Some(complete_gate.clone());
             let mut event = envelope(1, "Next");
