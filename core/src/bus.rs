@@ -213,13 +213,23 @@ impl Bus {
     /// Denied insertion is logged and leaves the original resource unchanged.
     #[inline]
     pub fn insert<T: Any + Send + Sync + 'static>(&mut self, resource: T) {
-        if let Err(err) = self.ensure_access::<T>() {
+        if let Err(err) = self.try_insert(resource) {
             tracing::error!("{err}");
-            return;
         }
+    }
+
+    /// Insert local context with explicit policy acknowledgement.
+    /// Rejection preserves existing local/shared storage and returns no value data.
+    #[inline]
+    pub fn try_insert<T: Any + Send + Sync + 'static>(
+        &mut self,
+        resource: T,
+    ) -> Result<(), BusAccessError> {
+        self.ensure_access::<T>()?;
         let type_id = std::any::TypeId::of::<T>();
         self.shared_resources.remove(&type_id);
         self.resources.insert(type_id, Box::new(resource));
+        Ok(())
     }
 
     /// Insert a value that explicit parallel Bus forks may inherit.
@@ -230,13 +240,23 @@ impl Bus {
     /// `Clone`. Denied insertion is logged and preserves the original value.
     #[inline]
     pub fn insert_shared<T: Any + Send + Sync + 'static>(&mut self, resource: T) {
-        if let Err(err) = self.ensure_access::<T>() {
+        if let Err(err) = self.try_insert_shared(resource) {
             tracing::error!("{err}");
-            return;
         }
+    }
+
+    /// Insert explicitly shareable context with policy acknowledgement.
+    /// Rejection preserves the existing value and its storage ownership.
+    #[inline]
+    pub fn try_insert_shared<T: Any + Send + Sync + 'static>(
+        &mut self,
+        resource: T,
+    ) -> Result<(), BusAccessError> {
+        self.ensure_access::<T>()?;
         let type_id = TypeId::of::<T>();
         self.resources.remove(&type_id);
         self.shared_resources.insert(type_id, Arc::new(resource));
+        Ok(())
     }
 
     /// Read a resource from the Bus.
@@ -807,6 +827,32 @@ mod tests {
         let mut bus = Bus::new();
         bus.provide("hello".to_string());
         assert_eq!(bus.try_require::<String>().unwrap(), "hello");
+    }
+
+    #[test]
+    fn fallible_insertions_return_denial_and_acknowledge_allowed_values() {
+        let mut bus = Bus::new();
+        bus.try_insert_shared("original".to_string()).unwrap();
+        bus.set_access_policy(
+            "writer",
+            Some(BusAccessPolicy::deny_only(vec![BusTypeRef::of::<String>()])),
+        );
+        for error in [
+            bus.try_insert("private-local".to_string()).unwrap_err(),
+            bus.try_insert_shared("private-shared".to_string())
+                .unwrap_err(),
+        ] {
+            assert!(
+                matches!(&error, BusAccessError::Unauthorized { transition, .. } if transition == "writer")
+            );
+            assert!(!error.to_string().contains("private-"));
+        }
+        bus.try_insert(7_i32).unwrap();
+        assert_eq!(*bus.get::<i32>().unwrap(), 7);
+        bus.clear_access_policy();
+        assert_eq!(bus.fork_for_parallel().get::<String>().unwrap(), "original");
+        bus.try_insert_shared(8_i32).unwrap();
+        assert_eq!(*bus.fork_for_parallel().get::<i32>().unwrap(), 8);
     }
 
     #[test]
