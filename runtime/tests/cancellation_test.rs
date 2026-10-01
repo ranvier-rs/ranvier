@@ -716,6 +716,8 @@ async fn dropped_shielded_undo_restores_parent_and_keeps_in_progress_journal() {
     assert_eq!(undos.load(Ordering::SeqCst), 1);
     let journal = bus.read::<SagaRollbackJournal>().unwrap().snapshot();
     assert!(!journal.finished);
+    assert!(!journal.is_complete());
+    assert_eq!(journal.steps.len(), 1);
     assert_eq!(journal.steps[0].outcome, SagaRollbackOutcome::InProgress);
     assert!(!bus.cancellation_token().unwrap().is_cancelled());
     parent.cancel(CancellationReason::Explicit);
