@@ -162,8 +162,6 @@ fn local_demo_outcome<T, E>(
 async fn main() -> anyhow::Result<()> {
     println!("=== Custom Error Types Example ===\n");
 
-    let mut bus = Bus::new();
-
     // Test 1: Successful flow
     println!("Test 1: Valid admin user");
     let axon = Axon::<UserId, UserId, AppError, ()>::new("auth.pipeline")
@@ -171,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
         .then(FetchUser)
         .then(CheckAuthorization);
 
+    let mut bus = Bus::new();
     match local_demo_outcome(axon.execute(UserId("admin".into()), &(), &mut bus).await)? {
         Outcome::Next(user) => {
             println!("  Success: {} (role={})", user.name, user.role);
@@ -178,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
         Outcome::Fault(err) => {
             println!("  Error: {}", err);
         }
-        _ => {}
+        _ => anyhow::bail!("Unexpected domain control flow in local demo"),
     }
 
     // Test 2: Validation error
@@ -187,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
         .then(ValidateUserId)
         .then(FetchUser);
 
+    let mut bus = Bus::new();
     match local_demo_outcome(axon.execute(UserId("ab".into()), &(), &mut bus).await)? {
         Outcome::Next(user) => {
             println!("  Success: {:?}", user);
@@ -198,7 +198,7 @@ async fn main() -> anyhow::Result<()> {
                 _ => println!("  -> Unexpected error variant"),
             }
         }
-        _ => {}
+        _ => anyhow::bail!("Unexpected domain control flow in local demo"),
     }
 
     // Test 3: Not found error
@@ -207,6 +207,7 @@ async fn main() -> anyhow::Result<()> {
         .then(ValidateUserId)
         .then(FetchUser);
 
+    let mut bus = Bus::new();
     match local_demo_outcome(axon.execute(UserId("unknown".into()), &(), &mut bus).await)? {
         Outcome::Next(user) => {
             println!("  Success: {:?}", user);
@@ -218,7 +219,7 @@ async fn main() -> anyhow::Result<()> {
                 _ => println!("  -> Unexpected error variant"),
             }
         }
-        _ => {}
+        _ => anyhow::bail!("Unexpected domain control flow in local demo"),
     }
 
     // Test 4: Authorization error
@@ -228,6 +229,7 @@ async fn main() -> anyhow::Result<()> {
         .then(FetchUser)
         .then(CheckAuthorization);
 
+    let mut bus = Bus::new();
     match local_demo_outcome(axon.execute(UserId("user123".into()), &(), &mut bus).await)? {
         Outcome::Next(user) => {
             println!("  Success: {:?}", user);
@@ -239,8 +241,97 @@ async fn main() -> anyhow::Result<()> {
                 _ => println!("  -> Unexpected error variant"),
             }
         }
-        _ => {}
+        _ => anyhow::bail!("Unexpected domain control flow in local demo"),
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod execution_contract_tests {
+    use super::*;
+    use ranvier_runtime::{
+        CompletionConfirmation, EffectBoundary, ExecutionReport, PersistenceOperation,
+        SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep,
+    };
+
+    #[test]
+    fn declared_demo_scenarios_run_through_the_report_policy() {
+        main().unwrap();
+    }
+
+    #[test]
+    fn local_report_policy_preserves_faults_and_rejects_uncertain_or_incomplete_execution() {
+        let next = || Outcome::<u32, String>::Next(7);
+        let reports = [
+            ExecutionReport::NotRequested {
+                result: next(),
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::Confirmed,
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::NotRequested,
+                cleanup: None,
+            },
+            ExecutionReport::Unconfirmed {
+                result: next(),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::NotInvoked,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+        ];
+        for report in reports {
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        for (finished, outcome) in [
+            (false, SagaRollbackOutcome::Completed),
+            (true, SagaRollbackOutcome::Fault),
+            (true, SagaRollbackOutcome::InProgress),
+        ] {
+            let report = ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: Some(SagaRollbackReport {
+                    trace_id: "private-trace".into(),
+                    finished,
+                    steps: vec![SagaRollbackStep {
+                        node_id: "private-node".into(),
+                        outcome,
+                    }],
+                }),
+            };
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        assert!(matches!(
+            local_demo_outcome(ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: None
+            })
+            .unwrap(),
+            Outcome::Next(7)
+        ));
+        assert!(
+            matches!(local_demo_outcome(ExecutionReport::Unpersisted { result: Outcome::<u32, String>::Fault("expected-domain-failure".into()), cleanup: None }).unwrap(), Outcome::Fault(error) if error == "expected-domain-failure")
+        );
+    }
 }
