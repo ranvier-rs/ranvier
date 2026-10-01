@@ -250,6 +250,18 @@ async fn redis_killed_pre_eval_process_preserves_seed_and_allows_fresh_writer() 
         .unwrap();
     let trace = format!("killed-process-{}", uuid::Uuid::new_v4().simple());
     observer.append(event(&trace, 0)).await.unwrap();
+    observer.resume(&trace, 0).await.unwrap();
+    observer
+        .save_intervention(
+            &trace,
+            Intervention {
+                target_node: "kill-seed-node".into(),
+                payload_override: Some(json!({"prior": u64::MAX})),
+                timestamp_ms: u64::MAX,
+            },
+        )
+        .await
+        .unwrap();
     let mut expected = observer.load(&trace).await.unwrap().unwrap();
     let original = observer.read_trace(&trace).await.unwrap().0.unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -274,7 +286,10 @@ async fn redis_killed_pre_eval_process_preserves_seed_and_allows_fresh_writer() 
         );
         assert_eq!(killed.0.try_wait().unwrap(), Some(status));
         drop(channel);
-        let fresh = RedisPersistenceStore::connect(&url).await.unwrap();
+        let fresh = timeout(Duration::from_secs(5), RedisPersistenceStore::connect(&url))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(fresh.load(&trace).await.unwrap().unwrap(), expected);
         let mut writer = OwnedProcess::start(&trace, 2, address, &token);
         let fresh_pid = writer.0.id();
@@ -295,6 +310,21 @@ async fn redis_killed_pre_eval_process_preserves_seed_and_allows_fresh_writer() 
         expected.schematic_version = accepted.schematic_version.clone();
         expected.events.push(accepted);
         assert_eq!(fresh.load(&trace).await.unwrap().unwrap(), expected);
+        fresh
+            .complete(&trace, CompletionState::Success)
+            .await
+            .unwrap();
+        expected.completion = Some(CompletionState::Success);
+        assert!(
+            fresh
+                .resume(&trace, 2)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("already completed")
+        );
+        assert_eq!(fresh.load(&trace).await.unwrap().unwrap(), expected);
+
         println!(
             "Redis kill identities: parent={} killed={killed_pid} fresh={fresh_pid}",
             std::process::id()
