@@ -28,6 +28,13 @@ impl Transition<u32, u32> for AddOne {
 #[tokio::test]
 async fn timeline_assertion_works_in_integration_test() {
     let axon = Axon::<u32, u32, TestInfallible, ()>::new("TimelineFlow").then(AddOne);
+    let transition_id = axon
+        .schematic()
+        .nodes
+        .last()
+        .expect("transition node")
+        .id
+        .clone();
 
     let mut bus = Bus::new();
     bus.insert(Timeline::new());
@@ -44,6 +51,31 @@ async fn timeline_assertion_works_in_integration_test() {
     let timeline = bus
         .read::<Timeline>()
         .expect("timeline should remain available for assertion");
+
+    let enters: Vec<_> = timeline
+        .events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| {
+            matches!(event, TimelineEvent::NodeEnter { node_id, .. } if node_id == &transition_id)
+                .then_some(index)
+        })
+        .collect();
+    let exits: Vec<_> = timeline
+        .events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| {
+            matches!(event, TimelineEvent::NodeExit { node_id, .. } if node_id == &transition_id)
+                .then_some(index)
+        })
+        .collect();
+    assert_eq!(enters.len(), 1, "one transition must enter exactly once");
+    assert_eq!(exits.len(), 1, "one transition must exit exactly once");
+    assert!(
+        enters[0] < exits[0],
+        "transition entry must precede its exit"
+    );
 
     assert!(
         timeline

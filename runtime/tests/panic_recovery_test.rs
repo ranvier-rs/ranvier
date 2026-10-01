@@ -128,11 +128,7 @@ async fn panic_with_non_string_error_emits_panic_signal() {
                 "Emit payload should contain panic message, got: {msg}"
             );
         }
-        Outcome::Fault(_) => {
-            // This would happen if StructuredError could somehow deserialize from a string
-            // which is also acceptable behavior
-        }
-        other => panic!("Expected Outcome::Emit or Outcome::Fault, got: {other:?}"),
+        other => panic!("Expected structured panic Outcome::Emit, got: {other:?}"),
     }
 }
 
