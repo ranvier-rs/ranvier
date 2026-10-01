@@ -396,6 +396,12 @@ impl Session {
         }
     }
     pub(crate) fn finish<T>(self, bus: &mut Bus, result: T) -> ExecutionReport<T> {
+        let report = self.build_report(bus, result);
+        self.restore(bus);
+        report
+    }
+
+    fn build_report<T>(&self, bus: &mut Bus, result: T) -> ExecutionReport<T> {
         bus.clear_access_policy();
         // Capture child ownership before restoring a parent's Bus observations.
         let cleanup = bus
@@ -414,7 +420,6 @@ impl Session {
             }
         }
         .with_cleanup(cleanup);
-        self.restore(bus);
         report
     }
 
@@ -467,10 +472,14 @@ impl<'a> InvocationOwner<'a> {
         self.bus
     }
     pub(crate) fn finish<T>(mut self, result: T) -> ExecutionReport<T> {
-        match self.session.take() {
-            Some(session) => session.finish(self.bus, result),
+        let report = match self.session.as_ref() {
+            Some(session) => session.build_report(self.bus, result),
             None => unreachable!("invocation session is consumed only by finish"),
+        };
+        if let Some(session) = self.session.take() {
+            session.restore(self.bus);
         }
+        report
     }
 }
 
