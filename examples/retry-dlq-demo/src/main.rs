@@ -70,9 +70,18 @@ struct PaymentResult {
 // In-Memory DLQ Sink
 // ============================================================================
 
+#[derive(Clone, Debug)]
+struct DeadLetter {
+    workflow: String,
+    circuit: String,
+    node: String,
+    reason: String,
+    payload: Vec<u8>,
+}
+
 #[derive(Clone)]
 struct InMemoryDlqSink {
-    letters: Arc<Mutex<Vec<String>>>,
+    letters: Arc<Mutex<Vec<DeadLetter>>>,
 }
 
 impl InMemoryDlqSink {
@@ -91,14 +100,15 @@ impl DlqSink for InMemoryDlqSink {
         circuit_label: &str,
         node_id: &str,
         error_msg: &str,
-        _payload: &[u8],
+        payload: &[u8],
     ) -> Result<(), String> {
-        let entry = format!(
-            "workflow={} circuit={} node={} error={}",
-            workflow_id, circuit_label, node_id, error_msg
-        );
-        println!("  [DLQ] Stored dead letter: {}", entry);
-        self.letters.lock().await.push(entry);
+        self.letters.lock().await.push(DeadLetter {
+            workflow: workflow_id.into(),
+            circuit: circuit_label.into(),
+            node: node_id.into(),
+            reason: error_msg.into(),
+            payload: payload.to_vec(),
+        });
         Ok(())
     }
 }
@@ -155,7 +165,9 @@ impl Transition<PaymentRequest, PaymentResult> for TransientPaymentGateway {
 // ============================================================================
 
 #[derive(Clone)]
-struct AlwaysFailGateway;
+struct AlwaysFailGateway {
+    attempts: Arc<AtomicU32>,
+}
 
 #[async_trait]
 impl Transition<PaymentRequest, PaymentResult> for AlwaysFailGateway {
@@ -168,6 +180,7 @@ impl Transition<PaymentRequest, PaymentResult> for AlwaysFailGateway {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<PaymentResult, Self::Error> {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
         Outcome::Fault("service_unavailable".to_string())
     }
 }
@@ -378,8 +391,9 @@ async fn run_demo() -> anyhow::Result<()> {
     let mut bus = Bus::new();
     bus.insert(Timeline::new());
 
+    let gateway = TransientPaymentGateway::new(2);
     let axon = Axon::<PaymentRequest, PaymentRequest, String, ()>::new("payment.retry_success")
-        .then(TransientPaymentGateway::new(2))
+        .then(gateway.clone())
         .with_dlq_policy(DlqPolicy::RetryThenDlq {
             max_attempts: 5,
             backoff_ms: 1,
@@ -402,13 +416,20 @@ async fn run_demo() -> anyhow::Result<()> {
     }
     print_timeline(&bus);
 
+    if gateway.fail_count.load(Ordering::SeqCst) != 3 || !dlq.letters.lock().await.is_empty() {
+        anyhow::bail!("Retry execution count or DLQ mismatch");
+    }
+
     // --- Demo 2: All retries exhausted → DLQ ---
     println!("\n--- Demo 2: All retries exhausted, sent to DLQ ---");
     let mut bus = Bus::new();
     bus.insert(Timeline::new());
 
+    let failures = Arc::new(AtomicU32::new(0));
     let axon = Axon::<PaymentRequest, PaymentRequest, String, ()>::new("payment.retry_exhaust")
-        .then(AlwaysFailGateway)
+        .then(AlwaysFailGateway {
+            attempts: failures.clone(),
+        })
         .with_dlq_policy(DlqPolicy::RetryThenDlq {
             max_attempts: 3,
             backoff_ms: 1,
@@ -430,7 +451,14 @@ async fn run_demo() -> anyhow::Result<()> {
     print_timeline(&bus);
 
     let letters = dlq.letters.lock().await;
-    if letters.len() != 1 || !letters[0].contains("service_unavailable") {
+    if failures.load(Ordering::SeqCst) != 3
+        || letters.len() != 1
+        || letters[0].workflow.is_empty()
+        || letters[0].node.is_empty()
+        || letters[0].circuit != "payment.retry_exhaust"
+        || !letters[0].reason.contains("service_unavailable")
+        || serde_json::from_slice::<String>(&letters[0].payload)? != "service_unavailable"
+    {
         anyhow::bail!("DLQ record mismatch");
     }
     drop(letters);
