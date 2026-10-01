@@ -8,13 +8,29 @@
 
 This example shows **how to integrate Tower middleware with Ranvier** for authentication:
 
-1. **Tower HTTP middleware** (`tower-http::auth::RequireAuthorizationLayer`)
-2. **Custom `AuthorizeRequest` implementation** (high-level API)
+1. **Tower HTTP middleware** (`tower-http::auth::AsyncRequireAuthorizationLayer`)
+2. **Custom `AsyncAuthorizeRequest` implementation** (high-level API)
 3. **Manual Layer + Service implementation** (low-level, educational)
 4. **Tower + Ranvier integration pattern** (Tower validates, Ranvier handles business logic)
 5. **Request extensions** (Tower stores `AuthContext` in `request.extensions()`, not Bus)
 
 ---
+
+## Verified boundary
+
+`cargo run` validates a demo JWT directly and then runs an Axon with identity in
+Bus. It does not start an HTTP server or exercise the Tower layer. The binary
+tests separately traverse both actual Tower services and verify that denied
+requests never call the inner domain service. Both implementations reject
+duplicate credentials, blank subjects and blank verifier secrets and return a
+fixed 401 response. The manual service preserves the readiness-polled instance.
+
+Run `cargo test -p auth-tower-integration --locked` for those tests. Local Axon
+execution explicitly accepts only Unpersisted reports with complete cleanup;
+it does not establish durable success. A production adapter must transfer the
+verified request extensions to a fresh Bus and choose an explicit durability
+policy. The composition sketches below require a concrete adapter and the
+corresponding Tower HTTP features; they are not runnable server examples.
 
 ## Why Tower Integration? (Ecosystem Way)
 
@@ -43,19 +59,9 @@ let service = ServiceBuilder::new()
 
 If your team already knows Tower, minimal learning curve:
 
-```rust
-// Familiar Tower pattern
-impl<B> AuthorizeRequest<B> for JwtAuthorizer {
-    fn authorize(&mut self, request: &mut Request<B>) -> Result<(), Response<Self::ResponseBody>> {
-        // Standard Tower auth logic
-        let auth_header = request.headers().get("authorization")?;
-        let token = extract_bearer_token(auth_header)?;
-        let auth_ctx = validate_jwt(token, &self.secret)?;
-        request.extensions_mut().insert(auth_ctx);
-        Ok(())
-    }
-}
-```
+See the complete `AsyncAuthorizeRequest<B>` implementation in
+[`src/tower_auth.rs`](src/tower_auth.rs). It returns a future containing either
+the request with verified identity or the fixed unauthorized response.
 
 **Benefits**:
 - **Familiar patterns**: Team experience with Tower is directly applicable

@@ -143,11 +143,10 @@ fn authenticate<B>(request: &Request<B>, secret: &str) -> Result<super::auth::Au
     if headers.next().is_some() {
         return Err(());
     }
-    let token = header
-        .to_str()
-        .map_err(|_| ())?
-        .strip_prefix("Bearer ")
-        .ok_or(())?;
+    let (scheme, token) = header.to_str().map_err(|_| ())?.split_once(' ').ok_or(())?;
+    if !scheme.eq_ignore_ascii_case("Bearer") {
+        return Err(());
+    }
     if token.is_empty() || token.len() > 8192 || token.bytes().any(|b| b.is_ascii_whitespace()) {
         return Err(());
     }
@@ -244,6 +243,13 @@ mod tests {
         ];
         for headers in rejected {
             let mut request = Request::new("private-input".to_owned());
+            // Unverified upstream extensions must not bypass header validation.
+            request
+                .extensions_mut()
+                .insert(super::super::auth::AuthContext {
+                    user_id: "forged".into(),
+                    roles: vec!["admin".into()],
+                });
             for header in headers {
                 request
                     .headers_mut()
@@ -258,11 +264,11 @@ mod tests {
             assert_eq!(response.headers()[http::header::WWW_AUTHENTICATE], "Bearer");
             assert_eq!(calls.load(Ordering::SeqCst), 0);
         }
-        for _ in 0..2 {
+        for scheme in ["Bearer", "bearer"] {
             let mut request = Request::new("public-result".to_owned());
             request.headers_mut().insert(
                 http::header::AUTHORIZATION,
-                format!("Bearer {valid}").parse().unwrap(),
+                format!("{scheme} {valid}").parse().unwrap(),
             );
             std::future::poll_fn(|cx| service.poll_ready(cx))
                 .await
@@ -292,5 +298,27 @@ mod tests {
             calls: calls.clone(),
         });
         exercise(service, calls).await;
+    }
+
+    #[tokio::test]
+    async fn blank_verifier_secret_rejects_even_matching_signature() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut service = jwt_auth_layer(" ".into()).layer(ProtectedService {
+            ready: false,
+            calls: calls.clone(),
+        });
+        let signed = token("alice", chrono::Utc::now().timestamp() + 3600, " ");
+        let mut request = Request::new(String::new());
+        request.headers_mut().insert(
+            http::header::AUTHORIZATION,
+            format!("Bearer {signed}").parse().unwrap(),
+        );
+        std::future::poll_fn(|cx| service.poll_ready(cx))
+            .await
+            .unwrap();
+        let response = service.call(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.body(), "Unauthorized");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 }
