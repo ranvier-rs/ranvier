@@ -1094,6 +1094,10 @@ impl PersistenceStore for RedisPersistenceStore {
     }
 }
 
+#[cfg(all(test, feature = "persistence-redis"))]
+#[path = "redis_process_fixture.rs"]
+mod process_fixture;
+
 #[cfg(test)]
 mod tests {
     use super::*;
