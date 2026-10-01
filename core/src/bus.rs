@@ -113,6 +113,17 @@ impl BusAccessGuard {
 #[derive(Debug)]
 pub struct BusAccessScope(Option<BusAccessGuard>);
 
+/// Opaque original resource storage for a nested framework invocation.
+/// Must be restored to the same Bus after child futures are dropped. This is a
+/// trusted framework API, not an authorization boundary against trusted Rust.
+#[doc(hidden)]
+#[must_use = "restore the resource scope after nested invocation cleanup"]
+pub struct BusResourceScope {
+    type_id: TypeId,
+    local: Option<Box<dyn Any + Send + Sync>>,
+    shared: Option<Arc<dyn Any + Send + Sync>>,
+}
+
 /// Bus access error with policy context.
 #[derive(Debug, Clone)]
 pub enum BusAccessError {
@@ -588,6 +599,63 @@ impl Bus {
             policy.map(|policy| BusAccessGuard::from_policy(transition_label.into(), policy));
     }
 
+    /// Preserve exact original storage while exposing a child working copy.
+    /// Unique local/shared values are cloned for the child; already aliased and
+    /// inherited values retain their read-only mutation restrictions. Restore
+    /// discards child overlays and reinstates the original allocation/absence.
+    /// Only use after framework access has been suspended, and restore after
+    /// the nested invocation's futures and Bus borrows have been dropped.
+    #[doc(hidden)]
+    pub fn begin_resource_scope<T: Any + Send + Sync + Clone + 'static>(
+        &mut self,
+    ) -> BusResourceScope {
+        let type_id = TypeId::of::<T>();
+        // Clone before removing anything: a panicking Clone must not lose the
+        // original slot. No resource payload is formatted or logged here.
+        let local_copy = self
+            .resources
+            .get(&type_id)
+            .and_then(|v| v.downcast_ref::<T>())
+            .cloned();
+        let shared_copy = self
+            .shared_resources
+            .get(&type_id)
+            .filter(|v| Arc::strong_count(v) == 1)
+            .and_then(|v| v.downcast_ref::<T>())
+            .cloned();
+        let local = self.resources.remove(&type_id);
+        let shared = if shared_copy.is_some() {
+            self.shared_resources.remove(&type_id)
+        } else {
+            self.shared_resources.get(&type_id).cloned()
+        };
+        if let Some(copy) = local_copy {
+            self.resources.insert(type_id, Box::new(copy));
+        }
+        if let Some(copy) = shared_copy {
+            self.shared_resources.insert(type_id, Arc::new(copy));
+        }
+        BusResourceScope {
+            type_id,
+            local,
+            shared,
+        }
+    }
+
+    /// Restore original local/shared ownership or absence after child cleanup.
+    /// Inherited storage is unchanged; any child local overlays are discarded.
+    #[doc(hidden)]
+    pub fn restore_resource_scope(&mut self, scope: BusResourceScope) {
+        self.resources.remove(&scope.type_id);
+        self.shared_resources.remove(&scope.type_id);
+        if let Some(value) = scope.local {
+            self.resources.insert(scope.type_id, value);
+        }
+        if let Some(value) = scope.shared {
+            self.shared_resources.insert(scope.type_id, value);
+        }
+    }
+
     /// Suspend the current policy for framework-owned invocation setup.
     /// Restore the returned scope after all framework cleanup.
     #[doc(hidden)]
@@ -729,6 +797,68 @@ impl std::ops::DerefMut for ConnectionBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_scope_restores_exact_storage_and_shared_restrictions() {
+        for mode in 0..5 {
+            let mut parent = Bus::new();
+            if mode == 1 {
+                parent.insert("parent".to_string());
+            }
+            if mode >= 2 {
+                parent.insert_shared("parent".to_string());
+            }
+            let mut fork = if mode >= 3 {
+                Some(parent.fork_for_parallel())
+            } else {
+                None
+            };
+            let bus = if mode == 4 {
+                fork.as_mut().unwrap()
+            } else {
+                &mut parent
+            };
+            let local_ptr = bus
+                .resources
+                .get(&TypeId::of::<String>())
+                .map(|v| v.downcast_ref::<String>().unwrap() as *const String);
+            let shared_ptr = bus
+                .shared_resources
+                .get(&TypeId::of::<String>())
+                .map(Arc::as_ptr);
+            let scope = bus.begin_resource_scope::<String>();
+            if mode >= 3 {
+                assert!(bus.remove::<String>().is_none());
+            } else {
+                assert_eq!(bus.remove::<String>().is_some(), mode != 0);
+            }
+            bus.insert("child".to_string());
+            bus.restore_resource_scope(scope);
+            assert_eq!(
+                bus.read::<String>().map(String::as_str),
+                if mode == 0 { None } else { Some("parent") }
+            );
+            assert_eq!(
+                local_ptr,
+                bus.resources
+                    .get(&TypeId::of::<String>())
+                    .map(|v| v.downcast_ref::<String>().unwrap() as *const String)
+            );
+            assert_eq!(
+                shared_ptr,
+                bus.shared_resources
+                    .get(&TypeId::of::<String>())
+                    .map(Arc::as_ptr)
+            );
+            if mode == 1 {
+                assert!(bus.fork_for_parallel().read::<String>().is_none());
+            }
+            if mode >= 3 {
+                assert_eq!(parent.read::<String>().unwrap(), "parent");
+                assert_eq!(fork.as_ref().unwrap().read::<String>().unwrap(), "parent");
+            }
+        }
+    }
 
     #[test]
     fn test_insert_and_read() {
