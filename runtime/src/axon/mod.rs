@@ -1766,7 +1766,7 @@ mod tests {
     #[derive(Clone)]
     struct CapturedLogWriter(Arc<StdMutex<Vec<u8>>>);
 
-    #[derive(Clone, serde::Serialize)]
+    #[derive(Debug, Clone, serde::Serialize)]
     struct PrivateJumpInput;
 
     impl<'de> serde::Deserialize<'de> for PrivateJumpInput {
@@ -1829,7 +1829,9 @@ mod tests {
                 prefix.then::<PrivateJumpInput, _>(CountJumpCalls(calls.clone()))
             };
             let mut bus = Bus::new();
-            let target = axon.schematic().nodes.last().unwrap().id.clone();
+            // A compensated chain also appends an undo node: target the second
+            // business transition, not the final schematic node.
+            let target = axon.schematic().nodes[2].id.clone();
             bus.insert(super::ManualJump {
                 target_node: target.clone(),
                 payload_override: Some(serde_json::json!("private-payload")),
@@ -1848,7 +1850,7 @@ mod tests {
                         )
                     );
                 }
-                _ => panic!("unexpected jump report"),
+                other => panic!("unexpected jump report: {other:?}"),
             }
             assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
             assert_eq!(undos.load(std::sync::atomic::Ordering::SeqCst), 0);
