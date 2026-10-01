@@ -87,3 +87,26 @@ impl SagaRollbackJournal {
             .finished = true;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn long_journal_clones_share_storage_and_snapshots_are_owned() {
+        let journal = SagaRollbackJournal::new("long-journal");
+        let published = journal.clone();
+        assert!(std::sync::Arc::ptr_eq(&journal.0, &published.0));
+        for index in 0..10_000 {
+            journal.push(index.to_string(), SagaRollbackOutcome::InProgress);
+            journal.settle(SagaRollbackOutcome::Completed);
+        }
+        journal.finish();
+        let snapshot = published.snapshot();
+        assert_eq!(snapshot.steps.len(), 10_000);
+        assert!(snapshot.is_complete());
+        journal.push("later".into(), SagaRollbackOutcome::InProgress);
+        assert_eq!(snapshot.steps.len(), 10_000);
+        assert_eq!(published.snapshot().steps.len(), 10_001);
+        assert!(!published.snapshot().is_complete());
+    }
+}

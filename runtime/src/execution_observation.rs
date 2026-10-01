@@ -80,6 +80,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn nested_session_restores_parent_cleanup_journal() {
+        use crate::saga_report::{SagaRollbackJournal, SagaRollbackOutcome, SagaRollbackReport};
+        let mut bus = Bus::new();
+        let outer = Session::begin(&mut bus);
+        let parent = SagaRollbackJournal::new("parent");
+        parent.push("parent-node".into(), SagaRollbackOutcome::InProgress);
+        bus.insert(parent.clone());
+        let parent_snapshot = parent.snapshot();
+        bus.insert(parent_snapshot.clone());
+        let inner = Session::begin(&mut bus);
+        assert!(bus.read::<SagaRollbackJournal>().is_none());
+        let child = SagaRollbackJournal::new("child");
+        child.push("child-node".into(), SagaRollbackOutcome::Fault);
+        child.finish();
+        bus.insert(child.snapshot());
+        bus.insert(child);
+        let _inner_result = inner.finish(&mut bus, "child-result");
+        assert_eq!(bus.read::<SagaRollbackReport>().unwrap(), &parent_snapshot);
+        parent.settle(SagaRollbackOutcome::Completed);
+        assert_eq!(
+            bus.read::<SagaRollbackJournal>().unwrap().snapshot(),
+            parent.snapshot()
+        );
+        assert_eq!(
+            bus.read::<SagaRollbackJournal>()
+                .unwrap()
+                .snapshot()
+                .trace_id,
+            "parent"
+        );
+        let _outer_result = outer.finish(&mut bus, "parent-result");
+    }
+
     #[tokio::test]
     async fn applied_compensation_write_error_preserves_readback_and_report() {
         check_applied_write(false).await;
@@ -271,15 +305,22 @@ pub(crate) struct Session {
     original: Option<PersistenceHandle>,
     original_compensation: Option<CompensationIdempotencyHandle>,
     previous: Option<ActiveObservation>,
+    previous_cleanup: Option<crate::saga_report::SagaRollbackJournal>,
+    previous_cleanup_report: Option<crate::saga_report::SagaRollbackReport>,
     observation: Arc<Observation>,
 }
 impl Session {
     pub(crate) fn begin(bus: &mut Bus) -> Self {
-        let _ = bus.remove::<crate::saga_report::SagaRollbackReport>();
-        let _ = bus.remove::<crate::saga_report::SagaRollbackJournal>();
         let original = bus.read::<PersistenceHandle>().cloned();
         let original_compensation = bus.read::<CompensationIdempotencyHandle>().cloned();
         let previous = bus.read::<ActiveObservation>().cloned();
+        let cleanup_report = bus.remove::<crate::saga_report::SagaRollbackReport>();
+        let cleanup = bus.remove::<crate::saga_report::SagaRollbackJournal>();
+        let (previous_cleanup, previous_cleanup_report) = if previous.is_some() {
+            (cleanup, cleanup_report)
+        } else {
+            (None, None)
+        };
         let observation = Arc::new(Observation::default());
         if let Some(handle) = &original {
             bus.insert(handle.observed(observation.clone()));
@@ -292,6 +333,8 @@ impl Session {
             original,
             original_compensation,
             previous,
+            previous_cleanup,
+            previous_cleanup_report,
             observation,
         }
     }
@@ -310,6 +353,14 @@ impl Session {
         }
         if let Some(previous) = self.previous {
             bus.insert(previous);
+            let _ = bus.remove::<crate::saga_report::SagaRollbackJournal>();
+            let _ = bus.remove::<crate::saga_report::SagaRollbackReport>();
+            if let Some(journal) = self.previous_cleanup {
+                bus.insert(journal);
+            }
+            if let Some(report) = self.previous_cleanup_report {
+                bus.insert(report);
+            }
         } else {
             let _ = bus.remove::<ActiveObservation>();
         }
