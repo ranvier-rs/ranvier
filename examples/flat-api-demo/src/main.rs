@@ -47,16 +47,22 @@ async fn init_state(_input: ()) -> Outcome<i32, String> {
 
 #[transition]
 async fn multiply_by_res(input: i32, res: &MyResources) -> Outcome<i32, String> {
-    Outcome::Next(input * res.multiplier)
+    match input.checked_mul(res.multiplier) {
+        Some(value) => Outcome::Next(value),
+        None => Outcome::Fault("Arithmetic overflow".into()),
+    }
 }
 
 #[transition(resources = MyResources)]
 async fn add_three(input: i32) -> Outcome<i32, String> {
-    Outcome::Next(input + 3)
+    match input.checked_add(3) {
+        Some(value) => Outcome::Next(value),
+        None => Outcome::Fault("Arithmetic overflow".into()),
+    }
 }
 
 #[transition(resources = MyResources)]
-async fn attach_trace(input: i32, _bus: &mut Bus) -> Outcome<i32, String> {
+async fn pass_through(input: i32, _bus: &mut Bus) -> Outcome<i32, String> {
     Outcome::Next(input)
 }
 
@@ -71,7 +77,7 @@ async fn math_circuit() -> Axon<(), String, String, MyResources> {
         .then(init_state)
         .then(multiply_by_res)
         .then(add_three)
-        .then(attach_trace)
+        .then(pass_through)
         .then(to_string)
 }
 
@@ -91,10 +97,45 @@ async fn main() -> Result<()> {
     let result = local_demo_outcome(axon.execute((), &res, &mut bus).await)?;
 
     println!("Input: (), Internal Start: 10, Multiplier: 2");
-    println!("Result: {:?}", result); // (10 * 2) + 3 = 23 -> "23"
-
-    assert!(matches!(result, Outcome::Next(ref s) if s == "23"));
+    if !matches!(result, Outcome::Next(ref value) if value == "23") {
+        anyhow::bail!("Math scenario did not produce expected result");
+    }
     println!("Verification PASSED!");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn actual_macro_chain_checks_resources_and_overflow() {
+        let axon = math_circuit().await;
+        for (multiplier, expected) in [(2, "23"), (0, "3"), (-2, "-17")] {
+            let result = local_demo_outcome(
+                axon.execute((), &MyResources { multiplier }, &mut Bus::new())
+                    .await,
+            )
+            .unwrap();
+            assert!(matches!(result, Outcome::Next(value) if value == expected));
+        }
+        for multiplier in [i32::MAX, i32::MIN] {
+            let result = local_demo_outcome(
+                axon.execute((), &MyResources { multiplier }, &mut Bus::new())
+                    .await,
+            )
+            .unwrap();
+            assert!(matches!(result, Outcome::Fault(error) if error == "Arithmetic overflow"));
+        }
+    }
+    #[tokio::test]
+    async fn addition_overflow_returns_fault() {
+        let axon = Axon::<i32, i32, String, MyResources>::new("addition").then(add_three);
+        let result = local_demo_outcome(
+            axon.execute(i32::MAX, &MyResources::default(), &mut Bus::new())
+                .await,
+        )
+        .unwrap();
+        assert!(matches!(result, Outcome::Fault(error) if error == "Arithmetic overflow"));
+    }
 }
