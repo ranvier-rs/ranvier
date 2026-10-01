@@ -1766,6 +1766,93 @@ mod tests {
     #[derive(Clone)]
     struct CapturedLogWriter(Arc<StdMutex<Vec<u8>>>);
 
+    #[derive(Clone, serde::Serialize)]
+    struct PrivateJumpInput;
+
+    impl<'de> serde::Deserialize<'de> for PrivateJumpInput {
+        fn deserialize<D: serde::Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+            Err(serde::de::Error::custom("private-jump-decode-sentinel"))
+        }
+    }
+
+    #[derive(Clone)]
+    struct CountJumpCalls(Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait]
+    impl Transition<PrivateJumpInput, PrivateJumpInput> for CountJumpCalls {
+        type Error = String;
+        type Resources = ();
+        async fn run(
+            &self,
+            input: PrivateJumpInput,
+            _: &(),
+            _: &mut Bus,
+        ) -> Outcome<PrivateJumpInput, String> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Outcome::Next(input)
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn manual_jump_decode_error_redacts_response_and_logs() {
+        let logs = Arc::new(StdMutex::new(Vec::new()));
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(move || CapturedLogWriter(writer.clone()))
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        for compensated in [false, true] {
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let undos = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let prefix = Axon::<PrivateJumpInput, PrivateJumpInput, String>::new("jump-redaction")
+                .with_saga_policy(ranvier_core::saga::SagaPolicy::Enabled)
+                .then(CountJumpCalls(calls.clone()));
+            let axon = if compensated {
+                prefix
+                    .then_compensated(CountJumpCalls(calls.clone()), CountJumpCalls(undos.clone()))
+            } else {
+                prefix.then(CountJumpCalls(calls.clone()))
+            };
+            let mut bus = Bus::new();
+            let target = axon.schematic().nodes.last().unwrap().id.clone();
+            bus.insert(ManualJump {
+                target_node: target.clone(),
+                payload_override: Some(serde_json::json!("private-payload")),
+            });
+            let report = axon.execute(PrivateJumpInput, &(), &mut bus).await;
+            match report {
+                crate::ExecutionReport::Unpersisted {
+                    result: Outcome::Emit(signal, payload),
+                    ..
+                } => {
+                    assert_eq!(signal, "execution.jump.payload_error");
+                    assert_eq!(
+                        payload,
+                        Some(
+                            serde_json::json!({"error": "Manual jump payload could not be decoded"})
+                        )
+                    );
+                }
+                _ => panic!("unexpected jump report"),
+            }
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(undos.load(std::sync::atomic::Ordering::SeqCst), 0);
+            let jump = bus.read::<ManualJump>().unwrap();
+            assert_eq!(jump.target_node, target);
+            assert_eq!(
+                jump.payload_override,
+                Some(serde_json::json!("private-payload"))
+            );
+        }
+        let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("manual_jump_payload_decode"));
+        assert!(!logs.contains("private-jump-decode-sentinel"));
+        assert!(!logs.contains("private-payload"));
+    }
+
     impl io::Write for CapturedLogWriter {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.0

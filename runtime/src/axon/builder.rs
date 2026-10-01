@@ -414,14 +414,14 @@ where
                         let state = if let Some(ow) = jump.payload_override.clone() {
                             match serde_json::from_value::<Out>(ow) {
                                 Ok(s) => s,
-                                Err(e) => {
+                                Err(_) => {
                                     tracing::error!(
-                                        "Payload override deserialization failed: {}",
-                                        e
+                                        operation = "manual_jump_payload_decode",
+                                        "Manual jump payload could not be decoded"
                                     );
                                     return Outcome::emit(
                                         "execution.jump.payload_error",
-                                        Some(serde_json::json!({"error": e.to_string()})),
+                                        Some(serde_json::json!({"error": "Manual jump payload could not be decoded"})),
                                     )
                                     .map(|_: ()| unreachable!());
                                 }
@@ -1015,14 +1015,14 @@ where
                         let state = if let Some(ow) = jump.payload_override.clone() {
                             match serde_json::from_value::<Out>(ow) {
                                 Ok(s) => s,
-                                Err(e) => {
+                                Err(_) => {
                                     tracing::error!(
-                                        "Payload override deserialization failed: {}",
-                                        e
+                                        operation = "manual_jump_payload_decode",
+                                        "Manual jump payload could not be decoded"
                                     );
                                     return Outcome::emit(
                                         "execution.jump.payload_error",
-                                        Some(serde_json::json!({"error": e.to_string()})),
+                                        Some(serde_json::json!({"error": "Manual jump payload could not be decoded"})),
                                     )
                                     .map(|_: ()| unreachable!());
                                 }
