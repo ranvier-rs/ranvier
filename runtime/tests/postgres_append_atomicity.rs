@@ -17,6 +17,68 @@ fn event(trace: &str, step: u64, version: &str) -> PersistenceEnvelope {
     }
 }
 
+// External owned-container rehearsal selects this worker in a new process per phase.
+#[tokio::test]
+async fn postgres_recovery_worker() {
+    let Ok(mode) = std::env::var("RANVIER_RECOVERY_MODE") else {
+        return;
+    };
+    let prefix = std::env::var("RANVIER_RECOVERY_PREFIX").unwrap();
+    let snapshot = std::env::var("RANVIER_RECOVERY_SNAPSHOT").unwrap();
+    let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL").unwrap();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(3))
+        .connect(&url)
+        .await
+        .unwrap();
+    let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
+    match mode.as_str() {
+        "seed" => {
+            store.ensure_schema().await.unwrap();
+            store.append(event("recovery", 0, "seed")).await.unwrap();
+            store
+                .append(event("recovery", 1, "acknowledged"))
+                .await
+                .unwrap();
+            store
+                .save_intervention(
+                    "recovery",
+                    Intervention {
+                        target_node: "recovery-node".into(),
+                        payload_override: Some(
+                            serde_json::json!({"fixture": [1, true, "retained"]}),
+                        ),
+                        timestamp_ms: 1100,
+                    },
+                )
+                .await
+                .unwrap();
+            store
+                .complete("recovery", CompletionState::Success)
+                .await
+                .unwrap();
+            let trace = store.load("recovery").await.unwrap().unwrap();
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&snapshot)
+                .unwrap();
+            serde_json::to_writer(&file, &trace).unwrap();
+            file.sync_all().unwrap();
+            println!("POSTGRES_RECOVERY_SEED acknowledged-event-terminal-intervention");
+        }
+        "check" => {
+            let expected: ranvier_runtime::persistence::PersistedTrace =
+                serde_json::from_reader(std::fs::File::open(&snapshot).unwrap()).unwrap();
+            assert_eq!(store.load("recovery").await.unwrap(), Some(expected));
+            println!("POSTGRES_RECOVERY_CHECK fresh-process full-snapshot-equality");
+        }
+        _ => panic!("unknown recovery worker mode"),
+    }
+    pool.close().await;
+}
+
 // Invoked only by the independent-process fixture, never accepted as evidence alone.
 #[tokio::test]
 async fn postgres_process_worker() {
