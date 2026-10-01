@@ -99,7 +99,15 @@ async fn external_future_drop_restores_handle_and_token() {
     child.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
     assert!(!bus.cancellation_token().unwrap().is_cancelled());
     assert!(!parent.is_cancelled());
+    assert!(bus.read::<ranvier_core::timeline::Timeline>().is_none());
+    bus.insert(ranvier_core::timeline::Timeline::new());
     assert!(axon.execute(1, &(), &mut bus).now_or_never().is_none());
+    assert!(
+        !bus.read::<ranvier_core::timeline::Timeline>()
+            .unwrap()
+            .events
+            .is_empty()
+    );
     assert!(Arc::ptr_eq(
         &original,
         &bus.read::<PersistenceHandle>().unwrap().store()
