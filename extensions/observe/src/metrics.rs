@@ -1454,6 +1454,48 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn failed_sum_callback_skips_later_callbacks_in_same_collection() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for mode in [Mode::Off, Mode::Public, Mode::Strict] {
+            let provider = ProtectedMeterProvider {
+                inner: bounded_meter_builder()
+                    .unwrap()
+                    .with_reader(
+                        PeriodicReader::builder(Capture(Arc::new(Mutex::new(Vec::new()))))
+                            .with_interval(Duration::from_secs(3600))
+                            .build(),
+                    )
+                    .build(),
+                policy: Policy::new(mode, "").unwrap(),
+                state: Default::default(),
+            };
+            let first = Arc::new(AtomicUsize::new(0));
+            let second = Arc::new(AtomicUsize::new(0));
+            let first_calls = first.clone();
+            let second_calls = second.clone();
+            let _counter = provider
+                .meter("failed-callback-fixture")
+                .u64_observable_counter("counter")
+                .with_callback(move |instrument| {
+                    first_calls.fetch_add(1, Ordering::SeqCst);
+                    instrument.observe(1, &[KeyValue::new("identity", "same")]);
+                    instrument.observe(2, &[KeyValue::new("identity", "same")]);
+                })
+                .with_callback(move |_| {
+                    second_calls.fetch_add(1, Ordering::SeqCst);
+                })
+                .build();
+            provider.inner.force_flush().unwrap();
+            assert!(provider.state.failed());
+            assert_eq!(first.load(Ordering::SeqCst), 1);
+            assert_eq!(second.load(Ordering::SeqCst), 0);
+            provider.inner.force_flush().unwrap();
+            provider.inner.shutdown().unwrap();
+            assert_eq!(first.load(Ordering::SeqCst), 1);
+            assert_eq!(second.load(Ordering::SeqCst), 0);
+        }
+    }
     #[derive(Debug, Default)]
     struct FloatTotals {
         metric_count: usize,
