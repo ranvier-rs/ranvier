@@ -28,6 +28,8 @@ pub enum DlqPolicy {
     /// with exponential backoff before sending its final fault to DLQ.
     /// Zero permits the initial call only. Typed input restoration failure stops
     /// further retries; exhaustion telemetry reports actual invocations.
+    /// These retry semantics are currently implemented by ordinary transitions;
+    /// compensated transitions do not yet run the same retry loop.
     /// A retry policy alone does not establish that a business effect is safe to repeat.
     RetryThenDlq { max_attempts: u32, backoff_ms: u64 },
 }
