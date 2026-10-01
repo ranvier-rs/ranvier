@@ -670,9 +670,7 @@ async fn cancellation_rolls_back_completed_saga_steps_in_lifo_order() {
     assert!(cleanup.is_complete());
     assert_eq!(cleanup.steps.len(), 2);
     assert_eq!(cleanup_tokens.load(Ordering::SeqCst), 2);
-    assert!(
-        bus.cancellation_token()
-            .is_some_and(|token| !token.is_cancelled()),
-        "cleanup must be shielded from the workflow cancellation token"
-    );
+    // cleanup_tokens above checks shielding during both undo operations.
+    // After returning, restore the caller's originally absent owner.
+    assert!(bus.cancellation_token().is_none());
 }
