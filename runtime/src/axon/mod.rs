@@ -3278,6 +3278,94 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct RetryControlExit {
+        calls: Arc<std::sync::atomic::AtomicU32>,
+        first_fault: bool,
+        result: Outcome<i32, String>,
+    }
+    #[async_trait]
+    impl Transition<i32, i32> for RetryControlExit {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, _: i32, _: &(), _: &mut Bus) -> Outcome<i32, String> {
+            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.first_fault && call == 0 {
+                Outcome::Fault("transient".into())
+            } else {
+                self.result.clone()
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_control_exits_preserve_payload_and_stop_without_dlq() {
+        let payload = Some(serde_json::json!({"marker": 7}));
+        let outcomes = [
+            Outcome::branch("exit", payload.clone()),
+            Outcome::jump(uuid::Uuid::nil(), payload.clone()),
+            Outcome::emit("exit", payload),
+        ];
+        for first_fault in [false, true] {
+            for expected in &outcomes {
+                let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+                let following = Arc::new(std::sync::atomic::AtomicU32::new(0));
+                let sink = MockDlqSink {
+                    letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+                };
+                let axon = Axon::<i32, i32, String>::start("retry-control-exit")
+                    .then_with_retry(
+                        RetryControlExit {
+                            calls: calls.clone(),
+                            first_fault,
+                            result: expected.clone(),
+                        },
+                        crate::RetryPolicy::fixed(3, std::time::Duration::ZERO),
+                    )
+                    .then(CountCombinedRetry {
+                        calls: following.clone(),
+                        failures: 0,
+                    })
+                    .with_dlq_policy(DlqPolicy::RetryThenDlq {
+                        max_attempts: 5,
+                        backoff_ms: 0,
+                    })
+                    .with_dlq_sink(sink.clone());
+                let mut bus = Bus::new();
+                bus.insert(Timeline::new());
+                let report = axon.execute(7, &(), &mut bus).await;
+                let crate::ExecutionReport::Unpersisted { result, .. } = report else {
+                    panic!("unexpected execution durability");
+                };
+                assert_eq!(
+                    serde_json::to_value(&result).unwrap(),
+                    serde_json::to_value(expected).unwrap()
+                );
+                assert_eq!(
+                    calls.load(std::sync::atomic::Ordering::SeqCst),
+                    if first_fault { 2 } else { 1 }
+                );
+                assert_eq!(following.load(std::sync::atomic::Ordering::SeqCst), 0);
+                assert!(sink.letters.lock().await.is_empty());
+                let timeline = bus.read::<Timeline>().unwrap();
+                assert_eq!(
+                    timeline
+                        .events
+                        .iter()
+                        .filter(|event| matches!(event, TimelineEvent::NodeRetry { .. }))
+                        .count(),
+                    usize::from(first_fault)
+                );
+                assert!(
+                    !timeline
+                        .events
+                        .iter()
+                        .any(|event| matches!(event, TimelineEvent::DlqExhausted { .. }))
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn retry_then_dlq_retries_and_succeeds_before_exhaustion() {
         // Fail 2 times, succeed on 3rd attempt. Policy allows 5 attempts.
