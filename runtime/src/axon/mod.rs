@@ -3516,6 +3516,65 @@ mod tests {
         assert!(child_sink.letters.lock().await.is_empty());
     }
 
+    #[derive(Clone)]
+    struct RestrictedNestedParent;
+    #[async_trait]
+    impl Transition<i32, i32> for RestrictedNestedParent {
+        type Error = String;
+        type Resources = ();
+        fn bus_access_policy(&self) -> Option<BusAccessPolicy> {
+            Some(BusAccessPolicy::deny_only(vec![BusTypeRef::of::<String>()]))
+        }
+        async fn run(&self, input: i32, _: &(), bus: &mut Bus) -> Outcome<i32, String> {
+            if !matches!(
+                bus.get::<String>(),
+                Err(BusAccessError::Unauthorized { .. })
+            ) {
+                return Outcome::Fault("parent_guard_missing_before_child".into());
+            }
+            let child = Axon::<i32, i32, String>::start("restricted-parent-child").then(
+                CountCombinedRetry {
+                    calls: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                    failures: 0,
+                },
+            );
+            let report = child.execute(input, &(), bus).await;
+            let crate::ExecutionReport::Unpersisted {
+                result: Outcome::Next(value),
+                ..
+            } = report
+            else {
+                return Outcome::Fault("child_execution_failed".into());
+            };
+            if !matches!(
+                bus.get::<String>(),
+                Err(BusAccessError::Unauthorized { .. })
+            ) {
+                return Outcome::Fault("parent_guard_lost_after_child".into());
+            }
+            Outcome::Next(value)
+        }
+    }
+    #[tokio::test]
+    async fn nested_execution_preserves_parent_bus_access_guard() {
+        let mut bus = Bus::new();
+        bus.insert("private-resource".to_string());
+        let axon =
+            Axon::<i32, i32, String>::start("restricted-parent").then(RestrictedNestedParent);
+        let report = axon.execute(7, &(), &mut bus).await;
+        assert!(
+            matches!(
+                report,
+                crate::ExecutionReport::Unpersisted {
+                    result: Outcome::Next(8),
+                    ..
+                }
+            ),
+            "nested execution must preserve parent access restrictions"
+        );
+        assert!(bus.get::<String>().is_ok());
+    }
+
     #[tokio::test]
     async fn retry_then_dlq_retries_and_succeeds_before_exhaustion() {
         // Fail 2 times, succeed on 3rd attempt. Policy allows 5 attempts.
