@@ -102,6 +102,53 @@ pub enum ExecutionReport<T> {
 }
 
 impl<T> ExecutionReport<T> {
+    /// Transform the owned result while retaining every durability and cleanup observation.
+    ///
+    /// This is a value transformation, not permission to invoke another effect. The
+    /// callback runs for `Unconfirmed` too, so callers must inspect the report before
+    /// starting stream initialization or any other business operation. It never runs
+    /// for `BlockedBeforeEffect`, which has no result to transform.
+    pub fn map_result<U>(self, map: impl FnOnce(T) -> U) -> ExecutionReport<U> {
+        match self {
+            Self::Unpersisted { result, cleanup } => ExecutionReport::Unpersisted {
+                result: map(result),
+                cleanup,
+            },
+            Self::NotRequested { result, cleanup } => ExecutionReport::NotRequested {
+                result: map(result),
+                cleanup,
+            },
+            Self::Recorded {
+                result,
+                completion,
+                cleanup,
+            } => ExecutionReport::Recorded {
+                result: map(result),
+                completion,
+                cleanup,
+            },
+            Self::Unconfirmed {
+                result,
+                operation,
+                effect,
+                cleanup,
+            } => ExecutionReport::Unconfirmed {
+                result: map(result),
+                operation,
+                effect,
+                cleanup,
+            },
+            Self::BlockedBeforeEffect {
+                operation,
+                effect,
+                cleanup,
+            } => ExecutionReport::BlockedBeforeEffect {
+                operation,
+                effect,
+                cleanup,
+            },
+        }
+    }
     /// Owned cleanup observations are independent of domain and durability state.
     /// Absence means no Saga rollback report was observed for this invocation.
     pub fn cleanup(&self) -> Option<&SagaRollbackReport> {
@@ -129,6 +176,90 @@ impl<T> ExecutionReport<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn result_mapping_preserves_all_observations_and_callback_count() {
+        use crate::saga_report::{SagaRollbackOutcome, SagaRollbackStep};
+        let cleanup = SagaRollbackReport {
+            trace_id: "partial-cleanup".into(),
+            finished: false,
+            steps: vec![SagaRollbackStep {
+                node_id: "undo".into(),
+                outcome: SagaRollbackOutcome::InProgress,
+            }],
+        };
+        let reports = vec![
+            ExecutionReport::Unpersisted {
+                result: String::from("known"),
+                cleanup: None,
+            },
+            ExecutionReport::NotRequested {
+                result: String::from("known"),
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: String::from("known"),
+                completion: CompletionConfirmation::Confirmed,
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: String::from("known"),
+                completion: CompletionConfirmation::NotRequested,
+                cleanup: None,
+            },
+        ];
+        let mut reports = reports;
+        for effect in [EffectBoundary::NotInvoked, EffectBoundary::MayHaveRun] {
+            for operation in [
+                PersistenceOperation::Load,
+                PersistenceOperation::RecoveryPayload,
+                PersistenceOperation::Intent,
+                PersistenceOperation::Result,
+                PersistenceOperation::Terminal,
+                PersistenceOperation::Complete,
+                PersistenceOperation::CompensationRead,
+                PersistenceOperation::CompensationWrite,
+                PersistenceOperation::CancellationCursor,
+            ] {
+                reports.push(ExecutionReport::Unconfirmed {
+                    result: String::from("known"),
+                    operation,
+                    effect,
+                    cleanup: None,
+                });
+                reports.push(ExecutionReport::BlockedBeforeEffect {
+                    operation,
+                    effect,
+                    cleanup: None,
+                });
+            }
+        }
+        for report in reports {
+            for attached in [None, Some(cleanup.clone())] {
+                let report = report.clone().with_cleanup(attached);
+                let mut expected = serde_json::to_value(&report).unwrap();
+                let has_result = expected.get("result").is_some();
+                if has_result {
+                    expected["result"] = serde_json::json!(["known"]);
+                }
+                let mut calls = 0;
+                let mapped = report.map_result(|result| {
+                    calls += 1;
+                    vec![result]
+                });
+                assert_eq!(calls, usize::from(has_result));
+                assert_eq!(serde_json::to_value(&mapped).unwrap(), expected);
+                assert_eq!(
+                    mapped.cleanup().map(|r| r.is_complete()),
+                    if mapped.cleanup().is_some() {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                );
+            }
+        }
+    }
 
     #[test]
     fn completion_omission_is_distinct_from_confirmation() {
