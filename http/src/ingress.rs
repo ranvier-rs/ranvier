@@ -3246,20 +3246,12 @@ where
                         Err(CancellableStreamingError::Cancelled(context)) => {
                             return cancellation_http_response(&context);
                         }
-                        Err(CancellableStreamingError::Stream(e)) => {
-                            tracing::error!("Streaming pipeline error: {}", e);
-                            if cfg!(debug_assertions) {
-                                return json_error_response(
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    format!("Streaming error: {}", e),
-                                );
-                            } else {
-                                return json_error_response(
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    "Internal server error",
-                                );
-                            }
+                        Err(CancellableStreamingError::Stream(_)) => {
+                            tracing::error!(failure_source = "stream_init", "Streaming initialization failed");
+                            return json_error_response(StatusCode::INTERNAL_SERVER_ERROR,
+                                "Streaming initialization failed");
                         }
+
                     };
 
                     // Bridge stream → mpsc channel → SSE frames.
