@@ -108,7 +108,7 @@ mod tests {
         kit.insert(5usize);
 
         let result = kit.run(&axon, 10).await;
-        let crate::ExecutionReport::Unpersisted { result } = result else {
+        let crate::ExecutionReport::Unpersisted { result, .. } = result else {
             panic!("expected an execution without persistence");
         };
         match result {

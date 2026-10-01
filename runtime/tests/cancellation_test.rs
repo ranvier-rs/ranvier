@@ -109,7 +109,7 @@ async fn pre_cancelled_cleanup_reports_applied_compensation_without_ack() {
             result: ExecutionTerminal::Cancelled(context),
             operation: PersistenceOperation::CompensationWrite,
             effect: EffectBoundary::MayHaveRun,
-        } if context.reason == CancellationReason::Explicit));
+         .. } if context.reason == CancellationReason::Explicit));
         assert_eq!(observed.load(Ordering::SeqCst), 0);
         let recorded = calls.lock().await;
         assert_eq!(recorded.len(), 1);
@@ -197,7 +197,7 @@ async fn completed_trace_blocks_normal_and_cancellation_effects_for_all_terminal
                         .expect("completed execution must reject before waiting transition");
                 assert!(matches!(report, ExecutionReport::NotRequested {
                     result: Outcome::Emit(event, None),
-                } if event == "execution.resumption.completed_trace"));
+                 .. } if event == "execution.resumption.completed_trace"));
             } else {
                 let token = CancellationToken::new();
                 if mode == 2 {
@@ -212,11 +212,11 @@ async fn completed_trace_blocks_normal_and_cancellation_effects_for_all_terminal
                 if mode == 2 {
                     assert!(matches!(report, ExecutionReport::NotRequested {
                         result: ExecutionTerminal::Cancelled(context),
-                    } if context.reason == CancellationReason::Explicit));
+                     .. } if context.reason == CancellationReason::Explicit));
                 } else {
                     assert!(matches!(report, ExecutionReport::NotRequested {
                         result: ExecutionTerminal::Outcome(Outcome::Emit(event, None)),
-                    } if event == "execution.resumption.completed_trace"));
+                     .. } if event == "execution.resumption.completed_trace"));
                 }
             }
             assert!(
@@ -296,6 +296,7 @@ async fn pre_cancelled_execution_does_not_write_when_persistence_cursor_load_fai
             result: ExecutionTerminal::Cancelled(_),
             operation: PersistenceOperation::Load,
             effect: EffectBoundary::NotInvoked,
+            ..
         }
     ));
     assert_eq!(observed.load(Ordering::SeqCst), 0);
@@ -332,6 +333,7 @@ async fn unknown_entry_cursor_blocks_normal_and_cancellable_execution() {
                 ExecutionReport::BlockedBeforeEffect {
                     operation: PersistenceOperation::Load,
                     effect: EffectBoundary::NotInvoked,
+                    ..
                 }
             ));
             serde_json::to_value(report).unwrap()
@@ -345,6 +347,7 @@ async fn unknown_entry_cursor_blocks_normal_and_cancellable_execution() {
                 ExecutionReport::BlockedBeforeEffect {
                     operation: PersistenceOperation::Load,
                     effect: EffectBoundary::NotInvoked,
+                    ..
                 }
             ));
             serde_json::to_value(report).unwrap()
@@ -388,6 +391,7 @@ async fn pre_cancelled_persisted_execution_records_entry_before_terminal() {
         ExecutionReport::Recorded {
             result: ExecutionTerminal::Cancelled(_),
             completion: CompletionConfirmation::Confirmed,
+            ..
         }
     ));
     assert_eq!(observed.load(Ordering::SeqCst), 0);
@@ -435,7 +439,7 @@ async fn in_flight_cancellation_is_structured_persisted_and_policy_visible() {
 
     assert!(matches!(
         terminal,
-        ExecutionReport::Recorded { result: ExecutionTerminal::Cancelled(context), completion: CompletionConfirmation::Confirmed }
+        ExecutionReport::Recorded { result: ExecutionTerminal::Cancelled(context), completion: CompletionConfirmation::Confirmed , .. }
             if context.reason == CancellationReason::OperatorShutdown
     ));
     assert_eq!(observed.load(Ordering::SeqCst), 1);
@@ -492,6 +496,7 @@ async fn cancellation_runs_external_compensation_and_marks_compensated() {
         ExecutionReport::Recorded {
             result: ExecutionTerminal::Cancelled(_),
             completion: CompletionConfirmation::Confirmed,
+            ..
         }
     ));
 
@@ -545,7 +550,7 @@ async fn isolated_parallel_branches_receive_framework_cancellation_control() {
 
     assert!(matches!(
         terminal,
-        ExecutionReport::Unpersisted { result: ExecutionTerminal::Cancelled(context) } if context.reason == CancellationReason::Explicit
+        ExecutionReport::Unpersisted { result: ExecutionTerminal::Cancelled(context) , .. } if context.reason == CancellationReason::Explicit
     ));
     assert_eq!(observed.load(Ordering::SeqCst), 2);
 }
@@ -648,7 +653,8 @@ async fn cancellation_rolls_back_completed_saga_steps_in_lifo_order() {
     assert!(matches!(
         terminal,
         ExecutionReport::Unpersisted {
-            result: ExecutionTerminal::Cancelled(_)
+            result: ExecutionTerminal::Cancelled(_),
+            ..
         }
     ));
     assert_eq!(

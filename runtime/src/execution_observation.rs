@@ -67,6 +67,7 @@ mod tests {
                 result: "domain-result",
                 operation: PersistenceOperation::CompensationWrite,
                 effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
             }
         );
         assert!(backing.was_compensated("key").await.unwrap());
@@ -161,6 +162,7 @@ impl Observation {
                     } else {
                         EffectBoundary::NotInvoked
                     },
+                    cleanup: None,
                 };
             }
             return ExecutionReport::Unconfirmed {
@@ -171,10 +173,14 @@ impl Observation {
                 } else {
                     EffectBoundary::NotInvoked
                 },
+                cleanup: None,
             };
         }
         if !self.attempted_write.load(Ordering::SeqCst) {
-            return ExecutionReport::NotRequested { result };
+            return ExecutionReport::NotRequested {
+                result,
+                cleanup: None,
+            };
         }
         ExecutionReport::Recorded {
             result,
@@ -183,6 +189,7 @@ impl Observation {
             } else {
                 CompletionConfirmation::NotRequested
             },
+            cleanup: None,
         }
     }
 }
@@ -340,11 +347,23 @@ impl Session {
     }
     pub(crate) fn finish<T>(self, bus: &mut Bus, result: T) -> ExecutionReport<T> {
         bus.clear_access_policy();
+        // Capture child ownership before restoring a parent's Bus observations.
+        let cleanup = bus
+            .read::<crate::saga_report::SagaRollbackJournal>()
+            .map(|journal| journal.snapshot())
+            .or_else(|| {
+                bus.read::<crate::saga_report::SagaRollbackReport>()
+                    .cloned()
+            });
         let report = if self.original.is_some() || self.original_compensation.is_some() {
             self.observation.report(result)
         } else {
-            ExecutionReport::Unpersisted { result }
-        };
+            ExecutionReport::Unpersisted {
+                result,
+                cleanup: None,
+            }
+        }
+        .with_cleanup(cleanup);
         if let Some(original) = self.original {
             bus.insert(original);
         }

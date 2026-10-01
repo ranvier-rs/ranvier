@@ -27,7 +27,7 @@ async fn panic_in_transition_returns_fault_when_e_is_string() {
 
     let mut bus = Bus::new();
     let result = axon.execute("hello".to_string(), &(), &mut bus).await;
-    let ranvier_runtime::ExecutionReport::Unpersisted { result } = result else {
+    let ranvier_runtime::ExecutionReport::Unpersisted { result, .. } = result else {
         panic!("expected an execution without persistence");
     };
 
@@ -68,7 +68,7 @@ async fn normal_transition_unaffected_by_catch_unwind() {
 
     let mut bus = Bus::new();
     let result = axon.execute("hello".to_string(), &(), &mut bus).await;
-    let ranvier_runtime::ExecutionReport::Unpersisted { result } = result else {
+    let ranvier_runtime::ExecutionReport::Unpersisted { result, .. } = result else {
         panic!("expected an execution without persistence");
     };
 
@@ -113,7 +113,7 @@ async fn panic_with_non_string_error_emits_panic_signal() {
 
     let mut bus = Bus::new();
     let result = axon.execute("hello".to_string(), &(), &mut bus).await;
-    let ranvier_runtime::ExecutionReport::Unpersisted { result } = result else {
+    let ranvier_runtime::ExecutionReport::Unpersisted { result, .. } = result else {
         panic!("expected an execution without persistence");
     };
 
@@ -160,7 +160,7 @@ async fn panic_in_second_step_of_chain_returns_fault() {
 
     let mut bus = Bus::new();
     let result = axon.execute("hello".to_string(), &(), &mut bus).await;
-    let ranvier_runtime::ExecutionReport::Unpersisted { result } = result else {
+    let ranvier_runtime::ExecutionReport::Unpersisted { result, .. } = result else {
         panic!("expected an execution without persistence");
     };
 

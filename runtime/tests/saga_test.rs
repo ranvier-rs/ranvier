@@ -130,7 +130,10 @@ async fn test_saga_automated_rollback_with_state_mapping() {
     };
     let mut bus = Bus::new();
     let outcome = axon.execute(initial_state, &(), &mut bus).await;
-    let ranvier_runtime::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+    let ranvier_runtime::ExecutionReport::Unpersisted {
+        result: outcome, ..
+    } = outcome
+    else {
         panic!("expected an execution without persistence");
     };
 
@@ -193,7 +196,10 @@ async fn saga_compensation_snapshot_mismatch_does_not_panic() {
     };
     let mut bus = Bus::new();
     let outcome = axon.execute(initial_state, &(), &mut bus).await;
-    let ranvier_runtime::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+    let ranvier_runtime::ExecutionReport::Unpersisted {
+        result: outcome, ..
+    } = outcome
+    else {
         panic!("expected an execution without persistence");
     };
 
@@ -250,6 +256,7 @@ async fn compensated_step_records_result_when_saga_is_disabled() {
     let ExecutionReport::Recorded {
         result: Outcome::Next(state),
         completion: CompletionConfirmation::Confirmed,
+        ..
     } = report
     else {
         panic!("expected acknowledged transition and completion");
@@ -301,6 +308,7 @@ async fn compensated_step_records_fault_before_automatic_compensation() {
     let ExecutionReport::Recorded {
         result: Outcome::Fault(error),
         completion: CompletionConfirmation::Confirmed,
+        ..
     } = report
     else {
         panic!("expected acknowledged fault and completion");
@@ -374,7 +382,7 @@ async fn verify_incomplete_automatic_compensation(compensation_result: Outcome<(
         .await;
     assert!(matches!(report, ExecutionReport::Recorded {
         result: Outcome::Fault(ref error), completion: CompletionConfirmation::Confirmed,
-    } if error == "Planned SAGA Failure"));
+     .. } if error == "Planned SAGA Failure"));
     let trace = store.load("failed-automatic-undo").await.unwrap().unwrap();
     assert_eq!(trace.completion, Some(CompletionState::Fault));
     assert!(
@@ -460,7 +468,7 @@ async fn saga_rollback_classifies_incomplete_hooks_without_replacing_business_fa
             )
             .await;
         assert!(
-            matches!(result, ranvier_runtime::ExecutionReport::Unpersisted { result: Outcome::Fault(ref error) } if error == "Planned SAGA Failure")
+            matches!(result, ranvier_runtime::ExecutionReport::Unpersisted { result: Outcome::Fault(ref error) , .. } if error == "Planned SAGA Failure")
         );
         let report = bus.read::<SagaRollbackReport>().unwrap();
         assert!(!report.is_complete());
@@ -515,7 +523,7 @@ async fn rollback_panic_preserves_business_fault_and_incomplete_cleanup() {
         )
         .await;
     assert!(
-        matches!(result, ranvier_runtime::ExecutionReport::Unpersisted { result: Outcome::Fault(ref error) } if error == "Planned SAGA Failure")
+        matches!(result, ranvier_runtime::ExecutionReport::Unpersisted { result: Outcome::Fault(ref error) , .. } if error == "Planned SAGA Failure")
     );
     let report = bus.read::<SagaRollbackReport>().unwrap();
     assert!(report.finished);

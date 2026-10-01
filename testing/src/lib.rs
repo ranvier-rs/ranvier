@@ -14,7 +14,7 @@
 //!     let bus = TestBus::new().with(42_i32).with("config".to_string());
 //!     let axon = Axon::simple::<String>("test").then(my_transition);
 //!     let (report, _) = TestAxon::run(axon, (), &(), bus).await;
-//!     let ExecutionReport::Unpersisted { result: outcome } = report else {
+//!     let ExecutionReport::Unpersisted { result: outcome , .. } = report else {
 //!         panic!("expected an execution without persistence");
 //!     };
 //!     assert_outcome_ok!(outcome, |val| assert_eq!(val, expected));
@@ -79,7 +79,7 @@ impl TestAxon {
     /// ```rust,ignore
     /// let bus = TestBus::new().with(42_i32);
     /// let (report, bus) = TestAxon::run(axon, (), &(), bus).await;
-    /// let ranvier_runtime::ExecutionReport::Unpersisted { result: outcome } = report else {
+    /// let ranvier_runtime::ExecutionReport::Unpersisted { result: outcome , .. } = report else {
     ///     panic!("expected an execution without persistence");
     /// };
     /// assert_outcome_ok!(outcome);
@@ -280,7 +280,10 @@ mod tests {
                 Outcome::Next("hello".to_string())
             });
         let (report, _bus) = TestAxon::run(axon, (), &(), TestBus::new()).await;
-        let ranvier_runtime::ExecutionReport::Unpersisted { result: outcome } = report else {
+        let ranvier_runtime::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = report
+        else {
             panic!("expected an execution without persistence");
         };
         assert_outcome_ok!(outcome, |val: String| assert_eq!(val, "hello"));
@@ -293,7 +296,10 @@ mod tests {
                 Outcome::<String, String>::Fault("boom".to_string())
             });
         let (report, bus) = TestAxon::run(axon, (), &(), TestBus::new()).await;
-        let ranvier_runtime::ExecutionReport::Unpersisted { result: outcome } = report else {
+        let ranvier_runtime::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = report
+        else {
             panic!("expected an execution without persistence");
         };
         assert_outcome_err!(outcome, |err: String| assert_eq!(err, "boom"));
@@ -314,7 +320,10 @@ mod tests {
             },
         );
         let (report, _bus) = TestAxon::run(axon, (), &(), TestBus::new().with(99_i32)).await;
-        let ranvier_runtime::ExecutionReport::Unpersisted { result: outcome } = report else {
+        let ranvier_runtime::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = report
+        else {
             panic!("expected an execution without persistence");
         };
         assert_outcome_ok!(outcome, |val: i32| assert_eq!(val, 99));
@@ -340,6 +349,7 @@ mod tests {
         let ExecutionReport::Recorded {
             result,
             completion: CompletionConfirmation::Confirmed,
+            ..
         } = report
         else {
             panic!("expected recorded execution with confirmed completion");

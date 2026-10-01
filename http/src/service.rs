@@ -122,8 +122,8 @@ where
         _ => None,
     };
     let (outcome, durability) = match report {
-        ExecutionReport::Unpersisted { result } => (result, "unpersisted"),
-        ExecutionReport::NotRequested { result } => (result, "not_requested"),
+        ExecutionReport::Unpersisted { result, .. } => (result, "unpersisted"),
+        ExecutionReport::NotRequested { result, .. } => (result, "not_requested"),
         ExecutionReport::Recorded { result, .. } => (result, "recorded"),
         _ => {
             return json_value_response(

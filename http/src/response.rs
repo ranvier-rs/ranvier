@@ -19,6 +19,12 @@ pub(crate) fn durability_rejection<T: Serialize>(
 ) -> Option<(StatusCode, serde_json::Value)> {
     use ranvier_runtime::{EffectBoundary, ExecutionReport};
     let (status, reconciliation) = match report {
+        _ if report
+            .cleanup()
+            .is_some_and(|cleanup| !cleanup.is_complete()) =>
+        {
+            (StatusCode::CONFLICT, true)
+        }
         ExecutionReport::Unconfirmed { .. } => (StatusCode::CONFLICT, true),
         ExecutionReport::BlockedBeforeEffect { effect, .. } => {
             if *effect == EffectBoundary::MayHaveRun {
@@ -495,6 +501,7 @@ mod tests {
             result: Outcome::<u32, String>::Next(7),
             operation: ranvier_runtime::PersistenceOperation::Complete,
             effect: ranvier_runtime::EffectBoundary::MayHaveRun,
+            cleanup: None,
         };
         let (status, payload) = durability_rejection(&report).unwrap();
         assert_eq!(status, StatusCode::CONFLICT);
@@ -520,6 +527,7 @@ mod tests {
             let report = ExecutionReport::<u32>::BlockedBeforeEffect {
                 operation: PersistenceOperation::Intent,
                 effect,
+                cleanup: None,
             };
             let (actual, body) = durability_rejection(&report).unwrap();
             assert_eq!(actual, status);
@@ -540,6 +548,7 @@ mod tests {
             result: Broken,
             operation: ranvier_runtime::PersistenceOperation::Result,
             effect: ranvier_runtime::EffectBoundary::MayHaveRun,
+            cleanup: None,
         };
         let (status, body) = durability_rejection(&report).unwrap();
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);

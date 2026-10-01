@@ -75,8 +75,7 @@ async fn verify_resume_from_start(completed: bool) {
         axon_v10.execute(0, &(), &mut bus).await,
         ExecutionReport::Recorded {
             result: Outcome::Next(2),
-            completion
-        } if completion == if completed { CompletionConfirmation::Confirmed } else { CompletionConfirmation::NotRequested }
+            completion, .. } if completion == if completed { CompletionConfirmation::Confirmed } else { CompletionConfirmation::NotRequested }
     ));
     let before = store.load("trace-1").await.unwrap().unwrap();
 
@@ -120,8 +119,7 @@ async fn verify_resume_from_start(completed: bool) {
         assert!(matches!(
             report,
             ExecutionReport::NotRequested {
-                result: Outcome::Emit(event, None),
-            } if event == "execution.resumption.completed_trace"
+                result: Outcome::Emit(event, None), .. } if event == "execution.resumption.completed_trace"
         ));
         let after = store.load("trace-1").await.unwrap().unwrap();
         assert_eq!(after.events, before.events);
@@ -133,6 +131,7 @@ async fn verify_resume_from_start(completed: bool) {
             ExecutionReport::Recorded {
                 result: Outcome::Next(3),
                 completion: CompletionConfirmation::Confirmed,
+                ..
             }
         ));
     }
@@ -165,7 +164,8 @@ async fn test_migration_fail_by_default() {
         axon_v10.execute(0, &(), &mut bus).await,
         ExecutionReport::Recorded {
             result: Outcome::Next(1),
-            completion: CompletionConfirmation::NotRequested
+            completion: CompletionConfirmation::NotRequested,
+            ..
         }
     ));
 
@@ -183,7 +183,10 @@ async fn test_migration_fail_by_default() {
     // No migration registered
 
     let report = axon_v11.execute(0, &(), &mut bus_v11).await;
-    let ExecutionReport::NotRequested { result: outcome } = report else {
+    let ExecutionReport::NotRequested {
+        result: outcome, ..
+    } = report
+    else {
         panic!("expected migration rejection without persistence writes");
     };
 
@@ -280,7 +283,8 @@ async fn test_migration_migrate_active_node() {
         axon_v11.execute(0, &(), &mut bus_v11).await,
         ExecutionReport::Recorded {
             result: Outcome::Next(1),
-            completion: CompletionConfirmation::Confirmed
+            completion: CompletionConfirmation::Confirmed,
+            ..
         }
     ));
 
@@ -359,7 +363,8 @@ async fn test_migration_fallback_to_node() {
         axon_v11.execute(0, &(), &mut bus_v11).await,
         ExecutionReport::Recorded {
             result: Outcome::Next(1),
-            completion: CompletionConfirmation::Confirmed
+            completion: CompletionConfirmation::Confirmed,
+            ..
         }
     ));
 
@@ -618,7 +623,8 @@ async fn test_multi_hop_axon_execution_with_payload_mapping() {
         axon_v12.execute(0, &(), &mut bus).await,
         ExecutionReport::Recorded {
             result: Outcome::Next(3),
-            completion: CompletionConfirmation::Confirmed
+            completion: CompletionConfirmation::Confirmed,
+            ..
         }
     ));
 

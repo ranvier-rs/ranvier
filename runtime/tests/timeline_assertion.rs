@@ -40,7 +40,10 @@ async fn timeline_assertion_works_in_integration_test() {
     bus.insert(Timeline::new());
 
     let outcome = axon.execute(41, &(), &mut bus).await;
-    let ranvier_runtime::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+    let ranvier_runtime::ExecutionReport::Unpersisted {
+        result: outcome, ..
+    } = outcome
+    else {
         panic!("expected an execution without persistence");
     };
     match outcome {

@@ -181,8 +181,8 @@ where
         ));
     }
     let terminal = match report {
-        ranvier_runtime::ExecutionReport::Unpersisted { result }
-        | ranvier_runtime::ExecutionReport::NotRequested { result }
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. }
+        | ranvier_runtime::ExecutionReport::NotRequested { result, .. }
         | ranvier_runtime::ExecutionReport::Recorded { result, .. } => result,
         _ => {
             return Err(json_error_response(

@@ -109,7 +109,7 @@ async fn verify_cancelled_write(
             result: ranvier_runtime::ExecutionTerminal::Cancelled(_),
             operation,
             effect
-        } if operation == expected_operation && effect == expected_effect
+        , .. } if operation == expected_operation && effect == expected_effect
     ));
     assert_eq!(effects.load(Ordering::SeqCst), effect_count);
     let persisted = backing.load("cancelled-ack").await.unwrap().unwrap();
@@ -183,7 +183,7 @@ async fn collected_stream_terminal_failure_retains_invoked_effect_boundary() {
     assert!(matches!(report, ExecutionReport::Unconfirmed {
         result: Outcome::Next(ref items), operation: PersistenceOperation::Terminal,
         effect: EffectBoundary::MayHaveRun,
-    } if items == &[7, 8]));
+     .. } if items == &[7, 8]));
     assert_eq!(effects.load(Ordering::SeqCst), 1);
     assert_eq!(writes.load(Ordering::SeqCst), 2);
     let trace = backing.load("stream-report").await.unwrap().unwrap();
@@ -263,6 +263,7 @@ async fn rejected_and_applied_unknown_entries_block_both_execution_paths() {
                     ExecutionReport::BlockedBeforeEffect {
                         operation: PersistenceOperation::Intent,
                         effect: EffectBoundary::NotInvoked,
+                        ..
                     }
                 ));
                 serde_json::to_value(report).unwrap()
@@ -273,6 +274,7 @@ async fn rejected_and_applied_unknown_entries_block_both_execution_paths() {
                     ExecutionReport::BlockedBeforeEffect {
                         operation: PersistenceOperation::Intent,
                         effect: EffectBoundary::NotInvoked,
+                        ..
                     }
                 ));
                 serde_json::to_value(report).unwrap()
@@ -342,7 +344,8 @@ async fn actual_execute_retains_first_failure_after_terminal_and_completion_succ
         ExecutionReport::Unconfirmed {
             result: Outcome::Next(1),
             operation: PersistenceOperation::Result,
-            effect: EffectBoundary::MayHaveRun
+            effect: EffectBoundary::MayHaveRun,
+            ..
         }
     ));
     assert_eq!(effects.load(Ordering::SeqCst), 1);
@@ -369,7 +372,8 @@ async fn actual_execute_distinguishes_no_store_and_app_owned_completion() {
     assert!(matches!(
         axon.execute(0, &(), &mut bus).await,
         ExecutionReport::Unpersisted {
-            result: Outcome::Next(1)
+            result: Outcome::Next(1),
+            ..
         }
     ));
     bus.insert(PersistenceHandle::from_store(
@@ -380,7 +384,8 @@ async fn actual_execute_distinguishes_no_store_and_app_owned_completion() {
         axon.execute(0, &(), &mut bus).await,
         ExecutionReport::Recorded {
             result: Outcome::Next(1),
-            completion: CompletionConfirmation::NotRequested
+            completion: CompletionConfirmation::NotRequested,
+            ..
         }
     ));
 }
@@ -449,6 +454,7 @@ async fn verify_compensated_result_ack_cancellation(apply_blocked: bool) {
             result: ranvier_runtime::ExecutionTerminal::Cancelled(_),
             operation: PersistenceOperation::Result,
             effect: EffectBoundary::MayHaveRun,
+            ..
         }
     ));
     assert_eq!(effects.load(Ordering::SeqCst), 1);

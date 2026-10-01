@@ -1979,6 +1979,7 @@ mod tests {
         let crate::ExecutionReport::Recorded {
             result: outcome,
             completion: crate::CompletionConfirmation::Confirmed,
+            ..
         } = outcome
         else {
             panic!("unexpected execution durability");
@@ -2007,6 +2008,7 @@ mod tests {
         let crate::ExecutionReport::Recorded {
             result: outcome,
             completion: crate::CompletionConfirmation::Confirmed,
+            ..
         } = outcome
         else {
             panic!("unexpected execution durability");
@@ -2035,6 +2037,7 @@ mod tests {
         let crate::ExecutionReport::Recorded {
             result: outcome,
             completion: crate::CompletionConfirmation::NotRequested,
+            ..
         } = outcome
         else {
             panic!("unexpected execution durability");
@@ -2066,6 +2069,7 @@ mod tests {
         let crate::ExecutionReport::Recorded {
             result: outcome,
             completion: crate::CompletionConfirmation::Confirmed,
+            ..
         } = outcome
         else {
             panic!("unexpected execution durability");
@@ -2106,6 +2110,7 @@ mod tests {
         let crate::ExecutionReport::Recorded {
             result: outcome,
             completion: crate::CompletionConfirmation::Confirmed,
+            ..
         } = outcome
         else {
             panic!("unexpected execution durability");
@@ -2150,6 +2155,7 @@ mod tests {
         let crate::ExecutionReport::Recorded {
             result: outcome,
             completion: crate::CompletionConfirmation::Confirmed,
+            ..
         } = outcome
         else {
             panic!("unexpected execution durability");
@@ -2196,6 +2202,7 @@ mod tests {
         let crate::ExecutionReport::Recorded {
             result: outcome1,
             completion: crate::CompletionConfirmation::NotRequested,
+            ..
         } = outcome1
         else {
             panic!("unexpected execution durability");
@@ -2204,6 +2211,7 @@ mod tests {
         let crate::ExecutionReport::Recorded {
             result: outcome2,
             completion: crate::CompletionConfirmation::NotRequested,
+            ..
         } = outcome2
         else {
             panic!("unexpected execution durability");
@@ -2256,6 +2264,7 @@ mod tests {
             result: outcome,
             operation: crate::PersistenceOperation::CompensationRead,
             effect: crate::EffectBoundary::MayHaveRun,
+            ..
         } = outcome
         else {
             panic!("unexpected execution durability");
@@ -2287,7 +2296,10 @@ mod tests {
 
         let axon = Axon::<(), (), String>::start("BusPolicy").then(CapabilityGuarded);
         let outcome = axon.execute((), &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
 
@@ -2328,7 +2340,10 @@ mod tests {
         // Current axon is version 1.0
         let axon = Axon::<i32, i32, TestInfallible>::new("TestCircuit").then(AddOne);
         let outcome = axon.execute(10, &(), &mut bus).await;
-        let crate::ExecutionReport::NotRequested { result: outcome } = outcome else {
+        let crate::ExecutionReport::NotRequested {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
 
@@ -2379,6 +2394,7 @@ mod tests {
         let crate::ExecutionReport::Recorded {
             result: outcome,
             completion: crate::CompletionConfirmation::Confirmed,
+            ..
         } = outcome
         else {
             panic!("unexpected execution durability");
@@ -2449,6 +2465,7 @@ mod tests {
         let crate::ExecutionReport::Recorded {
             result: outcome,
             completion: crate::CompletionConfirmation::Confirmed,
+            ..
         } = outcome
         else {
             panic!("unexpected execution durability");
@@ -2538,7 +2555,10 @@ mod tests {
             })
             .with_dlq_sink(dlq_sink.clone());
         let outcome = axon.execute(10, &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
 
@@ -2585,7 +2605,10 @@ mod tests {
             })
             .with_dlq_sink(dlq_sink.clone());
         let outcome = axon.execute(42, &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
 
@@ -2632,7 +2655,10 @@ mod tests {
             .with_dlq_policy(DlqPolicy::SendToDlq)
             .with_dlq_sink(dlq_sink.clone());
         let outcome = axon.execute(1, &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
 
@@ -2665,7 +2691,10 @@ mod tests {
             .with_dlq_policy(DlqPolicy::Drop)
             .with_dlq_sink(dlq_sink.clone());
         let outcome = axon.execute(1, &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
 
@@ -2694,7 +2723,10 @@ mod tests {
         // First execution: Drop policy → no dead letters
         let mut bus = Bus::new();
         let outcome = axon.execute(1, &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
         assert!(matches!(outcome, Outcome::Fault(_)));
@@ -2709,7 +2741,10 @@ mod tests {
         // Second execution: SendToDlq policy → dead letter captured
         let mut bus2 = Bus::new();
         let outcome2 = axon.execute(2, &(), &mut bus2).await;
-        let crate::ExecutionReport::Unpersisted { result: outcome2 } = outcome2 else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome2, ..
+        } = outcome2
+        else {
             panic!("unexpected execution durability");
         };
         assert!(matches!(outcome2, Outcome::Fault(_)));
@@ -2735,7 +2770,10 @@ mod tests {
         // First execution: Disabled → no SagaStack in bus
         let mut bus = Bus::new();
         let _outcome = axon.execute(1, &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result: _outcome } = _outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: _outcome, ..
+        } = _outcome
+        else {
             panic!("unexpected execution durability");
         };
         assert!(
@@ -2749,7 +2787,10 @@ mod tests {
         // Second execution: Enabled → SagaStack populated
         let mut bus2 = Bus::new();
         let _outcome2 = axon.execute(10, &(), &mut bus2).await;
-        let crate::ExecutionReport::Unpersisted { result: _outcome2 } = _outcome2 else {
+        let crate::ExecutionReport::Unpersisted {
+            result: _outcome2, ..
+        } = _outcome2
+        else {
             panic!("unexpected execution durability");
         };
         assert!(
@@ -2796,7 +2837,10 @@ mod tests {
             let mut bus = Bus::new();
             bus.insert(IamToken("valid-token".to_string()));
             let outcome = axon.execute(10, &(), &mut bus).await;
-            let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+            let crate::ExecutionReport::Unpersisted {
+                result: outcome, ..
+            } = outcome
+            else {
                 panic!("unexpected execution durability");
             };
 
@@ -2822,7 +2866,10 @@ mod tests {
             let mut bus = Bus::new();
             // No IamToken inserted
             let outcome = axon.execute(10, &(), &mut bus).await;
-            let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+            let crate::ExecutionReport::Unpersisted {
+                result: outcome, ..
+            } = outcome
+            else {
                 panic!("unexpected execution durability");
             };
 
@@ -2849,7 +2896,10 @@ mod tests {
             let mut bus = Bus::new();
             bus.insert(IamToken("bad-token".to_string()));
             let outcome = axon.execute(10, &(), &mut bus).await;
-            let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+            let crate::ExecutionReport::Unpersisted {
+                result: outcome, ..
+            } = outcome
+            else {
                 panic!("unexpected execution durability");
             };
 
@@ -2875,7 +2925,10 @@ mod tests {
             let mut bus = Bus::new();
             bus.insert(IamToken("token".to_string()));
             let outcome = axon.execute(5, &(), &mut bus).await;
-            let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+            let crate::ExecutionReport::Unpersisted {
+                result: outcome, ..
+            } = outcome
+            else {
                 panic!("unexpected execution durability");
             };
 
@@ -2896,7 +2949,10 @@ mod tests {
             let mut bus = Bus::new();
             bus.insert(IamToken("token".to_string()));
             let outcome = axon.execute(5, &(), &mut bus).await;
-            let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+            let crate::ExecutionReport::Unpersisted {
+                result: outcome, ..
+            } = outcome
+            else {
                 panic!("unexpected execution durability");
             };
 
@@ -2922,7 +2978,10 @@ mod tests {
             let mut bus = Bus::new();
             // No token needed when policy is None
             let outcome = axon.execute(10, &(), &mut bus).await;
-            let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+            let crate::ExecutionReport::Unpersisted {
+                result: outcome, ..
+            } = outcome
+            else {
                 panic!("unexpected execution durability");
             };
 
@@ -3126,7 +3185,10 @@ mod tests {
 
         let outcome = axon.execute(5, &(), &mut bus).await;
 
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
         assert!(matches!(outcome, Outcome::Next(6)));
@@ -3142,7 +3204,10 @@ mod tests {
 
         // Starting with 5: AddOne -> 6, MultiplyByTwo -> 12, AddTen -> 22
         let outcome = axon.execute(5, &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
         assert!(matches!(outcome, Outcome::Next(22)));
@@ -3163,7 +3228,10 @@ mod tests {
 
         let outcome = axon.execute(5, &(), &mut bus).await;
 
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
         assert!(matches!(outcome, Outcome::Fault(msg) if msg == "boom"));
@@ -3181,7 +3249,10 @@ mod tests {
 
         let outcome = axon.execute(5, &(), &mut bus).await;
 
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
         assert!(matches!(outcome, Outcome::Fault(_)));
@@ -3217,7 +3288,10 @@ mod tests {
 
         let outcome = axon.execute(3, &(), &mut bus).await;
 
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
         assert!(matches!(outcome, Outcome::Next(8))); // (3 + 1) * 2 = 8
@@ -3395,7 +3469,10 @@ mod tests {
 
         let outcome = axon.execute(5, &(), &mut bus).await;
 
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
         assert!(matches!(outcome, Outcome::Next(5)));
@@ -3426,7 +3503,10 @@ mod tests {
 
         let outcome = axon.execute(5, &(), &mut bus).await;
 
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
         assert!(matches!(outcome, Outcome::Next(6)));
@@ -3455,7 +3535,10 @@ mod tests {
 
         let outcome = axon.execute(5, &(), &mut bus).await;
 
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
         assert!(matches!(outcome, Outcome::Next(5)));
@@ -3497,7 +3580,10 @@ mod tests {
 
         let outcome = axon.execute(5, &(), &mut bus).await;
 
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
         assert!(matches!(outcome, Outcome::Next(5)));
@@ -3558,7 +3644,10 @@ mod tests {
         // Input 5: AddOne -> 6, MultiplyByTwo -> 10.
         // AllMustSucceed returns the first Next (AddOne = 6).
         let outcome = axon.execute(5, &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
         assert!(matches!(outcome, Outcome::Next(6)));
@@ -3580,7 +3669,10 @@ mod tests {
 
         let outcome = axon.execute(5, &(), &mut bus).await;
 
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
         assert!(
@@ -3606,7 +3698,10 @@ mod tests {
 
         // AlwaysFault faults, but AddOneString succeeds (5 + 1 = 6).
         let outcome = axon.execute(5, &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
         assert!(
@@ -3648,7 +3743,10 @@ mod tests {
 
         let outcome = axon.execute(5, &(), &mut bus).await;
 
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
         // Should return the first fault
@@ -3729,7 +3827,10 @@ mod tests {
 
         // 5 -> AddOne -> 6 -> Parallel(AddOne=7, MultiplyByTwo=12) -> first=7 -> AddTen -> 17
         let outcome = axon.execute(5, &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
         assert!(
@@ -3762,7 +3863,10 @@ mod tests {
 
         let outcome = axon.execute(3, &(), &mut bus).await;
 
-        let crate::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+        let crate::ExecutionReport::Unpersisted {
+            result: outcome, ..
+        } = outcome
+        else {
             panic!("unexpected execution durability");
         };
         assert!(matches!(outcome, Outcome::Next(4)));
@@ -3811,7 +3915,7 @@ mod tests {
 
         let mut bus = Bus::new();
         let result = axon.execute((), &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result } = result else {
+        let crate::ExecutionReport::Unpersisted { result, .. } = result else {
             panic!("unexpected execution durability");
         };
 
@@ -3832,11 +3936,11 @@ mod tests {
 
         let r1 = simple.execute((), &(), &mut bus1).await;
 
-        let crate::ExecutionReport::Unpersisted { result: r1 } = r1 else {
+        let crate::ExecutionReport::Unpersisted { result: r1, .. } = r1 else {
             panic!("unexpected execution durability");
         };
         let r2 = explicit.execute((), &(), &mut bus2).await;
-        let crate::ExecutionReport::Unpersisted { result: r2 } = r2 else {
+        let crate::ExecutionReport::Unpersisted { result: r2, .. } = r2 else {
             panic!("unexpected execution durability");
         };
 
@@ -3855,7 +3959,7 @@ mod tests {
 
         let mut bus = Bus::new();
         let result = axon.execute((), &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result } = result else {
+        let crate::ExecutionReport::Unpersisted { result, .. } = result else {
             panic!("unexpected execution durability");
         };
 
@@ -3882,7 +3986,7 @@ mod tests {
         let mut bus = Bus::new();
         bus.insert(80u32);
         let result = axon.execute((), &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result } = result else {
+        let crate::ExecutionReport::Unpersisted { result, .. } = result else {
             panic!("unexpected execution durability");
         };
         match result {
@@ -3902,7 +4006,7 @@ mod tests {
 
         let mut bus = Bus::new();
         let result = axon.execute((), &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result } = result else {
+        let crate::ExecutionReport::Unpersisted { result, .. } = result else {
             panic!("unexpected execution durability");
         };
         match result {

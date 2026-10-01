@@ -67,7 +67,10 @@ async fn test_dlq_captures_fault() {
 
     let mut bus = Bus::new();
     let outcome = axon.execute((), &(), &mut bus).await;
-    let ranvier_runtime::ExecutionReport::Unpersisted { result: outcome } = outcome else {
+    let ranvier_runtime::ExecutionReport::Unpersisted {
+        result: outcome, ..
+    } = outcome
+    else {
         panic!("expected an execution without persistence");
     };
 

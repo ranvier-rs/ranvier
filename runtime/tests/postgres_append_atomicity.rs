@@ -64,6 +64,7 @@ async fn postgres_executor_terminal_step_collision_is_observable() {
             result: Outcome::Next(2),
             operation: ranvier_runtime::PersistenceOperation::Terminal,
             effect: ranvier_runtime::EffectBoundary::MayHaveRun,
+            ..
         }
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
@@ -86,7 +87,7 @@ async fn postgres_executor_terminal_step_collision_is_observable() {
     assert!(matches!(axon.execute(0, &(), &mut bus).await,
         ranvier_runtime::ExecutionReport::NotRequested {
             result: Outcome::Emit(event, None),
-        } if event == "execution.resumption.completed_trace"));
+         .. } if event == "execution.resumption.completed_trace"));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(
         store.load("terminal-collision").await.unwrap().unwrap(),
