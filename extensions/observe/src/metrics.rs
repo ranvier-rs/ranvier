@@ -1312,6 +1312,118 @@ mod tests {
         }
     }
     #[derive(Debug, Default)]
+    struct ObservableSnapshot {
+        total: u64,
+        series: usize,
+        unexpected: bool,
+    }
+    struct ObservableCapture {
+        snapshots: Arc<Mutex<Vec<ObservableSnapshot>>>,
+        temporality: Temporality,
+    }
+    impl PushMetricExporter for ObservableCapture {
+        async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+            use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+            let mut snapshot = ObservableSnapshot::default();
+            for scope in metrics.scope_metrics() {
+                for metric in scope.metrics() {
+                    if metric.name() == "heartbeat" {
+                        continue;
+                    }
+                    if let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() {
+                        snapshot.unexpected |= metric.name() != "observable-counter"
+                            || sum.temporality() != self.temporality
+                            || !sum.is_monotonic();
+                        for point in sum.data_points() {
+                            snapshot.total += point.value();
+                            snapshot.series += 1;
+                        }
+                    } else {
+                        snapshot.unexpected = true;
+                    }
+                }
+            }
+            self.snapshots.lock().unwrap().push(snapshot);
+            Ok(())
+        }
+        fn force_flush(&self) -> OTelSdkResult {
+            Ok(())
+        }
+        fn shutdown_with_timeout(&self, _: Duration) -> OTelSdkResult {
+            Ok(())
+        }
+        fn temporality(&self) -> Temporality {
+            self.temporality
+        }
+    }
+    #[test]
+    fn observable_counter_repeated_absolute_values_do_not_accumulate_again() {
+        use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+        for temporality in [Temporality::Cumulative, Temporality::Delta] {
+            for mode in [Mode::Off, Mode::Public, Mode::Strict] {
+                let strict = matches!(mode, Mode::Strict);
+                let value = Arc::new(AtomicU64::new(2));
+                let callbacks = Arc::new(AtomicUsize::new(0));
+                let snapshots = Arc::new(Mutex::new(Vec::new()));
+                let provider = ProtectedMeterProvider {
+                    inner: bounded_meter_builder()
+                        .unwrap()
+                        .with_reader(
+                            PeriodicReader::builder(ObservableCapture {
+                                snapshots: snapshots.clone(),
+                                temporality,
+                            })
+                            .with_interval(Duration::from_secs(3600))
+                            .build(),
+                        )
+                        .build(),
+                    policy: Policy::new(mode, "").unwrap(),
+                    state: Default::default(),
+                };
+                let meter = provider.meter("observable-interval-fixture");
+                let callback_value = value.clone();
+                let callback_count = callbacks.clone();
+                let _counter = meter
+                    .u64_observable_counter("observable-counter")
+                    .with_callback(move |instrument| {
+                        callback_count.fetch_add(1, Ordering::SeqCst);
+                        let absolute = callback_value.load(Ordering::SeqCst);
+                        for index in 0..1024 {
+                            instrument.observe(
+                                absolute,
+                                &[KeyValue::new("identity", format!("label-{index}"))],
+                            );
+                        }
+                    })
+                    .build();
+                // Force an export even if an unchanged delta observable has no points.
+                let heartbeat = meter.u64_counter("heartbeat").build();
+                for (interval, absolute) in [2, 2, 5].into_iter().enumerate() {
+                    value.store(absolute, Ordering::SeqCst);
+                    heartbeat.add(1, &[]);
+                    provider.inner.force_flush().unwrap();
+                    assert_eq!(callbacks.load(Ordering::SeqCst), interval + 1);
+                    let captured = snapshots.lock().unwrap();
+                    assert_eq!(captured.len(), interval + 1);
+                    let actual = captured.last().unwrap();
+                    let expected = if temporality == Temporality::Cumulative {
+                        absolute * 1024
+                    } else {
+                        [2048, 0, 3072][interval]
+                    };
+                    assert_eq!(actual.total, expected);
+                    assert!(!actual.unexpected, "{actual:?}");
+                    assert!(actual.series <= 1024);
+                    if expected != 0 {
+                        assert_eq!(actual.series, if strict { 1 } else { 1024 });
+                    }
+                    assert!(!provider.state.failed());
+                }
+                provider.inner.shutdown().unwrap();
+            }
+        }
+    }
+    #[derive(Debug, Default)]
     struct FloatTotals {
         metric_count: usize,
         minimum: Option<f64>,
