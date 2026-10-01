@@ -2,8 +2,24 @@
 use ranvier_core::{
     Bus, event::DlqPolicy, saga::SagaPolicy, schematic::Schematic, streaming::StreamingTransition,
 };
-use ranvier_runtime::Axon;
+use ranvier_core::{Outcome, Transition, event::DlqSink};
+use ranvier_runtime::{Axon, ExecutionReport};
 use std::pin::Pin;
+use std::sync::Arc;
+struct Sink;
+#[async_trait::async_trait]
+impl DlqSink for Sink {
+    async fn store_dead_letter(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &[u8],
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
 #[derive(Clone)]
 struct Child(u8, std::sync::Arc<tokio::sync::Notify>);
 #[async_trait::async_trait]
@@ -17,6 +33,7 @@ impl StreamingTransition<()> for Child {
         _: &(),
         bus: &mut Bus,
     ) -> Result<Pin<Box<dyn futures_util::Stream<Item = String> + Send>>, String> {
+        bus.insert::<Arc<dyn DlqSink>>(Arc::new(Sink));
         bus.insert(DlqPolicy::SendToDlq);
         bus.insert(SagaPolicy::Enabled);
         bus.insert(Axon::<(), (), String>::start("child-config").schematic);
@@ -48,17 +65,24 @@ impl StreamingTransition<()> for Parent {
         _: &(),
         bus: &mut Bus,
     ) -> Result<Pin<Box<dyn futures_util::Stream<Item = String> + Send>>, String> {
+        bus.remove::<DlqPolicy>();
+        bus.remove::<SagaPolicy>();
+        bus.remove::<Schematic>();
+        let sink: Arc<dyn DlqSink> = Arc::new(Sink);
         if self.configured {
             if self.shared {
+                bus.insert_shared(sink.clone());
                 bus.insert_shared(DlqPolicy::Drop);
                 bus.insert_shared(SagaPolicy::Disabled);
                 bus.insert_shared(Axon::<(), (), String>::start("parent-config").schematic);
             } else {
+                bus.insert(sink.clone());
                 bus.insert(DlqPolicy::Drop);
                 bus.insert(SagaPolicy::Disabled);
                 bus.insert(Axon::<(), (), String>::start("parent-config").schematic);
             }
         }
+        let original_sink = bus.read::<Arc<dyn DlqSink>>().cloned();
         let schematic_ptr = bus.read::<Schematic>().map(|v| v as *const _ as usize);
         let entered = std::sync::Arc::new(tokio::sync::Notify::new());
         let child = Axon::<(), (), String>::start("child-config")
@@ -121,6 +145,15 @@ impl StreamingTransition<()> for Parent {
             bus.fork_for_parallel().read::<SagaPolicy>().is_some(),
             self.configured && self.shared
         );
+        match (original_sink, bus.read::<Arc<dyn DlqSink>>()) {
+            (Some(original), Some(restored)) => assert!(Arc::ptr_eq(&original, restored)),
+            (None, None) => {}
+            _ => panic!("sink presence changed"),
+        }
+        assert_eq!(
+            bus.fork_for_parallel().read::<Arc<dyn DlqSink>>().is_some(),
+            self.configured && self.shared
+        );
         Ok(Box::pin(futures_util::stream::iter(vec![
             "restored".into(),
         ])))
@@ -139,6 +172,40 @@ async fn streaming_parent_config_survives_stream_child_return_unwind_and_drop() 
                 });
                 let mut stream = circuit.execute((), &(), &mut Bus::new()).await.unwrap();
                 assert_eq!(stream.next().await, Some("restored".into()));
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Transition<(), ()> for Parent {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: (), res: &(), bus: &mut Bus) -> Outcome<(), String> {
+        use futures_util::StreamExt;
+        let mut stream = self.run_stream((), res, bus).await.unwrap();
+        assert_eq!(stream.next().await, Some("restored".into()));
+        Outcome::Next(())
+    }
+}
+#[tokio::test]
+async fn ordinary_parent_config_survives_stream_child_return_unwind_and_drop() {
+    for configured in [false, true] {
+        for shared in [false, true] {
+            for mode in 0..4 {
+                let parent = Axon::<(), (), String>::start("ordinary-parent").then(Parent {
+                    configured,
+                    shared,
+                    mode,
+                });
+                let report = parent.execute((), &(), &mut Bus::new()).await;
+                assert!(matches!(
+                    report,
+                    ExecutionReport::Unpersisted {
+                        result: Outcome::Next(()),
+                        ..
+                    }
+                ));
             }
         }
     }
