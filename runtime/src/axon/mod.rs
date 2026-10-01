@@ -1882,7 +1882,7 @@ mod tests {
         bus.insert(PersistenceTraceId::new(trace_id));
         let target_node_id = axon.schematic.nodes[0].id.clone();
 
-        // 0. Pre-requisite: Save an initial trace state so intervention has a target to attach to
+        // 0. Save a valid entry so intervention has a target to attach to.
         store_impl
             .append(crate::persistence::PersistenceEnvelope {
                 trace_id: trace_id.to_string(),
@@ -1890,7 +1890,7 @@ mod tests {
                 schematic_version: axon.schematic.schema_version.clone(),
                 step: 0,
                 node_id: None,
-                outcome_kind: "Next".to_string(),
+                outcome_kind: "Enter".to_string(),
                 timestamp_ms: 0,
                 payload_hash: None,
                 payload: None,
