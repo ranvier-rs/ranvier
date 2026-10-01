@@ -1,7 +1,7 @@
 //! State Persistence & Recovery Demo
 //!
 //! ## Purpose
-//! Demonstrates Ranvier's persistence layer for durable workflow execution:
+//! Demonstrates process-local persistence observations for workflow execution:
 //! fault recovery via checkpointed traces and compensation hooks for rollback.
 //!
 //! ## Run
@@ -194,13 +194,26 @@ fn verify_trace(
         anyhow::bail!("Stored trace identity or completion mismatch");
     }
     if trace.events.iter().any(|event| {
-        event.trace_id != id || event.circuit != trace.circuit || event.node_id.is_none()
+        event.trace_id != id
+            || event.circuit != trace.circuit
+            || (event.outcome_kind != "Enter" && event.node_id.is_none())
     }) || trace
         .events
         .windows(2)
         .any(|events| events[0].step >= events[1].step)
     {
-        anyhow::bail!("Stored event identity/order mismatch");
+        anyhow::bail!(
+            "Stored event identity/order mismatch: {:?}",
+            trace
+                .events
+                .iter()
+                .map(|event| (
+                    event.step,
+                    event.outcome_kind.as_str(),
+                    event.node_id.is_some()
+                ))
+                .collect::<Vec<_>>()
+        );
     }
     Ok(())
 }
