@@ -165,3 +165,11 @@ handling. A verifier panic is an infrastructure failure, not invalid credentials
 or permission to retry a possibly poisoned verifier. Runtime panic-hook privacy,
 issuer/audience, tenant membership and production key/revocation policy remain
 separate responsibilities. This change belongs to the API B release cohort.
+
+High-level ordinary Axon ingress applies the same reserved IAM failures before
+route-specific response mapping, including typed JSON and fallback responses.
+Durability and cancellation rejection still take precedence. StreamingAxon uses
+a separate execution path without the ordinary Axon IAM handle; configure its
+explicit ingress guards and validate that authentication boundary separately.
+Custom response extractors/transforms and response mappers remain application
+policy and require their own audit.
