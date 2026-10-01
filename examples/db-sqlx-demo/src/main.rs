@@ -1,6 +1,6 @@
 //! # DB SQLx Demo
 //!
-//! Demonstrates injecting a SQLx pool via Bus and executing queries in Transitions.
+//! Demonstrates passing a SQLx pool through typed Resources and querying in Transitions.
 //! Replaces the removed `ranvier-db` crate for SQLx usage.
 //!
 //! ## Run
@@ -10,7 +10,7 @@
 //! ```
 //!
 //! ## Key Concepts
-//! - SQLx Pool as a Bus-injectable resource
+//! - SQLx Pool as an explicit typed resource
 //! - Query execution inside Transitions
 //! - Optional local `safe_query_builder.rs` helper for dynamic SQL safety
 //! - No public DB wrapper crate needed — `sqlx` + Bus injection is sufficient
@@ -19,7 +19,7 @@ mod safe_query_builder;
 
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
-use ranvier_runtime::Axon;
+use ranvier_runtime::{Axon, ExecutionReport};
 use safe_query_builder::{QueryBuilder, SortDirection};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePoolOptions;
@@ -176,6 +176,22 @@ impl Transition<(), UserList> for ListUsers {
 // Main
 // ============================================================================
 
+// This local SQLite demo intentionally has no workflow persistence backend.
+fn local_demo_outcome<T, E>(
+    report: ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     println!("=== DB SQLx Demo ===\n");
@@ -194,7 +210,10 @@ async fn main() -> anyhow::Result<()> {
     println!("--- Init schema ---");
     let init_axon = Axon::<(), (), String, DbPool>::new("init-schema").then(InitSchema);
     let mut bus = Bus::new();
-    init_axon.execute((), &db, &mut bus).await;
+    match local_demo_outcome(init_axon.execute((), &db, &mut bus).await)? {
+        Outcome::Next(()) => {}
+        _ => anyhow::bail!("Schema initialization failed"),
+    }
     println!("  Schema created\n");
 
     // ── Insert users ─────────────────────────────────────────────────────
@@ -209,7 +228,7 @@ async fn main() -> anyhow::Result<()> {
         ("Charlie", "charlie@example.com"),
     ] {
         let mut bus = Bus::new();
-        insert_axon
+        let report = insert_axon
             .execute(
                 CreateUserReq {
                     name: name.into(),
@@ -219,6 +238,10 @@ async fn main() -> anyhow::Result<()> {
                 &mut bus,
             )
             .await;
+        match local_demo_outcome(report)? {
+            Outcome::Next(_) => {}
+            _ => anyhow::bail!("User insertion failed; reconcile before retry"),
+        }
     }
 
     // ── List users ───────────────────────────────────────────────────────
@@ -226,7 +249,7 @@ async fn main() -> anyhow::Result<()> {
     println!("\n--- List users ---");
     let list_axon = Axon::<(), (), String, DbPool>::new("list-users").then(ListUsers);
     let mut bus = Bus::new();
-    let result = list_axon.execute((), &db, &mut bus).await;
+    let result = local_demo_outcome(list_axon.execute((), &db, &mut bus).await)?;
 
     match &result {
         Outcome::Next(list) => {
@@ -234,7 +257,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("  id={} name={} email={}", user.id, user.name, user.email);
             }
         }
-        other => println!("  {:?}", other),
+        _ => anyhow::bail!("User listing failed"),
     }
 
     println!("\ndone");
