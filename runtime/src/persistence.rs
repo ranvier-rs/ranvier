@@ -1412,16 +1412,23 @@ mod tests {
         };
         let url =
             std::env::var("RANVIER_ATOMICITY_REDIS_URL").expect("explicit isolated Redis required");
-        let observer = RedisPersistenceStore::connect(&url).await.unwrap();
+        let observer = timeout(Duration::from_secs(5), RedisPersistenceStore::connect(&url))
+            .await
+            .unwrap()
+            .unwrap();
         let trace_id = format!("clients-{}", Uuid::new_v4().simple());
         let mut seed = envelope(0, "Next");
         seed.trace_id = trace_id.clone();
         observer.append(seed.clone()).await.unwrap();
+        let mut expected = observer.load(&trace_id).await.unwrap().unwrap();
         let barrier = Arc::new(Barrier::new(17));
         let mut workers = JoinSet::new();
         // Connect before spawning so connection failures cannot strand the barrier.
         for step in 1..=16 {
-            let client = RedisPersistenceStore::connect(&url).await.unwrap();
+            let client = timeout(Duration::from_secs(5), RedisPersistenceStore::connect(&url))
+                .await
+                .unwrap()
+                .unwrap();
             let barrier = barrier.clone();
             let mut event = envelope(step, "Next");
             event.trace_id = trace_id.clone();
@@ -1458,7 +1465,12 @@ mod tests {
             accepted.len() > 1,
             "at least one public append must succeed"
         );
-        let mut expected = observer.load(&trace_id).await.unwrap().unwrap();
+        let loaded = observer.load(&trace_id).await.unwrap().unwrap();
+        expected.events = accepted.clone();
+        assert_eq!(
+            loaded, expected,
+            "full snapshot must match acknowledged writes"
+        );
         assert_eq!(
             expected.events, accepted,
             "every acknowledged event, and only those events, survive"
