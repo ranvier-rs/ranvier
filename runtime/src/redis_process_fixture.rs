@@ -11,7 +11,7 @@ fn event(trace_id: &str, step: u64) -> PersistenceEnvelope {
     PersistenceEnvelope {
         trace_id: trace_id.into(),
         circuit: "ProcessFixture".into(),
-        schematic_version: "process-version".into(),
+        schematic_version: format!("process-version-{step}"),
         step,
         node_id: Some(format!("node-{step}")),
         outcome_kind: "Next".into(),
@@ -186,7 +186,9 @@ async fn redis_independent_process_appends_preserve_acknowledged_write() {
                     if index == 0 { "ack" } else { "conflict" }
                 );
                 if index == 0 {
-                    expected.events.push(event(&trace, *step));
+                    let accepted = event(&trace, *step);
+                    expected.schematic_version = accepted.schematic_version.clone();
+                    expected.events.push(accepted);
                 }
                 assert_eq!(observer.load(&trace).await.unwrap().unwrap(), expected);
             }
