@@ -967,6 +967,12 @@ impl RedisPersistenceStore {
             .as_deref()
             .map(serde_json::from_str::<PersistedTrace>)
             .transpose()?;
+        if trace
+            .as_ref()
+            .is_some_and(|value| value.trace_id != trace_id)
+        {
+            return Err(anyhow!("persisted trace_id does not match requested key"));
+        }
         Ok((payload, trace))
     }
 
@@ -1306,6 +1312,8 @@ mod tests {
         let trace_id = format!("stale-{}", Uuid::new_v4().simple());
         let mut seed = envelope(0, "Next");
         seed.trace_id = trace_id.clone();
+        seed.timestamp_ms = u64::MAX;
+        seed.payload = Some(serde_json::json!({"large": u64::MAX}));
         store.append(seed.clone()).await.unwrap();
         let (previous, before) = store.read_trace(&trace_id).await.unwrap();
         let before = before.unwrap();
@@ -1330,18 +1338,66 @@ mod tests {
             loaded.events.contains(&event_one),
             "successful first write must remain acknowledged"
         );
-        if second_result.is_ok() {
-            assert!(
-                loaded.events.contains(&event_two),
-                "successful second write must remain acknowledged"
-            );
-        } else {
-            assert_eq!(
-                loaded, first,
-                "rejected stale write must preserve entire winning snapshot"
-            );
-        }
+        assert!(
+            second_result
+                .unwrap_err()
+                .to_string()
+                .contains("concurrent persistence update")
+        );
+        assert_eq!(
+            loaded, first,
+            "rejected stale write must preserve entire winning snapshot"
+        );
+        assert!(
+            store.write_trace(&second, None).await.is_err(),
+            "absent-key expectation must not overwrite existing trace"
+        );
+        let winning_payload = store.read_trace(&trace_id).await.unwrap().0;
+        store
+            .complete(&trace_id, CompletionState::Success)
+            .await
+            .unwrap();
+        let terminal = store.load(&trace_id).await.unwrap();
+        assert!(
+            store
+                .write_trace(&second, winning_payload.as_deref())
+                .await
+                .is_err()
+        );
+        assert_eq!(store.load(&trace_id).await.unwrap(), terminal);
         println!("REDIS_STALE_WRITE_PASS acknowledged-write-preserved stale-write-rejected");
+    }
+
+    #[cfg(feature = "persistence-redis")]
+    #[tokio::test]
+    #[ignore = "requires explicitly isolated Redis fixture URL"]
+    async fn redis_mismatched_trace_identity_is_rejected() {
+        use redis::AsyncCommands;
+        let url =
+            std::env::var("RANVIER_ATOMICITY_REDIS_URL").expect("explicit isolated Redis required");
+        let store = RedisPersistenceStore::connect(&url).await.unwrap();
+        let requested = format!("identity-{}", Uuid::new_v4().simple());
+        let mut event = envelope(0, "Next");
+        event.trace_id = requested.clone();
+        store.append(event.clone()).await.unwrap();
+        let mut wrong = store.load(&requested).await.unwrap().unwrap();
+        wrong.trace_id = format!("other-{}", Uuid::new_v4().simple());
+        let payload = serde_json::to_string(&wrong).unwrap();
+        let mut conn = store.manager.clone();
+        let _: () = conn.set(store.key(&requested), &payload).await.unwrap();
+        assert!(
+            store.load(&requested).await.is_err(),
+            "stored identity must match requested key"
+        );
+        assert!(store.append(event).await.is_err());
+        let after: String = conn.get(store.key(&requested)).await.unwrap();
+        assert_eq!(after, payload);
+        let other: Option<String> = conn.get(store.key(&wrong.trace_id)).await.unwrap();
+        assert_eq!(
+            other, None,
+            "corrupt identity must not redirect a write into another trace"
+        );
+        println!("REDIS_IDENTITY_PASS mismatched-key rejected-read-write unchanged-other-key");
     }
 
     #[cfg(feature = "persistence-redis")]
