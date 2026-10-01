@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SagaRollbackOutcome {
+    InProgress,
+    Panicked,
     Completed,
     Fault,
     Emitted,
@@ -24,6 +26,8 @@ pub struct SagaRollbackStep {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SagaRollbackReport {
     pub trace_id: String,
+    /// False until every queued rollback task has been inspected.
+    pub finished: bool,
     pub steps: Vec<SagaRollbackStep>,
 }
 
@@ -31,8 +35,10 @@ impl SagaRollbackReport {
     /// True if every requested hook returned Next(()); an empty rollback has
     /// no incomplete hooks. This does not certify any external effect reversal.
     pub fn is_complete(&self) -> bool {
-        self.steps
-            .iter()
-            .all(|step| step.outcome == SagaRollbackOutcome::Completed)
+        self.finished
+            && self
+                .steps
+                .iter()
+                .all(|step| step.outcome == SagaRollbackOutcome::Completed)
     }
 }

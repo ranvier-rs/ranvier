@@ -636,8 +636,10 @@ where
         use crate::saga_report::{SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep};
         let mut report = SagaRollbackReport {
             trace_id: trace_id.to_string(),
+            finished: false,
             steps: Vec::new(),
         };
+        bus.insert(report.clone());
         while let Some(task) = {
             let mut stack = bus.read_mut::<SagaStack>();
             stack.as_mut().and_then(|stack| stack.pop())
@@ -656,7 +658,26 @@ where
                 }
             };
             if let Some(handler) = handler {
-                let result = handler(task.input_snapshot, resources, bus).await;
+                report.steps.push(SagaRollbackStep {
+                    node_id: task.node_id.clone(),
+                    outcome: SagaRollbackOutcome::InProgress,
+                });
+                bus.insert(report.clone());
+                use futures_util::FutureExt as _;
+                let result = AssertUnwindSafe(handler(task.input_snapshot, resources, bus))
+                    .catch_unwind()
+                    .await;
+                let result = match result {
+                    Ok(result) => result,
+                    Err(_) => {
+                        if let Some(step) = report.steps.last_mut() {
+                            step.outcome = SagaRollbackOutcome::Panicked;
+                        }
+                        bus.insert(report.clone());
+                        tracing::error!(trace_id = %trace_id, node_id = %task.node_id, "Saga compensation panicked");
+                        continue;
+                    }
+                };
                 let outcome = match &result {
                     Outcome::Next(()) => SagaRollbackOutcome::Completed,
                     Outcome::Fault(_) => SagaRollbackOutcome::Fault,
@@ -664,10 +685,10 @@ where
                     Outcome::Branch(_, _) => SagaRollbackOutcome::Branched,
                     Outcome::Jump(_, _) => SagaRollbackOutcome::Jumped,
                 };
-                report.steps.push(SagaRollbackStep {
-                    node_id: task.node_id.clone(),
-                    outcome,
-                });
+                if let Some(step) = report.steps.last_mut() {
+                    step.outcome = outcome;
+                }
+                bus.insert(report.clone());
                 match result {
                     Outcome::Fault(_) => {
                         tracing::error!(trace_id = %trace_id, node_id = %task.node_id, "Saga compensation returned a fault");
@@ -685,6 +706,7 @@ where
                 tracing::warn!(trace_id = %trace_id, node_id = %task.node_id, "No compensation handler found in registry for saga rollback");
             }
         }
+        report.finished = true;
         let complete = report.is_complete();
         bus.insert(report);
         tracing::info!(trace_id = %trace_id, complete, "Saga automated rollback finished");

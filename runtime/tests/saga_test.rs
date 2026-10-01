@@ -474,3 +474,47 @@ async fn saga_rollback_classifies_incomplete_hooks_without_replacing_business_fa
         );
     }
 }
+
+#[derive(Clone)]
+struct PanicUndo;
+#[async_trait]
+impl Transition<SagaState, ()> for PanicUndo {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: SagaState, _: &(), _: &mut Bus) -> Outcome<(), String> {
+        panic!("private-panic-sentinel")
+    }
+}
+
+#[tokio::test]
+async fn rollback_panic_preserves_business_fault_and_incomplete_cleanup() {
+    use ranvier_runtime::saga_report::{SagaRollbackOutcome, SagaRollbackReport};
+    let axon = Axon::<SagaState, SagaState, String>::new("PanicRollback")
+        .with_saga_policy(SagaPolicy::Enabled)
+        .then_compensated(SuccStep { id: "one".into() }, PanicUndo)
+        .then(FailStep);
+    let mut bus = Bus::new();
+    let result = axon
+        .execute(
+            SagaState {
+                cnt: 0,
+                log: vec![],
+            },
+            &(),
+            &mut bus,
+        )
+        .await;
+    assert!(
+        matches!(result, ranvier_runtime::ExecutionReport::Unpersisted { result: Outcome::Fault(ref error) } if error == "Planned SAGA Failure")
+    );
+    let report = bus.read::<SagaRollbackReport>().unwrap();
+    assert!(report.finished);
+    assert!(!report.is_complete());
+    assert_eq!(report.steps.len(), 1);
+    assert_eq!(report.steps[0].outcome, SagaRollbackOutcome::Panicked);
+    assert!(
+        !serde_json::to_string(report)
+            .unwrap()
+            .contains("private-panic")
+    );
+}
