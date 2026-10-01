@@ -465,10 +465,11 @@ async fn checkpoint_fresh_input_can_mask_incompatible_persisted_value() {
         ] {
             let backing = InMemoryPersistenceStore::new();
             let effects = Arc::new(AtomicUsize::new(0));
+            let previous_effects = Arc::new(AtomicUsize::new(0));
             let undo_inputs = Arc::new(std::sync::Mutex::new(Vec::new()));
             let prefix = Axon::<u32, u32, String>::new("typed-checkpoint")
                 .with_saga_policy(ranvier_core::saga::SagaPolicy::Enabled)
-                .then(Count(effects.clone()));
+                .then(Count(previous_effects.clone()));
             let axon = if compensated {
                 prefix.then_compensated(Count(effects.clone()), RecordUndo(undo_inputs.clone()))
             } else {
@@ -495,10 +496,12 @@ async fn checkpoint_fresh_input_can_mask_incompatible_persisted_value() {
                 axon.execute(7, &(), &mut bus).await,
                 ExecutionReport::Recorded {
                     result: Outcome::Next(8),
+                    completion: CompletionConfirmation::Confirmed,
                     ..
                 }
             ));
             assert_eq!(effects.load(Ordering::SeqCst), 1);
+            assert_eq!(previous_effects.load(Ordering::SeqCst), 0);
             assert!(undo_inputs.lock().unwrap().is_empty());
             let trace = backing.load("typed-checkpoint").await.unwrap().unwrap();
             assert_eq!(trace.completion, Some(CompletionState::Success));
