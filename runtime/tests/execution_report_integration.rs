@@ -378,3 +378,87 @@ async fn actual_execute_distinguishes_no_store_and_app_owned_completion() {
         }
     ));
 }
+
+#[derive(Clone)]
+struct RecordUndo(std::sync::Arc<std::sync::Mutex<Vec<u32>>>);
+#[async_trait::async_trait]
+impl Transition<u32, ()> for RecordUndo {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, input: u32, _: &(), bus: &mut Bus) -> Outcome<(), String> {
+        assert!(
+            bus.cancellation_token()
+                .is_some_and(|token| !token.is_cancelled())
+        );
+        self.0.lock().unwrap().push(input);
+        Outcome::next(())
+    }
+}
+
+#[tokio::test]
+async fn compensated_result_ack_cancellation_retains_undo_and_uncertainty() {
+    use ranvier_core::cancellation::{CancellationReason, CancellationToken};
+    use ranvier_core::saga::SagaPolicy;
+    let backing = InMemoryPersistenceStore::new();
+    let applied = Arc::new(tokio::sync::Notify::new());
+    let effects = Arc::new(AtomicUsize::new(0));
+    let later_effects = Arc::new(AtomicUsize::new(0));
+    let undo_inputs = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let original: Arc<dyn PersistenceStore> = Arc::new(AppliedAwaitingAck {
+        backing: backing.clone(),
+        calls: AtomicUsize::new(0),
+        block_at: 2,
+        applied: applied.clone(),
+    });
+    let mut bus = Bus::new();
+    bus.insert(PersistenceTraceId::new("compensated-result-ack"));
+    bus.insert(PersistenceHandle::from_arc(original.clone()));
+    let token = CancellationToken::new();
+    let axon = Axon::<u32, u32, String>::new("compensated-result-ack")
+        .with_saga_policy(SagaPolicy::Enabled)
+        .then_compensated(Count(effects.clone()), RecordUndo(undo_inputs.clone()))
+        .then(Count(later_effects.clone()));
+    let report = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(
+            axon.execute_cancellable(41, &(), &mut bus, token.clone()),
+            async {
+                applied.notified().await;
+                assert!(token.cancel(CancellationReason::Explicit));
+            }
+        )
+        .0
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        report,
+        ExecutionReport::Unconfirmed {
+            result: ranvier_runtime::ExecutionTerminal::Cancelled(_),
+            operation: PersistenceOperation::Result,
+            effect: EffectBoundary::MayHaveRun,
+        }
+    ));
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(later_effects.load(Ordering::SeqCst), 0);
+    assert_eq!(*undo_inputs.lock().unwrap(), vec![41]);
+    let trace = backing
+        .load("compensated-result-ack")
+        .await
+        .unwrap()
+        .unwrap();
+    let result_events: Vec<_> = trace
+        .events
+        .iter()
+        .filter(|event| event.outcome_kind == "Next")
+        .collect();
+    assert_eq!(result_events.len(), 1);
+    assert_eq!(
+        result_events[0].payload,
+        Some(Outcome::<u32, String>::Next(42).to_json_value())
+    );
+    assert_eq!(trace.completion, Some(CompletionState::Cancelled));
+    assert!(Arc::ptr_eq(
+        &original,
+        &bus.read::<PersistenceHandle>().unwrap().store()
+    ));
+}
