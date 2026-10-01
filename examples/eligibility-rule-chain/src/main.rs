@@ -129,6 +129,9 @@ impl Transition<Applicant, Applicant> for IncomeRule {
         );
 
         let threshold = 50_000.0;
+        if !applicant.annual_income.is_finite() || applicant.annual_income < 0.0 {
+            return Outcome::Fault("Income must be finite and nonnegative".into());
+        }
         if applicant.annual_income > threshold {
             return Outcome::Fault(format!(
                 "Income rule: ${:.0} exceeds threshold ${:.0}",
@@ -359,7 +362,7 @@ async fn main() -> anyhow::Result<()> {
             Outcome::Fault(err) => {
                 println!("\n  REJECTED: {}", err);
             }
-            other => println!("\n  Unexpected: {:?}", other),
+            _ => anyhow::bail!("Unexpected domain control flow in local demo"),
         }
         println!();
     }
@@ -373,4 +376,111 @@ async fn main() -> anyhow::Result<()> {
     println!("  5. Same pattern works for: loan approval, feature flags, access control");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod execution_contract_tests {
+    use super::*;
+    #[tokio::test]
+    async fn invalid_numeric_income_cannot_pass_the_rule() {
+        for annual_income in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            let mut bus = Bus::new();
+            let input = Applicant {
+                id: "fixture".into(),
+                name: "fixture".into(),
+                age: 30,
+                annual_income,
+                residency_years: 5,
+                current_benefits: vec![],
+                rules_passed: vec![],
+            };
+            assert!(
+                matches!(IncomeRule.run(input, &(), &mut bus).await, Outcome::Fault(error) if error == "Income must be finite and nonnegative")
+            );
+        }
+    }
+    use ranvier_runtime::{
+        CompletionConfirmation, EffectBoundary, ExecutionReport, PersistenceOperation,
+        SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep,
+    };
+
+    #[test]
+    fn declared_demo_scenarios_run_through_the_report_policy() {
+        main().unwrap();
+    }
+
+    #[test]
+    fn local_report_policy_preserves_faults_and_rejects_uncertain_or_incomplete_execution() {
+        let next = || Outcome::<u32, String>::Next(7);
+        let reports = [
+            ExecutionReport::NotRequested {
+                result: next(),
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::Confirmed,
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::NotRequested,
+                cleanup: None,
+            },
+            ExecutionReport::Unconfirmed {
+                result: next(),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::NotInvoked,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+        ];
+        for report in reports {
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        for (finished, outcome) in [
+            (false, SagaRollbackOutcome::Completed),
+            (true, SagaRollbackOutcome::Fault),
+            (true, SagaRollbackOutcome::InProgress),
+        ] {
+            let report = ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: Some(SagaRollbackReport {
+                    trace_id: "private-trace".into(),
+                    finished,
+                    steps: vec![SagaRollbackStep {
+                        node_id: "private-node".into(),
+                        outcome,
+                    }],
+                }),
+            };
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        assert!(matches!(
+            local_demo_outcome(ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: None
+            })
+            .unwrap(),
+            Outcome::Next(7)
+        ));
+        assert!(
+            matches!(local_demo_outcome(ExecutionReport::Unpersisted { result: Outcome::<u32, String>::Fault("expected-domain-failure".into()), cleanup: None }).unwrap(), Outcome::Fault(error) if error == "expected-domain-failure")
+        );
+    }
 }

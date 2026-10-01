@@ -85,6 +85,9 @@ impl Transition<Patient, Patient> for AssessVitals {
         );
 
         // Validate vitals
+        if !patient.temperature.is_finite() {
+            return Outcome::Fault("Temperature must be finite".into());
+        }
         if patient.heart_rate == 0 {
             return Outcome::Fault(format!(
                 "Invalid vitals for patient {}: heart rate is 0",
@@ -308,10 +311,7 @@ async fn main() -> anyhow::Result<()> {
             Outcome::Branch(dept, payload) => {
                 println!("\n  Routed to: {}", dept);
                 if let Some(p) = payload {
-                    println!(
-                        "  Details: {}",
-                        serde_json::to_string_pretty(&p).unwrap_or_default()
-                    );
+                    println!("  Details: {}", serde_json::to_string_pretty(&p)?);
                 }
             }
             Outcome::Next(p) => {
@@ -320,7 +320,7 @@ async fn main() -> anyhow::Result<()> {
             Outcome::Fault(err) => {
                 println!("\n  Triage error: {}", err);
             }
-            other => println!("\n  Unexpected: {:?}", other),
+            _ => anyhow::bail!("Unexpected domain control flow in local demo"),
         }
         println!();
     }
@@ -334,4 +334,112 @@ async fn main() -> anyhow::Result<()> {
     println!("  5. Same pattern works for: ticket routing, loan approval, content moderation");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod execution_contract_tests {
+    use super::*;
+    #[tokio::test]
+    async fn nonfinite_temperature_is_rejected_before_classification() {
+        for temperature in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut bus = Bus::new();
+            let input = Patient {
+                id: "fixture".into(),
+                name: "fixture".into(),
+                age: 30,
+                heart_rate: 70,
+                blood_pressure: 120,
+                temperature,
+                chief_complaint: "fixture".into(),
+                severity: None,
+            };
+            assert!(
+                matches!(AssessVitals.run(input, &(), &mut bus).await, Outcome::Fault(error) if error == "Temperature must be finite")
+            );
+        }
+    }
+    use ranvier_runtime::{
+        CompletionConfirmation, EffectBoundary, ExecutionReport, PersistenceOperation,
+        SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep,
+    };
+
+    #[test]
+    fn declared_demo_scenarios_run_through_the_report_policy() {
+        main().unwrap();
+    }
+
+    #[test]
+    fn local_report_policy_preserves_faults_and_rejects_uncertain_or_incomplete_execution() {
+        let next = || Outcome::<u32, String>::Next(7);
+        let reports = [
+            ExecutionReport::NotRequested {
+                result: next(),
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::Confirmed,
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::NotRequested,
+                cleanup: None,
+            },
+            ExecutionReport::Unconfirmed {
+                result: next(),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::NotInvoked,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+        ];
+        for report in reports {
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        for (finished, outcome) in [
+            (false, SagaRollbackOutcome::Completed),
+            (true, SagaRollbackOutcome::Fault),
+            (true, SagaRollbackOutcome::InProgress),
+        ] {
+            let report = ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: Some(SagaRollbackReport {
+                    trace_id: "private-trace".into(),
+                    finished,
+                    steps: vec![SagaRollbackStep {
+                        node_id: "private-node".into(),
+                        outcome,
+                    }],
+                }),
+            };
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        assert!(matches!(
+            local_demo_outcome(ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: None
+            })
+            .unwrap(),
+            Outcome::Next(7)
+        ));
+        assert!(
+            matches!(local_demo_outcome(ExecutionReport::Unpersisted { result: Outcome::<u32, String>::Fault("expected-domain-failure".into()), cleanup: None }).unwrap(), Outcome::Fault(error) if error == "expected-domain-failure")
+        );
+    }
 }
