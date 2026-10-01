@@ -156,9 +156,7 @@ where
         Outcome::Fault(error) => {
             let error_value = match serde_json::to_value(&error) {
                 Ok(value) => value,
-                Err(_) => serde_json::json!({
-                    "debug": format!("{error:?}")
-                }),
+                Err(_) => serde_json::json!({"message": "Fault response could not be encoded"}),
             };
             json_value_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -206,11 +204,11 @@ where
                 .header(CONTENT_TYPE, "application/json"),
             Bytes::from(bytes),
         ),
-        Err(error) => json_value_response(
+        Err(_) => json_value_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             serde_json::json!({
                 "kind": "serialization_error",
-                "error": error.to_string()
+                "error": "JSON response could not be encoded"
             }),
         ),
     }
@@ -223,13 +221,13 @@ fn json_value_response(status: StatusCode, value: serde_json::Value) -> Response
 fn response_with_body(builder: http::response::Builder, body: Bytes) -> Response<Full<Bytes>> {
     match builder.body(Full::new(body)) {
         Ok(response) => response,
-        Err(error) => {
+        Err(_) => {
             let fallback = Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Full::new(Bytes::from(format!(
-                    "HTTP response construction failed: {error}"
-                ))));
+                .body(Full::new(Bytes::from_static(
+                    b"HTTP response could not be constructed",
+                )));
             match fallback {
                 Ok(response) => response,
                 Err(_) => Response::new(Full::new(Bytes::from_static(b"Internal error"))),
@@ -244,6 +242,45 @@ mod tests {
     use http_body_util::BodyExt;
     use hyper::service::Service;
     use ranvier_core::Transition;
+
+    #[tokio::test]
+    async fn default_mapper_redacts_serializer_and_debug_failures() {
+        #[derive(Debug)]
+        struct Broken;
+        impl serde::Serialize for Broken {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("private-serializer-probe"))
+            }
+        }
+        struct PrivateFault;
+        impl std::fmt::Debug for PrivateFault {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("private-debug-probe")
+            }
+        }
+        impl serde::Serialize for PrivateFault {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("private-fault-serializer-probe"))
+            }
+        }
+        let bus = Bus::new();
+        for outcome in [Outcome::Next(Broken), Outcome::Fault(PrivateFault)] {
+            let response = default_response_mapper(
+                ExecutionReport::Unpersisted {
+                    result: outcome,
+                    cleanup: None,
+                },
+                &bus,
+            );
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(response.headers()[CONTENT_TYPE], "application/json");
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let text = std::str::from_utf8(&body).unwrap();
+            assert!(!text.contains("private-"));
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(value["kind"] == "fault" || value["kind"] == "serialization_error");
+        }
+    }
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
