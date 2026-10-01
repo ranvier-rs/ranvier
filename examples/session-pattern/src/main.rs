@@ -288,6 +288,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn inherited_or_aliased_identity_cannot_be_reused_as_request_session() {
+        for inherited in [false, true] {
+            for request in [
+                "GET /profile (No Cookie)",
+                "GET /profile (Cookie: sid=valid_sid_123)",
+            ] {
+                let mut parent = Bus::new();
+                parent.insert_shared(SessionStore::load("valid_sid_123").unwrap());
+                let mut fork = parent.fork_for_parallel();
+                let target = if inherited { &mut fork } else { &mut parent };
+                let flow = Axon::<String, String, String>::new("readonly-session")
+                    .then(LoadSession)
+                    .then(RequireAuth)
+                    .then(UserProfile);
+                let outcome =
+                    local_demo_outcome(flow.execute(request.into(), &(), target).await).unwrap();
+                assert!(
+                    matches!(outcome, Outcome::Fault(error) if error == "session_context_clear_failed")
+                );
+                assert_eq!(parent.get::<UserSession>().unwrap().user_id, "u_1");
+                assert_eq!(fork.get::<UserSession>().unwrap().user_id, "u_1");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn valid_flow_returns_report_checked_profile() {
         let flow = Axon::<String, String, String>::new("valid-session")
             .then(LoadSession)
