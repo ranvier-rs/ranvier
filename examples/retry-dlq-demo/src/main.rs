@@ -706,6 +706,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invalid_axon_input_preserves_open_window_and_valid_boundary() {
+        let gateway = CircuitBreakerGateway::new(2, std::time::Duration::from_secs(60), 3);
+        let opened_at = tokio::time::Instant::now();
+        *gateway.state.lock().await = CircuitState::Open { opened_at };
+        let axon = Axon::<PaymentRequest, PaymentRequest, String, ()>::new("invalid.payment")
+            .then(gateway.clone());
+        let result = local_demo_outcome(
+            axon.execute(
+                PaymentRequest {
+                    order_id: "valid".into(),
+                    amount: f64::NAN,
+                },
+                &(),
+                &mut Bus::new(),
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(matches!(result, Outcome::Fault(error) if error == "invalid_payment_request"));
+        assert!(matches!(&*gateway.state.lock().await,
+            CircuitState::Open { opened_at: actual } if *actual == opened_at));
+        assert_eq!(gateway.inner_fail_count.load(Ordering::SeqCst), 0);
+
+        let valid = PaymentRequest {
+            order_id: "x".repeat(128),
+            amount: 0.01,
+        };
+        assert!(valid.is_valid());
+        let result = TransientPaymentGateway::new(0)
+            .run(valid.clone(), &(), &mut Bus::new())
+            .await;
+        assert!(matches!(result, Outcome::Next(value)
+            if value.order_id == valid.order_id && value.amount == valid.amount));
+        assert!(
+            !PaymentRequest {
+                order_id: "가".repeat(43),
+                amount: 1.0
+            }
+            .is_valid()
+        );
+    }
+
+    #[tokio::test]
     async fn actual_retry_dlq_timeout_and_breaker_scenarios() {
         run_demo().await.unwrap();
     }
