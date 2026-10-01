@@ -453,6 +453,61 @@ async fn verify_cancelled_write(
 
 #[derive(Clone)]
 struct Count(Arc<AtomicUsize>);
+
+#[tokio::test]
+async fn legacy_bare_null_result_blocks_effects_without_rewriting_history() {
+    for cancellable in [false, true] {
+        let backing = InMemoryPersistenceStore::new();
+        let effects = Arc::new(AtomicUsize::new(0));
+        let axon = Axon::<u32, u32, String>::new("legacy-null").then(Count(effects.clone()));
+        let schematic = axon.schematic();
+        backing
+            .append(PersistenceEnvelope {
+                trace_id: "legacy-null".into(),
+                circuit: schematic.name.clone(),
+                schematic_version: schematic.schema_version.clone(),
+                step: 1,
+                node_id: Some(schematic.nodes[1].id.to_string()),
+                outcome_kind: "Next".into(),
+                timestamp_ms: 0,
+                payload_hash: None,
+                payload: Some(serde_json::Value::Null),
+            })
+            .await
+            .unwrap();
+        let before = serde_json::to_value(backing.load("legacy-null").await.unwrap()).unwrap();
+        let mut bus = Bus::new();
+        bus.insert(PersistenceTraceId::new("legacy-null"));
+        bus.insert(PersistenceHandle::from_store(backing.clone()));
+        if cancellable {
+            let token = ranvier_core::cancellation::CancellationToken::new();
+            let report = axon.execute_cancellable(7, &(), &mut bus, token).await;
+            assert!(matches!(
+                report,
+                ExecutionReport::BlockedBeforeEffect {
+                    operation: PersistenceOperation::Load,
+                    effect: EffectBoundary::NotInvoked,
+                    ..
+                }
+            ));
+        } else {
+            let report = axon.execute(7, &(), &mut bus).await;
+            assert!(matches!(
+                report,
+                ExecutionReport::BlockedBeforeEffect {
+                    operation: PersistenceOperation::Load,
+                    effect: EffectBoundary::NotInvoked,
+                    ..
+                }
+            ));
+        }
+        assert_eq!(effects.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            serde_json::to_value(backing.load("legacy-null").await.unwrap()).unwrap(),
+            before
+        );
+    }
+}
 #[async_trait::async_trait]
 impl Transition<u32, u32> for Count {
     type Error = String;

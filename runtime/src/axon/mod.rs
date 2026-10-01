@@ -473,6 +473,19 @@ async fn load_persistence_version(
     let store = handle.store();
     match store.load(trace_id).await {
         Ok(Some(trace)) => {
+            // The historical serialization-error fallback stored bare null,
+            // whereas a valid nullable Next is encoded as {"Next": null}.
+            // No automatic resume can infer the lost typed result. Preserve
+            // the trace for explicit reconciliation instead of using new input.
+            if trace.events.iter().any(|event| {
+                event.outcome_kind == "Next"
+                    && event
+                        .payload
+                        .as_ref()
+                        .is_some_and(serde_json::Value::is_null)
+            }) {
+                return Err(anyhow::anyhow!("persistence result payload unavailable"));
+            }
             let (next_step, last_node_id, last_payload) =
                 if let Some(resume_from_step) = trace.resumed_from_step {
                     let anchor_event = trace
