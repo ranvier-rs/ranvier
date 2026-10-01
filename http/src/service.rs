@@ -146,6 +146,42 @@ where
     response
 }
 
+// Exact framework IAM failure labels are reserved; ordinary application Emit
+// events retain their existing representation. Discard untrusted failure payloads.
+fn iam_failure_response(event: &str) -> Option<Response<Full<Bytes>>> {
+    let (status, message) = match event {
+        "iam.missing_token" => (StatusCode::UNAUTHORIZED, "Authentication required"),
+        "iam.verification_failed" => (StatusCode::UNAUTHORIZED, "Authentication failed"),
+        "iam.policy_denied" => (StatusCode::FORBIDDEN, "Access denied"),
+        "iam.context_clear_failed" | "iam.context_write_denied" => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Authentication context unavailable",
+        ),
+        "iam.verifier_panicked" => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Authentication verifier failed",
+        ),
+        _ => return None,
+    };
+    let mut response = json_value_response(
+        status,
+        serde_json::json!({
+            "kind": "iam", "event_type": event, "error": message
+        }),
+    );
+    response.headers_mut().insert(
+        http::header::CACHE_CONTROL,
+        http::HeaderValue::from_static("no-store"),
+    );
+    if status == StatusCode::UNAUTHORIZED {
+        response.headers_mut().insert(
+            http::header::WWW_AUTHENTICATE,
+            http::HeaderValue::from_static("Bearer"),
+        );
+    }
+    Some(response)
+}
+
 fn domain_response_mapper<Out, E>(outcome: Outcome<Out, E>, _bus: &Bus) -> Response<Full<Bytes>>
 where
     Out: serde::Serialize,
@@ -166,14 +202,18 @@ where
                 }),
             )
         }
-        Outcome::Emit(event_type, payload) => json_value_response(
-            StatusCode::ACCEPTED,
-            serde_json::json!({
-                "kind": "emit",
-                "event_type": event_type,
-                "payload": payload
-            }),
-        ),
+        Outcome::Emit(event_type, payload) => {
+            if let Some(response) = iam_failure_response(&event_type) {
+                response
+            } else {
+                json_value_response(
+                    StatusCode::ACCEPTED,
+                    serde_json::json!({
+                        "kind": "emit", "event_type": event_type, "payload": payload
+                    }),
+                )
+            }
+        }
         Outcome::Branch(branch_id, payload) => json_value_response(
             StatusCode::CONFLICT,
             serde_json::json!({
