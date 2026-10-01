@@ -14,15 +14,34 @@ use std::time::Duration;
 struct Broken;
 
 #[derive(Clone)]
-struct Business(Arc<AtomicUsize>);
+struct Business(Arc<AtomicUsize>, bool);
+
+#[derive(serde::Deserialize)]
+struct PrivateFault;
+
+impl std::fmt::Debug for PrivateFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("private-service-debug-probe")
+    }
+}
+
+impl serde::Serialize for PrivateFault {
+    fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+        Err(serde::ser::Error::custom("private-service-fault-probe"))
+    }
+}
 
 #[async_trait::async_trait]
 impl Transition<(), Broken> for Business {
-    type Error = String;
+    type Error = PrivateFault;
     type Resources = ();
-    async fn run(&self, _: (), _: &(), _: &mut Bus) -> Outcome<Broken, String> {
+    async fn run(&self, _: (), _: &(), _: &mut Bus) -> Outcome<Broken, PrivateFault> {
         self.0.fetch_add(1, Ordering::SeqCst);
-        Outcome::Next(Broken)
+        if self.1 {
+            Outcome::Fault(PrivateFault)
+        } else {
+            Outcome::Next(Broken)
+        }
     }
 }
 
@@ -44,9 +63,10 @@ impl<T> Drop for AbortTask<T> {
 #[tokio::test]
 async fn service_encoding_failure_over_tcp_preserves_effect_boundary() {
     tokio::time::timeout(Duration::from_secs(10), async {
+        for fault in [false, true] {
         let effects = Arc::new(AtomicUsize::new(0));
-        let axon = Axon::<(), (), String>::new("service-encoding-tcp")
-            .then(Business(effects.clone()));
+        let axon = Axon::<(), (), PrivateFault>::new("service-encoding-tcp")
+            .then(Business(effects.clone(), fault));
         let service = RanvierService::new(
             axon, |_: http::Request<hyper::body::Incoming>, _: &mut Bus| (), (),
         );
@@ -70,11 +90,16 @@ async fn service_encoding_failure_over_tcp_preserves_effect_boundary() {
         assert!(response.headers().get("ranvier-completion").is_none());
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert!(!std::str::from_utf8(&body).unwrap().contains("private-service-serializer-probe"));
-        assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
-            serde_json::json!({"kind":"serialization_error", "error":"JSON response could not be encoded"}));
+        let expected = if fault {
+            serde_json::json!({"kind":"fault", "error":{"message":"Fault response could not be encoded"}})
+        } else {
+            serde_json::json!({"kind":"serialization_error", "error":"JSON response could not be encoded"})
+        };
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap(), expected);
         assert_eq!(effects.load(Ordering::SeqCst), 1);
         drop(sender);
         (&mut driver.0).await.unwrap().unwrap();
         (&mut server.0).await.unwrap();
+        }
     }).await.expect("bounded service TCP fixture");
 }
