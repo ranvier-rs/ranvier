@@ -448,7 +448,7 @@ where
             }
 
             let ingress_node_id = self.schematic.nodes.first().map(|n| n.id.clone());
-            persist_execution_event(
+            let confirmation = persist_execution_event(
                 handle,
                 &trace_id,
                 &label,
@@ -459,6 +459,14 @@ where
                 None,
             )
             .await;
+
+            if confirmation == crate::execution_report::StoreConfirmation::Unconfirmed {
+                if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>()
+                {
+                    active.0.block(crate::PersistenceOperation::Intent);
+                }
+                return Outcome::emit("execution.persistence.intent_unconfirmed", None);
+            }
 
             bus.insert(StartStep(start_step));
             if start_step > 0 {
