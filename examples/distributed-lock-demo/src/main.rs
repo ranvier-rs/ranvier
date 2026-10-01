@@ -19,8 +19,6 @@ use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_runtime::{Axon, ExecutionReport};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 // ============================================================================
 // Distributed Lock
@@ -160,7 +158,7 @@ impl Transition<CriticalTask, TaskResult> for LockedProcessor {
                 // Release lock
                 let expired = tokio::time::Instant::now() >= lease.deadline;
                 match lock.release(&lease).await {
-                    Ok(true) if !expired => {}
+                    Ok(true) if !expired && tokio::time::Instant::now() < lease.deadline => {}
                     _ => {
                         return Outcome::fault(
                             "Lease completion unconfirmed; reconcile before retry".into(),
@@ -282,19 +280,68 @@ fn local_demo_result(
 #[cfg(test)]
 mod report_tests {
     use super::*;
-    use ranvier_runtime::{CompletionConfirmation as C, EffectBoundary, PersistenceOperation, SagaRollbackReport};
+    use ranvier_runtime::{
+        CompletionConfirmation as C, EffectBoundary, PersistenceOperation, SagaRollbackReport,
+    };
     #[test]
     fn local_policy_rejects_unconfirmed_and_incomplete_results() {
-        let next = || Outcome::Next(TaskResult { task_id: "synthetic".into(), status: "processed".into(), lock_acquired: true });
-        assert!(local_demo_result(ExecutionReport::Unpersisted { result: next(), cleanup: None }).is_ok());
+        let next = || {
+            Outcome::Next(TaskResult {
+                task_id: "synthetic".into(),
+                status: "processed".into(),
+                lock_acquired: true,
+            })
+        };
+        assert!(
+            local_demo_result(ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: None
+            })
+            .is_ok()
+        );
         for report in [
-            ExecutionReport::Unpersisted { result: Outcome::Fault("private".into()), cleanup: None },
-            ExecutionReport::Unpersisted { result: next(), cleanup: Some(SagaRollbackReport { trace_id: "private".into(), finished: false, steps: vec![] }) },
-            ExecutionReport::NotRequested { result: next(), cleanup: None },
-            ExecutionReport::Recorded { result: next(), completion: C::Confirmed, cleanup: None },
-            ExecutionReport::Recorded { result: next(), completion: C::NotRequested, cleanup: None },
-            ExecutionReport::Unconfirmed { result: next(), operation: PersistenceOperation::Result, effect: EffectBoundary::MayHaveRun, cleanup: None },
-            ExecutionReport::BlockedBeforeEffect { operation: PersistenceOperation::Intent, effect: EffectBoundary::NotInvoked, cleanup: None },
-        ] { assert_eq!(local_demo_result(report).unwrap_err().to_string(), "Execution requires reconciliation before retry"); }
+            ExecutionReport::Unpersisted {
+                result: Outcome::Fault("private".into()),
+                cleanup: None,
+            },
+            ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: Some(SagaRollbackReport {
+                    trace_id: "private".into(),
+                    finished: false,
+                    steps: vec![],
+                }),
+            },
+            ExecutionReport::NotRequested {
+                result: next(),
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: C::Confirmed,
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: C::NotRequested,
+                cleanup: None,
+            },
+            ExecutionReport::Unconfirmed {
+                result: next(),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::NotInvoked,
+                cleanup: None,
+            },
+        ] {
+            assert_eq!(
+                local_demo_result(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
     }
 }
