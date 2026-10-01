@@ -15,8 +15,10 @@ struct Order {
 }
 #[derive(Default, Debug)]
 struct Ledger {
+    order_id: Option<String>,
     reserved: u32,
     charged: u64,
+    refunded: bool,
     shipped: bool,
     events: Vec<&'static str>,
 }
@@ -57,6 +59,7 @@ impl Transition<Order, Order> for ReserveInventory {
             return Outcome::Fault("Ledger unavailable".into());
         };
         ledger.reserved = order.item_count;
+        ledger.order_id = Some(order.id.clone());
         ledger.events.push("reserve");
         Outcome::Next(order)
     }
@@ -110,6 +113,9 @@ impl Transition<Order, ()> for ReleaseInventory {
         if ledger.reserved == 0 {
             return Outcome::Next(());
         }
+        if ledger.order_id.as_deref() != Some(input.id.as_str()) {
+            return Outcome::Fault("Reservation owner mismatch".into());
+        }
         if ledger.reserved != input.item_count {
             return Outcome::Fault("Reservation mismatch".into());
         }
@@ -133,6 +139,12 @@ impl Transition<Order, ()> for RefundPayment {
             if !ledger.events.contains(&"charge") {
                 return Outcome::Next(());
             }
+            if ledger.order_id.as_deref() != Some(input.id.as_str()) {
+                return Outcome::Fault("Payment owner mismatch".into());
+            }
+            if ledger.refunded {
+                return Outcome::Next(());
+            }
             if ledger.charged != input.amount_cents {
                 return Outcome::Fault("Payment mismatch".into());
             }
@@ -148,6 +160,7 @@ impl Transition<Order, ()> for RefundPayment {
             return Outcome::Fault("Ledger unavailable".into());
         };
         ledger.charged = 0;
+        ledger.refunded = true;
         Outcome::Next(())
     }
 }
@@ -228,6 +241,57 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use ranvier_runtime::SagaRollbackOutcome;
+
+    #[tokio::test]
+    async fn local_undo_is_idempotent_and_cannot_reverse_another_order() {
+        let resources = Resources::new(false, false, RefundBehavior::Complete);
+        let order = Order {
+            id: "owner".into(),
+            amount_cents: 500,
+            item_count: 3,
+        };
+        let mut bus = Bus::new();
+        assert!(matches!(
+            ReserveInventory
+                .run(order.clone(), &resources, &mut bus)
+                .await,
+            Outcome::Next(_)
+        ));
+        assert!(matches!(
+            ChargePayment.run(order.clone(), &resources, &mut bus).await,
+            Outcome::Next(_)
+        ));
+        let other = Order {
+            id: "different-owner".into(),
+            ..order.clone()
+        };
+        assert!(matches!(
+            RefundPayment.run(other.clone(), &resources, &mut bus).await,
+            Outcome::Fault(_)
+        ));
+        assert!(matches!(
+            ReleaseInventory.run(other, &resources, &mut bus).await,
+            Outcome::Fault(_)
+        ));
+        for _ in 0..2 {
+            assert!(matches!(
+                RefundPayment.run(order.clone(), &resources, &mut bus).await,
+                Outcome::Next(())
+            ));
+            assert!(matches!(
+                ReleaseInventory
+                    .run(order.clone(), &resources, &mut bus)
+                    .await,
+                Outcome::Next(())
+            ));
+        }
+        let ledger = resources.ledger.lock().unwrap();
+        assert_eq!(ledger.events, ["reserve", "charge", "refund", "release"]);
+        assert_eq!(
+            (ledger.reserved, ledger.charged, ledger.refunded),
+            (0, 0, true)
+        );
+    }
 
     #[tokio::test]
     async fn actual_completed_steps_are_compensated_in_reverse_order() {
