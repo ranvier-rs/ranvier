@@ -99,6 +99,13 @@ async fn external_future_drop_restores_handle_and_token() {
     child.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
     assert!(!bus.cancellation_token().unwrap().is_cancelled());
     assert!(!parent.is_cancelled());
+    assert!(axon.execute(1, &(), &mut bus).now_or_never().is_none());
+    assert!(Arc::ptr_eq(
+        &original,
+        &bus.read::<PersistenceHandle>().unwrap().store()
+    ));
+    parent.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
+    assert!(bus.cancellation_token().unwrap().is_cancelled());
 }
 
 #[async_trait::async_trait]
