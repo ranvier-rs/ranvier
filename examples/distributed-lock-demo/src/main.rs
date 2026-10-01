@@ -1,6 +1,6 @@
 //! # Distributed Lock Demo
 //!
-//! Demonstrates Redis-based distributed locking injected via Bus for Axon singleton execution.
+//! Demonstrates Redis leases injected via Bus; effects still require fencing or idempotency.
 //! Replaces the removed `ranvier-cluster` crate.
 //!
 //! ## Run
@@ -12,12 +12,12 @@
 //! ## Key Concepts
 //! - Redis SETNX-based distributed lock implementation
 //! - Lock handle injected via Bus for Transition access
-//! - Automatic TTL-based lock expiry for crash recovery
+//! - TTL expiry and owner-checked release; expiry alone is not safe effect recovery
 //! - No wrapper crate needed — `redis` crate + Bus is sufficient
 
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
-use ranvier_runtime::Axon;
+use ranvier_runtime::{Axon, ExecutionReport};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -26,63 +26,81 @@ use tokio::sync::Mutex;
 // Distributed Lock
 // ============================================================================
 
-/// Simple Redis-based distributed lock.
+/// Local demonstration of a Redis lease, not a fenced singleton guarantee.
 #[derive(Clone)]
 struct DistributedLockHandle {
-    client: Arc<Mutex<Option<redis::Client>>>,
+    client: redis::Client,
     ttl_ms: u64,
+}
+
+struct LockLease {
+    key: String,
+    token: String,
+    deadline: tokio::time::Instant,
 }
 
 impl DistributedLockHandle {
     fn new(redis_url: &str, ttl_ms: u64) -> Result<Self, String> {
-        let client = redis::Client::open(redis_url).map_err(|e| e.to_string())?;
-        Ok(Self {
-            client: Arc::new(Mutex::new(Some(client))),
-            ttl_ms,
-        })
+        if ttl_ms == 0 || ttl_ms > i64::MAX as u64 {
+            return Err("Invalid lease duration".into());
+        }
+        let client = redis::Client::open(redis_url)
+            .map_err(|_| "Invalid Redis configuration".to_string())?;
+        Ok(Self { client, ttl_ms })
     }
 
-    /// Try to acquire a lock. Returns true if acquired.
-    async fn try_acquire(&self, key: &str) -> Result<bool, String> {
-        let guard = self.client.lock().await;
-        let client = guard.as_ref().ok_or("Redis client not available")?;
-        let mut conn = client
-            .get_multiplexed_async_connection()
+    async fn try_acquire(&self, key: &str) -> Result<Option<LockLease>, String> {
+        let token = uuid::Uuid::new_v4().to_string();
+        let started = tokio::time::Instant::now();
+        let operation = async {
+            let mut conn = self
+                .client
+                .get_multiplexed_async_connection()
+                .await
+                .map_err(|_| "Redis connection unavailable".to_string())?;
+            let reply: Option<String> = redis::cmd("SET")
+                .arg(key)
+                .arg(&token)
+                .arg("NX")
+                .arg("PX")
+                .arg(self.ttl_ms)
+                .query_async(&mut conn)
+                .await
+                .map_err(|_| "Lock acquisition unconfirmed; reconcile before retry".to_string())?;
+            match reply.as_deref() {
+                None => Ok(None),
+                Some("OK") => Ok(Some(LockLease {
+                    key: key.into(),
+                    token,
+                    deadline: started + std::time::Duration::from_millis(self.ttl_ms),
+                })),
+                _ => Err("Unexpected lock acknowledgement".into()),
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), operation)
             .await
-            .map_err(|e| format!("Redis connect: {}", e))?;
-
-        let result: bool = redis::cmd("SET")
-            .arg(key)
-            .arg("locked")
-            .arg("NX")
-            .arg("PX")
-            .arg(self.ttl_ms)
-            .query_async(&mut conn)
-            .await
-            .unwrap_or(false);
-
-        Ok(result)
+            .map_err(|_| "Lock acquisition timed out; reconcile before retry".to_string())?
     }
 
-    /// Release the lock.
-    async fn release(&self, key: &str) -> Result<(), String> {
-        let guard = self.client.lock().await;
-        let client = guard.as_ref().ok_or("Redis client not available")?;
-        let mut conn = client
-            .get_multiplexed_async_connection()
+    /// Atomic compare-and-delete: a stale owner cannot delete a successor's lease.
+    async fn release(&self, lease: &LockLease) -> Result<bool, String> {
+        let operation = async {
+            let mut conn = self
+                .client
+                .get_multiplexed_async_connection()
+                .await
+                .map_err(|_| "Redis connection unavailable".to_string())?;
+            let removed: i64 = redis::Script::new(
+                "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end"
+            ).key(&lease.key).arg(&lease.token).invoke_async(&mut conn).await
+                .map_err(|_| "Lock release unconfirmed; reconcile before retry".to_string())?;
+            Ok(removed == 1)
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), operation)
             .await
-            .map_err(|e| format!("Redis connect: {}", e))?;
-
-        let _: () = redis::cmd("DEL")
-            .arg(key)
-            .query_async(&mut conn)
-            .await
-            .map_err(|e| format!("Redis DEL: {}", e))?;
-
-        Ok(())
+            .map_err(|_| "Lock release timed out; reconcile before retry".to_string())?
     }
 }
-
 // ============================================================================
 // Transitions
 // ============================================================================
@@ -97,7 +115,7 @@ struct CriticalTask {
 struct TaskResult {
     task_id: String,
     status: String,
-    lock_held: bool,
+    lock_acquired: bool,
 }
 
 /// Transition that acquires a distributed lock before processing.
@@ -117,13 +135,16 @@ impl Transition<CriticalTask, TaskResult> for LockedProcessor {
         _resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<TaskResult, Self::Error> {
-        let lock = bus
-            .read::<DistributedLockHandle>()
-            .expect("DistributedLockHandle must be in Bus");
+        let Some(lock) = bus.read::<DistributedLockHandle>() else {
+            return Outcome::fault("Lock capability unavailable".into());
+        };
 
         // Try to acquire the distributed lock
         match lock.try_acquire(&self.lock_key).await {
-            Ok(true) => {
+            Ok(Some(lease)) => {
+                if tokio::time::Instant::now() >= lease.deadline {
+                    return Outcome::fault("Lease expired; reconcile before retry".into());
+                }
                 println!(
                     "  [Lock] Acquired lock '{}' for task {}",
                     self.lock_key, input.task_id
@@ -133,17 +154,23 @@ impl Transition<CriticalTask, TaskResult> for LockedProcessor {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
                 // Release lock
-                if let Err(e) = lock.release(&self.lock_key).await {
-                    println!("  [Lock] Warning: failed to release lock: {}", e);
+                let expired = tokio::time::Instant::now() >= lease.deadline;
+                match lock.release(&lease).await {
+                    Ok(true) if !expired => {}
+                    _ => {
+                        return Outcome::fault(
+                            "Lease completion unconfirmed; reconcile before retry".into(),
+                        );
+                    }
                 }
 
                 Outcome::next(TaskResult {
                     task_id: input.task_id,
                     status: "processed".into(),
-                    lock_held: true,
+                    lock_acquired: true,
                 })
             }
-            Ok(false) => {
+            Ok(None) => {
                 println!(
                     "  [Lock] Could not acquire lock '{}' — another instance holds it",
                     self.lock_key
@@ -151,13 +178,10 @@ impl Transition<CriticalTask, TaskResult> for LockedProcessor {
                 Outcome::next(TaskResult {
                     task_id: input.task_id,
                     status: "skipped_lock_held".into(),
-                    lock_held: false,
+                    lock_acquired: false,
                 })
             }
-            Err(e) => {
-                println!("  [Lock] Redis error: {}", e);
-                Outcome::fault(format!("Lock acquisition failed: {}", e))
-            }
+            Err(_) => Outcome::fault("Lock acquisition unconfirmed; reconcile before retry".into()),
         }
     }
 }
@@ -175,10 +199,8 @@ async fn main() -> anyhow::Result<()> {
 
     let lock_handle = match DistributedLockHandle::new(&redis_url, 5000) {
         Ok(h) => h,
-        Err(e) => {
-            println!("Could not create Redis client: {}", e);
-            println!("Skipping demo (Redis not available).");
-            return Ok(());
+        Err(_) => {
+            anyhow::bail!("Invalid Redis configuration");
         }
     };
 
@@ -224,9 +246,31 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let (result_a, result_b) = tokio::join!(worker_a, worker_b);
-    println!("\n  Worker A: {:?}", result_a.unwrap());
-    println!("  Worker B: {:?}", result_b.unwrap());
+    for result in [result_a, result_b] {
+        let report =
+            result.map_err(|_| anyhow::anyhow!("Worker failed; reconcile before retry"))?;
+        let result = local_demo_result(report)?;
+        println!("  Worker status: {}", result.status);
+    }
 
     println!("\ndone");
     Ok(())
+}
+
+fn local_demo_result(
+    report: ExecutionReport<Outcome<TaskResult, String>>,
+) -> anyhow::Result<TaskResult> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ExecutionReport::Unpersisted {
+            result: Outcome::Next(result),
+            ..
+        } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
 }
