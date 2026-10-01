@@ -151,6 +151,23 @@ fn rand_id() -> u32 {
 // Main
 // ============================================================================
 
+// Explicit local-demo policy: neither persisted nor incomplete cleanup results
+// may be converted into ordinary domain success or automatic retry permission.
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     println!("=== Testing Patterns Example ===\n");
@@ -169,7 +186,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Processing order: {:?}", request);
 
-    match axon.execute(request, &(), &mut bus).await {
+    match local_demo_outcome(axon.execute(request, &(), &mut bus).await)? {
         Outcome::Next(confirmation) => {
             println!("Success: {}", confirmation.message);
         }
@@ -316,7 +333,7 @@ mod tests {
             quantity: 7,
         };
 
-        let result = axon.execute(request, &(), &mut bus).await;
+        let result = local_demo_outcome(axon.execute(request, &(), &mut bus).await).unwrap();
 
         match result {
             Outcome::Next(confirmation) => {
@@ -340,7 +357,7 @@ mod tests {
             quantity: 5,
         };
 
-        let result = axon.execute(request, &(), &mut bus).await;
+        let result = local_demo_outcome(axon.execute(request, &(), &mut bus).await).unwrap();
 
         match result {
             Outcome::Fault(err) => {

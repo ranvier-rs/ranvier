@@ -141,6 +141,23 @@ impl Transition<User, User> for CheckAuthorization {
 // Main
 // ============================================================================
 
+// Explicit local-demo policy: neither persisted nor incomplete cleanup results
+// may be converted into ordinary domain success or automatic retry permission.
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     println!("=== Custom Error Types Example ===\n");
@@ -154,7 +171,7 @@ async fn main() -> anyhow::Result<()> {
         .then(FetchUser)
         .then(CheckAuthorization);
 
-    match axon.execute(UserId("admin".into()), &(), &mut bus).await {
+    match local_demo_outcome(axon.execute(UserId("admin".into()), &(), &mut bus).await)? {
         Outcome::Next(user) => {
             println!("  Success: {} (role={})", user.name, user.role);
         }
@@ -170,7 +187,7 @@ async fn main() -> anyhow::Result<()> {
         .then(ValidateUserId)
         .then(FetchUser);
 
-    match axon.execute(UserId("ab".into()), &(), &mut bus).await {
+    match local_demo_outcome(axon.execute(UserId("ab".into()), &(), &mut bus).await)? {
         Outcome::Next(user) => {
             println!("  Success: {:?}", user);
         }
@@ -190,7 +207,7 @@ async fn main() -> anyhow::Result<()> {
         .then(ValidateUserId)
         .then(FetchUser);
 
-    match axon.execute(UserId("unknown".into()), &(), &mut bus).await {
+    match local_demo_outcome(axon.execute(UserId("unknown".into()), &(), &mut bus).await)? {
         Outcome::Next(user) => {
             println!("  Success: {:?}", user);
         }
@@ -211,7 +228,7 @@ async fn main() -> anyhow::Result<()> {
         .then(FetchUser)
         .then(CheckAuthorization);
 
-    match axon.execute(UserId("user123".into()), &(), &mut bus).await {
+    match local_demo_outcome(axon.execute(UserId("user123".into()), &(), &mut bus).await)? {
         Outcome::Next(user) => {
             println!("  Success: {:?}", user);
         }

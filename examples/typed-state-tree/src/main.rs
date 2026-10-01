@@ -99,6 +99,23 @@ impl Transition<FlowState, FlowState> for FetchContent {
 // 3. Main - Wire the Tree
 // ============================================================================
 
+// Explicit local-demo policy: neither persisted nor incomplete cleanup results
+// may be converted into ordinary domain success or automatic retry permission.
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     println!("=== Typed State Tree Demo ===\n");
@@ -115,7 +132,7 @@ async fn main() -> anyhow::Result<()> {
     // Case 1: Valid Path
     println!("--- Case 1: Valid Path ---");
     let input1 = FlowState::RequestReceived("/dashboard".to_string());
-    match axon.execute(input1, &(), &mut bus).await {
+    match local_demo_outcome(axon.execute(input1, &(), &mut bus).await)? {
         Outcome::Next(FlowState::ContentLoaded { data, .. }) => {
             println!("Success! Final Data: {}", data);
         }
@@ -126,7 +143,7 @@ async fn main() -> anyhow::Result<()> {
     // Case 2: Forbidden Path
     println!("\n--- Case 2: Forbidden Path ---");
     let input2 = FlowState::RequestReceived("/forbidden".to_string());
-    match axon.execute(input2, &(), &mut bus).await {
+    match local_demo_outcome(axon.execute(input2, &(), &mut bus).await)? {
         Outcome::Fault(e) => println!("Caught expected error: {}", e),
         other => println!("Unexpected result: {:?}", other),
     }
