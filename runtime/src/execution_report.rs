@@ -15,7 +15,8 @@ pub enum StoreConfirmation {
     Unconfirmed,
 }
 
-/// Store operation classification; backend text and credentials are excluded.
+/// Persistence operation classification; backend text and credentials are excluded.
+/// Result/Terminal can also identify encoding failure before an append is called.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PersistenceOperation {
@@ -78,7 +79,9 @@ pub enum ExecutionReport<T> {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cleanup: Option<SagaRollbackReport>,
     },
-    /// Preserve the known result, without certifying the failed store operation.
+    /// Preserve the known result, without certifying the failed persistence operation.
+    /// Encoding failure can prevent the selected append from being attempted;
+    /// earlier effects or writes can still require reconciliation.
     Unconfirmed {
         result: T,
         operation: PersistenceOperation,

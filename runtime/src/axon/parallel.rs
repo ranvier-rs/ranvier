@@ -13,7 +13,7 @@ use crate::persistence::PersistenceHandle;
 use super::*;
 use super::{
     bus_capability_schema_from_policy, now_ms, outcome_kind_name, outcome_type_name,
-    persist_execution_event, persistence_trace_id, type_name_of,
+    persistence_trace_id, type_name_of,
 };
 
 struct ParallelBranchResult<Out, E> {

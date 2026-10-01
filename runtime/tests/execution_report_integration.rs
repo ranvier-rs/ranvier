@@ -8,6 +8,112 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+#[derive(Clone, serde::Deserialize)]
+struct EncodingOutput {
+    terminal_only: bool,
+    #[serde(skip)]
+    calls: Arc<AtomicUsize>,
+}
+impl serde::Serialize for EncodingOutput {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if !self.terminal_only || call > 0 {
+            Err(serde::ser::Error::custom("private-encoding-probe"))
+        } else {
+            serializer.serialize_u32(7)
+        }
+    }
+}
+
+#[derive(Clone)]
+struct EncodingBusiness {
+    effects: Arc<AtomicUsize>,
+    terminal_only: bool,
+}
+#[async_trait::async_trait]
+impl Transition<(), EncodingOutput> for EncodingBusiness {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: (), _: &(), _: &mut Bus) -> Outcome<EncodingOutput, String> {
+        self.effects.fetch_add(1, Ordering::SeqCst);
+        Outcome::Next(EncodingOutput {
+            terminal_only: self.terminal_only,
+            calls: Arc::new(AtomicUsize::new(0)),
+        })
+    }
+}
+
+#[tokio::test]
+async fn result_and_terminal_encoding_failures_preserve_result_without_false_completion() {
+    for terminal_only in [false, true] {
+        let backing = InMemoryPersistenceStore::new();
+        let effects = Arc::new(AtomicUsize::new(0));
+        let mut bus = Bus::new();
+        bus.insert(PersistenceTraceId::new("encoding-failure"));
+        bus.insert(PersistenceHandle::from_store(backing.clone()));
+        let axon = Axon::<(), (), String>::new("encoding-fixture").then(EncodingBusiness {
+            effects: effects.clone(),
+            terminal_only,
+        });
+        let report = axon.execute((), &(), &mut bus).await;
+        match report {
+            ExecutionReport::Unconfirmed {
+                result: Outcome::Next(_),
+                operation,
+                effect,
+                ..
+            } => {
+                assert_eq!(
+                    operation,
+                    if terminal_only {
+                        PersistenceOperation::Terminal
+                    } else {
+                        PersistenceOperation::Result
+                    }
+                );
+                assert_eq!(effect, EffectBoundary::MayHaveRun);
+            }
+            _ => panic!("unencodable recovery result must not be acknowledged"),
+        }
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        let trace = backing.load("encoding-failure").await.unwrap().unwrap();
+        assert_eq!(trace.completion, None);
+        assert_eq!(trace.events.len(), if terminal_only { 2 } else { 1 });
+        assert!(
+            trace
+                .events
+                .iter()
+                .all(|event| event.payload != Some(serde_json::Value::Null))
+        );
+        if terminal_only {
+            assert_eq!(
+                trace.events[1].payload,
+                Some(serde_json::json!({"Next": 7}))
+            );
+        }
+        // The restored store remains usable; failure state belongs to this
+        // invocation, and cannot suppress completion of a later healthy call.
+        bus.insert(PersistenceTraceId::new("after-encoding-failure"));
+        let healthy = Axon::<(), (), String>::new("healthy-after-encoding");
+        assert!(matches!(
+            healthy.execute((), &(), &mut bus).await,
+            ExecutionReport::Recorded {
+                completion: CompletionConfirmation::Confirmed,
+                ..
+            }
+        ));
+        assert_eq!(
+            backing
+                .load("after-encoding-failure")
+                .await
+                .unwrap()
+                .unwrap()
+                .completion,
+            Some(CompletionState::Success)
+        );
+    }
+}
+
 struct AppliedAwaitingAck {
     backing: InMemoryPersistenceStore,
     calls: AtomicUsize,
