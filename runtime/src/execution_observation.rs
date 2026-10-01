@@ -823,6 +823,24 @@ impl IamScope {
     }
 }
 
+/// Preserve configuration allocation, sharing and absence across nested execution.
+struct ConfigurationScope(Vec<ranvier_core::bus::BusResourceScope>);
+impl ConfigurationScope {
+    fn begin(bus: &mut Bus) -> Self {
+        Self(vec![
+            bus.begin_resource_scope::<ranvier_core::event::DlqPolicy>(),
+            bus.begin_resource_scope::<Arc<dyn ranvier_core::event::DlqSink>>(),
+            bus.begin_resource_scope::<ranvier_core::schematic::Schematic>(),
+            bus.begin_resource_scope::<ranvier_core::saga::SagaPolicy>(),
+        ])
+    }
+    fn restore(mut self, bus: &mut Bus) {
+        while let Some(scope) = self.0.pop() {
+            bus.restore_resource_scope(scope);
+        }
+    }
+}
+
 pub(crate) struct Session {
     original: Option<PersistenceHandle>,
     original_compensation: Option<CompensationIdempotencyHandle>,
@@ -830,10 +848,7 @@ pub(crate) struct Session {
     nested: bool,
     previous_trace: Option<InvocationTrace>,
     iam_scope: IamScope,
-    previous_dlq_policy: Option<ranvier_core::event::DlqPolicy>,
-    previous_dlq_sink: Option<Arc<dyn ranvier_core::event::DlqSink>>,
-    previous_schematic: Option<ranvier_core::schematic::Schematic>,
-    previous_saga_policy: Option<ranvier_core::saga::SagaPolicy>,
+    config_scope: Option<ConfigurationScope>,
     previous_cleanup: Option<crate::saga_report::SagaRollbackJournal>,
     previous_cleanup_report: Option<crate::saga_report::SagaRollbackReport>,
     observation: Arc<Observation>,
@@ -844,11 +859,8 @@ impl Session {
         let original_compensation = bus.read::<CompensationIdempotencyHandle>().cloned();
         let previous = bus.read::<ActiveObservation>().cloned();
         let nested = previous.is_some() || bus.has::<ActiveIamBoundary>();
+        let config_scope = nested.then(|| ConfigurationScope::begin(bus));
         let iam_scope = IamScope::begin(bus);
-        let previous_dlq_policy = bus.read::<ranvier_core::event::DlqPolicy>().cloned();
-        let previous_dlq_sink = bus.read::<Arc<dyn ranvier_core::event::DlqSink>>().cloned();
-        let previous_schematic = bus.read::<ranvier_core::schematic::Schematic>().cloned();
-        let previous_saga_policy = bus.read::<ranvier_core::saga::SagaPolicy>().cloned();
         let previous_trace = bus.remove::<InvocationTrace>();
         bus.insert(InvocationTrace(format!(
             "{}:{}",
@@ -877,10 +889,7 @@ impl Session {
             nested,
             previous_trace,
             iam_scope,
-            previous_dlq_policy,
-            previous_dlq_sink,
-            previous_schematic,
-            previous_saga_policy,
+            config_scope,
             previous_cleanup,
             previous_cleanup_report,
             observation,
@@ -928,25 +937,10 @@ impl Session {
             bus.insert(trace);
         }
         self.iam_scope.restore(bus);
+        if let Some(scope) = self.config_scope {
+            scope.restore(bus);
+        }
         if self.nested {
-            // Child execution config must not become the parent's final policy
-            // or attribution. Restore absence as well as configured values.
-            bus.remove::<ranvier_core::event::DlqPolicy>();
-            bus.remove::<Arc<dyn ranvier_core::event::DlqSink>>();
-            bus.remove::<ranvier_core::schematic::Schematic>();
-            bus.remove::<ranvier_core::saga::SagaPolicy>();
-            if let Some(value) = self.previous_dlq_policy {
-                bus.insert(value);
-            }
-            if let Some(value) = self.previous_dlq_sink {
-                bus.insert(value);
-            }
-            if let Some(value) = self.previous_schematic {
-                bus.insert(value);
-            }
-            if let Some(value) = self.previous_saga_policy {
-                bus.insert(value);
-            }
             let _ = bus.remove::<crate::saga_report::SagaRollbackJournal>();
             let _ = bus.remove::<crate::saga_report::SagaRollbackReport>();
             if let Some(journal) = self.previous_cleanup {
