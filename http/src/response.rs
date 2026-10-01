@@ -217,6 +217,11 @@ impl IntoResponse for (StatusCode, Bytes) {
 
 // ── Json<T> response ──
 
+// Serializer errors can contain private payloads or backend details. Keep the
+// wire message fixed in every build profile. A response encoding failure says
+// nothing about whether application effects ran; callers must not infer retry
+// safety from this 500 response.
+
 impl<T: Serialize> IntoResponse for Json<T> {
     fn into_response(self) -> HttpResponse {
         match serde_json::to_vec(&self.0) {
@@ -730,10 +735,17 @@ mod tests {
             }
         }
 
+        impl IntoProblemDetail for Broken {
+            fn into_problem_detail(&self) -> ProblemDetail {
+                unreachable!("the Next branch must not format a fault")
+            }
+        }
+
         for response in [
             Json(Broken).into_response(),
             (StatusCode::CREATED, Json(Broken)).into_response(),
             outcome_to_json_response::<_, String>(Outcome::Next(Broken)),
+            outcome_to_json_problem_response::<_, Broken>(Outcome::Next(Broken)),
         ] {
             assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
             assert_eq!(response.headers()[CONTENT_TYPE], "application/json");
