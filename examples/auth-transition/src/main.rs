@@ -161,11 +161,7 @@ async fn authorize(
         ));
     }
 
-    tracing::info!(
-        user_id = %auth.user_id,
-        role = %required_role,
-        "Authorization successful"
-    );
+    tracing::info!("Authorization successful");
 
     Outcome::Next(())
 }
@@ -184,10 +180,7 @@ async fn protected_handler(
         Err(_) => return Outcome::Fault(AppError::Auth("Authentication required".into())),
     };
 
-    tracing::info!(
-        user_id = %auth.user_id,
-        "Protected handler executed for authenticated user"
-    );
+    tracing::info!("Protected handler executed for authenticated user");
 
     #[cfg(test)]
     bus.insert(HandlerVisited);
