@@ -21,6 +21,23 @@ use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 
+// Explicit local-demo policy: neither persisted nor incomplete cleanup results
+// may be converted into ordinary domain success or automatic retry permission.
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
 diesel::table! {
@@ -300,26 +317,30 @@ async fn main() -> Result<()> {
         Axon::<DeleteUserInput, DeleteUserInput, String, AppResources>::new("diesel.delete_user")
             .then(DeleteUserTransition);
 
-    let alice = create
-        .execute(
-            CreateUserInput {
-                username: "alice".to_string(),
-                email: "alice@demo.local".to_string(),
-            },
-            &resources,
-            &mut bus,
-        )
-        .await;
-    let bob = create
-        .execute(
-            CreateUserInput {
-                username: "bob".to_string(),
-                email: "bob@demo.local".to_string(),
-            },
-            &resources,
-            &mut bus,
-        )
-        .await;
+    let alice = local_demo_outcome(
+        create
+            .execute(
+                CreateUserInput {
+                    username: "alice".to_string(),
+                    email: "alice@demo.local".to_string(),
+                },
+                &resources,
+                &mut bus,
+            )
+            .await,
+    )?;
+    let bob = local_demo_outcome(
+        create
+            .execute(
+                CreateUserInput {
+                    username: "bob".to_string(),
+                    email: "bob@demo.local".to_string(),
+                },
+                &resources,
+                &mut bus,
+            )
+            .await,
+    )?;
 
     match (&alice, &bob) {
         (Outcome::Next(a), Outcome::Next(b)) => {
@@ -331,34 +352,38 @@ async fn main() -> Result<()> {
     }
 
     let before: Outcome<Vec<UserSummary>, String> =
-        list.execute(FetchAllInput, &resources, &mut bus).await;
+        local_demo_outcome(list.execute(FetchAllInput, &resources, &mut bus).await)?;
     if let Outcome::Next(users) = &before {
         println!("list(before): {} users", users.len());
     }
 
-    let updated = update
-        .execute(
-            UpdateEmailInput {
-                id: 1,
-                email: "alice+updated@demo.local".to_string(),
-            },
-            &resources,
-            &mut bus,
-        )
-        .await;
+    let updated = local_demo_outcome(
+        update
+            .execute(
+                UpdateEmailInput {
+                    id: 1,
+                    email: "alice+updated@demo.local".to_string(),
+                },
+                &resources,
+                &mut bus,
+            )
+            .await,
+    )?;
     if let Outcome::Next(user) = &updated {
         println!("updated: {} -> {}", user.username, user.email);
     }
 
-    let deleted = delete
-        .execute(DeleteUserInput { id: 2 }, &resources, &mut bus)
-        .await;
+    let deleted = local_demo_outcome(
+        delete
+            .execute(DeleteUserInput { id: 2 }, &resources, &mut bus)
+            .await,
+    )?;
     if let Outcome::Next(id) = &deleted {
         println!("deleted id={}", id);
     }
 
     let after: Outcome<Vec<UserSummary>, String> =
-        list.execute(FetchAllInput, &resources, &mut bus).await;
+        local_demo_outcome(list.execute(FetchAllInput, &resources, &mut bus).await)?;
     match after {
         Outcome::Next(users) => {
             println!("list(after): {} users", users.len());
