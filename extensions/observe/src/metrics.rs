@@ -1497,6 +1497,136 @@ mod tests {
         }
     }
     #[derive(Debug, Default)]
+    struct UpDownSnapshot {
+        signed: i64,
+        fraction: f64,
+        signed_series: usize,
+        fraction_series: usize,
+        unexpected: bool,
+    }
+    struct UpDownCapture {
+        snapshots: Arc<Mutex<Vec<UpDownSnapshot>>>,
+        requested: Temporality,
+    }
+    impl PushMetricExporter for UpDownCapture {
+        async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+            use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+            let mut snapshot = UpDownSnapshot::default();
+            for scope in metrics.scope_metrics() {
+                for metric in scope.metrics() {
+                    match metric.data() {
+                        AggregatedMetrics::I64(MetricData::Sum(sum)) => {
+                            snapshot.unexpected |= metric.name() != "signed"
+                                || sum.temporality() != Temporality::Cumulative
+                                || sum.is_monotonic();
+                            for point in sum.data_points() {
+                                snapshot.signed += point.value();
+                                snapshot.signed_series += 1;
+                            }
+                        }
+                        AggregatedMetrics::F64(MetricData::Sum(sum)) => {
+                            snapshot.unexpected |= metric.name() != "fraction"
+                                || sum.temporality() != Temporality::Cumulative
+                                || sum.is_monotonic();
+                            for point in sum.data_points() {
+                                snapshot.fraction += point.value();
+                                snapshot.fraction_series += 1;
+                            }
+                        }
+                        _ => snapshot.unexpected = true,
+                    }
+                }
+            }
+            self.snapshots.lock().unwrap().push(snapshot);
+            Ok(())
+        }
+        fn force_flush(&self) -> OTelSdkResult {
+            Ok(())
+        }
+        fn shutdown_with_timeout(&self, _: Duration) -> OTelSdkResult {
+            Ok(())
+        }
+        fn temporality(&self) -> Temporality {
+            self.requested
+        }
+    }
+    #[test]
+    fn observable_up_down_preserves_negative_absolute_values_for_delta_request() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for requested in [Temporality::Cumulative, Temporality::Delta] {
+            for mode in [Mode::Off, Mode::Public, Mode::Strict] {
+                let strict = matches!(mode, Mode::Strict);
+                let snapshots = Arc::new(Mutex::new(Vec::new()));
+                let values = Arc::new(Mutex::new((2_i64, 0.5_f64)));
+                let signed_calls = Arc::new(AtomicUsize::new(0));
+                let fraction_calls = Arc::new(AtomicUsize::new(0));
+                let provider = ProtectedMeterProvider {
+                    inner: bounded_meter_builder()
+                        .unwrap()
+                        .with_reader(
+                            PeriodicReader::builder(UpDownCapture {
+                                snapshots: snapshots.clone(),
+                                requested,
+                            })
+                            .with_interval(Duration::from_secs(3600))
+                            .build(),
+                        )
+                        .build(),
+                    policy: Policy::new(mode, "").unwrap(),
+                    state: Default::default(),
+                };
+                let meter = provider.meter("up-down-interval-fixture");
+                let signed_values = values.clone();
+                let signed_count = signed_calls.clone();
+                let _signed = meter
+                    .i64_observable_up_down_counter("signed")
+                    .with_callback(move |instrument| {
+                        signed_count.fetch_add(1, Ordering::SeqCst);
+                        let value = signed_values.lock().unwrap().0;
+                        for index in 0..1024 {
+                            instrument.observe(
+                                value,
+                                &[KeyValue::new("identity", format!("label-{index}"))],
+                            );
+                        }
+                    })
+                    .build();
+                let fraction_values = values.clone();
+                let fraction_count = fraction_calls.clone();
+                let _fraction = meter
+                    .f64_observable_up_down_counter("fraction")
+                    .with_callback(move |instrument| {
+                        fraction_count.fetch_add(1, Ordering::SeqCst);
+                        let value = fraction_values.lock().unwrap().1;
+                        for index in 0..1024 {
+                            instrument.observe(
+                                value,
+                                &[KeyValue::new("identity", format!("label-{index}"))],
+                            );
+                        }
+                    })
+                    .build();
+                for (interval, value) in [(2, 0.5), (-3, -1.5), (-3, -1.5)].into_iter().enumerate()
+                {
+                    *values.lock().unwrap() = value;
+                    provider.inner.force_flush().unwrap();
+                    assert_eq!(signed_calls.load(Ordering::SeqCst), interval + 1);
+                    assert_eq!(fraction_calls.load(Ordering::SeqCst), interval + 1);
+                    let captured = snapshots.lock().unwrap();
+                    assert_eq!(captured.len(), interval + 1);
+                    let actual = captured.last().unwrap();
+                    assert_eq!(actual.signed, value.0 * 1024);
+                    assert_eq!(actual.fraction, value.1 * 1024.0);
+                    assert_eq!(actual.signed_series, if strict { 1 } else { 1024 });
+                    assert_eq!(actual.fraction_series, if strict { 1 } else { 1024 });
+                    assert!(!actual.unexpected, "{actual:?}");
+                    assert!(!provider.state.failed());
+                }
+                provider.inner.shutdown().unwrap();
+            }
+        }
+    }
+    #[derive(Debug, Default)]
     struct FloatTotals {
         metric_count: usize,
         minimum: Option<f64>,
