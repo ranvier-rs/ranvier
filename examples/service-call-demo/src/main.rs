@@ -9,8 +9,8 @@ Demonstrates how to wrap external HTTP service calls as Ranvier Transitions:
 
 ## Key Pattern
 External service calls are just Transitions — validate locally, call remotely,
-transform the response. The Axon execution engine handles retry and timeout
-transparently.
+transform the response. The timeout drops the local wait; it does not prove remote cancellation.
+This runnable example makes one read-only GET per invocation and does not retry.
 
 ## Running
 ```bash
@@ -87,6 +87,28 @@ struct ApiResources {
     base_url: String,
 }
 
+impl ApiResources {
+    fn new(base_url: String) -> anyhow::Result<Self> {
+        let parsed = reqwest::Url::parse(&base_url)?;
+        anyhow::ensure!(
+            matches!(parsed.scheme(), "http" | "https")
+                && parsed.host_str().is_some()
+                && parsed.username().is_empty()
+                && parsed.password().is_none()
+                && parsed.query().is_none()
+                && parsed.fragment().is_none(),
+            "Invalid service endpoint"
+        );
+        Ok(Self {
+            client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(10))
+                .build()?,
+            base_url: base_url.trim_end_matches('/').to_owned(),
+        })
+    }
+}
+
 // ============================================================================
 // Transition 1: Local Validation
 // ============================================================================
@@ -144,9 +166,8 @@ impl Transition<UserLookupRequest, UserProfile> for FetchUserFromApi {
         // Step 1: Send HTTP request
         let response = match resources.client.get(&url).send().await {
             Ok(resp) => resp,
-            Err(e) => {
-                // Network error → Fault (retryable by then_with_retry)
-                return Outcome::Fault(format!("Network error: {}", e));
+            Err(_) => {
+                return Outcome::Fault("Service request unavailable".into());
             }
         };
 
@@ -154,26 +175,56 @@ impl Transition<UserLookupRequest, UserProfile> for FetchUserFromApi {
 
         // Step 2: Map HTTP status to Outcome
         match status {
-            200..=299 => match response.json::<serde_json::Value>().await {
-                Ok(json) => {
-                    let name = json["name"].as_str().unwrap_or("unknown");
-                    let email = json["email"].as_str().unwrap_or("unknown");
-                    let company = json["company"]["name"].as_str().unwrap_or("unknown");
-
-                    let profile = UserProfile {
-                        id: input.user_id,
-                        name: name.to_string(),
-                        email: email.to_string(),
-                        company: company.to_string(),
-                    };
-                    println!(
-                        "  [FetchUserFromApi] 200 OK: {} <{}>",
-                        profile.name, profile.email
-                    );
-                    Outcome::Next(profile)
+            200..=299 => {
+                let mut response = response;
+                const MAX_BYTES: usize = 65536;
+                if response
+                    .content_length()
+                    .is_some_and(|length| length > MAX_BYTES as u64)
+                {
+                    return Outcome::Fault("Service response too large".into());
                 }
-                Err(e) => Outcome::Fault(format!("JSON parse error: {}", e)),
-            },
+                let mut body = Vec::new();
+                loop {
+                    let chunk = match response.chunk().await {
+                        Ok(Some(chunk)) => chunk,
+                        Ok(None) => break,
+                        Err(_) => return Outcome::Fault("Service response unavailable".into()),
+                    };
+                    if chunk.len() > MAX_BYTES - body.len() {
+                        return Outcome::Fault("Service response too large".into());
+                    }
+                    body.extend_from_slice(&chunk);
+                }
+                #[derive(Deserialize)]
+                struct Company {
+                    name: String,
+                }
+                #[derive(Deserialize)]
+                struct ApiProfile {
+                    id: u32,
+                    name: String,
+                    email: String,
+                    company: Company,
+                }
+                let parsed = match serde_json::from_slice::<ApiProfile>(&body) {
+                    Ok(parsed) => parsed,
+                    Err(_) => return Outcome::Fault("Invalid service response".into()),
+                };
+                if parsed.id != input.user_id
+                    || parsed.name.trim().is_empty()
+                    || parsed.email.trim().is_empty()
+                    || parsed.company.name.trim().is_empty()
+                {
+                    return Outcome::Fault("Invalid service response".into());
+                }
+                Outcome::Next(UserProfile {
+                    id: parsed.id,
+                    name: parsed.name,
+                    email: parsed.email,
+                    company: parsed.company.name,
+                })
+            }
             400..=499 => {
                 // Client error → Branch (non-retryable, handled separately)
                 println!("  [FetchUserFromApi] {} Client Error", status);
@@ -186,9 +237,9 @@ impl Transition<UserLookupRequest, UserProfile> for FetchUserFromApi {
                 )
             }
             _ => {
-                // Server error → Fault (retryable)
+                // Unhandled status → Fault; this demo does not automatically retry.
                 println!("  [FetchUserFromApi] {} Server Error", status);
-                Outcome::Fault(format!("Server error: HTTP {}", status))
+                Outcome::Fault(format!("Unexpected service status: HTTP {}", status))
             }
         }
     }
@@ -214,7 +265,7 @@ impl Transition<UserProfile, EnrichedProfile> for EnrichProfile {
     ) -> Outcome<EnrichedProfile, Self::Error> {
         let enriched = EnrichedProfile {
             lookup_note: format!("Fetched from {}", resources.base_url),
-            source: "jsonplaceholder".to_string(),
+            source: "configured-http-api".to_string(),
             user,
         };
         println!(
@@ -233,13 +284,10 @@ impl Transition<UserProfile, EnrichedProfile> for EnrichProfile {
 async fn main() -> anyhow::Result<()> {
     println!("=== Service Call Demo ===\n");
 
-    let resources = ApiResources {
-        client: reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()?,
-        base_url: std::env::var("SERVICE_CALL_BASE_URL")
+    let resources = ApiResources::new(
+        std::env::var("SERVICE_CALL_BASE_URL")
             .unwrap_or_else(|_| "https://jsonplaceholder.typicode.com".to_string()),
-    };
+    )?;
 
     // ── Scenario 1: Successful lookup ────────────────────────────
     println!("--- Scenario 1: Successful service call ---");
@@ -265,7 +313,7 @@ async fn main() -> anyhow::Result<()> {
             Outcome::Branch(id, payload) => {
                 println!("\n  Branch({}): {:?}", id, payload);
             }
-            other => println!("\n  Unexpected: {:?}", other),
+            other => anyhow::bail!("Unexpected service control outcome: {other:?}"),
         }
     }
 
@@ -299,22 +347,23 @@ async fn main() -> anyhow::Result<()> {
                     "  → In production, route to a fallback handler or return a friendly error"
                 );
             }
-            other => println!("  Unexpected: {:?}", other),
+            other => anyhow::bail!("Unexpected service control outcome: {other:?}"),
         }
     }
 
     println!();
 
     // ── Scenario 3: With retry + timeout ─────────────────────────
-    println!("--- Scenario 3: Resilient service call (retry + timeout) ---");
-    println!("    Validate → Fetch with retry(2) + timeout(5s) → Enrich\n");
+    println!("--- Scenario 3: Read-only service call with timeout ---");
+    println!("    Validate → Fetch with timeout(5s) → Enrich\n");
     {
         let pipeline = Axon::<UserLookupRequest, UserLookupRequest, String, ApiResources>::new(
             "ResilientLookup",
         )
         .then(ValidateRequest)
         .then_with_timeout(FetchUserFromApi, Duration::from_secs(5), || {
-            "Service call timed out after 5s".to_string()
+            "Local request wait timed out after 5s; remote cancellation is not confirmed"
+                .to_string()
         })
         .then(EnrichProfile);
 
@@ -329,7 +378,7 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             Outcome::Fault(err) => println!("\n  Fault: {}", err),
-            other => println!("\n  Unexpected: {:?}", other),
+            other => anyhow::bail!("Unexpected service control outcome: {other:?}"),
         }
     }
 
@@ -353,7 +402,7 @@ async fn main() -> anyhow::Result<()> {
             Outcome::Fault(err) => {
                 println!("  Fault: {} (caught before network call)", err);
             }
-            other => println!("  Unexpected: {:?}", other),
+            other => anyhow::bail!("Unexpected service control outcome: {other:?}"),
         }
     }
 
@@ -371,4 +420,252 @@ async fn main() -> anyhow::Result<()> {
     println!("  4. Local validation runs BEFORE the network call");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+    use ranvier_runtime::{
+        CompletionConfirmation, EffectBoundary, ExecutionReport, PersistenceOperation,
+        SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep,
+    };
+    async fn fixture(
+        status: u16,
+        body: String,
+        delay: Duration,
+    ) -> (ApiResources, tokio::task::JoinHandle<String>) {
+        fixture_with_headers(status, body, delay, String::new()).await
+    }
+    async fn fixture_with_headers(
+        status: u16,
+        body: String,
+        delay: Duration,
+        extra_headers: String,
+    ) -> (ApiResources, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let resources =
+            ApiResources::new(format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                let n = tokio::time::timeout(Duration::from_secs(5), socket.read(&mut buffer))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(n > 0 && request.len() + n <= 8192);
+                request.extend_from_slice(&buffer[..n]);
+            }
+            tokio::time::sleep(delay).await;
+            let response = format!(
+                "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n{extra_headers}\r\n{body}",
+                body.len()
+            );
+            let _ = socket.write_all(response.as_bytes()).await; // Timed-out client may have closed.
+            String::from_utf8(request).unwrap()
+        });
+        (resources, handle)
+    }
+
+    fn pipeline() -> Axon<UserLookupRequest, EnrichedProfile, String, ApiResources> {
+        Axon::<UserLookupRequest, UserLookupRequest, String, ApiResources>::new("http-fixture")
+            .then(ValidateRequest)
+            .then(FetchUserFromApi)
+            .then(EnrichProfile)
+    }
+
+    #[tokio::test]
+    async fn actual_http_status_and_response_contracts_are_enforced() {
+        let valid = r#"{"id":7,"name":"Fixture","email":"fixture@example.test","company":{"name":"Local"}}"#;
+        let cases = [
+            (200, valid.to_owned(), "next"),
+            (404, "private body".into(), "branch"),
+            (503, "private body".into(), "fault"),
+            (302, "redirect".into(), "fault"),
+            (200, "{}".into(), "fault"),
+            (200, "invalid-json".into(), "fault"),
+            (200, valid.replace("\"id\":7", "\"id\":8"), "fault"),
+            (200, "a".repeat(65537), "fault"),
+        ];
+        for (status, body, expected) in cases {
+            let (resources, server) = fixture(status, body, Duration::ZERO).await;
+            let outcome = local_demo_outcome(
+                pipeline()
+                    .execute(
+                        UserLookupRequest { user_id: 7 },
+                        &resources,
+                        &mut Bus::new(),
+                    )
+                    .await,
+            )
+            .unwrap();
+            match (expected, outcome) {
+                ("next", Outcome::Next(profile)) => assert_eq!(profile.user.id, 7),
+                ("branch", Outcome::Branch(id, payload)) => {
+                    assert_eq!(id, "client_error");
+                    assert_eq!(payload.unwrap()["status"], 404);
+                }
+                ("fault", Outcome::Fault(error)) => assert!(!error.contains("private body")),
+                (_, other) => panic!("unexpected {other:?}"),
+            }
+            assert!(server.await.unwrap().starts_with("GET /users/7 HTTP/1.1"));
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_input_does_not_connect_and_timeout_is_only_local_wait() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let resources =
+            ApiResources::new(format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        assert!(matches!(
+            local_demo_outcome(
+                pipeline()
+                    .execute(
+                        UserLookupRequest { user_id: 0 },
+                        &resources,
+                        &mut Bus::new()
+                    )
+                    .await
+            )
+            .unwrap(),
+            Outcome::Fault(_)
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), listener.accept())
+                .await
+                .is_err()
+        );
+        let (resources, server) = fixture(200, "{}".into(), Duration::from_millis(100)).await;
+        let axon =
+            Axon::<UserLookupRequest, UserLookupRequest, String, ApiResources>::new("timeout")
+                .then_with_timeout(FetchUserFromApi, Duration::from_millis(20), || {
+                    "Local wait elapsed".to_owned()
+                });
+        assert!(
+            matches!(local_demo_outcome(axon.execute(UserLookupRequest { user_id: 7 }, &resources, &mut Bus::new()).await).unwrap(), Outcome::Fault(ref error) if error == "Local wait elapsed")
+        );
+        assert!(server.await.unwrap().starts_with("GET /users/7 HTTP/1.1")); // Server observed the request.
+    }
+
+    #[tokio::test]
+    async fn redirects_do_not_contact_a_second_origin() {
+        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let location = format!(
+            "Location: http://{}/private\r\n",
+            target.local_addr().unwrap()
+        );
+        let (resources, server) =
+            fixture_with_headers(302, String::new(), Duration::ZERO, location).await;
+        assert!(matches!(
+            local_demo_outcome(
+                pipeline()
+                    .execute(
+                        UserLookupRequest { user_id: 7 },
+                        &resources,
+                        &mut Bus::new()
+                    )
+                    .await
+            )
+            .unwrap(),
+            Outcome::Fault(_)
+        ));
+        server.await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), target.accept())
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn endpoint_configuration_rejects_credentials_query_and_unsupported_schemes() {
+        for value in [
+            "file:///tmp/users",
+            "https://user:secret@example.test",
+            "https://example.test?secret=value",
+            "https://example.test#fragment",
+        ] {
+            assert!(ApiResources::new(value.into()).is_err());
+        }
+    }
+
+    #[test]
+    fn local_report_policy_preserves_faults_and_rejects_uncertain_or_incomplete_execution() {
+        let next = || Outcome::<u32, String>::Next(7);
+        let reports = [
+            ExecutionReport::NotRequested {
+                result: next(),
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::Confirmed,
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::NotRequested,
+                cleanup: None,
+            },
+            ExecutionReport::Unconfirmed {
+                result: next(),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::NotInvoked,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+        ];
+        for report in reports {
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        for (finished, outcome) in [
+            (false, SagaRollbackOutcome::Completed),
+            (true, SagaRollbackOutcome::Fault),
+            (true, SagaRollbackOutcome::InProgress),
+        ] {
+            let report = ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: Some(SagaRollbackReport {
+                    trace_id: "private-trace".into(),
+                    finished,
+                    steps: vec![SagaRollbackStep {
+                        node_id: "private-node".into(),
+                        outcome,
+                    }],
+                }),
+            };
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        assert!(matches!(
+            local_demo_outcome(ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: None
+            })
+            .unwrap(),
+            Outcome::Next(7)
+        ));
+        assert!(
+            matches!(local_demo_outcome(ExecutionReport::Unpersisted { result: Outcome::<u32, String>::Fault("expected-domain-failure".into()), cleanup: None }).unwrap(), Outcome::Fault(error) if error == "expected-domain-failure")
+        );
+    }
 }
