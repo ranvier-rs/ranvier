@@ -320,6 +320,34 @@ mod tests {
         assert_outcome_ok!(outcome, |val: i32| assert_eq!(val, 99));
     }
 
+    #[tokio::test]
+    async fn test_axon_preserves_recorded_completion_and_bus_handle() {
+        use ranvier_runtime::persistence::{InMemoryPersistenceStore, PersistenceHandle};
+        use ranvier_runtime::{CompletionConfirmation, ExecutionReport};
+        let axon = ranvier_runtime::Axon::simple::<String>("stored-test")
+            .then_fn("greet", |_: (), _bus: &mut Bus| {
+                Outcome::Next("hello".to_string())
+            });
+        let (report, bus) = TestAxon::run(
+            axon,
+            (),
+            &(),
+            TestBus::new().with(PersistenceHandle::from_store(
+                InMemoryPersistenceStore::new(),
+            )),
+        )
+        .await;
+        let ExecutionReport::Recorded {
+            result,
+            completion: CompletionConfirmation::Confirmed,
+        } = report
+        else {
+            panic!("expected recorded execution with confirmed completion");
+        };
+        assert_outcome_ok!(result, |val: String| assert_eq!(val, "hello"));
+        assert!(bus.read::<PersistenceHandle>().is_some());
+    }
+
     #[test]
     fn assert_outcome_ok_panics_on_fault() {
         let outcome: Outcome<i32, String> = Outcome::Fault("err".to_string());
