@@ -64,8 +64,12 @@ pub enum ExecutionReport<T> {
         operation: PersistenceOperation,
         effect: EffectBoundary,
     },
-    /// Required persistence prevented effect invocation; no domain result exists.
-    BlockedBeforeEffect { operation: PersistenceOperation },
+    /// Required persistence prevented the next effect; no terminal domain result
+    /// exists. Earlier effects in the workflow may already have been invoked.
+    BlockedBeforeEffect {
+        operation: PersistenceOperation,
+        effect: EffectBoundary,
+    },
 }
 
 #[cfg(test)]
@@ -93,6 +97,7 @@ mod tests {
     fn blocked_execution_has_no_fabricated_result() {
         let report = ExecutionReport::<u32>::BlockedBeforeEffect {
             operation: PersistenceOperation::Intent,
+            effect: EffectBoundary::NotInvoked,
         };
         let json = serde_json::to_value(&report).unwrap();
         assert!(json.get("result").is_none());
@@ -101,6 +106,33 @@ mod tests {
             serde_json::from_value::<ExecutionReport<u32>>(json).unwrap(),
             report
         );
+    }
+
+    #[test]
+    fn later_block_does_not_erase_prior_effect_boundary() {
+        let report = ExecutionReport::<u32>::BlockedBeforeEffect {
+            operation: PersistenceOperation::Intent,
+            effect: EffectBoundary::MayHaveRun,
+        };
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["effect"], "may_have_run");
+        assert!(json.get("result").is_none());
+        assert_eq!(
+            serde_json::from_value::<ExecutionReport<u32>>(json).unwrap(),
+            report
+        );
+    }
+
+    #[test]
+    fn business_failure_survives_unconfirmed_completion() {
+        let report = ExecutionReport::Unconfirmed {
+            result: Result::<u32, &str>::Err("business_rejected"),
+            operation: PersistenceOperation::Complete,
+            effect: EffectBoundary::MayHaveRun,
+        };
+        let json = serde_json::to_value(report).unwrap();
+        assert_eq!(json["result"]["Err"], "business_rejected");
+        assert_eq!(json["durability"], "unconfirmed");
     }
 
     #[test]
