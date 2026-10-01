@@ -936,12 +936,59 @@ impl Session {
     }
 }
 
+/// Exact control-plane state suspended across a framework initialization boundary.
+struct ControlScope {
+    access: ranvier_core::bus::BusAccessScope,
+    token: Option<ranvier_core::cancellation::CancellationToken>,
+}
+impl ControlScope {
+    fn begin(bus: &mut Bus) -> Self {
+        Self {
+            access: bus.take_access_scope(),
+            token: bus.cancellation_token().cloned(),
+        }
+    }
+    fn restore(self, bus: &mut Bus) {
+        bus.replace_cancellation_token(self.token);
+        bus.restore_access_scope(self.access);
+    }
+}
+
+/// Owns only streaming initialization control state, without constructing or
+/// discarding a persistence report. The returned stream owns its cancellation
+/// token independently and cannot borrow the caller Bus.
+#[cfg(feature = "streaming")]
+pub(crate) struct StreamInitializationOwner<'a> {
+    bus: &'a mut Bus,
+    control: Option<ControlScope>,
+}
+#[cfg(feature = "streaming")]
+impl<'a> StreamInitializationOwner<'a> {
+    pub(crate) fn begin(bus: &'a mut Bus) -> Self {
+        let control = ControlScope::begin(bus);
+        Self {
+            bus,
+            control: Some(control),
+        }
+    }
+    pub(crate) fn bus(&mut self) -> &mut Bus {
+        self.bus
+    }
+}
+#[cfg(feature = "streaming")]
+impl Drop for StreamInitializationOwner<'_> {
+    fn drop(&mut self) {
+        if let Some(control) = self.control.take() {
+            control.restore(self.bus);
+        }
+    }
+}
+
 /// Owns the Bus borrow until the executor future and its child borrows are dropped.
 pub(crate) struct InvocationOwner<'a> {
     bus: &'a mut Bus,
     session: Option<Session>,
-    access_scope: Option<ranvier_core::bus::BusAccessScope>,
-    token: Option<ranvier_core::cancellation::CancellationToken>,
+    control: Option<ControlScope>,
     caller_timeline: bool,
     start_step: Option<crate::axon::StartStep>,
     resumption: Option<crate::axon::ResumptionState>,
@@ -952,8 +999,7 @@ impl<'a> InvocationOwner<'a> {
     pub(crate) fn begin(bus: &'a mut Bus) -> Self {
         // Framework setup cannot run under a caller transition's guard. Own the
         // exact suspended guard and restore it only after all framework cleanup.
-        let access_scope = bus.take_access_scope();
-        let token = bus.cancellation_token().cloned();
+        let control = ControlScope::begin(bus);
         let caller_timeline = bus.read::<ranvier_core::timeline::Timeline>().is_some();
         let start_step = bus.remove::<crate::axon::StartStep>();
         let resumption = bus.remove::<crate::axon::ResumptionState>();
@@ -964,8 +1010,7 @@ impl<'a> InvocationOwner<'a> {
         Self {
             bus,
             session: Some(session),
-            access_scope: Some(access_scope),
-            token,
+            control: Some(control),
             caller_timeline,
             start_step,
             resumption,
@@ -992,7 +1037,6 @@ impl Drop for InvocationOwner<'_> {
         if let Some(session) = self.session.take() {
             session.restore(self.bus);
         }
-        self.bus.replace_cancellation_token(self.token.take());
         let _ = self.bus.remove::<crate::axon::StartStep>();
         let _ = self.bus.remove::<crate::axon::ResumptionState>();
         let _ = self.bus.remove::<crate::axon::ManualJump>();
@@ -1008,8 +1052,8 @@ impl Drop for InvocationOwner<'_> {
         if !self.caller_timeline {
             let _ = self.bus.remove::<ranvier_core::timeline::Timeline>();
         }
-        if let Some(scope) = self.access_scope.take() {
-            self.bus.restore_access_scope(scope);
+        if let Some(control) = self.control.take() {
+            control.restore(self.bus);
         }
     }
 }

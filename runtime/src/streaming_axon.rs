@@ -156,7 +156,10 @@ where
         resources: &Res,
         bus: &mut Bus,
     ) -> Result<Pin<Box<dyn Stream<Item = Item> + Send>>, StreamingAxonError<E>> {
-        let stream = (self.stream_executor)(input, resources, bus).await?;
+        let stream = {
+            let mut owner = crate::execution_observation::StreamInitializationOwner::begin(bus);
+            (self.stream_executor)(input, resources, owner.bus()).await?
+        };
 
         // Apply timeout wrapping if configured
         match &self.timeout_config {
@@ -181,8 +184,10 @@ where
         bus: &mut Bus,
         token: CancellationToken,
     ) -> Result<Pin<Box<dyn Stream<Item = Item> + Send>>, CancellableStreamingError<E>> {
-        bus.set_cancellation_token(token.clone());
         let initialized = {
+            let mut owner = crate::execution_observation::StreamInitializationOwner::begin(bus);
+            let bus = owner.bus();
+            bus.set_cancellation_token(token.clone());
             let initialization = (self.stream_executor)(input, resources, bus);
             tokio::pin!(initialization);
             tokio::select! {
