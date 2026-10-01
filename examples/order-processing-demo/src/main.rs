@@ -25,6 +25,23 @@ use ranvier_runtime::Axon;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+// Explicit local-demo policy: neither persisted nor incomplete cleanup results
+// may be converted into ordinary domain success or automatic retry permission.
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // 1) Setup data and dependencies
@@ -111,7 +128,7 @@ async fn run_order_flow(
     println!("Incoming Request: {:?}", request);
     let mut bus = Bus::new();
 
-    match axon.execute(request, resources, &mut bus).await {
+    match local_demo_outcome(axon.execute(request, resources, &mut bus).await)? {
         Outcome::Next(tracking) => println!(
             "\n\x1b[32m[SUCCESS] Order Completed! Tracking: {}\x1b[0m",
             tracking

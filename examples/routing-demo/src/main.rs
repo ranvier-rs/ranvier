@@ -46,11 +46,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Example 1: Simple path routing
     println!("--- Example 1: Path Routing ---");
-    routes::demo_path_routing().await;
+    routes::demo_path_routing().await?;
 
     // Example 2: Nested route resolution
     println!("\n--- Example 2: Nested Routes ---");
-    routes::demo_nested_routing().await;
+    routes::demo_nested_routing().await?;
 
     // Example 3: Branch-based routing with Outcome
     println!("\n--- Example 3: Branch Outcome ---");

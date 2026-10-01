@@ -1,3 +1,20 @@
+// Explicit local-demo policy: neither persisted nor incomplete cleanup results
+// may be converted into ordinary domain success or automatic retry permission.
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
@@ -51,7 +68,7 @@ pub enum RouteError {
 // Demo Functions
 // ============================================================================
 
-pub async fn demo_path_routing() {
+pub async fn demo_path_routing() -> anyhow::Result<()> {
     // Test different routes
     let requests = vec![
         RouteRequest {
@@ -77,15 +94,16 @@ pub async fn demo_path_routing() {
         let mut bus = Bus::new();
         let axon =
             Axon::<RouteRequest, RouteRequest, RouteError>::new("RootRouter").then(RootRoute);
-        match axon.execute(req, &(), &mut bus).await {
+        match local_demo_outcome(axon.execute(req, &(), &mut bus).await)? {
             Outcome::Next(resp) => println!("    {} {}", resp.status, resp.body),
             Outcome::Fault(e) => println!("    Error: {:?}", e),
             _ => {}
         }
     }
+    Ok(())
 }
 
-pub async fn demo_nested_routing() {
+pub async fn demo_nested_routing() -> anyhow::Result<()> {
     let requests = vec![
         RouteRequest {
             method: HttpMethod::GET,
@@ -109,7 +127,7 @@ pub async fn demo_nested_routing() {
         println!("  {} {} => ", req.method.as_str(), req.path);
         let mut bus = Bus::new();
         let axon = Axon::<RouteRequest, RouteRequest, RouteError>::new("ApiRouter").then(ApiRoute);
-        match axon.execute(req.clone(), &(), &mut bus).await {
+        match local_demo_outcome(axon.execute(req.clone(), &(), &mut bus).await)? {
             Outcome::Next(resp) => println!("    {} {}", resp.status, resp.body),
             Outcome::Branch(route, resp_box) => {
                 println!("    Branch: {} => {:?}", route, resp_box);
@@ -118,6 +136,7 @@ pub async fn demo_nested_routing() {
             _ => {}
         }
     }
+    Ok(())
 }
 
 pub async fn demo_branch_routing() -> anyhow::Result<()> {
@@ -141,7 +160,7 @@ pub async fn demo_branch_routing() -> anyhow::Result<()> {
         let mut bus = Bus::new();
         let axon =
             Axon::<RouteRequest, RouteRequest, RouteError>::new("BranchRouter").then(BranchRoute);
-        let result = axon.execute(req.clone(), &(), &mut bus).await;
+        let result = local_demo_outcome(axon.execute(req.clone(), &(), &mut bus).await)?;
         match result {
             Outcome::Branch(route, req_val) => {
                 println!("    Routed to: {} (payload: {:?})", route, req_val);
