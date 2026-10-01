@@ -1864,69 +1864,91 @@ mod tests {
     #[tokio::test]
     async fn execute_logs_audit_events_for_intervention() {
         use ranvier_inspector::StateInspector;
+        for outcome_kind in ["Enter", "Next"] {
+            let trace_id = "test-audit-trace";
+            let store_impl = InMemoryPersistenceStore::new();
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let logger = MockAuditLogger {
+                events: events.clone(),
+            };
 
-        let trace_id = "test-audit-trace";
-        let store_impl = InMemoryPersistenceStore::new();
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let logger = MockAuditLogger {
-            events: events.clone(),
-        };
+            let axon = Axon::<i32, i32, TestInfallible>::start("AuditTest")
+                .then(AddOne)
+                .with_persistence_store(store_impl.clone())
+                .with_audit_logger(logger);
 
-        let axon = Axon::<i32, i32, TestInfallible>::start("AuditTest")
-            .then(AddOne)
-            .with_persistence_store(store_impl.clone())
-            .with_audit_logger(logger);
+            let mut bus = Bus::new();
+            bus.insert(PersistenceHandle::from_arc(Arc::new(store_impl.clone())));
+            bus.insert(PersistenceTraceId::new(trace_id));
+            let target_node_id = axon.schematic.nodes[0].id.clone();
 
-        let mut bus = Bus::new();
-        bus.insert(PersistenceHandle::from_arc(Arc::new(store_impl.clone())));
-        bus.insert(PersistenceTraceId::new(trace_id));
-        let target_node_id = axon.schematic.nodes[0].id.clone();
+            // 0. Save a valid entry so intervention has a target to attach to.
+            store_impl
+                .append(crate::persistence::PersistenceEnvelope {
+                    trace_id: trace_id.to_string(),
+                    circuit: "AuditTest".to_string(),
+                    schematic_version: axon.schematic.schema_version.clone(),
+                    step: 0,
+                    node_id: None,
+                    outcome_kind: outcome_kind.to_string(),
+                    timestamp_ms: 0,
+                    payload_hash: None,
+                    payload: None,
+                })
+                .await
+                .unwrap();
 
-        // 0. Save a valid entry so intervention has a target to attach to.
-        store_impl
-            .append(crate::persistence::PersistenceEnvelope {
-                trace_id: trace_id.to_string(),
-                circuit: "AuditTest".to_string(),
-                schematic_version: axon.schematic.schema_version.clone(),
-                step: 0,
-                node_id: None,
-                outcome_kind: "Enter".to_string(),
-                timestamp_ms: 0,
-                payload_hash: None,
-                payload: None,
-            })
-            .await
-            .unwrap();
+            // 1. Trigger force_resume (should log ForceResume)
+            axon.force_resume(trace_id, &target_node_id, None)
+                .await
+                .unwrap();
 
-        // 1. Trigger force_resume (should log ForceResume)
-        axon.force_resume(trace_id, &target_node_id, None)
-            .await
-            .unwrap();
-
-        // 2. Execute (should log ApplyIntervention)
-        assert!(matches!(
-            axon.execute(10, &(), &mut bus).await,
-            crate::ExecutionReport::Recorded {
-                result: Outcome::Next(11),
-                completion: crate::CompletionConfirmation::Confirmed,
-                ..
+            // A manual resume command does not repair a missing result or
+            // authorize the executor to bypass recovery validation.
+            if outcome_kind == "Next" {
+                let before = store_impl.load(trace_id).await.unwrap().unwrap();
+                assert!(matches!(
+                    axon.execute(10, &(), &mut bus).await,
+                    crate::ExecutionReport::BlockedBeforeEffect {
+                        operation: crate::PersistenceOperation::RecoveryPayload,
+                        effect: crate::EffectBoundary::NotInvoked,
+                        ..
+                    }
+                ));
+                assert_eq!(store_impl.load(trace_id).await.unwrap().unwrap(), before);
+                let recorded = events.lock().await;
+                assert_eq!(recorded.len(), 1);
+                assert!(
+                    matches!(&recorded[0], InterventionEvent::ForceResume { workflow_id, .. } if workflow_id == trace_id)
+                );
+                continue;
             }
-        ));
 
-        let recorded = events.lock().await;
-        assert_eq!(
-            recorded.len(),
-            2,
-            "Should have 2 audit events: ForceResume and ApplyIntervention"
-        );
-        assert!(matches!(
-            &recorded[0],
-            InterventionEvent::ForceResume { workflow_id, .. } if workflow_id == trace_id
-        ));
-        assert!(matches!(
-            &recorded[1],
-            InterventionEvent::ApplyIntervention { workflow_id, .. } if workflow_id == trace_id
-        ));
+            // 2. Execute (should log ApplyIntervention)
+            assert!(matches!(
+                axon.execute(10, &(), &mut bus).await,
+                crate::ExecutionReport::Recorded {
+                    result: Outcome::Next(11),
+                    completion: crate::CompletionConfirmation::Confirmed,
+                    ..
+                }
+            ));
+
+            let recorded = events.lock().await;
+            assert_eq!(
+                recorded.len(),
+                2,
+                "Should have 2 audit events: ForceResume and ApplyIntervention"
+            );
+            assert!(matches!(
+                &recorded[0],
+                InterventionEvent::ForceResume { workflow_id, .. } if workflow_id == trace_id
+            ));
+            assert!(matches!(
+                &recorded[1],
+                InterventionEvent::ApplyIntervention { workflow_id, .. } if workflow_id == trace_id
+            ));
+        }
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
