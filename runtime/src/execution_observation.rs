@@ -24,6 +24,22 @@ mod tests {
     use futures_util::FutureExt;
 
     #[test]
+    fn owner_restores_parent_checkpoint_position_and_removes_child_position() {
+        let mut bus = Bus::new();
+        {
+            let mut parent = InvocationOwner::begin(&mut bus);
+            parent.bus().insert(crate::axon::StartStep(7));
+            {
+                let mut child = InvocationOwner::begin(parent.bus());
+                assert!(child.bus().read::<crate::axon::StartStep>().is_none());
+                child.bus().insert(crate::axon::StartStep(9));
+            }
+            assert_eq!(parent.bus().read::<crate::axon::StartStep>().unwrap().0, 7);
+        }
+        assert!(bus.read::<crate::axon::StartStep>().is_none());
+    }
+
+    #[test]
     fn dropped_owner_removes_generated_timeline_and_preserves_caller_timeline() {
         let mut bus = Bus::new();
         {
