@@ -47,6 +47,15 @@ fn expected(trace: &str) -> PersistedTrace {
 }
 
 fn read_witness(path: &Path) -> anyhow::Result<PersistedTrace> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    anyhow::ensure!(
+        metadata.is_file() && !metadata.file_type().is_symlink(),
+        "regular witness file required"
+    );
+    anyhow::ensure!(
+        metadata.len() <= 1024 * 1024,
+        "witness exceeds fixture limit"
+    );
     let mut bytes = Vec::new();
     std::fs::File::open(path)?
         .take(1024 * 1024 + 1)
@@ -160,5 +169,39 @@ fn malformed_witness_is_rejected() {
     let path = std::env::temp_dir().join(format!("redis-witness-{}.json", uuid::Uuid::new_v4()));
     std::fs::write(&path, b"{corrupt").unwrap();
     assert!(read_witness(&path).is_err());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn oversized_witness_is_rejected() {
+    use std::io::Write;
+    let path = std::env::temp_dir().join(format!("redis-witness-{}.json", uuid::Uuid::new_v4()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .unwrap();
+    file.write_all(&vec![b' '; 1024 * 1024 + 1]).unwrap();
+    drop(file);
+    assert!(read_witness(&path).is_err());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_witness_is_rejected_without_changing_target() {
+    let path = std::env::temp_dir().join(format!("redis-witness-{}.json", uuid::Uuid::new_v4()));
+    let link = path.with_extension("link");
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .unwrap();
+    serde_json::to_writer(&file, &expected("fixture")).unwrap();
+    drop(file);
+    std::os::unix::fs::symlink(&path, &link).unwrap();
+    assert!(read_witness(&link).is_err());
+    assert_eq!(read_witness(&path).unwrap(), expected("fixture"));
+    std::fs::remove_file(link).unwrap();
     std::fs::remove_file(path).unwrap();
 }
