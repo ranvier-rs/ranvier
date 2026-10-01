@@ -3064,6 +3064,120 @@ mod tests {
         assert_eq!(sink.letters.lock().await.len(), 1);
     }
 
+    #[derive(Clone)]
+    struct CountCombinedRetry {
+        calls: Arc<std::sync::atomic::AtomicU32>,
+        failures: u32,
+    }
+
+    #[async_trait]
+    impl Transition<i32, i32> for CountCombinedRetry {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, input: i32, _: &(), _: &mut Bus) -> Outcome<i32, String> {
+            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if call < self.failures {
+                Outcome::Fault("combined_failure".into())
+            } else {
+                Outcome::Next(input + 1)
+            }
+        }
+    }
+
+    // Defect characterization, not acceptance of multiplicative budgets or
+    // intermediate DLQ writes. Replace expectations with selected composition
+    // contract when the retry scheduler is unified.
+    #[tokio::test]
+    async fn retry_combined_policy_characterizes_intermediate_dlq_on_success() {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let sink = MockDlqSink {
+            letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
+        let axon = Axon::<i32, i32, String>::start("combined-success")
+            .then_with_retry(
+                CountCombinedRetry {
+                    calls: calls.clone(),
+                    failures: 3,
+                },
+                crate::RetryPolicy::fixed(1, std::time::Duration::ZERO),
+            )
+            .with_dlq_policy(DlqPolicy::RetryThenDlq {
+                max_attempts: 2,
+                backoff_ms: 0,
+            })
+            .with_dlq_sink(sink.clone());
+        let mut bus = Bus::new();
+        bus.insert(Timeline::new());
+        let report = axon.execute(7, &(), &mut bus).await;
+        assert!(matches!(
+            report,
+            crate::ExecutionReport::Unpersisted {
+                result: Outcome::Next(8),
+                ..
+            }
+        ));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+        assert_eq!(sink.letters.lock().await.len(), 1);
+        assert_eq!(
+            bus.read::<Timeline>()
+                .unwrap()
+                .events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    TimelineEvent::DlqExhausted {
+                        total_attempts: 2,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_combined_policy_characterizes_multiplied_budget_and_duplicate_dlq() {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let sink = MockDlqSink {
+            letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
+        let axon = Axon::<i32, i32, String>::start("combined-failure")
+            .then_with_retry(
+                CountCombinedRetry {
+                    calls: calls.clone(),
+                    failures: 10,
+                },
+                crate::RetryPolicy::fixed(1, std::time::Duration::ZERO),
+            )
+            .with_dlq_policy(DlqPolicy::RetryThenDlq {
+                max_attempts: 2,
+                backoff_ms: 0,
+            })
+            .with_dlq_sink(sink.clone());
+        let mut bus = Bus::new();
+        bus.insert(Timeline::new());
+        let report = axon.execute(7, &(), &mut bus).await;
+        assert!(matches!(report, crate::ExecutionReport::Unpersisted {
+            result: Outcome::Fault(error), .. } if error == "combined_failure"));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+        assert_eq!(sink.letters.lock().await.len(), 2);
+        assert_eq!(
+            bus.read::<Timeline>()
+                .unwrap()
+                .events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    TimelineEvent::DlqExhausted {
+                        total_attempts: 2,
+                        ..
+                    }
+                ))
+                .count(),
+            2
+        );
+    }
+
     #[tokio::test]
     async fn retry_then_dlq_retries_and_succeeds_before_exhaustion() {
         // Fail 2 times, succeed on 3rd attempt. Policy allows 5 attempts.
