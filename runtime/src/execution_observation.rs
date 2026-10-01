@@ -71,6 +71,7 @@ mod tests {
         let parent_observation = parent.bus().read::<ActiveObservation>().unwrap().0.clone();
         {
             let mut child = InvocationOwner::begin(parent.bus());
+            child.bus().read::<ActiveObservation>().unwrap().0.effect();
             assert_ne!(
                 child.bus().read::<InvocationTrace>().unwrap().0,
                 parent_trace
@@ -80,6 +81,7 @@ mod tests {
             parent.bus().read::<InvocationTrace>().unwrap().0,
             parent_trace
         );
+        assert!(!parent_observation.effect.load(Ordering::SeqCst));
         assert!(Arc::ptr_eq(
             &parent_observation,
             &parent.bus().read::<ActiveObservation>().unwrap().0
