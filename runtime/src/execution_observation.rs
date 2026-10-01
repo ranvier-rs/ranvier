@@ -24,6 +24,49 @@ mod tests {
     use futures_util::FutureExt;
 
     #[test]
+    fn owner_restores_caller_jump_and_removes_invocation_jump() {
+        for finish in [false, true] {
+            let mut bus = Bus::new();
+            {
+                let mut owner = InvocationOwner::begin(&mut bus);
+                owner.bus().insert(crate::axon::ManualJump {
+                    target_node: "generated".into(),
+                    payload_override: Some(serde_json::json!(9)),
+                });
+                if finish {
+                    let _ = owner.finish(());
+                }
+            }
+            assert!(bus.read::<crate::axon::ManualJump>().is_none());
+            bus.insert(crate::axon::ManualJump {
+                target_node: "caller".into(),
+                payload_override: Some(serde_json::json!(7)),
+            });
+            {
+                let mut owner = InvocationOwner::begin(&mut bus);
+                assert_eq!(
+                    owner
+                        .bus()
+                        .read::<crate::axon::ManualJump>()
+                        .unwrap()
+                        .target_node,
+                    "caller"
+                );
+                owner.bus().insert(crate::axon::ManualJump {
+                    target_node: "replacement".into(),
+                    payload_override: None,
+                });
+                if finish {
+                    let _ = owner.finish(());
+                }
+            }
+            let restored = bus.read::<crate::axon::ManualJump>().unwrap();
+            assert_eq!(restored.target_node, "caller");
+            assert_eq!(restored.payload_override, Some(serde_json::json!(7)));
+        }
+    }
+
+    #[test]
     fn owner_restores_parent_checkpoint_position_and_removes_child_position() {
         let mut bus = Bus::new();
         {
@@ -593,6 +636,7 @@ pub(crate) struct InvocationOwner<'a> {
     caller_timeline: bool,
     start_step: Option<crate::axon::StartStep>,
     resumption: Option<crate::axon::ResumptionState>,
+    manual_jump: Option<crate::axon::ManualJump>,
 }
 
 impl<'a> InvocationOwner<'a> {
@@ -601,6 +645,9 @@ impl<'a> InvocationOwner<'a> {
         let caller_timeline = bus.read::<ranvier_core::timeline::Timeline>().is_some();
         let start_step = bus.remove::<crate::axon::StartStep>();
         let resumption = bus.remove::<crate::axon::ResumptionState>();
+        // ManualJump is also a public caller input. Keep it visible during this
+        // invocation, but restore it if persisted intervention replaces it.
+        let manual_jump = bus.read::<crate::axon::ManualJump>().cloned();
         let session = Session::begin(bus);
         Self {
             bus,
@@ -609,6 +656,7 @@ impl<'a> InvocationOwner<'a> {
             caller_timeline,
             start_step,
             resumption,
+            manual_jump,
         }
     }
     pub(crate) fn bus(&mut self) -> &mut Bus {
@@ -634,6 +682,10 @@ impl Drop for InvocationOwner<'_> {
         self.bus.replace_cancellation_token(self.token.take());
         let _ = self.bus.remove::<crate::axon::StartStep>();
         let _ = self.bus.remove::<crate::axon::ResumptionState>();
+        let _ = self.bus.remove::<crate::axon::ManualJump>();
+        if let Some(jump) = self.manual_jump.take() {
+            self.bus.insert(jump);
+        }
         if let Some(start) = self.start_step.take() {
             self.bus.insert(start);
         }
