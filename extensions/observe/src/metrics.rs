@@ -1311,6 +1311,77 @@ mod tests {
             Temporality::Cumulative
         }
     }
+    struct DeltaNumericCapture(NumericCapture);
+    impl PushMetricExporter for DeltaNumericCapture {
+        async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+            self.0.export(metrics).await
+        }
+        fn force_flush(&self) -> OTelSdkResult {
+            self.0.force_flush()
+        }
+        fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
+            self.0.shutdown_with_timeout(timeout)
+        }
+        fn temporality(&self) -> Temporality {
+            Temporality::Delta
+        }
+    }
+    #[test]
+    fn bounded_delta_view_resets_interval_totals_without_losing_overflow() {
+        for mode in [Mode::Off, Mode::Public, Mode::Strict] {
+            let strict = matches!(mode, Mode::Strict);
+            let totals = Arc::new(Mutex::new(Totals::default()));
+            let provider = ProtectedMeterProvider {
+                inner: bounded_meter_builder()
+                    .unwrap()
+                    .with_reader(
+                        PeriodicReader::builder(DeltaNumericCapture(NumericCapture(
+                            totals.clone(),
+                        )))
+                        .with_interval(Duration::from_secs(3600))
+                        .build(),
+                    )
+                    .build(),
+                policy: Policy::new(mode, "").unwrap(),
+                state: Default::default(),
+            };
+            let meter = provider.meter("delta-capacity-fixture");
+            let counter = meter.u64_counter("counter").build();
+            let histogram = meter
+                .u64_histogram("histogram")
+                .with_boundaries(vec![5.0])
+                .build();
+            for value in [2, 8] {
+                for index in 0..2048 {
+                    let labels = [KeyValue::new("identity", format!("label-{index}"))];
+                    counter.add(value, &labels);
+                    histogram.record(value, &labels);
+                }
+                provider.inner.force_flush().unwrap();
+                let actual = totals.lock().unwrap();
+                assert_eq!(actual.counter, value * 2048);
+                assert_eq!(actual.histogram_sum, value * 2048);
+                assert_eq!(actual.histogram_count, 2048);
+                assert_eq!(
+                    actual.buckets,
+                    if value == 2 {
+                        vec![2048, 0]
+                    } else {
+                        vec![0, 2048]
+                    }
+                );
+                assert!(!actual.unexpected_data);
+                assert!(actual.counter_series > 0 && actual.counter_series <= 1025);
+                assert!(actual.histogram_series > 0 && actual.histogram_series <= 1025);
+                if strict {
+                    assert_eq!(actual.counter_series, 1);
+                    assert_eq!(actual.histogram_series, 1);
+                }
+            }
+            assert!(!provider.state.failed());
+            provider.inner.shutdown().unwrap();
+        }
+    }
     #[test]
     fn bounded_view_preserves_histogram_boundaries_and_overflow_totals() {
         for mode in [Mode::Off, Mode::Public, Mode::Strict] {
