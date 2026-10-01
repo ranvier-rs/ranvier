@@ -43,16 +43,25 @@ struct Claims {
 pub fn validate_jwt(token: &str, secret: &str) -> Result<AuthContext, AuthError> {
     use jsonwebtoken::{DecodingKey, Validation, decode};
 
+    if secret.trim().is_empty() {
+        return Err(AuthError::InvalidToken(
+            "Invalid verifier configuration".into(),
+        ));
+    }
     let key = DecodingKey::from_secret(secret.as_bytes());
     let validation = Validation::default();
 
     let token_data = decode::<Claims>(token, &key, &validation).map_err(|e| {
-        if e.to_string().contains("ExpiredSignature") {
+        if matches!(e.kind(), jsonwebtoken::errors::ErrorKind::ExpiredSignature) {
             AuthError::ExpiredToken
         } else {
             AuthError::InvalidToken(e.to_string())
         }
     })?;
+
+    if token_data.claims.sub.trim().is_empty() {
+        return Err(AuthError::InvalidToken("Missing subject".into()));
+    }
 
     Ok(AuthContext {
         user_id: token_data.claims.sub,

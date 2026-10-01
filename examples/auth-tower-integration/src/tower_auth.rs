@@ -34,41 +34,9 @@ where
     type Future = std::future::Ready<Result<Request<B>, Response<Self::ResponseBody>>>;
 
     fn authorize(&mut self, mut request: Request<B>) -> Self::Future {
-        // Extract Authorization header
-        let auth_header = match request
-            .headers()
-            .get("authorization")
-            .and_then(|h| h.to_str().ok())
-        {
-            Some(h) => h,
-            None => {
-                return std::future::ready(Err(Response::builder()
-                    .status(StatusCode::UNAUTHORIZED)
-                    .body("Missing Authorization header".to_string())
-                    .unwrap()));
-            }
-        };
-
-        // Extract token from "Bearer <token>"
-        let token = match auth_header.strip_prefix("Bearer ") {
-            Some(t) => t,
-            None => {
-                return std::future::ready(Err(Response::builder()
-                    .status(StatusCode::UNAUTHORIZED)
-                    .body("Invalid Authorization format".to_string())
-                    .unwrap()));
-            }
-        };
-
-        // Validate JWT
-        let auth_ctx = match validate_jwt(token, &self.secret) {
-            Ok(ctx) => ctx,
-            Err(e) => {
-                return std::future::ready(Err(Response::builder()
-                    .status(StatusCode::UNAUTHORIZED)
-                    .body(format!("Invalid token: {}", e))
-                    .unwrap()));
-            }
+        let auth_ctx = match authenticate(&request, &self.secret) {
+            Ok(context) => context,
+            Err(()) => return std::future::ready(Err(unauthorized())),
         };
 
         // Store AuthContext in request extensions for downstream use
@@ -137,47 +105,14 @@ where
 
     fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
         let secret = self.secret.clone();
-        let mut inner = self.inner.clone();
+        // Move the instance whose readiness was polled, not an unready clone.
+        let replacement = self.inner.clone();
+        let mut inner = std::mem::replace(&mut self.inner, replacement);
 
         Box::pin(async move {
-            // Extract Authorization header
-            let auth_header = match req
-                .headers()
-                .get("authorization")
-                .and_then(|h| h.to_str().ok())
-            {
-                Some(h) => h,
-                None => {
-                    let response = Response::builder()
-                        .status(StatusCode::UNAUTHORIZED)
-                        .body(ResBody::from("Missing Authorization header".to_string()))
-                        .unwrap();
-                    return Ok(response);
-                }
-            };
-
-            // Extract token
-            let token = match auth_header.strip_prefix("Bearer ") {
-                Some(t) => t,
-                None => {
-                    let response = Response::builder()
-                        .status(StatusCode::UNAUTHORIZED)
-                        .body(ResBody::from("Invalid Authorization format".to_string()))
-                        .unwrap();
-                    return Ok(response);
-                }
-            };
-
-            // Validate JWT
-            let auth_ctx = match validate_jwt(token, &secret) {
-                Ok(ctx) => ctx,
-                Err(e) => {
-                    let response = Response::builder()
-                        .status(StatusCode::UNAUTHORIZED)
-                        .body(ResBody::from(format!("Invalid token: {}", e)))
-                        .unwrap();
-                    return Ok(response);
-                }
+            let auth_ctx = match authenticate(&req, &secret) {
+                Ok(context) => context,
+                Err(()) => return Ok(unauthorized()),
             };
 
             // Store AuthContext in request extensions
@@ -196,4 +131,166 @@ where
 /// Create a Tower authorization layer using Option B (recommended).
 pub fn jwt_auth_layer(secret: String) -> AsyncRequireAuthorizationLayer<JwtAuthorizer> {
     AsyncRequireAuthorizationLayer::new(JwtAuthorizer { secret })
+}
+
+// One policy for both layer implementations. Ambiguous credentials fail closed.
+fn authenticate<B>(request: &Request<B>, secret: &str) -> Result<super::auth::AuthContext, ()> {
+    let mut headers = request
+        .headers()
+        .get_all(http::header::AUTHORIZATION)
+        .iter();
+    let header = headers.next().ok_or(())?;
+    if headers.next().is_some() {
+        return Err(());
+    }
+    let token = header
+        .to_str()
+        .map_err(|_| ())?
+        .strip_prefix("Bearer ")
+        .ok_or(())?;
+    if token.is_empty() || token.len() > 8192 || token.bytes().any(|b| b.is_ascii_whitespace()) {
+        return Err(());
+    }
+    validate_jwt(token, secret).map_err(|_| ())
+}
+
+fn unauthorized<B: From<String>>() -> Response<B> {
+    let mut response = Response::new(B::from("Unauthorized".to_owned()));
+    *response.status_mut() = StatusCode::UNAUTHORIZED;
+    response.headers_mut().insert(
+        http::header::WWW_AUTHENTICATE,
+        http::HeaderValue::from_static("Bearer"),
+    );
+    response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::convert::Infallible;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct ProtectedService {
+        ready: bool,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Clone for ProtectedService {
+        fn clone(&self) -> Self {
+            Self {
+                ready: false,
+                calls: self.calls.clone(),
+            }
+        }
+    }
+
+    impl Service<Request<String>> for ProtectedService {
+        type Response = Response<String>;
+        type Error = Infallible;
+        type Future = std::future::Ready<Result<Self::Response, Self::Error>>;
+
+        fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            self.ready = true;
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, request: Request<String>) -> Self::Future {
+            assert!(self.ready, "call must use the instance polled ready");
+            self.ready = false;
+            let identity = request
+                .extensions()
+                .get::<super::super::auth::AuthContext>()
+                .unwrap();
+            assert_eq!(identity.user_id, "alice");
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Ok(Response::new(request.into_body())))
+        }
+    }
+
+    fn token(subject: &str, expires: i64, secret: &str) -> String {
+        jsonwebtoken::encode(
+            &jsonwebtoken::Header::default(),
+            &serde_json::json!({"sub": subject, "roles": ["user"], "exp": expires}),
+            &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
+    }
+
+    async fn exercise<S>(mut service: S, calls: Arc<AtomicUsize>)
+    where
+        S: Service<Request<String>, Response = Response<String>, Error = Infallible>,
+    {
+        let now = chrono::Utc::now().timestamp();
+        let valid = token("alice", now + 3600, "test-secret");
+        let rejected = [
+            vec![],
+            vec!["Basic abc".to_owned()],
+            vec!["Bearer ".to_owned()],
+            vec!["Bearer malformed".to_owned()],
+            vec![format!(
+                "Bearer {}",
+                token("alice", now + 3600, "wrong-secret")
+            )],
+            vec![format!(
+                "Bearer {}",
+                token("alice", now - 3600, "test-secret")
+            )],
+            vec![format!("Bearer {}", token("  ", now + 3600, "test-secret"))],
+            vec![format!("Bearer {valid}"), format!("Bearer {valid}")],
+            vec![format!("Bearer {}", "x".repeat(8193))],
+        ];
+        for headers in rejected {
+            let mut request = Request::new("private-input".to_owned());
+            for header in headers {
+                request
+                    .headers_mut()
+                    .append(http::header::AUTHORIZATION, header.parse().unwrap());
+            }
+            std::future::poll_fn(|cx| service.poll_ready(cx))
+                .await
+                .unwrap();
+            let response = service.call(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(response.body(), "Unauthorized");
+            assert_eq!(response.headers()[http::header::WWW_AUTHENTICATE], "Bearer");
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+        }
+        for _ in 0..2 {
+            let mut request = Request::new("public-result".to_owned());
+            request.headers_mut().insert(
+                http::header::AUTHORIZATION,
+                format!("Bearer {valid}").parse().unwrap(),
+            );
+            std::future::poll_fn(|cx| service.poll_ready(cx))
+                .await
+                .unwrap();
+            let response = service.call(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.body(), "public-result");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn high_level_layer_rejects_without_domain_effects() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let service = jwt_auth_layer("test-secret".into()).layer(ProtectedService {
+            ready: false,
+            calls: calls.clone(),
+        });
+        exercise(service, calls).await;
+    }
+
+    #[tokio::test]
+    async fn manual_layer_preserves_readiness_and_rejects_without_effects() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let service = AuthLayer::new("test-secret".into()).layer(ProtectedService {
+            ready: false,
+            calls: calls.clone(),
+        });
+        exercise(service, calls).await;
+    }
 }
