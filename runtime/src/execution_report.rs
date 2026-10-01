@@ -21,6 +21,8 @@ pub enum StoreConfirmation {
 #[serde(rename_all = "snake_case")]
 pub enum PersistenceOperation {
     Load,
+    /// Loaded history contains an unusable recovery payload; operator reconciliation is required.
+    RecoveryPayload,
     Intent,
     Result,
     Terminal,

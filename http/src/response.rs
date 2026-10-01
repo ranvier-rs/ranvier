@@ -17,7 +17,7 @@ pub type RanvierResponse = HttpResponse;
 pub(crate) fn durability_rejection<T: Serialize>(
     report: &ranvier_runtime::ExecutionReport<T>,
 ) -> Option<(StatusCode, serde_json::Value)> {
-    use ranvier_runtime::{EffectBoundary, ExecutionReport};
+    use ranvier_runtime::{EffectBoundary, ExecutionReport, PersistenceOperation};
     let (status, reconciliation) = match report {
         _ if report
             .cleanup()
@@ -26,6 +26,10 @@ pub(crate) fn durability_rejection<T: Serialize>(
             (StatusCode::CONFLICT, true)
         }
         ExecutionReport::Unconfirmed { .. } => (StatusCode::CONFLICT, true),
+        ExecutionReport::BlockedBeforeEffect {
+            operation: PersistenceOperation::RecoveryPayload,
+            ..
+        } => (StatusCode::CONFLICT, true),
         ExecutionReport::BlockedBeforeEffect { effect, .. } => {
             if *effect == EffectBoundary::MayHaveRun {
                 (StatusCode::CONFLICT, true)

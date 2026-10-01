@@ -459,6 +459,15 @@ fn unwrap_outcome_payload(payload: Option<&serde_json::Value>) -> Option<serde_j
     })
 }
 
+#[derive(Debug)]
+struct RecoveryPayloadUnavailable;
+impl std::fmt::Display for RecoveryPayloadUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("persistence result payload unavailable")
+    }
+}
+impl std::error::Error for RecoveryPayloadUnavailable {}
+
 async fn load_persistence_version(
     handle: &PersistenceHandle,
     trace_id: &str,
@@ -484,7 +493,7 @@ async fn load_persistence_version(
                         .as_ref()
                         .is_some_and(serde_json::Value::is_null)
             }) {
-                return Err(anyhow::anyhow!("persistence result payload unavailable"));
+                return Err(RecoveryPayloadUnavailable.into());
             }
             let (next_step, last_node_id, last_payload) =
                 if let Some(resume_from_step) = trace.resumed_from_step {

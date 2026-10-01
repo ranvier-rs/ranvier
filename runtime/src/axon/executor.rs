@@ -233,11 +233,15 @@ where
                 completion,
             ) = match load_persistence_version(handle, &trace_id).await {
                 Ok(cursor) => cursor,
-                Err(_) => {
+                Err(error) => {
                     if let Some(active) =
                         bus.read::<crate::execution_observation::ActiveObservation>()
                     {
-                        active.0.block(crate::PersistenceOperation::Load);
+                        active.0.block(if error.is::<RecoveryPayloadUnavailable>() {
+                            crate::PersistenceOperation::RecoveryPayload
+                        } else {
+                            crate::PersistenceOperation::Load
+                        });
                     }
                     // Internal control signal is discarded by the blocking report.
                     return Outcome::emit("execution.persistence.load_unconfirmed", None);

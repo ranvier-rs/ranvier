@@ -406,9 +406,10 @@ async fn legacy_null_trace_is_blocked_over_tcp_without_effect_or_store_mutation(
     let before =
         serde_json::to_value(store.backing.load("http-report-fixture").await.unwrap()).unwrap();
     let (status, body) = request(axon, store.clone()).await;
-    assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(status, http::StatusCode::CONFLICT);
     assert_eq!(body["durability"], "blocked_before_effect");
-    assert_eq!(body["operation"], "load");
+    assert_eq!(body["operation"], "recovery_payload");
+    assert_eq!(body["reconciliation_required"], true);
     assert_eq!(body["effect"], "not_invoked");
     assert_eq!(effects.load(Ordering::SeqCst), 0);
     assert_eq!(store.writes.load(Ordering::SeqCst), 0);

@@ -485,7 +485,7 @@ async fn legacy_bare_null_result_blocks_effects_without_rewriting_history() {
             assert!(matches!(
                 report,
                 ExecutionReport::BlockedBeforeEffect {
-                    operation: PersistenceOperation::Load,
+                    operation: PersistenceOperation::RecoveryPayload,
                     effect: EffectBoundary::NotInvoked,
                     ..
                 }
@@ -495,7 +495,7 @@ async fn legacy_bare_null_result_blocks_effects_without_rewriting_history() {
             assert!(matches!(
                 report,
                 ExecutionReport::BlockedBeforeEffect {
-                    operation: PersistenceOperation::Load,
+                    operation: PersistenceOperation::RecoveryPayload,
                     effect: EffectBoundary::NotInvoked,
                     ..
                 }
