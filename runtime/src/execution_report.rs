@@ -262,6 +262,49 @@ mod tests {
     }
 
     #[test]
+    fn result_mapping_moves_non_clone_values_and_fn_once_captures() {
+        struct Owned(String);
+        let report = ExecutionReport::Unconfirmed {
+            result: Owned("known-result".into()),
+            operation: PersistenceOperation::Complete,
+            effect: EffectBoundary::MayHaveRun,
+            cleanup: None,
+        };
+        let capture = Owned("owned-capture".into());
+        let mapped = report.map_result(move |value| (value, capture));
+        match mapped {
+            ExecutionReport::Unconfirmed {
+                result: (value, capture),
+                operation,
+                effect,
+                cleanup,
+            } => {
+                assert_eq!(value.0, "known-result");
+                assert_eq!(capture.0, "owned-capture");
+                assert_eq!(operation, PersistenceOperation::Complete);
+                assert_eq!(effect, EffectBoundary::MayHaveRun);
+                assert!(cleanup.is_none());
+            }
+            _ => panic!("mapping changed durability classification"),
+        }
+        let blocked = ExecutionReport::<Owned>::BlockedBeforeEffect {
+            operation: PersistenceOperation::Intent,
+            effect: EffectBoundary::MayHaveRun,
+            cleanup: None,
+        };
+        let mapped: ExecutionReport<Owned> =
+            blocked.map_result(|_| panic!("blocked result was fabricated"));
+        assert!(matches!(
+            mapped,
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            }
+        ));
+    }
+
+    #[test]
     fn completion_omission_is_distinct_from_confirmation() {
         let confirmed = ExecutionReport::Recorded {
             result: 7,
