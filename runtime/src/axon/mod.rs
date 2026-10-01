@@ -1474,6 +1474,51 @@ mod tests {
 
     const PERSISTENCE_ERROR_SENTINEL: &str = "db_password=ranvier-test-secret";
 
+    struct LostAcknowledgementStore(InMemoryPersistenceStore);
+
+    #[async_trait]
+    impl PersistenceStore for LostAcknowledgementStore {
+        async fn append(&self, event: PersistenceEnvelope) -> Result<()> {
+            self.0.append(event).await?;
+            Err(anyhow::anyhow!(PERSISTENCE_ERROR_SENTINEL))
+        }
+        async fn complete(&self, trace: &str, completion: CompletionState) -> Result<()> {
+            self.0.complete(trace, completion).await?;
+            Err(anyhow::anyhow!(PERSISTENCE_ERROR_SENTINEL))
+        }
+        async fn load(&self, trace: &str) -> Result<Option<PersistedTrace>> {
+            self.0.load(trace).await
+        }
+        async fn resume(&self, trace: &str, step: u64) -> Result<ResumeCursor> {
+            self.0.resume(trace, step).await
+        }
+        async fn save_intervention(&self, trace: &str, value: Intervention) -> Result<()> {
+            self.0.save_intervention(trace, value).await
+        }
+    }
+
+    #[tokio::test]
+    async fn persistence_helpers_do_not_infer_noncommit_from_lost_acknowledgement() {
+        use crate::execution_report::StoreConfirmation;
+        let store = InMemoryPersistenceStore::new();
+        let handle = PersistenceHandle::from_store(LostAcknowledgementStore(store.clone()));
+        assert_eq!(
+            persist_execution_event(&handle, "lost-ack", "fixture", "1", 0, None, "Enter", None)
+                .await,
+            StoreConfirmation::Unconfirmed
+        );
+        let appended = store.load("lost-ack").await.unwrap().unwrap();
+        assert_eq!(appended.events.len(), 1);
+        assert_eq!(appended.completion, None);
+        assert_eq!(
+            persist_completion(&handle, "lost-ack", CompletionState::Success).await,
+            StoreConfirmation::Unconfirmed
+        );
+        let completed = store.load("lost-ack").await.unwrap().unwrap();
+        assert_eq!(completed.events, appended.events);
+        assert_eq!(completed.completion, Some(CompletionState::Success));
+    }
+
     #[tokio::test]
     async fn persistence_helpers_confirm_actual_event_and_completion() {
         use crate::execution_report::StoreConfirmation;
