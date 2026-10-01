@@ -71,6 +71,9 @@ struct HttpResponse {
 // Business Logic Transition
 // ============================================================================
 
+#[derive(Clone)]
+struct HandlerVisited;
+
 /// Simple handler that reads guard outputs from the Bus and returns a response.
 #[derive(Clone)]
 struct HelloHandler;
@@ -86,6 +89,7 @@ impl Transition<HttpRequest, HttpResponse> for HelloHandler {
         _resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<HttpResponse, Self::Error> {
+        bus.insert(HandlerVisited);
         // Read CORS headers injected by CorsGuard
         let cors = bus
             .read::<CorsHeaders>()
@@ -111,10 +115,7 @@ impl Transition<HttpRequest, HttpResponse> for HelloHandler {
 // Demo Runner
 // ============================================================================
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-
+async fn run_scenarios() -> anyhow::Result<()> {
     println!("=== Guard Demo ===\n");
 
     // ── Configure Guards ─────────────────────────────────────────────────
@@ -171,11 +172,7 @@ async fn main() -> anyhow::Result<()> {
                 .await,
         )?;
 
-        match &result {
-            Outcome::Next(resp) => println!("  [200] {}\n", resp.body),
-            Outcome::Fault(e) => println!("  [FAULT] {}\n", e),
-            other => println!("  [OTHER] {:?}\n", other),
-        }
+        verify_scenario(result, &bus, None)?;
     }
 
     // ── Demo 2: CORS rejection ───────────────────────────────────────────
@@ -201,10 +198,7 @@ async fn main() -> anyhow::Result<()> {
                 .await,
         )?;
 
-        match &result {
-            Outcome::Fault(e) => println!("  [BLOCKED] {}\n", e),
-            other => println!("  [UNEXPECTED] {:?}\n", other),
-        }
+        verify_scenario(result, &bus, Some("CORS:"))?;
     }
 
     // ── Demo 3: IP filter rejection ──────────────────────────────────────
@@ -230,10 +224,7 @@ async fn main() -> anyhow::Result<()> {
                 .await,
         )?;
 
-        match &result {
-            Outcome::Fault(e) => println!("  [BLOCKED] {}\n", e),
-            other => println!("  [UNEXPECTED] {:?}\n", other),
-        }
+        verify_scenario(result, &bus, Some("IP "))?;
     }
 
     // ── Demo 4: Rate limit exhaustion ────────────────────────────────────
@@ -260,11 +251,15 @@ async fn main() -> anyhow::Result<()> {
                     .await,
             )?;
 
-            match &result {
-                Outcome::Next(resp) => println!("  Request {}: [200] {}", i, resp.body),
-                Outcome::Fault(e) => println!("  Request {}: [BLOCKED] {}", i, e),
-                other => println!("  Request {}: [OTHER] {:?}", i, other),
-            }
+            verify_scenario(
+                result,
+                &bus,
+                if i <= 3 {
+                    None
+                } else {
+                    Some("Rate limit exceeded.")
+                },
+            )?;
         }
         println!();
     }
@@ -294,10 +289,7 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .await,
         )?;
-        match &result {
-            Outcome::Fault(e) => println!("  Denied IP 10.0.0.99: [BLOCKED] {}", e),
-            other => println!("  Denied IP 10.0.0.99: [UNEXPECTED] {:?}", other),
-        }
+        verify_scenario(result, &bus, Some("IP "))?;
 
         // Allowed IP
         let mut bus = Bus::new();
@@ -315,12 +307,65 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .await,
         )?;
-        match &result {
-            Outcome::Next(resp) => println!("  Allowed IP 172.16.0.5: [200] {}", resp.body),
-            other => println!("  Allowed IP 172.16.0.5: [UNEXPECTED] {:?}", other),
-        }
+        verify_scenario(result, &bus, None)?;
     }
 
     println!("\ndone");
     Ok(())
+}
+
+fn verify_scenario(
+    outcome: Outcome<HttpResponse, String>,
+    bus: &Bus,
+    expected_fault: Option<&str>,
+) -> anyhow::Result<()> {
+    match (outcome, expected_fault) {
+        (Outcome::Next(response), None)
+            if response.status == 200 && bus.has::<HandlerVisited>() =>
+        {
+            Ok(())
+        }
+        (Outcome::Fault(error), Some(prefix))
+            if error.starts_with(prefix) && !bus.has::<HandlerVisited>() =>
+        {
+            Ok(())
+        }
+        _ => anyhow::bail!("Guard scenario did not match expected outcome"),
+    }
+}
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::try_init()
+        .map_err(|_| anyhow::anyhow!("Tracing initialization failed"))?;
+    run_scenarios().await
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn actual_guard_scenarios_and_handler_boundaries() {
+        run_scenarios().await.unwrap();
+    }
+    #[test]
+    fn unexpected_success_and_wrong_rejection_fail() {
+        assert!(
+            verify_scenario(
+                Outcome::Next(HttpResponse {
+                    status: 200,
+                    body: String::new()
+                }),
+                &Bus::new(),
+                Some("CORS:")
+            )
+            .is_err()
+        );
+        assert!(
+            verify_scenario(
+                Outcome::Fault("wrong rejection".into()),
+                &Bus::new(),
+                Some("CORS:")
+            )
+            .is_err()
+        );
+    }
 }
