@@ -1793,6 +1793,16 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl Transition<PrivateJumpInput, ()> for CountJumpCalls {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, _: PrivateJumpInput, _: &(), _: &mut Bus) -> Outcome<(), String> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Outcome::Next(())
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn manual_jump_decode_error_redacts_response_and_logs() {
         let logs = Arc::new(StdMutex::new(Vec::new()));
@@ -1809,16 +1819,18 @@ mod tests {
             let undos = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let prefix = Axon::<PrivateJumpInput, PrivateJumpInput, String>::new("jump-redaction")
                 .with_saga_policy(ranvier_core::saga::SagaPolicy::Enabled)
-                .then(CountJumpCalls(calls.clone()));
+                .then::<PrivateJumpInput, _>(CountJumpCalls(calls.clone()));
             let axon = if compensated {
-                prefix
-                    .then_compensated(CountJumpCalls(calls.clone()), CountJumpCalls(undos.clone()))
+                prefix.then_compensated::<PrivateJumpInput, _, _>(
+                    CountJumpCalls(calls.clone()),
+                    CountJumpCalls(undos.clone()),
+                )
             } else {
-                prefix.then(CountJumpCalls(calls.clone()))
+                prefix.then::<PrivateJumpInput, _>(CountJumpCalls(calls.clone()))
             };
             let mut bus = Bus::new();
             let target = axon.schematic().nodes.last().unwrap().id.clone();
-            bus.insert(ManualJump {
+            bus.insert(super::ManualJump {
                 target_node: target.clone(),
                 payload_override: Some(serde_json::json!("private-payload")),
             });
@@ -1840,7 +1852,7 @@ mod tests {
             }
             assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
             assert_eq!(undos.load(std::sync::atomic::Ordering::SeqCst), 0);
-            let jump = bus.read::<ManualJump>().unwrap();
+            let jump = bus.read::<super::ManualJump>().unwrap();
             assert_eq!(jump.target_node, target);
             assert_eq!(
                 jump.payload_override,
