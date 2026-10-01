@@ -1,6 +1,6 @@
 // Extracted public policy: only HTTP rejection expressions become false.
 // This does not compile Actix/Axum imports, extractors or response bodies.
-use ranvier::{ExecutionReport, CompletionConfirmation, EffectBoundary, PersistenceOperation, SagaRollbackReport};
+use ranvier::{ExecutionReport, CompletionConfirmation, EffectBoundary, PersistenceOperation, SagaRollbackReport, SagaRollbackStep, SagaRollbackOutcome};
 use ranvier::prelude::Outcome;
 fn policy_0(report: ExecutionReport<Outcome<u32, String>>) -> bool {
     if report.cleanup().is_some_and(|cleanup| !cleanup.is_complete()) {
@@ -67,6 +67,17 @@ fn public_http_policy_checks_durability_and_cleanup() {
             assert!(!policy(ExecutionReport::Unconfirmed { result: result.clone(), operation: PersistenceOperation::Result, effect: EffectBoundary::MayHaveRun, cleanup: None }));
             assert!(!policy(ExecutionReport::BlockedBeforeEffect { operation: PersistenceOperation::RecoveryPayload, effect: EffectBoundary::MayHaveRun, cleanup: None }));
             assert!(!policy(ExecutionReport::Unpersisted { result, cleanup: Some(SagaRollbackReport { trace_id: "private".into(), finished: false, steps: vec![] }) }));
+        }
+        for finished in [false, true] {
+            for outcome in [SagaRollbackOutcome::InProgress, SagaRollbackOutcome::Panicked,
+                SagaRollbackOutcome::Completed, SagaRollbackOutcome::Fault, SagaRollbackOutcome::Emitted,
+                SagaRollbackOutcome::Branched, SagaRollbackOutcome::Jumped, SagaRollbackOutcome::MissingHandler] {
+                let cleanup = SagaRollbackReport { trace_id: "private".into(), finished,
+                    steps: vec![SagaRollbackStep { node_id: "private".into(), outcome }] };
+                let allowed = finished && outcome == SagaRollbackOutcome::Completed;
+                assert_eq!(policy(ExecutionReport::Recorded { result: Outcome::Next(7),
+                    completion: CompletionConfirmation::Confirmed, cleanup: Some(cleanup) }), allowed);
+            }
         }
     }
 }
