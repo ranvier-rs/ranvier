@@ -20,6 +20,21 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 #[derive(Clone)]
 struct AppResources {
     redis: redis::aio::ConnectionManager,
@@ -213,8 +228,8 @@ async fn main() -> Result<()> {
     .then(CacheResponseTransition);
 
     let mut bus_first = Bus::new();
-    let first = flow
-        .execute(
+    let first = local_demo_outcome(
+        flow.execute(
             SessionRequest {
                 sid: "sid_demo_1".to_string(),
                 route: "/profile".to_string(),
@@ -222,11 +237,12 @@ async fn main() -> Result<()> {
             &resources,
             &mut bus_first,
         )
-        .await;
+        .await,
+    )?;
 
     let mut bus_second = Bus::new();
-    let second = flow
-        .execute(
+    let second = local_demo_outcome(
+        flow.execute(
             SessionRequest {
                 sid: "sid_demo_1".to_string(),
                 route: "/profile".to_string(),
@@ -234,11 +250,12 @@ async fn main() -> Result<()> {
             &resources,
             &mut bus_second,
         )
-        .await;
+        .await,
+    )?;
 
     let mut bus_third = Bus::new();
-    let third = flow
-        .execute(
+    let third = local_demo_outcome(
+        flow.execute(
             SessionRequest {
                 sid: "sid_demo_1".to_string(),
                 route: "/profile/settings".to_string(),
@@ -246,7 +263,8 @@ async fn main() -> Result<()> {
             &resources,
             &mut bus_third,
         )
-        .await;
+        .await,
+    )?;
 
     for (label, outcome) in [("first", &first), ("second", &second), ("third", &third)] {
         match outcome {
