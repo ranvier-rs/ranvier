@@ -87,28 +87,23 @@ impl Transition<String, String> for LoadSession {
         _resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<String, Self::Error> {
-        // Simulate extracting cookie from "Request" (here just the string input)
-        // In real app: bus.req.headers().get("Cookie")...
-        let sid = if req.contains("sid=") {
-            req.split("sid=")
-                .nth(1)
-                .unwrap_or("")
-                .trim_end_matches(')')
-                .to_string()
-        } else {
-            "".to_string()
-        };
-
-        if !sid.is_empty() {
-            if let Some(session) = SessionStore::load(&sid) {
-                println!("[LoadSession] Session loaded for: {}", session.username);
-                // CRITICAL: Explicitly write session to Bus
-                bus.insert(session);
-            } else {
-                println!("[LoadSession] Invalid Session ID");
+        // A reused Bus must never retain a previous request's identity.
+        bus.remove::<UserSession>();
+        // This is an explicit simulated envelope, not an HTTP cookie parser.
+        let cookie = req
+            .strip_prefix("GET /profile (Cookie: ")
+            .and_then(|value| value.strip_suffix(')'));
+        if let Some(cookie) = cookie.filter(|value| value.len() <= 4096) {
+            let mut session_ids = cookie
+                .split(';')
+                .filter_map(|field| field.trim().strip_prefix("sid="));
+            if let Some(sid) = session_ids.next() {
+                if session_ids.next().is_none() {
+                    if let Some(session) = SessionStore::load(sid) {
+                        bus.insert(session);
+                    }
+                }
             }
-        } else {
-            println!("[LoadSession] No Session ID found");
         }
 
         // Always continue. Session presence is checked later.
@@ -197,10 +192,10 @@ async fn main() -> anyhow::Result<()> {
     let result = local_demo_outcome(axon.execute(req_valid, &(), &mut bus).await)?;
 
     match result {
-        Outcome::Next(profile) => println!("Success: {}", profile),
-        Outcome::Branch(route, _) => println!("Redirected: {}", route),
-        Outcome::Fault(e) => println!("Error: {:?}", e),
-        _ => {}
+        Outcome::Next(profile) if profile == "Profile: alice (Roles: [\"user\"])" => {
+            println!("Valid session accepted")
+        }
+        _ => anyhow::bail!("Valid session scenario failed"),
     }
 
     // Case 2: Invalid Session
@@ -216,15 +211,71 @@ async fn main() -> anyhow::Result<()> {
     let result2 = local_demo_outcome(axon2.execute(req_invalid, &(), &mut bus2).await)?;
 
     match result2 {
-        Outcome::Next(profile) => println!("Success: {}", profile),
-        Outcome::Branch(route, reason) => {
-            if let Some(r) = reason.as_ref().and_then(|v| v.as_str()) {
-                println!("Redirected to '{}': {}", route, r);
-            }
-        }
-        Outcome::Fault(e) => println!("Error: {:?}", e),
-        _ => {}
+        Outcome::Branch(route, _) if route == "login_flow" => println!("Missing session rejected"),
+        _ => anyhow::bail!("Missing session scenario failed"),
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn invalid_requests_clear_prior_identity() {
+        for request in [
+            "GET /profile (No Cookie)",
+            "GET /profile (Cookie: sid=bad)",
+            "GET /profile (Cookie: sid=valid_sid_123; sid=bad)",
+            "GET /profile (Cookie: xsid=valid_sid_123)",
+            "GET /profile (Cookie: sid=valid_sid_123) trailing",
+        ] {
+            let mut bus = Bus::new();
+            bus.insert(SessionStore::load("valid_sid_123").unwrap());
+            let flow = Axon::<String, String, String>::new("session-test")
+                .then(LoadSession)
+                .then(RequireAuth)
+                .then(UserProfile);
+            let outcome =
+                local_demo_outcome(flow.execute(request.into(), &(), &mut bus).await).unwrap();
+            assert!(matches!(outcome, Outcome::Branch(route, _) if route == "login_flow"));
+            assert!(!bus.has::<UserSession>());
+        }
+    }
+    #[tokio::test]
+    async fn valid_flow_returns_report_checked_profile() {
+        let flow = Axon::<String, String, String>::new("valid-session")
+            .then(LoadSession)
+            .then(RequireAuth)
+            .then(UserProfile);
+        let result = local_demo_outcome(
+            flow.execute(
+                "GET /profile (Cookie: sid=valid_sid_123)".into(),
+                &(),
+                &mut Bus::new(),
+            )
+            .await,
+        )
+        .unwrap();
+        assert!(
+            matches!(result, Outcome::Next(profile) if profile == "Profile: alice (Roles: [\"user\"])")
+        );
+    }
+    #[tokio::test]
+    async fn valid_session_and_missing_profile_capability() {
+        let mut bus = Bus::new();
+        let result = LoadSession
+            .run(
+                "GET /profile (Cookie: other=x; sid=valid_sid_123)".into(),
+                &(),
+                &mut bus,
+            )
+            .await;
+        assert!(matches!(result, Outcome::Next(_)));
+        assert_eq!(bus.get_cloned::<UserSession>().unwrap().user_id, "u_1");
+        assert!(matches!(
+            UserProfile.run(String::new(), &(), &mut Bus::new()).await,
+            Outcome::Fault(_)
+        ));
+    }
 }
