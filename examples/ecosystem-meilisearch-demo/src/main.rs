@@ -88,13 +88,6 @@ struct SearchResponse {
     estimated_total_hits: Option<u64>,
 }
 
-fn now_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-}
-
 fn with_auth(
     builder: reqwest::RequestBuilder,
     api_key: &Option<String>,
@@ -354,6 +347,7 @@ async fn main() -> Result<()> {
     let api_key = std::env::var("RANVIER_ECOSYSTEM_MEILI_API_KEY").ok();
 
     let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(5))
         .build()?;
 
@@ -363,27 +357,18 @@ async fn main() -> Result<()> {
 
     match health {
         Ok(response) if response.status().is_success() => {}
-        Ok(response) => {
-            println!(
-                "meilisearch unavailable (url={}): status={}",
-                base_url,
-                response.status()
-            );
-            println!("skip live search flow");
-            return Ok(());
-        }
-        Err(err) => {
-            println!("meilisearch unavailable (url={}): {}", base_url, err);
-            println!("skip live search flow");
-            return Ok(());
-        }
+        _ => return Err(anyhow!("Meilisearch health request failed")),
     }
 
     let resources = AppResources {
         client,
         base_url,
         api_key,
-        index_uid: format!("m132_books_{}", now_ms()),
+        index_uid: format!(
+            "m132_books_{}_{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        ),
     };
 
     let axon = Axon::<SearchInput, SearchInput, String, AppResources>::new("meili.search_flow")
@@ -402,25 +387,52 @@ async fn main() -> Result<()> {
         .await,
     )?;
 
-    match outcome {
-        Outcome::Next(output) => {
-            println!(
-                "query='{}' estimated_total_hits={}",
-                output.query, output.estimated_total_hits
-            );
-            for hit in output.hits {
-                println!("hit id={} title={} tags={:?}", hit.id, hit.title, hit.tags);
-            }
-        }
-        other => {
-            return Err(anyhow!("search flow failed: {:?}", other));
-        }
-    }
-
-    if let Err(err) = delete_index(&resources).await {
-        eprintln!("cleanup warning: {}", err);
-    }
+    verify_search(outcome)?;
+    delete_index(&resources)
+        .await
+        .map_err(|_| anyhow!("Owned index cleanup unconfirmed"))?;
 
     println!("done");
     Ok(())
+}
+
+fn verify_search(outcome: Outcome<SearchOutput, String>) -> Result<()> {
+    match outcome {
+        Outcome::Next(output)
+            if output.query == "ranvier" && output.hits.iter().any(|hit| hit.id == "b1") =>
+        {
+            Ok(())
+        }
+        _ => Err(anyhow!("Search result did not match seeded query")),
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn search_projection_requires_expected_seed() {
+        assert!(verify_search(Outcome::Fault("private error".into())).is_err());
+        assert!(
+            verify_search(Outcome::Next(SearchOutput {
+                query: "ranvier".into(),
+                estimated_total_hits: 0,
+                hits: vec![]
+            }))
+            .is_err()
+        );
+        let hit = BookDoc {
+            id: "b1".into(),
+            title: "sample".into(),
+            description: "demo".into(),
+            tags: vec![],
+        };
+        assert!(
+            verify_search(Outcome::Next(SearchOutput {
+                query: "ranvier".into(),
+                estimated_total_hits: 1,
+                hits: vec![hit]
+            }))
+            .is_ok()
+        );
+    }
 }
