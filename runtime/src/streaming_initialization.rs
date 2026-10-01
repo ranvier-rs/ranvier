@@ -397,4 +397,311 @@ mod tests {
             "parent"
         );
     }
+    struct AckStore {
+        backing: crate::InMemoryPersistenceStore,
+        mode: u8,
+    }
+    #[async_trait::async_trait]
+    impl crate::PersistenceStore for AckStore {
+        async fn append(&self, event: crate::PersistenceEnvelope) -> anyhow::Result<()> {
+            self.backing.append(event).await?;
+            if self.mode == 1 {
+                anyhow::bail!("synthetic unknown entry ACK");
+            }
+            Ok(())
+        }
+        async fn load(&self, trace: &str) -> anyhow::Result<Option<crate::PersistedTrace>> {
+            if self.mode == 3 {
+                anyhow::bail!("synthetic unavailable history");
+            }
+            self.backing.load(trace).await
+        }
+        async fn resume(&self, trace: &str, step: u64) -> anyhow::Result<crate::ResumeCursor> {
+            self.backing.resume(trace, step).await
+        }
+        async fn complete(
+            &self,
+            trace: &str,
+            completion: crate::CompletionState,
+        ) -> anyhow::Result<()> {
+            self.backing.complete(trace, completion).await?;
+            if self.mode == 2 {
+                anyhow::bail!("synthetic applied completion without ACK");
+            }
+            Ok(())
+        }
+        async fn save_intervention(
+            &self,
+            trace: &str,
+            intervention: crate::persistence::Intervention,
+        ) -> anyhow::Result<()> {
+            self.backing.save_intervention(trace, intervention).await
+        }
+    }
+    #[tokio::test]
+    async fn actual_ack_matrix_blocks_initialization_and_retains_known_result() {
+        use crate::PersistenceStore;
+        for mode in 0..4 {
+            for cancellable in [false, true] {
+                for auto_complete in [false, true] {
+                    if mode == 2 && !auto_complete {
+                        continue;
+                    }
+                    let backing = crate::InMemoryPersistenceStore::new();
+                    let original: Arc<dyn PersistenceStore> = Arc::new(AckStore {
+                        backing: backing.clone(),
+                        mode,
+                    });
+                    let effects = Arc::new(AtomicUsize::new(0));
+                    let initialized = Arc::new(AtomicUsize::new(0));
+                    let prefix = Axon::<usize, usize, String>::start("ack-handoff")
+                        .then(Effect(effects.clone()));
+                    let mut bus = Bus::new();
+                    bus.insert(crate::PersistenceHandle::from_arc(original.clone()));
+                    bus.insert(crate::PersistenceTraceId::new("ack-handoff"));
+                    bus.insert(crate::PersistenceAutoComplete(auto_complete));
+                    let report = prefix
+                        .initialize_stream(
+                            42,
+                            &(),
+                            &mut bus,
+                            &Init(initialized.clone()),
+                            cancellable.then(ranvier_core::CancellationToken::new),
+                        )
+                        .await;
+                    match (mode, report) {
+                        (
+                            0,
+                            StreamInitializationReport::Ready {
+                                prefix: ExecutionReport::Recorded { completion, .. },
+                                ..
+                            },
+                        ) => {
+                            assert_eq!(
+                                completion,
+                                if auto_complete {
+                                    CompletionConfirmation::Confirmed
+                                } else {
+                                    CompletionConfirmation::NotRequested
+                                }
+                            );
+                            assert_eq!(initialized.load(Ordering::SeqCst), 1);
+                        }
+                        (
+                            1,
+                            StreamInitializationReport::Rejected {
+                                prefix:
+                                    ExecutionReport::BlockedBeforeEffect {
+                                        operation: PersistenceOperation::Intent,
+                                        effect: EffectBoundary::NotInvoked,
+                                        ..
+                                    },
+                            },
+                        ) => {}
+                        (
+                            2,
+                            StreamInitializationReport::Rejected {
+                                prefix:
+                                    ExecutionReport::Unconfirmed {
+                                        result: ExecutionTerminal::Outcome(Outcome::Next(42)),
+                                        operation: PersistenceOperation::Complete,
+                                        effect: EffectBoundary::MayHaveRun,
+                                        ..
+                                    },
+                            },
+                        ) => {
+                            assert!(
+                                backing
+                                    .load("ack-handoff")
+                                    .await
+                                    .unwrap()
+                                    .unwrap()
+                                    .completion
+                                    .is_some()
+                            );
+                        }
+                        (
+                            3,
+                            StreamInitializationReport::Rejected {
+                                prefix:
+                                    ExecutionReport::BlockedBeforeEffect {
+                                        operation: PersistenceOperation::Load,
+                                        effect: EffectBoundary::NotInvoked,
+                                        ..
+                                    },
+                            },
+                        ) => {}
+                        _ => panic!("unexpected admission state for mode {mode}"),
+                    }
+                    if mode != 0 {
+                        assert_eq!(initialized.load(Ordering::SeqCst), 0);
+                    }
+                    assert_eq!(
+                        effects.load(Ordering::SeqCst),
+                        usize::from(mode == 0 || mode == 2)
+                    );
+                    assert!(Arc::ptr_eq(
+                        &bus.read::<crate::PersistenceHandle>().unwrap().store(),
+                        &original
+                    ));
+                }
+            }
+        }
+    }
+
+    struct PendingInit(Arc<tokio::sync::Notify>);
+    #[async_trait::async_trait]
+    impl StreamingTransition<usize> for PendingInit {
+        type Item = usize;
+        type Error = String;
+        type Resources = ();
+        async fn run_stream(
+            &self,
+            _: usize,
+            _: &(),
+            bus: &mut Bus,
+        ) -> Result<Pin<Box<dyn futures_core::Stream<Item = usize> + Send>>, String> {
+            bus.insert(SagaPolicy::Enabled);
+            bus.insert(ranvier_core::iam::IamIdentity::new("initializer"));
+            self.0.notify_one();
+            std::future::pending().await
+        }
+    }
+    #[tokio::test]
+    async fn pending_initializer_cancel_and_outer_drop_restore_parent_context() {
+        use ranvier_core::iam::IamIdentity;
+        for cancel in [false, true] {
+            let mut bus = Bus::new();
+            let mut parent = crate::execution_observation::InvocationOwner::begin(&mut bus);
+            parent.bus().insert_shared(IamIdentity::new("parent"));
+            parent.bus().insert(SagaPolicy::Disabled);
+            let identity = parent.bus().read::<IamIdentity>().unwrap() as *const _;
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let token = ranvier_core::CancellationToken::new();
+            let prefix = Axon::<usize, usize, String>::start("pending-init");
+            let init = PendingInit(entered.clone());
+            {
+                let future =
+                    prefix.initialize_stream(42, &(), parent.bus(), &init, Some(token.clone()));
+                tokio::pin!(future);
+                tokio::select! {
+                    _ = entered.notified() => {},
+                    _ = &mut future => panic!("pending init ended early"),
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => panic!("init did not enter"),
+                }
+                if cancel {
+                    token.cancel(ranvier_core::CancellationReason::Explicit);
+                    assert!(matches!(
+                        future.await,
+                        StreamInitializationReport::Cancelled {
+                            prefix: ExecutionReport::Unpersisted { result: (), .. },
+                            initialization: EffectBoundary::MayHaveRun,
+                            ..
+                        }
+                    ));
+                }
+            }
+            assert_eq!(
+                parent.bus().read::<IamIdentity>().unwrap() as *const _,
+                identity
+            );
+            assert_eq!(
+                parent.bus().read::<SagaPolicy>(),
+                Some(&SagaPolicy::Disabled)
+            );
+        }
+    }
+    #[test]
+    fn value_mapping_never_invokes_callback_for_rejected_failed_or_cancelled() {
+        let context = CancellationContext::new(ranvier_core::CancellationReason::Explicit);
+        let cases: [StreamInitializationReport<u32, Box<u32>, String>; 4] = [
+            StreamInitializationReport::Ready {
+                prefix: ExecutionReport::Recorded {
+                    result: (),
+                    completion: CompletionConfirmation::NotRequested,
+                    cleanup: None,
+                },
+                value: Box::new(42),
+            },
+            StreamInitializationReport::Rejected {
+                prefix: ExecutionReport::Unconfirmed {
+                    result: ExecutionTerminal::Outcome(Outcome::Next(42)),
+                    operation: PersistenceOperation::Complete,
+                    effect: EffectBoundary::MayHaveRun,
+                    cleanup: None,
+                },
+            },
+            StreamInitializationReport::Failed {
+                prefix: ExecutionReport::Unpersisted {
+                    result: (),
+                    cleanup: None,
+                },
+                error: crate::streaming_axon::StreamingAxonError::StreamInitError(
+                    "synthetic".into(),
+                ),
+                initialization: EffectBoundary::MayHaveRun,
+            },
+            StreamInitializationReport::Cancelled {
+                prefix: ExecutionReport::NotRequested {
+                    result: (),
+                    cleanup: None,
+                },
+                context: context.clone(),
+                initialization: EffectBoundary::NotInvoked,
+            },
+        ];
+        for (index, report) in cases.into_iter().enumerate() {
+            let mut calls = 0;
+            let mapped = report.map_value(|value| {
+                calls += 1;
+                vec![value]
+            });
+            assert_eq!(calls, usize::from(index == 0));
+            match mapped {
+                StreamInitializationReport::Ready {
+                    prefix:
+                        ExecutionReport::Recorded {
+                            result: (),
+                            completion: CompletionConfirmation::NotRequested,
+                            cleanup: None,
+                        },
+                    value,
+                } => assert_eq!(*value[0], 42),
+                StreamInitializationReport::Rejected {
+                    prefix:
+                        ExecutionReport::Unconfirmed {
+                            result: ExecutionTerminal::Outcome(Outcome::Next(42)),
+                            operation: PersistenceOperation::Complete,
+                            effect: EffectBoundary::MayHaveRun,
+                            cleanup: None,
+                        },
+                } => assert_eq!(index, 1),
+                StreamInitializationReport::Failed {
+                    error: crate::streaming_axon::StreamingAxonError::StreamInitError(error),
+                    prefix:
+                        ExecutionReport::Unpersisted {
+                            result: (),
+                            cleanup: None,
+                        },
+                    initialization: EffectBoundary::MayHaveRun,
+                } => {
+                    assert_eq!(index, 2);
+                    assert_eq!(error, "synthetic");
+                }
+                StreamInitializationReport::Cancelled {
+                    prefix:
+                        ExecutionReport::NotRequested {
+                            result: (),
+                            cleanup: None,
+                        },
+                    context: actual,
+                    initialization: EffectBoundary::NotInvoked,
+                } => {
+                    assert_eq!(index, 3);
+                    assert_eq!(actual, context);
+                }
+                _ => panic!("mapping changed report state"),
+            }
+        }
+    }
 }
