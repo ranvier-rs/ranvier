@@ -518,6 +518,9 @@ macro_rules! asynchronous_sum {
             let state = self.state.clone();
             delegated
                 .with_callback(move |inner| {
+                    if state.failed() {
+                        return;
+                    }
                     let observations = Summing {
                         groups: std::sync::Mutex::new(Vec::new()),
                         originals: std::sync::Mutex::new(Vec::new()),
@@ -525,6 +528,9 @@ macro_rules! asynchronous_sum {
                         state: &state,
                     };
                     for callback in &callbacks {
+                        if state.failed() {
+                            break;
+                        }
                         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             callback(&observations)
                         }))
@@ -1362,6 +1368,12 @@ mod tests {
         for temporality in [Temporality::Cumulative, Temporality::Delta] {
             for mode in [Mode::Off, Mode::Public, Mode::Strict] {
                 let strict = matches!(mode, Mode::Strict);
+                let mode_name = match mode {
+                    Mode::Off => "off",
+                    Mode::Public => "public",
+                    Mode::Strict => "strict",
+                };
+                let label_count = Arc::new(AtomicUsize::new(1024));
                 let value = Arc::new(AtomicU64::new(2));
                 let callbacks = Arc::new(AtomicUsize::new(0));
                 let snapshots = Arc::new(Mutex::new(Vec::new()));
@@ -1383,12 +1395,13 @@ mod tests {
                 let meter = provider.meter("observable-interval-fixture");
                 let callback_value = value.clone();
                 let callback_count = callbacks.clone();
+                let callback_labels = label_count.clone();
                 let _counter = meter
                     .u64_observable_counter("observable-counter")
                     .with_callback(move |instrument| {
                         callback_count.fetch_add(1, Ordering::SeqCst);
                         let absolute = callback_value.load(Ordering::SeqCst);
-                        for index in 0..1024 {
+                        for index in 0..callback_labels.load(Ordering::SeqCst) {
                             instrument.observe(
                                 absolute,
                                 &[KeyValue::new("identity", format!("label-{index}"))],
@@ -1419,6 +1432,24 @@ mod tests {
                     }
                     assert!(!provider.state.failed());
                 }
+                // The adapter budget is for original labels, even when strict redaction merges them.
+                label_count.store(1025, Ordering::SeqCst);
+                heartbeat.add(1, &[]);
+                provider.inner.force_flush().unwrap();
+                assert!(provider.state.failed());
+                assert_eq!(callbacks.load(Ordering::SeqCst), 4);
+                {
+                    let captured = snapshots.lock().unwrap();
+                    assert_eq!(captured.len(), 4);
+                    assert_eq!(captured.last().unwrap().total, 0);
+                    assert_eq!(captured.last().unwrap().series, 0);
+                }
+                provider.inner.force_flush().unwrap();
+                assert!(provider.state.failed());
+                assert_eq!(callbacks.load(Ordering::SeqCst), 4);
+                eprintln!(
+                    "OTLP_OBSERVABLE_PASS temporality={temporality:?} mode={mode_name} absolute=2,2,5 original-labels=1024 overflow=1025 rejected-no-partial callback-skipped-after-failure"
+                );
                 provider.inner.shutdown().unwrap();
             }
         }
