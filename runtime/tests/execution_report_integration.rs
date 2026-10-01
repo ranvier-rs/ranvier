@@ -141,6 +141,18 @@ async fn compensated_result_encoding_failure_keeps_undo_and_original_fault() {
         trace
             .events
             .iter()
+            .all(|event| event.outcome_kind != "Next")
+    );
+    assert!(
+        trace
+            .events
+            .iter()
+            .any(|event| event.outcome_kind == "Fault" && event.node_id.is_none())
+    );
+    assert!(
+        trace
+            .events
+            .iter()
             .all(|event| event.payload != Some(serde_json::Value::Null))
     );
 }
@@ -206,6 +218,24 @@ async fn direct_compensation_encoding_failure_preserves_cleanup_and_domain_fault
     assert_eq!(undos.load(Ordering::SeqCst), 1);
     let trace = backing.load("undo-encoding").await.unwrap().unwrap();
     assert_eq!(trace.completion, None);
+    assert_eq!(trace.events.len(), 3);
+    assert!(
+        trace
+            .events
+            .iter()
+            .all(|event| event.outcome_kind != "CompensationIncomplete")
+    );
+    let faults: Vec<_> = trace
+        .events
+        .iter()
+        .filter(|event| event.outcome_kind == "Fault")
+        .collect();
+    assert_eq!(faults.len(), 2);
+    assert!(faults.iter().any(|event| event.node_id.is_some()));
+    assert!(faults.iter().any(|event| event.node_id.is_none()));
+    assert!(faults.iter().all(
+        |event| event.payload == Some(serde_json::json!({"Fault": "original-business-fault"}))
+    ));
     assert!(
         trace
             .events
