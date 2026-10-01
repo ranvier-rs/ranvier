@@ -16,7 +16,7 @@
 use async_graphql::{EmptySubscription, Object, Schema, SimpleObject};
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
-use ranvier_runtime::Axon;
+use ranvier_runtime::{Axon, ExecutionReport};
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -63,6 +63,7 @@ struct MutationRoot;
 #[Object]
 impl MutationRoot {
     async fn create_user(&self, name: String, email: String) -> User {
+        // Synthetic demonstration only: no database write or durable identity.
         User {
             id: 42,
             name,
@@ -72,6 +73,13 @@ impl MutationRoot {
 }
 
 type AppSchema = Schema<QueryRoot, MutationRoot, EmptySubscription>;
+
+fn demo_schema() -> AppSchema {
+    Schema::build(QueryRoot, MutationRoot, EmptySubscription)
+        .limit_depth(8)
+        .limit_complexity(100)
+        .finish()
+}
 
 // ============================================================================
 // GraphQL Executor Transition
@@ -96,18 +104,27 @@ impl Transition<String, serde_json::Value> for ExecuteGraphQl {
         _resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<serde_json::Value, Self::Error> {
-        let schema = bus
-            .read::<GraphQlSchema>()
-            .expect("GraphQlSchema must be in Bus");
+        if query.len() > 16_384 {
+            return Outcome::fault("GraphQL request exceeds local size limit".into());
+        }
+        let Some(schema) = bus.read::<GraphQlSchema>() else {
+            return Outcome::fault("GraphQL schema unavailable".into());
+        };
 
         let request = async_graphql::Request::new(&query);
         let response = schema.0.execute(request).await;
-        let json = match serde_json::to_value(&response.data) {
+        let data = match serde_json::to_value(&response.data) {
             Ok(v) => v,
-            Err(e) => return Outcome::fault(format!("serialize error: {}", e)),
+            Err(_) => return Outcome::fault("GraphQL response encoding failed".into()),
         };
-
-        Outcome::next(json)
+        let mut envelope = serde_json::json!({ "data": data });
+        if !response.errors.is_empty() {
+            // Do not expose resolver errors, request text or extensions.
+            envelope["errors"] = serde_json::json!([
+                { "message": "GraphQL request failed" }
+            ]);
+        }
+        Outcome::next(envelope)
     }
 }
 
@@ -119,7 +136,7 @@ impl Transition<String, serde_json::Value> for ExecuteGraphQl {
 async fn main() -> anyhow::Result<()> {
     println!("=== GraphQL async-graphql Demo ===\n");
 
-    let schema = Schema::build(QueryRoot, MutationRoot, EmptySubscription).finish();
+    let schema = demo_schema();
 
     let axon = Axon::<String, String, String>::new("GraphQL Executor").then(ExecuteGraphQl);
 
@@ -132,10 +149,10 @@ async fn main() -> anyhow::Result<()> {
         let result = axon
             .execute("{ users { id name email } }".into(), &(), &mut bus)
             .await;
-        match &result {
-            Outcome::Next(data) => println!("  Result: {}\n", serde_json::to_string_pretty(data)?),
-            other => println!("  {:?}\n", other),
-        }
+        println!(
+            "  Response: {}\n",
+            serde_json::to_string_pretty(&local_demo_response(result)?)?
+        );
     }
 
     // ── Query: single user ───────────────────────────────────────────────
@@ -147,10 +164,10 @@ async fn main() -> anyhow::Result<()> {
         let result = axon
             .execute("{ user(id: 1) { name } }".into(), &(), &mut bus)
             .await;
-        match &result {
-            Outcome::Next(data) => println!("  Result: {}\n", serde_json::to_string_pretty(data)?),
-            other => println!("  {:?}\n", other),
-        }
+        println!(
+            "  Response: {}\n",
+            serde_json::to_string_pretty(&local_demo_response(result)?)?
+        );
     }
 
     // ── Mutation: create user ────────────────────────────────────────────
@@ -166,12 +183,30 @@ async fn main() -> anyhow::Result<()> {
                 &mut bus,
             )
             .await;
-        match &result {
-            Outcome::Next(data) => println!("  Result: {}\n", serde_json::to_string_pretty(data)?),
-            other => println!("  {:?}\n", other),
-        }
+        println!(
+            "  Response: {}\n",
+            serde_json::to_string_pretty(&local_demo_response(result)?)?
+        );
     }
 
     println!("done");
     Ok(())
+}
+
+fn local_demo_response(
+    report: ExecutionReport<Outcome<serde_json::Value, String>>,
+) -> anyhow::Result<serde_json::Value> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ExecutionReport::Unpersisted {
+            result: Outcome::Next(response),
+            ..
+        } => Ok(response),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
 }
