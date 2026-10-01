@@ -1627,6 +1627,126 @@ mod tests {
 
     #[cfg(feature = "persistence-redis")]
     #[tokio::test]
+    #[ignore = "requires explicitly isolated Redis fixture URL"]
+    async fn redis_public_resume_intervention_controlled_orders() {
+        use tokio::{
+            sync::Semaphore,
+            task::JoinSet,
+            time::{Duration, timeout},
+        };
+        let url = std::env::var("RANVIER_ATOMICITY_REDIS_URL").expect("explicit Redis fixture");
+        let connect = || timeout(Duration::from_secs(5), RedisPersistenceStore::connect(&url));
+        for intervention_first in [true, false] {
+            let observer = connect().await.unwrap().unwrap();
+            let trace_id = format!("resume-order-{}", Uuid::new_v4().simple());
+            let mut seed = envelope(0, "Next");
+            seed.trace_id = trace_id.clone();
+            observer.append(seed).await.unwrap();
+            let intervention = Intervention {
+                target_node: "reviewed-node".to_owned(),
+                payload_override: Some(
+                    serde_json::json!({"large": u64::MAX, "command": "fixture"}),
+                ),
+                timestamp_ms: u64::MAX,
+            };
+            let mut expected = observer.load(&trace_id).await.unwrap().unwrap();
+            let original = observer.read_trace(&trace_id).await.unwrap().0;
+            let gate = || {
+                Arc::new(RedisWriteGate {
+                    ready: Semaphore::new(0),
+                    release: Semaphore::new(0),
+                    expected: tokio::sync::Mutex::new(None),
+                })
+            };
+            let resume_gate = gate();
+            let intervention_gate = gate();
+            let mut resumer = connect().await.unwrap().unwrap();
+            let mut editor = connect().await.unwrap().unwrap();
+            resumer.write_gate = Some(resume_gate.clone());
+            editor.write_gate = Some(intervention_gate.clone());
+            let resume_id = trace_id.clone();
+            let edit_id = trace_id.clone();
+            let edit = intervention.clone();
+            let mut workers = JoinSet::new();
+            workers.spawn(async move {
+                let result = resumer.resume(&resume_id, 7).await.map(|cursor| {
+                    assert_eq!(cursor.trace_id, resume_id);
+                    assert_eq!(cursor.next_step, 8);
+                });
+                (false, result)
+            });
+            workers.spawn(async move { (true, editor.save_intervention(&edit_id, edit).await) });
+            let result = timeout(Duration::from_secs(10), async {
+                resume_gate.ready.acquire().await.unwrap().forget();
+                intervention_gate.ready.acquire().await.unwrap().forget();
+                assert_eq!(*resume_gate.expected.lock().await, original);
+                assert_eq!(*intervention_gate.expected.lock().await, original);
+                let (first, second) = if intervention_first {
+                    (&intervention_gate, &resume_gate)
+                } else {
+                    (&resume_gate, &intervention_gate)
+                };
+                first.release.add_permits(1);
+                let (kind, outcome) = workers.join_next().await.unwrap().unwrap();
+                assert_eq!(kind, intervention_first);
+                outcome.unwrap();
+                if intervention_first {
+                    expected.interventions.push(intervention.clone());
+                } else {
+                    expected.resumed_from_step = Some(7);
+                }
+                assert_eq!(observer.load(&trace_id).await.unwrap().unwrap(), expected);
+                second.release.add_permits(1);
+                let (kind, outcome) = workers.join_next().await.unwrap().unwrap();
+                assert_eq!(kind, !intervention_first);
+                assert!(
+                    outcome
+                        .unwrap_err()
+                        .to_string()
+                        .contains("concurrent persistence update")
+                );
+                assert_eq!(observer.load(&trace_id).await.unwrap().unwrap(), expected);
+                // Explicit fresh caller operation, not an automatic adapter retry.
+                if intervention_first {
+                    let cursor = observer.resume(&trace_id, 7).await.unwrap();
+                    assert_eq!(cursor.trace_id, trace_id);
+                    assert_eq!(cursor.next_step, 8);
+                    expected.resumed_from_step = Some(7);
+                } else {
+                    observer
+                        .save_intervention(&trace_id, intervention.clone())
+                        .await
+                        .unwrap();
+                    expected.interventions.push(intervention.clone());
+                }
+                assert_eq!(observer.load(&trace_id).await.unwrap().unwrap(), expected);
+                observer
+                    .complete(&trace_id, CompletionState::Success)
+                    .await
+                    .unwrap();
+                expected.completion = Some(CompletionState::Success);
+                assert!(
+                    observer
+                        .resume(&trace_id, 7)
+                        .await
+                        .unwrap_err()
+                        .to_string()
+                        .contains("already completed")
+                );
+                assert_eq!(observer.load(&trace_id).await.unwrap().unwrap(), expected);
+            })
+            .await;
+            workers.abort_all();
+            while workers.join_next().await.is_some() {}
+            result.expect("bounded resume/intervention order fixture");
+            println!(
+                "REDIS_FIELDS_PASS intervention_first={intervention_first} same-read controlled-writes exact-snapshot"
+            );
+        }
+    }
+
+    #[cfg(feature = "persistence-redis")]
+    #[tokio::test]
     async fn redis_store_roundtrip_when_configured() {
         let url = match std::env::var("RANVIER_PERSISTENCE_REDIS_URL") {
             Ok(value) => value,
