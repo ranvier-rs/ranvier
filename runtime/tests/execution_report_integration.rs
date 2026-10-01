@@ -46,6 +46,72 @@ async fn cancellable_generated_identity_does_not_escape_invocation() {
     assert_eq!(effects.load(Ordering::SeqCst), 3);
 }
 
+struct IdentityStore {
+    backing: InMemoryPersistenceStore,
+    keys: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl PersistenceStore for IdentityStore {
+    async fn append(&self, event: PersistenceEnvelope) -> anyhow::Result<()> {
+        self.keys.lock().unwrap().push(event.trace_id.clone());
+        self.backing.append(event).await
+    }
+    async fn load(&self, trace: &str) -> anyhow::Result<Option<PersistedTrace>> {
+        self.backing.load(trace).await
+    }
+    async fn resume(&self, trace: &str, step: u64) -> anyhow::Result<ResumeCursor> {
+        self.backing.resume(trace, step).await
+    }
+    async fn complete(&self, trace: &str, completion: CompletionState) -> anyhow::Result<()> {
+        self.backing.complete(trace, completion).await
+    }
+    async fn save_intervention(
+        &self,
+        trace: &str,
+        intervention: Intervention,
+    ) -> anyhow::Result<()> {
+        self.backing.save_intervention(trace, intervention).await
+    }
+}
+
+#[tokio::test]
+async fn repeated_cancellable_invocations_persist_separate_traces() {
+    let store = Arc::new(IdentityStore {
+        backing: InMemoryPersistenceStore::new(),
+        keys: std::sync::Mutex::new(Vec::new()),
+    });
+    let effects = Arc::new(AtomicUsize::new(0));
+    let axon = Axon::<u32, u32, String>::new("persisted-identity").then(Count(effects.clone()));
+    let mut bus = Bus::new();
+    bus.insert(PersistenceHandle::from_arc(store.clone()));
+    let mut identities = Vec::new();
+    for cancelled in [false, true, false] {
+        store.keys.lock().unwrap().clear();
+        let token = ranvier_core::cancellation::CancellationToken::new();
+        if cancelled {
+            token.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
+        }
+        let report = axon.execute_cancellable(1, &(), &mut bus, token).await;
+        assert!(matches!(
+            report,
+            ExecutionReport::Recorded {
+                completion: CompletionConfirmation::Confirmed,
+                ..
+            }
+        ));
+        let keys = store.keys.lock().unwrap().clone();
+        assert!(!keys.is_empty());
+        assert!(keys.iter().all(|key| key == &keys[0]));
+        assert!(!identities.contains(&keys[0]));
+        identities.push(keys[0].clone());
+        let trace = store.backing.load(&keys[0]).await.unwrap().unwrap();
+        assert!(trace.completion.is_some());
+        assert!(bus.read::<PersistenceTraceId>().is_none());
+    }
+    assert_eq!(effects.load(Ordering::SeqCst), 2);
+}
+
 #[derive(Clone, serde::Deserialize)]
 struct EncodingOutput {
     terminal_only: bool,
