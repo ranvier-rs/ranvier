@@ -908,6 +908,13 @@ where
         });
     }
 
+    // Register undo state before an awaited result write can be cancelled.
+    if let (Outcome::Next(_), Some(snapshot)) = (&result, saga_snapshot)
+        && let Some(stack) = bus.read_mut::<SagaStack>()
+    {
+        stack.push(node_id.to_string(), label.clone(), snapshot);
+    }
+
     // Record every transition result independently of Saga snapshot policy.
     if let Some(handle) = bus.read::<PersistenceHandle>() {
         let trace_id = persistence_trace_id(bus);
@@ -986,11 +993,6 @@ where
                 )
                 .await;
             }
-        }
-    } else if let (Outcome::Next(_), Some(snapshot)) = (&result, saga_snapshot) {
-        // Push to Saga Stack if Next outcome and snapshot taken
-        if let Some(stack) = bus.read_mut::<SagaStack>() {
-            stack.push(node_id.to_string(), label.clone(), snapshot);
         }
     }
 

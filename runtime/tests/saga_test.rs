@@ -235,3 +235,58 @@ async fn compensated_step_records_result_when_saga_is_disabled() {
     );
     assert!(results.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn compensated_step_records_fault_before_automatic_compensation() {
+    use ranvier_runtime::persistence::*;
+    use ranvier_runtime::{CompletionConfirmation, ExecutionReport};
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let store = Arc::new(InMemoryPersistenceStore::default());
+    let axon = Axon::<SagaState, SagaState, String, ()>::new("SagaFaultPersistence")
+        .with_saga_policy(SagaPolicy::Enabled)
+        .then_compensated(
+            FailStep,
+            CompStep {
+                id: "fault".into(),
+                results: results.clone(),
+            },
+        );
+    let mut bus = Bus::new();
+    bus.insert(PersistenceHandle::from_arc(store.clone()));
+    bus.insert(PersistenceTraceId::new("saga-fault-result"));
+    let report = axon
+        .execute(
+            SagaState {
+                cnt: 0,
+                log: vec![],
+            },
+            &(),
+            &mut bus,
+        )
+        .await;
+    let ExecutionReport::Recorded {
+        result: Outcome::Fault(error),
+        completion: CompletionConfirmation::Confirmed,
+    } = report
+    else {
+        panic!("expected acknowledged fault and completion");
+    };
+    assert_eq!(error, "Planned SAGA Failure");
+    let trace = store.load("saga-fault-result").await.unwrap().unwrap();
+    let fault_index = trace
+        .events
+        .iter()
+        .position(|event| event.node_id.is_some() && event.outcome_kind == "Fault")
+        .unwrap();
+    let compensation_index = trace
+        .events
+        .iter()
+        .position(|event| event.outcome_kind == "Compensated")
+        .unwrap();
+    assert!(fault_index < compensation_index);
+    assert_eq!(
+        trace.events[fault_index].payload,
+        Some(Outcome::<SagaState, String>::Fault(error).to_json_value())
+    );
+    assert_eq!(*results.lock().unwrap(), vec!["Comp_fault:0"]);
+}
