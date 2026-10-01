@@ -1313,11 +1313,10 @@ mod tests {
 
     #[cfg(feature = "persistence-postgres")]
     #[tokio::test]
+    #[ignore = "requires explicitly isolated backend fixture URL"]
     async fn postgres_store_roundtrip_when_configured() {
-        let url = match std::env::var("RANVIER_PERSISTENCE_POSTGRES_URL") {
-            Ok(value) => value,
-            Err(_) => return,
-        };
+        let url = std::env::var("RANVIER_PERSISTENCE_POSTGRES_URL")
+            .expect("explicit isolated backend fixture URL required");
 
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(5)
@@ -1807,11 +1806,10 @@ mod tests {
 
     #[cfg(feature = "persistence-redis")]
     #[tokio::test]
+    #[ignore = "requires explicitly isolated backend fixture URL"]
     async fn redis_store_roundtrip_when_configured() {
-        let url = match std::env::var("RANVIER_PERSISTENCE_REDIS_URL") {
-            Ok(value) => value,
-            Err(_) => return,
-        };
+        let url = std::env::var("RANVIER_PERSISTENCE_REDIS_URL")
+            .expect("explicit isolated backend fixture URL required");
 
         let base = RedisPersistenceStore::connect(&url).await.unwrap();
         let prefix = format!("ranvier:persistence:test:{}", Uuid::new_v4().simple());
@@ -1854,11 +1852,10 @@ mod tests {
 
     #[cfg(feature = "persistence-postgres")]
     #[tokio::test]
+    #[ignore = "requires explicitly isolated backend fixture URL"]
     async fn postgres_compensation_idempotency_roundtrip_when_configured() {
-        let url = match std::env::var("RANVIER_PERSISTENCE_POSTGRES_URL") {
-            Ok(value) => value,
-            Err(_) => return,
-        };
+        let url = std::env::var("RANVIER_PERSISTENCE_POSTGRES_URL")
+            .expect("explicit isolated backend fixture URL required");
 
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(5)
@@ -1886,11 +1883,10 @@ mod tests {
 
     #[cfg(feature = "persistence-postgres")]
     #[tokio::test]
+    #[ignore = "requires explicitly isolated backend fixture URL"]
     async fn postgres_compensation_idempotency_purge_when_configured() {
-        let url = match std::env::var("RANVIER_PERSISTENCE_POSTGRES_URL") {
-            Ok(value) => value,
-            Err(_) => return,
-        };
+        let url = std::env::var("RANVIER_PERSISTENCE_POSTGRES_URL")
+            .expect("explicit isolated backend fixture URL required");
 
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(5)
@@ -1933,11 +1929,10 @@ mod tests {
 
     #[cfg(feature = "persistence-redis")]
     #[tokio::test]
+    #[ignore = "requires explicitly isolated backend fixture URL"]
     async fn redis_compensation_idempotency_roundtrip_when_configured() {
-        let url = match std::env::var("RANVIER_PERSISTENCE_REDIS_URL") {
-            Ok(value) => value,
-            Err(_) => return,
-        };
+        let url = std::env::var("RANVIER_PERSISTENCE_REDIS_URL")
+            .expect("explicit isolated backend fixture URL required");
 
         let base = RedisCompensationIdempotencyStore::connect(&url)
             .await
@@ -1962,11 +1957,10 @@ mod tests {
 
     #[cfg(feature = "persistence-redis")]
     #[tokio::test]
+    #[ignore = "requires explicitly isolated backend fixture URL"]
     async fn redis_compensation_idempotency_ttl_when_configured() {
-        let url = match std::env::var("RANVIER_PERSISTENCE_REDIS_URL") {
-            Ok(value) => value,
-            Err(_) => return,
-        };
+        let url = std::env::var("RANVIER_PERSISTENCE_REDIS_URL")
+            .expect("explicit isolated backend fixture URL required");
 
         let base = RedisCompensationIdempotencyStore::connect(&url)
             .await
