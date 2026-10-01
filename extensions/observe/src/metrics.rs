@@ -576,5 +576,4 @@ impl InstrumentProvider for ProtectedInstruments {
 }
 
 #[cfg(test)]
-#[path = "metrics/tests.rs"]
 mod tests;
