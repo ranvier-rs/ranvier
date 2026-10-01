@@ -381,6 +381,43 @@ async fn fully_acknowledged_execution_keeps_normal_json_success() {
 
 #[derive(serde::Deserialize)]
 struct BrokenOutput;
+
+#[tokio::test]
+async fn legacy_null_trace_is_blocked_over_tcp_without_effect_or_store_mutation() {
+    let store = store(Failure::None, false);
+    let effects = Arc::new(AtomicUsize::new(0));
+    let axon = Axon::<(), (), String>::new("legacy-null-http").then(Business(effects.clone()));
+    let schematic = axon.schematic();
+    store
+        .backing
+        .append(PersistenceEnvelope {
+            trace_id: "http-report-fixture".into(),
+            circuit: schematic.name.clone(),
+            schematic_version: schematic.schema_version.clone(),
+            step: 1,
+            node_id: Some(schematic.nodes[1].id.to_string()),
+            outcome_kind: "Next".into(),
+            timestamp_ms: 0,
+            payload_hash: None,
+            payload: Some(serde_json::Value::Null),
+        })
+        .await
+        .unwrap();
+    let before =
+        serde_json::to_value(store.backing.load("http-report-fixture").await.unwrap()).unwrap();
+    let (status, body) = request(axon, store.clone()).await;
+    assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["durability"], "blocked_before_effect");
+    assert_eq!(body["operation"], "load");
+    assert_eq!(body["effect"], "not_invoked");
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    assert_eq!(store.writes.load(Ordering::SeqCst), 0);
+    assert_eq!(store.completions.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        serde_json::to_value(store.backing.load("http-report-fixture").await.unwrap()).unwrap(),
+        before
+    );
+}
 impl serde::Serialize for BrokenOutput {
     fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
         Err(serde::ser::Error::custom("private-serializer-probe"))
