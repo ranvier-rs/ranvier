@@ -7,7 +7,7 @@ When you define execution with Axon, a Schematic (structural analysis) is automa
 
 ## Learning Topics
 - **Transition Trait**: Contract that defines state transformation
-- **Axon Builder**: Compose execution paths with `start()` and `then()` chaining
+- **Axon Builder**: Compose execution paths with `new()` and `then()` chaining
 - **Schematic Extraction**: JSON serialization of execution paths
 - **Bus**: Context object for resource injection
 
@@ -31,7 +31,7 @@ cargo run --bin basic-schematic
 ## Schematic vs Axon
 | Concept | Role | Output |
 |---------|------|--------|
-| **Axon** | Execution path (dynamic) | `Outcome<T, E>` |
+| **Axon** | Execution path (dynamic) | `ExecutionReport<Outcome<T, E>>` |
 | **Schematic** | Structural analysis (static) | `Schematic` JSON |
 */
 
@@ -134,6 +134,13 @@ impl Transition<String, ()> for LogEnd {
 // 2. Main - Build Axon and Execute
 // ============================================================================
 
+fn require_success(outcome: Outcome<(), String>) -> anyhow::Result<()> {
+    match outcome {
+        Outcome::Next(()) => Ok(()),
+        _ => anyhow::bail!("Unexpected execution outcome; reconcile before retry"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Build the Axon (Execution chain)
@@ -160,7 +167,8 @@ async fn main() -> anyhow::Result<()> {
     println!("=== Running Axon ===");
     let mut bus = Bus::new();
     let result = local_demo_outcome(axon.execute((), &(), &mut bus).await)?;
-    println!("Final Result: {:?}", result);
+    require_success(result)?;
+    println!("Final Result: successful local execution");
 
     // Demonstrate Axon helper methods
     println!("\n=== Axon Analysis ===");
@@ -168,4 +176,32 @@ async fn main() -> anyhow::Result<()> {
     println!("Total edges: {}", edge_count);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn actual_chain_has_structure_and_success() {
+        let axon = Axon::simple::<String>("My First Schematic")
+            .then(LogStart)
+            .then(ProcessData)
+            .then(LogEnd);
+        assert_eq!(axon.schematic.nodes.len(), 4);
+        assert!(matches!(
+            axon.schematic.nodes[0].kind,
+            ranvier_core::schematic::NodeKind::Ingress
+        ));
+        assert_eq!(axon.schematic.edges.len(), 3);
+        let json = serde_json::to_value(&axon.schematic).unwrap();
+        assert_eq!(json["name"], "My First Schematic");
+        require_success(local_demo_outcome(axon.execute((), &(), &mut Bus::new()).await).unwrap())
+            .unwrap();
+    }
+    #[test]
+    fn domain_failure_and_nonterminal_outcomes_do_not_succeed() {
+        assert!(require_success(Outcome::Fault("private error".into())).is_err());
+        assert!(require_success(Outcome::Branch("elsewhere".into(), None)).is_err());
+        assert!(require_success(Outcome::Emit("event".into(), None)).is_err());
+    }
 }
