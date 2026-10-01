@@ -1658,6 +1658,58 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn actual_float_observable_callbacks_reject_nonfinite_measurements() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for mode in [Mode::Off, Mode::Public, Mode::Strict] {
+            for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                for up_down in [false, true] {
+                    let captured = Arc::new(Mutex::new(Vec::new()));
+                    let calls = Arc::new(AtomicUsize::new(0));
+                    let provider = ProtectedMeterProvider {
+                        inner: bounded_meter_builder()
+                            .unwrap()
+                            .with_reader(
+                                PeriodicReader::builder(Capture(captured.clone()))
+                                    .with_interval(Duration::from_secs(3600))
+                                    .build(),
+                            )
+                            .build(),
+                        policy: Policy::new(mode.clone(), "").unwrap(),
+                        state: Default::default(),
+                    };
+                    let meter = provider.meter("invalid-number-fixture");
+                    let callback_calls = calls.clone();
+                    let callback = move |instrument: &dyn AsyncInstrument<f64>| {
+                        callback_calls.fetch_add(1, Ordering::SeqCst);
+                        instrument.observe(1.0, &[KeyValue::new("identity", "valid")]);
+                        instrument.observe(invalid, &[KeyValue::new("identity", "invalid")]);
+                    };
+                    if up_down {
+                        let _instrument = meter
+                            .f64_observable_up_down_counter("invalid")
+                            .with_callback(callback)
+                            .build();
+                    } else {
+                        let _instrument = meter
+                            .f64_observable_counter("invalid")
+                            .with_callback(callback)
+                            .build();
+                    }
+                    provider.inner.force_flush().unwrap();
+                    assert!(provider.state.failed());
+                    assert_eq!(calls.load(Ordering::SeqCst), 1);
+                    assert!(
+                        captured.lock().unwrap().is_empty(),
+                        "invalid collection leaked earlier valid observation"
+                    );
+                    provider.inner.force_flush().unwrap();
+                    provider.inner.shutdown().unwrap();
+                    assert_eq!(calls.load(Ordering::SeqCst), 1);
+                }
+            }
+        }
+    }
     #[derive(Debug, Default)]
     struct FloatTotals {
         metric_count: usize,
