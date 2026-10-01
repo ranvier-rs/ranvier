@@ -138,6 +138,96 @@ async fn pre_cancelled_cleanup_reports_applied_compensation_without_ack() {
     }
 }
 
+#[tokio::test]
+async fn completed_trace_blocks_normal_and_cancellation_effects_for_all_terminal_states() {
+    for completion in [
+        CompletionState::Success,
+        CompletionState::Fault,
+        CompletionState::Cancelled,
+        CompletionState::Compensated,
+    ] {
+        for mode in 0..3 {
+            let store = InMemoryPersistenceStore::new();
+            let calls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+            let axon =
+                Axon::<i32, i32, String>::start("CompletedGuard").then(WaitForCancellation {
+                    entered: Arc::new(Notify::new()),
+                    observed_token: Arc::new(AtomicUsize::new(0)),
+                });
+            store
+                .append(PersistenceEnvelope {
+                    trace_id: "completed".into(),
+                    circuit: "CompletedGuard".into(),
+                    schematic_version: axon.schematic().schema_version.clone(),
+                    step: 0,
+                    node_id: None,
+                    outcome_kind: "Enter".into(),
+                    timestamp_ms: 0,
+                    payload_hash: None,
+                    payload: None,
+                })
+                .await
+                .unwrap();
+            store
+                .save_intervention(
+                    "completed",
+                    Intervention {
+                        target_node: axon.schematic().nodes[1].id.clone(),
+                        payload_override: Some(serde_json::json!(100)),
+                        timestamp_ms: 1,
+                    },
+                )
+                .await
+                .unwrap();
+            store
+                .complete("completed", completion.clone())
+                .await
+                .unwrap();
+            let before = store.load("completed").await.unwrap().unwrap();
+            let mut bus = Bus::new();
+            bus.insert(PersistenceHandle::from_store(store.clone()));
+            bus.insert(PersistenceTraceId::new("completed"));
+            bus.insert(CompensationHandle::from_hook(RecordingCompensation {
+                calls: calls.clone(),
+            }));
+            if mode == 0 {
+                let report =
+                    tokio::time::timeout(Duration::from_secs(2), axon.execute(0, &(), &mut bus))
+                        .await
+                        .expect("completed execution must reject before waiting transition");
+                assert!(matches!(report, ExecutionReport::NotRequested {
+                    result: Outcome::Emit(event, None),
+                } if event == "execution.resumption.completed_trace"));
+            } else {
+                let token = CancellationToken::new();
+                if mode == 2 {
+                    token.cancel(CancellationReason::Explicit);
+                }
+                let report = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    axon.execute_cancellable(0, &(), &mut bus, token),
+                )
+                .await
+                .expect("completed cleanup must not invoke waiting transition");
+                if mode == 2 {
+                    assert!(matches!(report, ExecutionReport::NotRequested {
+                        result: ExecutionTerminal::Cancelled(context),
+                    } if context.reason == CancellationReason::Explicit));
+                } else {
+                    assert!(matches!(report, ExecutionReport::NotRequested {
+                        result: ExecutionTerminal::Outcome(Outcome::Emit(event, None)),
+                    } if event == "execution.resumption.completed_trace"));
+                }
+            }
+            assert!(
+                calls.lock().await.is_empty(),
+                "terminal trace cannot replay compensation"
+            );
+            assert_eq!(store.load("completed").await.unwrap().unwrap(), before);
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct FailedCursorPersistenceStore {
     loads: Arc<AtomicUsize>,
