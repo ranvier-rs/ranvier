@@ -459,6 +459,15 @@ impl Bus {
         self.cancellation_token = Some(token);
     }
 
+    /// Replace the cancellation owner, returning the previous owner.
+    /// Supports scoped adapter execution and restoration of an absent token.
+    pub fn replace_cancellation_token(
+        &mut self,
+        token: Option<CancellationToken>,
+    ) -> Option<CancellationToken> {
+        std::mem::replace(&mut self.cancellation_token, token)
+    }
+
     /// Read the cooperative cancellation token for this execution.
     pub fn cancellation_token(&self) -> Option<&CancellationToken> {
         self.cancellation_token.as_ref()

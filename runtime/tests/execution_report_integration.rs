@@ -31,6 +31,7 @@ async fn cancellable_generated_identity_does_not_escape_invocation() {
             other => panic!("unexpected report: {other:?}"),
         }
         assert!(bus.read::<PersistenceTraceId>().is_none());
+        assert!(bus.cancellation_token().is_none());
     }
     assert_eq!(effects.load(Ordering::SeqCst), 2);
     bus.insert(PersistenceTraceId::new("caller-owned"));

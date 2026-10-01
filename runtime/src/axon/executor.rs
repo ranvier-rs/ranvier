@@ -43,7 +43,7 @@ where
         token: CancellationToken,
     ) -> crate::ExecutionReport<ExecutionTerminal<Out, E>> {
         let session = crate::execution_observation::Session::begin(bus);
-        bus.set_cancellation_token(token.clone());
+        let previous_token = bus.replace_cancellation_token(Some(token.clone()));
         // Session owns InvocationTrace for both execution and cancellation
         // cleanup. Do not promote its generated identity to caller-owned
         // PersistenceTraceId: that would leak into later uses of this Bus.
@@ -80,6 +80,7 @@ where
             }
             Ok(outcome) => ExecutionTerminal::Outcome(outcome),
         };
+        bus.replace_cancellation_token(previous_token);
         session.finish(bus, terminal)
     }
 
