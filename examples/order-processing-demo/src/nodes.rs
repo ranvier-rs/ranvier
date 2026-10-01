@@ -103,7 +103,7 @@ impl Transition<ValidatedOrder, ValidatedOrder> for ProcessPayment {
             return Outcome::Fault(error);
         }
 
-        match resources.payment.call(request.payable_amount).await {
+        match resources.payment.call(request.clone()).await {
             Ok(true) => match resources.inventory.confirm_payment(&request, true) {
                 Ok(()) => Outcome::Next(request),
                 Err(error) => Outcome::Fault(error),
@@ -119,6 +119,29 @@ impl Transition<ValidatedOrder, ValidatedOrder> for ProcessPayment {
                 Outcome::Branch("payment_declined".into(), None)
             }
             Err(e) => Outcome::Fault(e),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct RefundPayment;
+#[async_trait]
+impl Transition<ValidatedOrder, ()> for RefundPayment {
+    type Error = String;
+    type Resources = OrderResources;
+    async fn run(
+        &self,
+        order: ValidatedOrder,
+        resources: &OrderResources,
+        _: &mut Bus,
+    ) -> Outcome<(), String> {
+        match resources
+            .payment
+            .refund(&order)
+            .and_then(|refunded| resources.inventory.settle_refund(&order, refunded))
+        {
+            Ok(()) => Outcome::Next(()),
+            Err(error) => Outcome::Fault(error),
         }
     }
 }

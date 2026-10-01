@@ -18,7 +18,7 @@ mod synapses;
 
 use crate::domain::{OrderRequest, OrderResources, Product};
 use crate::nodes::{
-    ProcessPayment, ReleaseInventory, ReserveInventory, ShipOrder, ValidateOrder,
+    ProcessPayment, RefundPayment, ReleaseInventory, ReserveInventory, ShipOrder, ValidateOrder,
     ValidationNoEffect,
 };
 use crate::synapses::{InventorySynapse, PaymentSynapse, ShippingSynapse};
@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
         .with_saga_policy(SagaPolicy::Enabled)
         .then_compensated(ValidateOrder, ValidationNoEffect)
         .then_compensated(ReserveInventory, ReleaseInventory)
-        .then(ProcessPayment)
+        .then_compensated(ProcessPayment, RefundPayment)
         .then(ShipOrder);
 
     // 3) Schematic mode for CLI integration

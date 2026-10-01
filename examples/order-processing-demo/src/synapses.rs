@@ -19,6 +19,7 @@ enum PaymentState {
     Pending,
     Approved,
     Declined,
+    Refunded,
 }
 struct Reservation {
     owner: String,
@@ -116,6 +117,30 @@ impl InventorySynapse {
         }
         record.released = true;
         Ok(())
+    }
+
+    pub fn settle_refund(&self, order: &ValidatedOrder, refunded: bool) -> Result<(), String> {
+        let mut ledger = self
+            .reservations
+            .lock()
+            .map_err(|_| "Reservation ledger unavailable".to_owned())?;
+        let Some(record) = ledger.get_mut(&order.request.order_id) else {
+            return Ok(());
+        };
+        if record.owner != order.reservation_owner || record.amount != order.payable_amount {
+            return Err("Refund owner or amount mismatch".into());
+        }
+        if refunded {
+            record.payment = PaymentState::Refunded;
+            Ok(())
+        } else if matches!(
+            record.payment,
+            PaymentState::NotAttempted | PaymentState::Declined | PaymentState::Refunded
+        ) {
+            Ok(())
+        } else {
+            Err("Payment requires reconciliation".into())
+        }
     }
     pub fn quote(&self, items: &[String]) -> Result<(Vec<u32>, u32), String> {
         let db = self
@@ -220,32 +245,128 @@ impl Synapse for InventorySynapse {
 // --- Payment Synapse ---
 #[derive(Default)]
 pub struct PaymentSynapse {
-    // Local fixture evidence only; not a durable payment ledger.
     pub attempted_amounts: Mutex<Vec<u32>>,
+    records: Mutex<HashMap<String, PaymentRecord>>,
+    #[cfg(test)]
+    pub refund_behavior: RefundBehavior,
+}
+#[derive(Clone, Copy, PartialEq)]
+enum ReceiptState {
+    Pending,
+    Declined,
+    Approved,
+    RefundPending,
+    Refunded,
+}
+struct PaymentRecord {
+    owner: String,
+    amount: u32,
+    receipt: Option<String>,
+    outstanding: u32,
+    state: ReceiptState,
+}
+#[cfg(test)]
+#[derive(Default, Clone, Copy)]
+pub enum RefundBehavior {
+    #[default]
+    Complete,
+    Fault,
+    Panic,
+    Uncertain,
+}
+
+impl PaymentSynapse {
+    pub fn refund(&self, order: &ValidatedOrder) -> Result<bool, String> {
+        {
+            let mut records = self
+                .records
+                .lock()
+                .map_err(|_| "Payment ledger unavailable".to_owned())?;
+            let Some(record) = records.get_mut(&order.request.order_id) else {
+                return Ok(false);
+            };
+            if record.owner != order.reservation_owner || record.amount != order.payable_amount {
+                return Err("Refund owner or amount mismatch".into());
+            }
+            match record.state {
+                ReceiptState::Declined => return Ok(false),
+                ReceiptState::Refunded => return Ok(true),
+                ReceiptState::Approved
+                    if record.receipt.is_some() && record.outstanding == record.amount => {}
+                _ => return Err("Refund requires reconciliation".into()),
+            }
+            record.state = ReceiptState::RefundPending;
+        }
+        // Explicit test failures occur outside the ledger lock to avoid poisoning.
+        #[cfg(test)]
+        match self.refund_behavior {
+            RefundBehavior::Fault => return Err("Refund failed".into()),
+            RefundBehavior::Uncertain => return Err("Refund outcome uncertain".into()),
+            RefundBehavior::Panic => panic!("explicit test-only refund panic"),
+            RefundBehavior::Complete => {}
+        }
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|_| "Payment ledger unavailable".to_owned())?;
+        let record = records
+            .get_mut(&order.request.order_id)
+            .ok_or_else(|| "Payment record missing".to_owned())?;
+        record.outstanding = 0;
+        record.state = ReceiptState::Refunded;
+        Ok(true)
+    }
 }
 
 #[async_trait]
 impl Synapse for PaymentSynapse {
-    type Input = u32; // Amount
-    type Output = bool; // Approved/Declined
+    type Input = ValidatedOrder;
+    type Output = bool;
     type Error = String;
-
-    async fn call(&self, amount: Self::Input) -> Result<Self::Output, Self::Error> {
+    async fn call(&self, order: Self::Input) -> Result<bool, String> {
+        let amount = order.payable_amount;
+        {
+            let mut records = self
+                .records
+                .lock()
+                .map_err(|_| "Payment ledger unavailable".to_owned())?;
+            if amount == 0
+                || amount != order.request.total_amount
+                || records.contains_key(&order.request.order_id)
+                || records.len() >= 1000
+            {
+                return Err("Payment requires reconciliation".into());
+            }
+            records.insert(
+                order.request.order_id.clone(),
+                PaymentRecord {
+                    owner: order.reservation_owner,
+                    amount,
+                    receipt: None,
+                    outstanding: 0,
+                    state: ReceiptState::Pending,
+                },
+            );
+        }
         self.attempted_amounts
             .lock()
             .map_err(|_| "Payment unavailable".to_owned())?
             .push(amount);
-        println!(
-            "\x1b[33m[Payment]\x1b[0m Processing transaction: ${}",
-            amount
-        );
         sleep(Duration::from_millis(500)).await;
-
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|_| "Payment ledger unavailable".to_owned())?;
+        let record = records
+            .get_mut(&order.request.order_id)
+            .ok_or_else(|| "Payment record missing".to_owned())?;
         if amount > 1000 {
-            println!("\x1b[31m[Payment]\x1b[0m Amount too high (Declined).");
+            record.state = ReceiptState::Declined;
             Ok(false)
         } else {
-            println!("\x1b[32m[Payment]\x1b[0m Transaction Approved.");
+            record.receipt = Some(uuid::Uuid::new_v4().to_string());
+            record.outstanding = amount;
+            record.state = ReceiptState::Approved;
             Ok(true)
         }
     }
