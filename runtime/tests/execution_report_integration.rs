@@ -138,6 +138,54 @@ struct FailSecondAppend {
     calls: Arc<AtomicUsize>,
 }
 
+#[cfg(feature = "streaming")]
+#[derive(Clone)]
+struct CountStream(Arc<AtomicUsize>);
+#[cfg(feature = "streaming")]
+#[async_trait::async_trait]
+impl ranvier_core::streaming::StreamingTransition<u32> for CountStream {
+    type Item = u32;
+    type Error = String;
+    type Resources = ();
+    async fn run_stream(
+        &self,
+        input: u32,
+        _: &(),
+        _: &mut Bus,
+    ) -> Result<std::pin::Pin<Box<dyn futures_core::Stream<Item = u32> + Send>>, String> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::pin(futures_util::stream::iter([input, input + 1])))
+    }
+}
+
+#[cfg(feature = "streaming")]
+#[tokio::test]
+async fn collected_stream_terminal_failure_retains_invoked_effect_boundary() {
+    let backing = InMemoryPersistenceStore::new();
+    let writes = Arc::new(AtomicUsize::new(0));
+    let effects = Arc::new(AtomicUsize::new(0));
+    let mut bus = Bus::new();
+    bus.insert(PersistenceTraceId::new("stream-report"));
+    bus.insert(PersistenceHandle::from_store(FailSecondAppend {
+        backing: backing.clone(),
+        calls: writes.clone(),
+    }));
+    let axon = Axon::<u32, u32, String, ()>::new("stream-report")
+        .then_stream(CountStream(effects.clone()))
+        .collect_into_vec();
+    let report = axon.execute(7, &(), &mut bus).await;
+    assert!(matches!(report, ExecutionReport::Unconfirmed {
+        result: Outcome::Next(ref items), operation: PersistenceOperation::Terminal,
+        effect: EffectBoundary::MayHaveRun,
+    } if items == &[7, 8]));
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(writes.load(Ordering::SeqCst), 2);
+    let trace = backing.load("stream-report").await.unwrap().unwrap();
+    assert_eq!(trace.events.len(), 1);
+    assert_eq!(trace.events[0].outcome_kind, "Enter");
+    assert_eq!(trace.completion, Some(CompletionState::Success));
+}
+
 struct UnknownEntry {
     backing: InMemoryPersistenceStore,
     applied: bool,
