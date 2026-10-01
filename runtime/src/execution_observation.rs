@@ -788,13 +788,47 @@ mod invocation_trace_tests {
     }
 }
 
+/// Private same-Bus invocation marker. Local storage prevents propagation to
+/// parallel forks, whose inherited resources keep their own alias constraints.
+#[derive(Clone)]
+struct ActiveIamBoundary;
+
+/// Owns nested IAM slots independently of persistence observation/report state.
+struct IamScope {
+    identity: Option<ranvier_core::bus::BusResourceScope>,
+    token: Option<ranvier_core::bus::BusResourceScope>,
+    marker: ranvier_core::bus::BusResourceScope,
+}
+impl IamScope {
+    fn begin(bus: &mut Bus) -> Self {
+        let nested = bus.has::<ActiveIamBoundary>() || bus.has::<ActiveObservation>();
+        let identity = nested.then(|| bus.begin_resource_scope::<ranvier_core::iam::IamIdentity>());
+        let token = nested.then(|| bus.begin_resource_scope::<ranvier_core::iam::IamToken>());
+        let marker = bus.begin_resource_scope::<ActiveIamBoundary>();
+        bus.insert(ActiveIamBoundary);
+        Self {
+            identity,
+            token,
+            marker,
+        }
+    }
+    fn restore(self, bus: &mut Bus) {
+        bus.restore_resource_scope(self.marker);
+        if let Some(scope) = self.token {
+            bus.restore_resource_scope(scope);
+        }
+        if let Some(scope) = self.identity {
+            bus.restore_resource_scope(scope);
+        }
+    }
+}
+
 pub(crate) struct Session {
     original: Option<PersistenceHandle>,
     original_compensation: Option<CompensationIdempotencyHandle>,
     previous: Option<ActiveObservation>,
     previous_trace: Option<InvocationTrace>,
-    previous_identity: Option<ranvier_core::bus::BusResourceScope>,
-    previous_token: Option<ranvier_core::bus::BusResourceScope>,
+    iam_scope: IamScope,
     previous_dlq_policy: Option<ranvier_core::event::DlqPolicy>,
     previous_dlq_sink: Option<Arc<dyn ranvier_core::event::DlqSink>>,
     previous_schematic: Option<ranvier_core::schematic::Schematic>,
@@ -808,12 +842,7 @@ impl Session {
         let original = bus.read::<PersistenceHandle>().cloned();
         let original_compensation = bus.read::<CompensationIdempotencyHandle>().cloned();
         let previous = bus.read::<ActiveObservation>().cloned();
-        let previous_identity = previous
-            .as_ref()
-            .map(|_| bus.begin_resource_scope::<ranvier_core::iam::IamIdentity>());
-        let previous_token = previous
-            .as_ref()
-            .map(|_| bus.begin_resource_scope::<ranvier_core::iam::IamToken>());
+        let iam_scope = IamScope::begin(bus);
         let previous_dlq_policy = bus.read::<ranvier_core::event::DlqPolicy>().cloned();
         let previous_dlq_sink = bus.read::<Arc<dyn ranvier_core::event::DlqSink>>().cloned();
         let previous_schematic = bus.read::<ranvier_core::schematic::Schematic>().cloned();
@@ -844,8 +873,7 @@ impl Session {
             original_compensation,
             previous,
             previous_trace,
-            previous_identity,
-            previous_token,
+            iam_scope,
             previous_dlq_policy,
             previous_dlq_sink,
             previous_schematic,
@@ -896,12 +924,7 @@ impl Session {
         if let Some(trace) = self.previous_trace {
             bus.insert(trace);
         }
-        if let Some(scope) = self.previous_token {
-            bus.restore_resource_scope(scope);
-        }
-        if let Some(scope) = self.previous_identity {
-            bus.restore_resource_scope(scope);
-        }
+        self.iam_scope.restore(bus);
         if let Some(previous) = self.previous {
             // Child execution config must not become the parent's final policy
             // or attribution. Restore absence as well as configured values.
@@ -954,21 +977,24 @@ impl ControlScope {
     }
 }
 
-/// Owns only streaming initialization control state, without constructing or
+/// Owns streaming initialization control and nested IAM state, without constructing or
 /// discarding a persistence report. The returned stream owns its cancellation
 /// token independently and cannot borrow the caller Bus.
 #[cfg(feature = "streaming")]
 pub(crate) struct StreamInitializationOwner<'a> {
     bus: &'a mut Bus,
     control: Option<ControlScope>,
+    iam_scope: Option<IamScope>,
 }
 #[cfg(feature = "streaming")]
 impl<'a> StreamInitializationOwner<'a> {
     pub(crate) fn begin(bus: &'a mut Bus) -> Self {
         let control = ControlScope::begin(bus);
+        let iam_scope = IamScope::begin(bus);
         Self {
             bus,
             control: Some(control),
+            iam_scope: Some(iam_scope),
         }
     }
     pub(crate) fn bus(&mut self) -> &mut Bus {
@@ -978,6 +1004,10 @@ impl<'a> StreamInitializationOwner<'a> {
 #[cfg(feature = "streaming")]
 impl Drop for StreamInitializationOwner<'_> {
     fn drop(&mut self) {
+        self.bus.clear_access_policy();
+        if let Some(scope) = self.iam_scope.take() {
+            scope.restore(self.bus);
+        }
         if let Some(control) = self.control.take() {
             control.restore(self.bus);
         }
