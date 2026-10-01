@@ -56,10 +56,40 @@ mod tests {
                     target_node: "replacement".into(),
                     payload_override: None,
                 });
+                {
+                    let mut child = InvocationOwner::begin(owner.bus());
+                    child.bus().insert(crate::axon::ManualJump {
+                        target_node: "child".into(),
+                        payload_override: Some(serde_json::json!(11)),
+                    });
+                    if finish {
+                        let _ = child.finish(());
+                    }
+                }
+                assert_eq!(
+                    owner
+                        .bus()
+                        .read::<crate::axon::ManualJump>()
+                        .unwrap()
+                        .target_node,
+                    "replacement"
+                );
                 if finish {
                     let _ = owner.finish(());
                 }
             }
+            let restored = bus.read::<crate::axon::ManualJump>().unwrap();
+            assert_eq!(restored.target_node, "caller");
+            assert_eq!(restored.payload_override, Some(serde_json::json!(7)));
+            let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut owner = InvocationOwner::begin(&mut bus);
+                owner.bus().insert(crate::axon::ManualJump {
+                    target_node: "panicking".into(),
+                    payload_override: None,
+                });
+                panic!("injected invocation unwind");
+            }));
+            assert!(unwind.is_err());
             let restored = bus.read::<crate::axon::ManualJump>().unwrap();
             assert_eq!(restored.target_node, "caller");
             assert_eq!(restored.payload_override, Some(serde_json::json!(7)));
