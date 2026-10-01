@@ -17,6 +17,95 @@ fn event(trace: &str, step: u64, version: &str) -> PersistenceEnvelope {
     }
 }
 
+#[tokio::test]
+#[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
+async fn postgres_legacy_null_blocks_execution_and_pre_cancelled_cleanup() {
+    use ranvier_core::cancellation::{CancellationReason, CancellationToken};
+    use ranvier_core::prelude::*;
+    use ranvier_runtime::persistence::{
+        CompensationContext, CompensationHandle, CompensationHook, PersistenceHandle,
+        PersistenceTraceId,
+    };
+    use ranvier_runtime::{Axon, EffectBoundary, ExecutionReport, PersistenceOperation};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[derive(Clone)]
+    struct Count(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl Transition<u32, u32> for Count {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, input: u32, _: &(), _: &mut Bus) -> Outcome<u32, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Outcome::Next(input + 1)
+        }
+    }
+    #[async_trait::async_trait]
+    impl CompensationHook for Count {
+        async fn compensate(&self, _: CompensationContext) -> anyhow::Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL")
+        .expect("explicit isolated database required");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .acquire_timeout(std::time::Duration::from_secs(3))
+        .connect(&url)
+        .await
+        .unwrap();
+    let prefix = format!("null_{}", uuid::Uuid::new_v4().simple());
+    let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
+    store.ensure_schema().await.unwrap();
+    for mode in [0, 1, 2] {
+        let trace_id = format!("null-mode-{mode}");
+        let effects = Arc::new(AtomicUsize::new(0));
+        let cleanup = Arc::new(AtomicUsize::new(0));
+        let axon = Axon::<u32, u32, String>::new("AtomicFixture").then(Count(effects.clone()));
+        let mut seed = event(&trace_id, 1, &axon.schematic().schema_version);
+        seed.payload = Some(serde_json::Value::Null);
+        store.append(seed).await.unwrap();
+        let before = store.load(&trace_id).await.unwrap().unwrap();
+        let mut bus = Bus::new();
+        bus.insert(PersistenceTraceId::new(trace_id.clone()));
+        bus.insert(PersistenceHandle::from_store(store.clone()));
+        bus.insert(CompensationHandle::from_hook(Count(cleanup.clone())));
+        if mode == 0 {
+            assert!(matches!(
+                axon.execute(7, &(), &mut bus).await,
+                ExecutionReport::BlockedBeforeEffect {
+                    operation: PersistenceOperation::RecoveryPayload,
+                    effect: EffectBoundary::NotInvoked,
+                    ..
+                }
+            ));
+        } else {
+            let token = CancellationToken::new();
+            if mode == 2 {
+                let _ = token.cancel(CancellationReason::Explicit);
+            }
+            assert!(matches!(
+                axon.execute_cancellable(7, &(), &mut bus, token).await,
+                ExecutionReport::BlockedBeforeEffect {
+                    operation: PersistenceOperation::RecoveryPayload,
+                    effect: EffectBoundary::NotInvoked,
+                    ..
+                }
+            ));
+        }
+        assert_eq!(effects.load(Ordering::SeqCst), 0);
+        assert_eq!(cleanup.load(Ordering::SeqCst), 0);
+        assert_eq!(store.load(&trace_id).await.unwrap().unwrap(), before);
+    }
+    pool.close().await;
+    println!("POSTGRES_LEGACY_NULL modes=3 effects=0 cleanup=0 full-traces-unchanged");
+}
+
 // Retains terminal collision defect evidence while requiring the versioned
 // caller report to expose uncertainty. Missing terminal data is not acceptance.
 #[tokio::test]
