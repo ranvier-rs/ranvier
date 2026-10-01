@@ -58,9 +58,15 @@ struct WsMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ChatEvent {
+    message_id: u64,
     user_id: String,
     message: String,
 }
+
+struct MessageContext(u64);
+const CLOSE_EVENT: &str = "connection.close";
+const MAX_MESSAGE_BYTES: usize = 4096;
+const MAX_QUEUED_RESPONSES: usize = 64;
 
 // ============================================================================
 // 2. Mock WebSocket Implementation
@@ -106,8 +112,14 @@ impl EventSink<String> for MockWebSocket {
     type Error = String;
 
     async fn send_event(&self, event: String) -> Result<(), Self::Error> {
-        println!("[Sink] Sending to client: {}", event);
-        self.outgoing.lock().unwrap().push(event);
+        let mut outgoing = self
+            .outgoing
+            .lock()
+            .map_err(|_| "Mock sink unavailable".to_owned())?;
+        if outgoing.len() >= MAX_QUEUED_RESPONSES {
+            return Err("Mock sink capacity reached".into());
+        }
+        outgoing.push(event);
         Ok(())
     }
 }
@@ -129,17 +141,21 @@ impl Transition<WsMessage, ChatEvent> for ProcessMessage {
         &self,
         input: WsMessage,
         _resources: &Self::Resources,
-        _bus: &mut Bus,
+        bus: &mut Bus,
     ) -> Outcome<ChatEvent, Self::Error> {
-        println!("[Process] Processing msg #{}: {}", input.id, input.content);
-
-        // Simple logic: If message is "exit", stop the loop (in real app, we might Emit a Close event)
+        if input.content.len() > MAX_MESSAGE_BYTES || input.content.trim().is_empty() {
+            return Outcome::Fault("Invalid message size".into());
+        }
+        if bus.read::<MessageContext>().is_some() {
+            return Outcome::Fault("Stale message context".into());
+        }
+        bus.insert(MessageContext(input.id));
         if input.content == "exit" {
-            // Check discussion 162: Control Flow. We can use Jump to End or similar.
-            // For this demo, let's just process it.
+            return Outcome::Emit(CLOSE_EVENT.into(), None);
         }
 
         Outcome::Next(ChatEvent {
+            message_id: input.id,
             user_id: "user_1".to_string(),
             message: input.content.to_uppercase(),
         })
@@ -159,8 +175,14 @@ impl Transition<ChatEvent, String> for Broadcast {
         &self,
         input: ChatEvent,
         _resources: &Self::Resources,
-        _bus: &mut Bus,
+        bus: &mut Bus,
     ) -> Outcome<String, Self::Error> {
+        if !bus
+            .read::<MessageContext>()
+            .is_some_and(|context| context.0 == input.message_id)
+        {
+            return Outcome::Fault("Message context missing or mismatched".into());
+        }
         let response = format!("User {} said: {}", input.user_id, input.message);
         Outcome::Next(response)
     }
@@ -170,54 +192,218 @@ impl Transition<ChatEvent, String> for Broadcast {
 // 4. Main Loop
 // ============================================================================
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    println!("=== WebSocket Loop Demo (Event Engine) ===\n");
+async fn deliver_report<S: EventSink<String>>(
+    report: ranvier_runtime::ExecutionReport<Outcome<String, String>>,
+    sink: &S,
+) -> anyhow::Result<bool> {
+    match local_demo_outcome(report)? {
+        Outcome::Next(response) => {
+            sink.send_event(response)
+                .await
+                .map_err(|_| anyhow::anyhow!("Sink delivery requires reconciliation"))?;
+            Ok(false)
+        }
+        Outcome::Emit(event, None) if event == CLOSE_EVENT => Ok(true),
+        Outcome::Fault(_) => anyhow::bail!("Message execution failed"),
+        _ => anyhow::bail!("Unexpected message control outcome"),
+    }
+}
 
-    // 1. Setup Mock Connection (Source + Sink)
-    // In a real app, this would be a real WebSocket stream split into SplitStream/SplitSink
-    let mut ws = MockWebSocket::new(vec!["hello", "ranvier", "is logic", "exit"]);
-
-    // We must clone the sink part to pass into the loop context if needed,
-    // or just use it at the end of the loop.
-    // For traits, we usually wrap Sink in Arc<Mutex<>> or use channels if it requires mutability.
-    // Here MockWebSocket implements EventSink via &self (interior mutability for outgoing), so reference is fine if lifetime allows.
-    // But since loop runs async, we need shared ownership.
-    let ws_sink = Arc::new(ws.outgoing.clone());
-    // Note: In real Rust async, splitting Source/Sink is common.
-    // For this mock, `ws` holds state. We'll just run the loop on `ws`.
-
-    // 2. The Event Loop
-    println!("--- Starting Event Loop ---");
+async fn run_loop(ws: &mut MockWebSocket) -> anyhow::Result<()> {
+    let axon = Axon::<WsMessage, WsMessage, String>::new("ChatFlow")
+        .then(ProcessMessage)
+        .then(Broadcast);
     while let Some(msg) = ws.next_event().await {
-        println!("\n[Loop] Received event: {:?}", msg);
-
-        // 3. Define the Axon for this event kind
-        // Note: Axons are light and created per event typically, or reused if stateless.
-        let axon = Axon::<WsMessage, WsMessage, String>::new("ChatFlow")
-            .then(ProcessMessage)
-            .then(Broadcast);
-
         let mut bus = Bus::new();
-        // 4. Execute Axon
-        match local_demo_outcome(axon.execute(msg, &(), &mut bus).await)? {
-            Outcome::Next(response) => {
-                // 5. Send result to Sink
-                if let Err(e) = ws.send_event(response).await {
-                    eprintln!("Failed to send: {}", e);
-                }
-            }
-            Outcome::Branch(_id, _val) => {
-                println!("Branched (not handled in this loop demo)");
-            }
-            Outcome::Fault(e) => eprintln!("Axon Error: {}", e),
-            _ => {}
+        if deliver_report(axon.execute(msg, &(), &mut bus).await, ws).await? {
+            break;
         }
     }
-
-    println!("\n--- Loop Ended ---");
-    let sent = ws_sink.lock().unwrap();
-    println!("Total messages sent: {}", sent.len());
-
     Ok(())
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    println!("=== Mock WebSocket Loop Demo ===");
+    let mut ws = MockWebSocket::new(vec!["hello", "ranvier", "is logic", "exit"]);
+    run_loop(&mut ws).await?;
+    let sent = ws
+        .outgoing
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Mock sink unavailable"))?;
+    println!("Total messages sent: {}", sent.len());
+    Ok(())
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+    use ranvier_runtime::{
+        CompletionConfirmation, EffectBoundary, ExecutionReport, PersistenceOperation,
+        SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep,
+    };
+    #[test]
+    fn declared_demo_runs() {
+        main().unwrap();
+    }
+    #[tokio::test]
+    async fn messages_have_fresh_context_and_exit_stops_without_sink_delivery() {
+        let mut ws = MockWebSocket::new(vec!["hello", "world", "exit", "after-close"]);
+        run_loop(&mut ws).await.unwrap();
+        assert_eq!(
+            *ws.outgoing.lock().unwrap(),
+            vec!["User user_1 said: HELLO", "User user_1 said: WORLD"]
+        );
+        assert_eq!(ws.incoming.len(), 1);
+        assert!(matches!(
+            Broadcast
+                .run(
+                    ChatEvent {
+                        message_id: 1,
+                        user_id: "user_1".into(),
+                        message: "private".into()
+                    },
+                    &(),
+                    &mut Bus::new()
+                )
+                .await,
+            Outcome::Fault(_)
+        ));
+    }
+    #[tokio::test]
+    async fn sink_failure_stops_before_consuming_the_next_message() {
+        let mut ws = MockWebSocket::new(vec!["first", "second"]);
+        *ws.outgoing.lock().unwrap() = vec!["queued".into(); MAX_QUEUED_RESPONSES];
+        assert_eq!(
+            run_loop(&mut ws).await.unwrap_err().to_string(),
+            "Sink delivery requires reconciliation"
+        );
+        assert_eq!(ws.incoming.len(), 1);
+        assert_eq!(ws.outgoing.lock().unwrap().len(), MAX_QUEUED_RESPONSES);
+    }
+    #[tokio::test]
+    async fn oversized_or_empty_input_does_not_reach_sink() {
+        let large = "x".repeat(MAX_MESSAGE_BYTES + 1);
+        for content in [large.as_str(), " "] {
+            let mut ws = MockWebSocket::new(vec![content, "next"]);
+            assert!(run_loop(&mut ws).await.is_err());
+            assert!(ws.outgoing.lock().unwrap().is_empty());
+            assert_eq!(ws.incoming.len(), 1);
+        }
+    }
+    #[tokio::test]
+    async fn unsafe_reports_and_faults_never_send_or_authorize_close() {
+        let ws = MockWebSocket::new(vec![]);
+        let reports = [
+            ExecutionReport::Unconfirmed {
+                result: Outcome::Next("private".into()),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::Unpersisted {
+                result: Outcome::Next("private".into()),
+                cleanup: Some(SagaRollbackReport {
+                    trace_id: "private".into(),
+                    finished: false,
+                    steps: vec![],
+                }),
+            },
+            ExecutionReport::Unpersisted {
+                result: Outcome::Fault("private-error".into()),
+                cleanup: None,
+            },
+        ];
+        for report in reports {
+            assert!(deliver_report(report, &ws).await.is_err());
+        }
+        assert!(ws.outgoing.lock().unwrap().is_empty());
+        assert!(
+            deliver_report(
+                ExecutionReport::Unpersisted {
+                    result: Outcome::Emit(CLOSE_EVENT.into(), None),
+                    cleanup: None
+                },
+                &ws
+            )
+            .await
+            .unwrap()
+        );
+        assert!(ws.outgoing.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn local_report_policy_preserves_faults_and_rejects_uncertain_or_incomplete_execution() {
+        let next = || Outcome::<u32, String>::Next(7);
+        let reports = [
+            ExecutionReport::NotRequested {
+                result: next(),
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::Confirmed,
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::NotRequested,
+                cleanup: None,
+            },
+            ExecutionReport::Unconfirmed {
+                result: next(),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::NotInvoked,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+        ];
+        for report in reports {
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        for (finished, outcome) in [
+            (false, SagaRollbackOutcome::Completed),
+            (true, SagaRollbackOutcome::Fault),
+            (true, SagaRollbackOutcome::InProgress),
+        ] {
+            let report = ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: Some(SagaRollbackReport {
+                    trace_id: "private-trace".into(),
+                    finished,
+                    steps: vec![SagaRollbackStep {
+                        node_id: "private-node".into(),
+                        outcome,
+                    }],
+                }),
+            };
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        assert!(matches!(
+            local_demo_outcome(ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: None
+            })
+            .unwrap(),
+            Outcome::Next(7)
+        ));
+        assert!(
+            matches!(local_demo_outcome(ExecutionReport::Unpersisted { result: Outcome::<u32, String>::Fault("expected-domain-failure".into()), cleanup: None }).unwrap(), Outcome::Fault(error) if error == "expected-domain-failure")
+        );
+    }
 }
