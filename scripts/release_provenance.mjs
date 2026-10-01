@@ -211,9 +211,13 @@ const output = safeOutputPath(policy, args.output, commit);
 mkdirSync(output, { recursive: true });
 const commands = [];
 const artifacts = [];
+// Package the selected cohort together so Cargo resolves unpublished workspace
+// dependencies against this cohort rather than older same-version registry crates.
+const packageArgs = ['package', '--locked', '--no-verify'];
+for (const pkg of publishable) packageArgs.push('-p', pkg.name);
+const packageCommand = run('cargo', packageArgs);
+commands.push(packageCommand.command);
 for (const pkg of publishable) {
-  const command = run('cargo', ['package', '--locked', '--no-verify', '-p', pkg.name]);
-  commands.push(command.command);
   const source = path.join(metadata.target_directory, 'package', `${pkg.name}-${pkg.version}.crate`);
   invariant(existsSync(source), `cargo package artifact missing: ${source}`);
   const destination = path.join(output, path.basename(source));
