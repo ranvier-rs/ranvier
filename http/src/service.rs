@@ -265,6 +265,7 @@ mod tests {
         }
         let bus = Bus::new();
         for outcome in [Outcome::Next(Broken), Outcome::Fault(PrivateFault)] {
+            let fault = matches!(&outcome, Outcome::Fault(_));
             let response = default_response_mapper(
                 ExecutionReport::Unpersisted {
                     result: outcome,
@@ -274,12 +275,50 @@ mod tests {
             );
             assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
             assert_eq!(response.headers()[CONTENT_TYPE], "application/json");
+            assert_eq!(response.headers()["ranvier-durability"], "unpersisted");
             let body = response.into_body().collect().await.unwrap().to_bytes();
             let text = std::str::from_utf8(&body).unwrap();
             assert!(!text.contains("private-"));
             let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert!(value["kind"] == "fault" || value["kind"] == "serialization_error");
+            assert_eq!(
+                value,
+                if fault {
+                    serde_json::json!({"kind":"fault", "error":{"message":"Fault response could not be encoded"}})
+                } else {
+                    serde_json::json!({"kind":"serialization_error", "error":"JSON response could not be encoded"})
+                }
+            );
         }
+        let response = default_response_mapper(
+            ExecutionReport::Unconfirmed {
+                result: Outcome::<Broken, PrivateFault>::Next(Broken),
+                operation: ranvier_runtime::PersistenceOperation::Result,
+                effect: ranvier_runtime::EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            &bus,
+        );
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "error":"Execution report could not be encoded",
+                "reconciliation_required":true
+            })
+        );
+        let response = response_with_body(
+            Response::builder().header("invalid header", "private-builder-probe"),
+            Bytes::from_static(b"unused"),
+        );
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response.headers()[CONTENT_TYPE],
+            "text/plain; charset=utf-8"
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body.as_ref(), b"HTTP response could not be constructed");
     }
     use serde::{Deserialize, Serialize};
 
