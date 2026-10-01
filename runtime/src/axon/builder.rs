@@ -435,9 +435,9 @@ where
                                 }
                             }
                         } else {
-                            // Default back to the provided input if this is an identity jump or types match
-                            // For now, treat missing payload on a mid-flow jump as an avoidable error if Possible.
-                            // In a better implementation, we'd try to load the last persisted Out for the previous step.
+                            if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>() {
+                                active.0.block(crate::PersistenceOperation::RecoveryPayload);
+                            }
                             return Outcome::emit(
                                 "execution.jump.missing_payload",
                                 Some(serde_json::json!({"node_id": timeline_node_id})),
@@ -1044,6 +1044,9 @@ where
                                 }
                             }
                         } else {
+                            if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>() {
+                                active.0.block(crate::PersistenceOperation::RecoveryPayload);
+                            }
                             return Outcome::emit(
                                 "execution.jump.missing_payload",
                                 Some(serde_json::json!({"node_id": timeline_node_id})),

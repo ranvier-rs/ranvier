@@ -1878,7 +1878,10 @@ mod tests {
             .with_writer(move || CapturedLogWriter(writer.clone()))
             .finish();
         let _guard = tracing::subscriber::set_default(subscriber);
-        for compensated in [false, true] {
+        for case in 0..8 {
+            let compensated = case & 1 != 0;
+            let missing = case & 2 != 0;
+            let cancellable = case & 4 != 0;
             let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let undos = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let prefix = Axon::<PrivateJumpInput, PrivateJumpInput, String>::new("stored-jump")
@@ -1907,7 +1910,7 @@ mod tests {
             store.append(seed.clone()).await.unwrap();
             let intervention = crate::persistence::Intervention {
                 target_node: axon.schematic.nodes[2].id.clone(),
-                payload_override: Some(serde_json::json!("private-payload")),
+                payload_override: if missing { None } else { Some(serde_json::json!("private-payload")) },
                 timestamp_ms: 17,
             };
             store
@@ -1917,15 +1920,24 @@ mod tests {
             let mut bus = Bus::new();
             bus.insert(PersistenceTraceId::new("stored-jump"));
             bus.insert(PersistenceHandle::from_store(store.clone()));
-            let report = axon.execute(PrivateJumpInput, &(), &mut bus).await;
-            assert!(matches!(
-                report,
+            let blocked = if cancellable {
+                matches!(axon.execute_cancellable(PrivateJumpInput, &(), &mut bus,
+                    ranvier_core::cancellation::CancellationToken::new()).await,
+                    crate::ExecutionReport::BlockedBeforeEffect {
+                        operation: crate::PersistenceOperation::RecoveryPayload,
+                        effect: crate::EffectBoundary::MayHaveRun, ..
+                    })
+            } else {
+                matches!(axon.execute(PrivateJumpInput, &(), &mut bus).await,
                 crate::ExecutionReport::BlockedBeforeEffect {
                     operation: crate::PersistenceOperation::RecoveryPayload,
                     effect: crate::EffectBoundary::MayHaveRun,
                     ..
                 }
-            ));
+                })
+            };
+            assert!(blocked, "case {case}");
+            assert!(bus.cancellation_token().is_none());
             assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
             assert_eq!(undos.load(std::sync::atomic::Ordering::SeqCst), 0);
             assert!(bus.read::<super::ManualJump>().is_none());
