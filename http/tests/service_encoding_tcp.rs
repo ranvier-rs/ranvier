@@ -67,7 +67,9 @@ async fn service_encoding_failure_over_tcp_preserves_effect_boundary() {
         assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(response.headers()["content-type"], "application/json");
         assert_eq!(response.headers()["ranvier-durability"], "unpersisted");
+        assert!(response.headers().get("ranvier-completion").is_none());
         let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(!std::str::from_utf8(&body).unwrap().contains("private-service-serializer-probe"));
         assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
             serde_json::json!({"kind":"serialization_error", "error":"JSON response could not be encoded"}));
         assert_eq!(effects.load(Ordering::SeqCst), 1);
