@@ -36,6 +36,23 @@ use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+// Explicit local-demo policy: neither persisted nor incomplete cleanup results
+// may be converted into ordinary domain success or automatic retry permission.
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 // ============================================================================
 // Domain Types
 // ============================================================================
@@ -237,7 +254,7 @@ async fn main() -> anyhow::Result<()> {
         let request = UserLookupRequest { user_id: 1 };
         let mut bus = Bus::new();
 
-        match pipeline.execute(request, &resources, &mut bus).await {
+        match local_demo_outcome(pipeline.execute(request, &resources, &mut bus).await)? {
             Outcome::Next(profile) => {
                 println!(
                     "\n  Result: {} <{}> @ {} (source: {})",
@@ -268,7 +285,7 @@ async fn main() -> anyhow::Result<()> {
         let request = UserLookupRequest { user_id: 999 };
         let mut bus = Bus::new();
 
-        match pipeline.execute(request, &resources, &mut bus).await {
+        match local_demo_outcome(pipeline.execute(request, &resources, &mut bus).await)? {
             Outcome::Next(profile) => {
                 println!(
                     "  Result: {} (API returned 200 for unknown ID)",
@@ -304,7 +321,7 @@ async fn main() -> anyhow::Result<()> {
         let request = UserLookupRequest { user_id: 3 };
         let mut bus = Bus::new();
 
-        match pipeline.execute(request, &resources, &mut bus).await {
+        match local_demo_outcome(pipeline.execute(request, &resources, &mut bus).await)? {
             Outcome::Next(profile) => {
                 println!(
                     "\n  Result: {} <{}> (with timeout guard)",
@@ -332,7 +349,7 @@ async fn main() -> anyhow::Result<()> {
         let request = UserLookupRequest { user_id: 0 };
         let mut bus = Bus::new();
 
-        match pipeline.execute(request, &resources, &mut bus).await {
+        match local_demo_outcome(pipeline.execute(request, &resources, &mut bus).await)? {
             Outcome::Fault(err) => {
                 println!("  Fault: {} (caught before network call)", err);
             }
