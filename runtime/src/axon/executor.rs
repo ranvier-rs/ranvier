@@ -150,8 +150,13 @@ where
 
                 match token {
                     Some(raw_token) => {
-                        match iam.verifier.verify(&raw_token).await {
-                            Ok(identity) => {
+                        use futures_util::FutureExt as _;
+                        let verification =
+                            AssertUnwindSafe(async { iam.verifier.verify(&raw_token).await })
+                                .catch_unwind()
+                                .await;
+                        match verification {
+                            Ok(Ok(identity)) => {
                                 if enforce_policy(&iam.policy, &identity).is_err() {
                                     tracing::warn!("IAM policy enforcement failed");
                                     return Outcome::emit("iam.policy_denied", None);
@@ -161,9 +166,13 @@ where
                                     return Outcome::emit("iam.context_write_denied", None);
                                 }
                             }
-                            Err(_) => {
+                            Ok(Err(_)) => {
                                 tracing::warn!("IAM token verification failed");
                                 return Outcome::emit("iam.verification_failed", None);
+                            }
+                            Err(_) => {
+                                tracing::warn!("IAM verifier panicked");
+                                return Outcome::emit("iam.verifier_panicked", None);
                             }
                         }
                     }

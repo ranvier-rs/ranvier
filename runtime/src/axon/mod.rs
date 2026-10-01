@@ -4565,12 +4565,12 @@ mod tests {
                     calls: calls.clone(),
                 });
                 if self.mode == 0 {
-                    assert!(
-                        std::panic::AssertUnwindSafe(child.execute(input, &(), bus))
-                            .catch_unwind()
-                            .await
-                            .is_err()
-                    );
+                    let report = std::panic::AssertUnwindSafe(child.execute(input, &(), bus))
+                        .catch_unwind()
+                        .await
+                        .expect("verifier panic must return a report");
+                    assert!(matches!(report, crate::ExecutionReport::Unpersisted {
+                        result: Outcome::Emit(label, None), .. } if label == "iam.verifier_panicked"));
                 } else if self.mode == 1 {
                     // Drop the actual child executor only after its domain
                     // transition entered and changed both context resources.
@@ -4644,6 +4644,52 @@ mod tests {
                     bus.read::<crate::execution_observation::InvocationTrace>()
                         .is_none()
                 );
+            }
+        }
+
+        #[tokio::test]
+        async fn iam_verifier_panic_returns_fixed_terminal_before_effect_for_both_entries() {
+            use futures_util::FutureExt;
+            for cancellable in [false, true] {
+                let mut bus = Bus::new();
+                bus.insert(IamToken("fixture-token".into()));
+                bus.insert(IamIdentity::new("stale-admin").with_role("admin"));
+                let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+                let axon = Axon::<i32, i32, String>::start("verifier-panic-boundary")
+                    .with_iam(IamPolicy::RequireIdentity, PanicIamVerifier)
+                    .then(CountCombinedRetry {
+                        calls: calls.clone(),
+                        failures: 0,
+                    });
+                if cancellable {
+                    let report = std::panic::AssertUnwindSafe(axon.execute_cancellable(
+                        7,
+                        &(),
+                        &mut bus,
+                        ranvier_core::cancellation::CancellationToken::new(),
+                    ))
+                    .catch_unwind()
+                    .await
+                    .unwrap();
+                    assert!(matches!(report, crate::ExecutionReport::Unpersisted {
+                        result: crate::ExecutionTerminal::Outcome(Outcome::Emit(label, None)), ..
+                    } if label == "iam.verifier_panicked"));
+                } else {
+                    let report = std::panic::AssertUnwindSafe(axon.execute(7, &(), &mut bus))
+                        .catch_unwind()
+                        .await
+                        .unwrap();
+                    assert!(matches!(report, crate::ExecutionReport::Unpersisted {
+                        result: Outcome::Emit(label, None), ..
+                    } if label == "iam.verifier_panicked"));
+                }
+                assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+                assert!(bus.read::<IamIdentity>().is_none());
+                assert!(
+                    bus.read::<crate::execution_observation::InvocationTrace>()
+                        .is_none()
+                );
+                assert!(bus.cancellation_token().is_none());
             }
         }
 
