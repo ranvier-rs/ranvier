@@ -24,6 +24,21 @@ mod tests {
     use futures_util::FutureExt;
 
     #[test]
+    fn dropped_owner_removes_generated_timeline_and_preserves_caller_timeline() {
+        let mut bus = Bus::new();
+        {
+            let mut owner = InvocationOwner::begin(&mut bus);
+            owner.bus().insert(ranvier_core::timeline::Timeline::new());
+        }
+        assert!(bus.read::<ranvier_core::timeline::Timeline>().is_none());
+        bus.insert(ranvier_core::timeline::Timeline::new());
+        {
+            let _owner = InvocationOwner::begin(&mut bus);
+        }
+        assert!(bus.read::<ranvier_core::timeline::Timeline>().is_some());
+    }
+
+    #[test]
     fn invocation_owner_restores_caller_state_during_unwind() {
         let mut bus = Bus::new();
         bus.insert(PersistenceHandle::from_store(
@@ -529,16 +544,19 @@ pub(crate) struct InvocationOwner<'a> {
     bus: &'a mut Bus,
     session: Option<Session>,
     token: Option<ranvier_core::cancellation::CancellationToken>,
+    caller_timeline: bool,
 }
 
 impl<'a> InvocationOwner<'a> {
     pub(crate) fn begin(bus: &'a mut Bus) -> Self {
         let token = bus.cancellation_token().cloned();
+        let caller_timeline = bus.read::<ranvier_core::timeline::Timeline>().is_some();
         let session = Session::begin(bus);
         Self {
             bus,
             session: Some(session),
             token,
+            caller_timeline,
         }
     }
     pub(crate) fn bus(&mut self) -> &mut Bus {
@@ -562,5 +580,8 @@ impl Drop for InvocationOwner<'_> {
             session.restore(self.bus);
         }
         self.bus.replace_cancellation_token(self.token.take());
+        if !self.caller_timeline {
+            let _ = self.bus.remove::<ranvier_core::timeline::Timeline>();
+        }
     }
 }
