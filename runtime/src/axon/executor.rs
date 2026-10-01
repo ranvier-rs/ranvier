@@ -22,6 +22,63 @@ use crate::persistence::{
     PersistenceHandle,
 };
 
+/// Apply the same configured IAM boundary before ordinary and streaming effects.
+pub(crate) async fn check_iam_boundary(
+    iam_handle: &Option<ranvier_core::iam::IamHandle>,
+    bus: &mut Bus,
+) -> Option<&'static str> {
+    if let Some(iam) = iam_handle {
+        use ranvier_core::iam::{IamIdentity, IamPolicy, IamToken, enforce_policy};
+
+        if matches!(iam.policy, IamPolicy::None) {
+            // No verification required — skip
+        } else {
+            // Required verification cannot reuse a previous request's identity.
+            bus.remove::<IamIdentity>();
+            if bus.has::<IamIdentity>() {
+                return Some("iam.context_clear_failed");
+            }
+            let token = bus.read::<IamToken>().map(|t| t.0.clone());
+
+            match token {
+                Some(raw_token) => {
+                    use futures_util::FutureExt as _;
+                    let verification =
+                        AssertUnwindSafe(async { iam.verifier.verify(&raw_token).await })
+                            .catch_unwind()
+                            .await;
+                    match verification {
+                        Ok(Ok(identity)) => {
+                            if enforce_policy(&iam.policy, &identity).is_err() {
+                                tracing::warn!("IAM policy enforcement failed");
+                                return Some("iam.policy_denied");
+                            }
+                            // Insert verified identity into Bus for downstream access
+                            if bus.try_insert_shared(identity).is_err() {
+                                return Some("iam.context_write_denied");
+                            }
+                        }
+                        Ok(Err(_)) => {
+                            tracing::warn!("IAM token verification failed");
+                            return Some("iam.verification_failed");
+                        }
+                        Err(_) => {
+                            tracing::warn!("IAM verifier panicked");
+                            return Some("iam.verifier_panicked");
+                        }
+                    }
+                }
+                None => {
+                    tracing::warn!("IAM policy requires token but none found in Bus");
+                    return Some("iam.missing_token");
+                }
+            }
+        }
+    }
+
+    None
+}
+
 impl<In, Out, E, Res> Axon<In, Out, E, Res>
 where
     In: Send + Sync + Serialize + DeserializeOwned + 'static,
@@ -134,54 +191,8 @@ where
             }
         }
 
-        // ── IAM Boundary Check ────────────────────────────────────
-        if let Some(iam) = &self.iam_handle {
-            use ranvier_core::iam::{IamIdentity, IamPolicy, IamToken, enforce_policy};
-
-            if matches!(iam.policy, IamPolicy::None) {
-                // No verification required — skip
-            } else {
-                // Required verification cannot reuse a previous request's identity.
-                bus.remove::<IamIdentity>();
-                if bus.has::<IamIdentity>() {
-                    return Outcome::emit("iam.context_clear_failed", None);
-                }
-                let token = bus.read::<IamToken>().map(|t| t.0.clone());
-
-                match token {
-                    Some(raw_token) => {
-                        use futures_util::FutureExt as _;
-                        let verification =
-                            AssertUnwindSafe(async { iam.verifier.verify(&raw_token).await })
-                                .catch_unwind()
-                                .await;
-                        match verification {
-                            Ok(Ok(identity)) => {
-                                if enforce_policy(&iam.policy, &identity).is_err() {
-                                    tracing::warn!("IAM policy enforcement failed");
-                                    return Outcome::emit("iam.policy_denied", None);
-                                }
-                                // Insert verified identity into Bus for downstream access
-                                if bus.try_insert_shared(identity).is_err() {
-                                    return Outcome::emit("iam.context_write_denied", None);
-                                }
-                            }
-                            Ok(Err(_)) => {
-                                tracing::warn!("IAM token verification failed");
-                                return Outcome::emit("iam.verification_failed", None);
-                            }
-                            Err(_) => {
-                                tracing::warn!("IAM verifier panicked");
-                                return Outcome::emit("iam.verifier_panicked", None);
-                            }
-                        }
-                    }
-                    None => {
-                        tracing::warn!("IAM policy requires token but none found in Bus");
-                        return Outcome::emit("iam.missing_token", None);
-                    }
-                }
-            }
+        if let Some(event) = check_iam_boundary(&self.iam_handle, bus).await {
+            return Outcome::emit(event, None);
         }
 
         let trace_id = persistence_trace_id(bus);

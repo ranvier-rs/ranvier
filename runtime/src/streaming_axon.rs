@@ -62,6 +62,8 @@ type StreamExecutor<In, Item, E, Res> = Arc<
 /// Errors that can occur during streaming pipeline execution.
 #[derive(Debug)]
 pub enum StreamingAxonError<E> {
+    /// Configured IAM rejected initialization before any prefix or stream effect.
+    IamRejected(&'static str),
     /// The prefix Axon produced a Fault outcome.
     PipelineFault(E),
     /// The prefix Axon produced a non-Next outcome (Branch/Jump/Emit).
@@ -95,6 +97,7 @@ pub enum StreamTimeoutKind {
 impl<E: Debug> std::fmt::Display for StreamingAxonError<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::IamRejected(event) => write!(f, "IAM rejected: {event}"),
             Self::PipelineFault(e) => write!(f, "Pipeline fault: {:?}", e),
             Self::UnexpectedOutcome(msg) => write!(f, "Unexpected outcome: {}", msg),
             Self::StreamInitError(msg) => write!(f, "Stream init error: {}", msg),

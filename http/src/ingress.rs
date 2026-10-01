@@ -3246,6 +3246,15 @@ where
                         Err(CancellableStreamingError::Cancelled(context)) => {
                             return cancellation_http_response(&context);
                         }
+                        Err(CancellableStreamingError::Stream(
+                            ranvier_runtime::streaming_axon::StreamingAxonError::IamRejected(event),
+                        )) => {
+                            if let Some(response) = crate::service::iam_failure_response(event) {
+                                return response.map(BodyExt::boxed);
+                            }
+                            return json_error_response(StatusCode::INTERNAL_SERVER_ERROR,
+                                "IAM initialization failed");
+                        }
                         Err(CancellableStreamingError::Stream(_)) => {
                             tracing::error!(failure_source = "stream_init", "Streaming initialization failed");
                             return json_error_response(StatusCode::INTERNAL_SERVER_ERROR,

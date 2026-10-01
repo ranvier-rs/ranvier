@@ -1377,6 +1377,7 @@ where
         let Axon {
             mut schematic,
             executor: prev_executor,
+            iam_handle,
             ..
         } = self;
 
@@ -1429,8 +1430,12 @@ where
             > {
                 let prev = prev_executor.clone();
                 let streaming = streaming.clone();
+                let iam = iam_handle.clone();
 
                 Box::pin(async move {
+                    if let Some(event) = super::executor::check_iam_boundary(&iam, bus).await {
+                        return Err(StreamingAxonError::IamRejected(event));
+                    }
                     // Execute prefix Axon
                     let outcome = prev(input, res, bus).await;
 
