@@ -75,11 +75,13 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
+// Encode every byte: distinct route strings must never share a cache key.
 fn route_slot(route: &str) -> String {
     route
-        .trim_start_matches('/')
-        .replace('/', ":")
-        .replace(['?', '&'], "_")
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -96,6 +98,18 @@ impl Transition<SessionRequest, SessionContext> for LoadSessionTransition {
         resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<SessionContext, Self::Error> {
+        bus.remove::<UserSession>();
+        if input.sid.is_empty()
+            || input.sid.len() > 128
+            || !input
+                .sid
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            || !input.route.starts_with('/')
+            || input.route.len() > 2048
+        {
+            return Outcome::Fault("Invalid session request".into());
+        }
         let mut redis = resources.redis.clone();
         let session_key = format!("{}:session:{}", resources.key_prefix, input.sid);
 
@@ -206,14 +220,13 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
 
     let client = redis::Client::open(redis_url.clone())?;
-    let manager = match redis::aio::ConnectionManager::new(client).await {
-        Ok(manager) => manager,
-        Err(err) => {
-            println!("redis unavailable (url={}): {}", redis_url, err);
-            println!("skip live cache/session flow");
-            return Ok(());
-        }
-    };
+    let manager = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        redis::aio::ConnectionManager::new(client),
+    )
+    .await
+    .map_err(|_| anyhow!("Redis connection timed out"))?
+    .map_err(|_| anyhow!("Redis connection failed"))?;
 
     let prefix = format!("ranvier:m132:redis-demo:{}", now_ms());
     let resources = AppResources {
@@ -279,16 +292,28 @@ async fn main() -> Result<()> {
     }
 
     let mut cleanup = manager.clone();
-    let pattern = format!("{}:*", prefix);
-    let keys: Vec<String> = redis::cmd("KEYS")
-        .arg(&pattern)
-        .query_async(&mut cleanup)
-        .await
-        .unwrap_or_default();
-    if !keys.is_empty() {
-        let _: usize = cleanup.del(keys).await?;
-    }
+    let keys = vec![
+        format!("{prefix}:session:sid_demo_1"),
+        format!("{prefix}:resp:sid_demo_1:{}", route_slot("/profile")),
+        format!(
+            "{prefix}:resp:sid_demo_1:{}",
+            route_slot("/profile/settings")
+        ),
+    ];
+    let _: usize = cleanup.del(keys).await?;
 
     println!("done");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn route_encoding_preserves_distinct_cache_identity() {
+        let routes = ["/a/b", "/a:b", "/a?b", "/a&b", "a/b", "//a/b", "/한글"];
+        let keys: std::collections::HashSet<_> =
+            routes.iter().map(|route| route_slot(route)).collect();
+        assert_eq!(keys.len(), routes.len());
+    }
 }
