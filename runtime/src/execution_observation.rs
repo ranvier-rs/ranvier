@@ -39,6 +39,80 @@ mod tests {
     }
 
     #[test]
+    fn nested_token_restores_exact_storage_on_finish_or_drop() {
+        use ranvier_core::iam::IamToken;
+        for mode in 0..5 {
+            for finish in [false, true] {
+                let mut root = Bus::new();
+                if mode == 1 {
+                    root.insert(IamToken("parent-fixture-token".into()));
+                }
+                if mode >= 2 {
+                    root.insert_shared(IamToken("parent-fixture-token".into()));
+                }
+                let mut fork = if mode >= 3 {
+                    Some(root.fork_for_parallel())
+                } else {
+                    None
+                };
+                let bus = if mode == 4 {
+                    fork.as_mut().unwrap()
+                } else {
+                    &mut root
+                };
+                let mut parent = InvocationOwner::begin(bus);
+                let ptr = parent
+                    .bus()
+                    .read::<IamToken>()
+                    .map(|v| v as *const IamToken);
+                {
+                    let mut child = InvocationOwner::begin(parent.bus());
+                    if mode >= 3 {
+                        assert!(child.bus().remove::<IamToken>().is_none());
+                    }
+                    child
+                        .bus()
+                        .insert_shared(IamToken("child-fixture-token".into()));
+                    if finish {
+                        let _ = child.finish(());
+                    }
+                }
+                assert_eq!(
+                    parent
+                        .bus()
+                        .read::<IamToken>()
+                        .map(|v| v as *const IamToken),
+                    ptr
+                );
+                assert_eq!(
+                    parent.bus().read::<IamToken>().map(|v| v.0.as_str()),
+                    if mode == 0 {
+                        None
+                    } else {
+                        Some("parent-fixture-token")
+                    }
+                );
+                assert_eq!(
+                    parent
+                        .bus()
+                        .fork_for_parallel()
+                        .read::<IamToken>()
+                        .is_some(),
+                    mode >= 2
+                );
+                drop(parent);
+                if mode >= 3 {
+                    assert_eq!(root.read::<IamToken>().unwrap().0, "parent-fixture-token");
+                    assert_eq!(
+                        fork.as_ref().unwrap().read::<IamToken>().unwrap().0,
+                        "parent-fixture-token"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn nested_identity_restores_presence_storage_and_absence_after_finish_or_drop() {
         use ranvier_core::iam::IamIdentity;
         for present in [false, true] {

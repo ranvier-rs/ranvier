@@ -3586,7 +3586,10 @@ mod tests {
         type Error = String;
         type Resources = ();
         fn bus_access_policy(&self) -> Option<BusAccessPolicy> {
-            Some(BusAccessPolicy::allow_only(vec![BusTypeRef::of::<i32>()]))
+            Some(BusAccessPolicy::allow_only(vec![
+                BusTypeRef::of::<i32>(),
+                BusTypeRef::of::<ranvier_core::iam::IamToken>(),
+            ]))
         }
         async fn run(&self, _: i32, _: &(), bus: &mut Bus) -> Outcome<i32, String> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3594,6 +3597,10 @@ mod tests {
                 bus.get::<String>(),
                 Err(BusAccessError::Unauthorized { .. })
             ));
+            bus.try_insert(ranvier_core::iam::IamToken(
+                "child-terminal-fixture-token".into(),
+            ))
+            .unwrap();
             if self.panic {
                 panic!("synthetic_nested_panic");
             }
@@ -3625,6 +3632,7 @@ mod tests {
             Some(BusAccessPolicy::deny_only(vec![BusTypeRef::of::<String>()]))
         }
         async fn run(&self, input: i32, _: &(), bus: &mut Bus) -> Outcome<i32, String> {
+            let parent_token = bus.read::<ranvier_core::iam::IamToken>().unwrap().0.clone();
             let parent_identity =
                 serde_json::to_value(bus.read::<ranvier_core::iam::IamIdentity>().unwrap())
                     .unwrap();
@@ -3668,6 +3676,10 @@ mod tests {
                     if context.reason == CancellationReason::Explicit));
                 assert!(!bus.cancellation_token().unwrap().is_cancelled());
             }
+            assert_eq!(
+                bus.read::<ranvier_core::iam::IamToken>().unwrap().0,
+                parent_token
+            );
             assert_eq!(
                 serde_json::to_value(bus.read::<ranvier_core::iam::IamIdentity>().unwrap())
                     .unwrap(),
