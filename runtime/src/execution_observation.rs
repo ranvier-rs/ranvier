@@ -276,6 +276,7 @@ pub(crate) struct Session {
 impl Session {
     pub(crate) fn begin(bus: &mut Bus) -> Self {
         let _ = bus.remove::<crate::saga_report::SagaRollbackReport>();
+        let _ = bus.remove::<crate::saga_report::SagaRollbackJournal>();
         let original = bus.read::<PersistenceHandle>().cloned();
         let original_compensation = bus.read::<CompensationIdempotencyHandle>().cloned();
         let previous = bus.read::<ActiveObservation>().cloned();

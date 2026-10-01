@@ -42,3 +42,48 @@ impl SagaRollbackReport {
                 .all(|step| step.outcome == SagaRollbackOutcome::Completed)
     }
 }
+
+/// Invocation-owned cleanup journal. Cloning this handle does not copy steps.
+/// Call snapshot to obtain an owned serializable report, including partial work.
+#[derive(Debug, Clone)]
+pub struct SagaRollbackJournal(std::sync::Arc<std::sync::Mutex<SagaRollbackReport>>);
+
+impl SagaRollbackJournal {
+    pub(crate) fn new(trace_id: &str) -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(
+            SagaRollbackReport {
+                trace_id: trace_id.to_string(),
+                finished: false,
+                steps: Vec::new(),
+            },
+        )))
+    }
+    pub fn snapshot(&self) -> SagaRollbackReport {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+    pub(crate) fn push(&self, node_id: String, outcome: SagaRollbackOutcome) {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .steps
+            .push(SagaRollbackStep { node_id, outcome });
+    }
+    pub(crate) fn settle(&self, outcome: SagaRollbackOutcome) {
+        let mut report = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(step) = report.steps.last_mut() {
+            step.outcome = outcome;
+        }
+    }
+    pub(crate) fn finish(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .finished = true;
+    }
+}

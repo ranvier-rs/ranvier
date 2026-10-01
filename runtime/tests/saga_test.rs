@@ -545,7 +545,7 @@ impl Transition<SagaState, ()> for PendingUndo {
 
 #[tokio::test]
 async fn dropped_pending_rollback_retains_in_progress_without_completed_claim() {
-    use ranvier_runtime::saga_report::{SagaRollbackOutcome, SagaRollbackReport};
+    use ranvier_runtime::saga_report::SagaRollbackOutcome;
     let started = Arc::new(tokio::sync::Notify::new());
     let axon = Axon::<SagaState, SagaState, String>::new("PendingRollback")
         .with_saga_policy(SagaPolicy::Enabled)
@@ -572,7 +572,10 @@ async fn dropped_pending_rollback_retains_in_progress_without_completed_claim() 
         // Dropping the polled executor releases its Bus borrow. No ACK or
         // known cleanup completion follows this interruption.
     }
-    let report = bus.read::<SagaRollbackReport>().unwrap();
+    let report = bus
+        .read::<ranvier_runtime::saga_report::SagaRollbackJournal>()
+        .unwrap()
+        .snapshot();
     assert!(!report.finished);
     assert!(!report.is_complete());
     assert_eq!(report.steps.len(), 1);
