@@ -92,6 +92,37 @@ mod tests {
         );
         assert_eq!(bus.get::<String>().unwrap(), "private-value");
     }
+    // This transition deliberately attempts denied operations for a guard test;
+    // its unit outcome is not acknowledgement of the attempted String writes.
+    #[transition(bus_allow = [i32], bus_deny = [String])]
+    async fn attempt_guarded_writes(_state: (), bus: &mut Bus) -> Outcome<(), String> {
+        bus.insert(42_i32);
+        bus.insert("denied-local".to_string());
+        bus.insert_shared("denied-shared".to_string());
+        bus.provide("denied-provide".to_string());
+        bus.provide_shared("denied-provide-shared".to_string());
+        Outcome::Next(())
+    }
+
+    #[tokio::test]
+    async fn macro_policy_blocks_write_aliases_and_preserves_existing_storage() {
+        for shared in [false, true] {
+            let mut bus = Bus::new();
+            if shared {
+                bus.insert_shared("original".to_string());
+            } else {
+                bus.insert("original".to_string());
+            }
+            let axon = Axon::simple::<String>("guarded-write-test").then(attempt_guarded_writes);
+            assert!(matches!(
+                local_demo_outcome(axon.execute((), &(), &mut bus).await).unwrap(),
+                Outcome::Next(())
+            ));
+            assert_eq!(bus.get::<String>().unwrap(), "original");
+            assert_eq!(*bus.get::<i32>().unwrap(), 42);
+        }
+    }
+
     #[tokio::test]
     async fn missing_allowed_capability_is_fault() {
         let axon = Axon::simple::<String>("missing").then(allowed_read);
