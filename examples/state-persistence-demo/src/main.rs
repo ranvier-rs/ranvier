@@ -48,6 +48,32 @@ use ranvier_runtime::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+fn recorded_outcome<T>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, String>>,
+    complete: bool,
+) -> anyhow::Result<Outcome<T, String>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Cleanup requires reconciliation");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Recorded {
+            result, completion, ..
+        } if completion
+            == if complete {
+                ranvier_runtime::CompletionConfirmation::Confirmed
+            } else {
+                ranvier_runtime::CompletionConfirmation::NotRequested
+            } =>
+        {
+            Ok(result)
+        }
+        _ => anyhow::bail!("Persistence report requires reconciliation before retry"),
+    }
+}
+
 // ============================================================================
 // Domain Types
 // ============================================================================
@@ -200,7 +226,7 @@ async fn main() -> anyhow::Result<()> {
         should_fail_payment: true,
     };
 
-    let outcome = axon.execute(input, &(), &mut bus).await;
+    let outcome = recorded_outcome(axon.execute(input, &(), &mut bus).await, false)?;
     match &outcome {
         Outcome::Fault(e) => println!("  Outcome: FAULT — {}", e),
         Outcome::Next(t) => println!("  Outcome: SUCCESS — {}", t),
@@ -243,7 +269,7 @@ async fn main() -> anyhow::Result<()> {
         should_fail_payment: false,
     };
 
-    let outcome = axon.execute(input, &(), &mut bus).await;
+    let outcome = recorded_outcome(axon.execute(input, &(), &mut bus).await, true)?;
     match &outcome {
         Outcome::Next(tracking) => println!("  Outcome: SUCCESS — {}", tracking),
         Outcome::Fault(e) => println!("  Outcome: FAULT — {}", e),
@@ -276,7 +302,7 @@ async fn main() -> anyhow::Result<()> {
         should_fail_payment: true,
     };
 
-    let outcome = axon.execute(input, &(), &mut bus).await;
+    let outcome = recorded_outcome(axon.execute(input, &(), &mut bus).await, true)?;
     match &outcome {
         Outcome::Fault(e) => println!("  Outcome: FAULT — {} (compensation executed)", e),
         _ => println!("  Outcome: unexpected"),
