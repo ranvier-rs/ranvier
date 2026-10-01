@@ -4018,16 +4018,42 @@ mod tests {
 
         #[tokio::test(flavor = "current_thread")]
         async fn iam_denial_logs_and_payloads_redact_private_context() {
+            // Tracing callsite interest is process-global. Other parallel tests
+            // exercise these same IAM callsites without a subscriber; isolate
+            // capture in a child harness while preserving the complete matrix.
+            const ISOLATED: &str = "RANVIER_IAM_CAPTURE_ISOLATED";
+            if std::env::var_os(ISOLATED).is_none() {
+                let result = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "axon::tests::iam_tests::iam_denial_logs_and_payloads_redact_private_context", "--test-threads=1"])
+                    .env(ISOLATED, "1")
+                    .output().unwrap();
+                assert!(
+                    result.status.success(),
+                    "isolated IAM capture failed: {} {}",
+                    String::from_utf8_lossy(&result.stdout),
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                let transcript = String::from_utf8_lossy(&result.stdout);
+                assert!(
+                    transcript.contains("running 1 test")
+                        && transcript.contains("1 passed; 0 failed"),
+                    "isolated IAM capture must actually run exactly one passing test"
+                );
+                return;
+            }
+
+            use tracing::instrument::WithSubscriber;
+
             let logs = Arc::new(StdMutex::new(Vec::new()));
             let writer_logs = logs.clone();
             let subscriber = tracing_subscriber::fmt()
                 .without_time()
                 .with_ansi(false)
                 .with_target(false)
+                .with_max_level(tracing::Level::TRACE)
                 .with_writer(move || CapturedLogWriter(writer_logs.clone()))
                 .finish();
-            {
-                let _guard = tracing::subscriber::set_default(subscriber);
+            async {
                 for cancellable in [false, true] {
                     for (policy, fail, token, shared, inherited, expected) in [
                         (
@@ -4144,6 +4170,8 @@ mod tests {
                     }
                 }
             }
+            .with_subscriber(subscriber)
+            .await;
             let output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
             for message in [
                 "IAM policy requires token",
