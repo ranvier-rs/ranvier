@@ -1087,6 +1087,7 @@ async fn run_compensation(
     context: CompensationContext,
     retry_policy: CompensationRetryPolicy,
     idempotency: Option<CompensationIdempotencyHandle>,
+    observation: Option<Arc<crate::execution_observation::Observation>>,
 ) -> bool {
     let hook = handle.hook();
     let key = compensation_idempotency_key(&context);
@@ -1117,6 +1118,9 @@ async fn run_compensation(
 
     let max_attempts = retry_policy.max_attempts.max(1);
     for attempt in 1..=max_attempts {
+        if let Some(observation) = &observation {
+            observation.effect();
+        }
         match hook.compensate(context.clone()).await {
             Ok(()) => {
                 if let Some(store_handle) = idempotency.as_ref() {
@@ -1658,6 +1662,7 @@ mod tests {
                     timestamp_ms: 0,
                 },
                 CompensationRetryPolicy::default(),
+                None,
                 None,
             )
             .await;
@@ -2221,9 +2226,10 @@ mod tests {
 
         let axon = Axon::<i32, i32, String>::start("IdempotencyStoreFailure").then(AlwaysFault);
         let outcome = axon.execute(9, &(), &mut bus).await;
-        let crate::ExecutionReport::Recorded {
+        let crate::ExecutionReport::Unconfirmed {
             result: outcome,
-            completion: crate::CompletionConfirmation::Confirmed,
+            operation: crate::PersistenceOperation::CompensationRead,
+            effect: crate::EffectBoundary::MayHaveRun,
         } = outcome
         else {
             panic!("unexpected execution durability");

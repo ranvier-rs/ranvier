@@ -155,34 +155,66 @@ impl PersistenceStore for ObservedStore {
 #[derive(Clone)]
 pub(crate) struct ActiveObservation(pub(crate) Arc<Observation>);
 
+pub(crate) struct ObservedCompensationStore {
+    pub(crate) inner: Arc<dyn CompensationIdempotencyStore>,
+    pub(crate) observation: Arc<Observation>,
+}
+#[async_trait::async_trait]
+impl CompensationIdempotencyStore for ObservedCompensationStore {
+    async fn was_compensated(&self, key: &str) -> anyhow::Result<bool> {
+        let call = ObservedCall::new(&self.observation, PersistenceOperation::CompensationRead);
+        let result = self.inner.was_compensated(key).await;
+        call.finish(&result);
+        result
+    }
+    async fn mark_compensated(&self, key: &str) -> anyhow::Result<()> {
+        self.observation
+            .attempted_write
+            .store(true, Ordering::SeqCst);
+        let call = ObservedCall::new(&self.observation, PersistenceOperation::CompensationWrite);
+        let result = self.inner.mark_compensated(key).await;
+        call.finish(&result);
+        result
+    }
+}
+
 pub(crate) struct Session {
     original: Option<PersistenceHandle>,
+    original_compensation: Option<CompensationIdempotencyHandle>,
     previous: Option<ActiveObservation>,
     observation: Arc<Observation>,
 }
 impl Session {
     pub(crate) fn begin(bus: &mut Bus) -> Self {
         let original = bus.read::<PersistenceHandle>().cloned();
+        let original_compensation = bus.read::<CompensationIdempotencyHandle>().cloned();
         let previous = bus.read::<ActiveObservation>().cloned();
         let observation = Arc::new(Observation::default());
         if let Some(handle) = &original {
             bus.insert(handle.observed(observation.clone()));
         }
+        if let Some(handle) = &original_compensation {
+            bus.insert(handle.observed(observation.clone()));
+        }
         bus.insert(ActiveObservation(observation.clone()));
         Self {
             original,
+            original_compensation,
             previous,
             observation,
         }
     }
     pub(crate) fn finish<T>(self, bus: &mut Bus, result: T) -> ExecutionReport<T> {
         bus.clear_access_policy();
-        let report = if self.original.is_some() {
+        let report = if self.original.is_some() || self.original_compensation.is_some() {
             self.observation.report(result)
         } else {
             ExecutionReport::Unpersisted { result }
         };
         if let Some(original) = self.original {
+            bus.insert(original);
+        }
+        if let Some(original) = self.original_compensation {
             bus.insert(original);
         }
         if let Some(previous) = self.previous {

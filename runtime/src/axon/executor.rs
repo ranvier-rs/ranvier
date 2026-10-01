@@ -560,6 +560,8 @@ where
                     context,
                     compensation_retry_policy,
                     compensation_idempotency.clone(),
+                    bus.read::<crate::execution_observation::ActiveObservation>()
+                        .map(|active| active.0.clone()),
                 )
                 .await
                 {
@@ -754,6 +756,8 @@ where
                 compensation_context,
                 compensation_retry_policy,
                 compensation_idempotency,
+                bus.read::<crate::execution_observation::ActiveObservation>()
+                    .map(|active| active.0.clone()),
             )
             .await
             {

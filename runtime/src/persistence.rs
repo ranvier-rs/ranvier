@@ -201,6 +201,7 @@ pub trait CompensationIdempotencyStore: Send + Sync {
 #[derive(Clone)]
 pub struct CompensationIdempotencyHandle {
     inner: Arc<dyn CompensationIdempotencyStore>,
+    observation: Option<Arc<crate::execution_observation::Observation>>,
 }
 
 impl std::fmt::Debug for CompensationIdempotencyHandle {
@@ -217,15 +218,37 @@ impl CompensationIdempotencyHandle {
     {
         Self {
             inner: Arc::new(store),
+            observation: None,
         }
     }
 
     pub fn from_arc(store: Arc<dyn CompensationIdempotencyStore>) -> Self {
-        Self { inner: store }
+        Self {
+            inner: store,
+            observation: None,
+        }
     }
 
     pub fn store(&self) -> Arc<dyn CompensationIdempotencyStore> {
-        self.inner.clone()
+        match &self.observation {
+            None => self.inner.clone(),
+            Some(observation) => {
+                Arc::new(crate::execution_observation::ObservedCompensationStore {
+                    inner: self.inner.clone(),
+                    observation: observation.clone(),
+                })
+            }
+        }
+    }
+
+    pub(crate) fn observed(
+        &self,
+        observation: Arc<crate::execution_observation::Observation>,
+    ) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            observation: Some(observation),
+        }
     }
 }
 
