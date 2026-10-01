@@ -23,6 +23,34 @@ mod tests {
     use super::*;
     use futures_util::FutureExt;
 
+    #[test]
+    fn invocation_owner_restores_caller_state_during_unwind() {
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_store(
+            InMemoryPersistenceStore::new(),
+        ));
+        let original = bus.read::<PersistenceHandle>().unwrap().store();
+        let parent = ranvier_core::cancellation::CancellationToken::new();
+        bus.set_cancellation_token(parent.clone());
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut owner = InvocationOwner::begin(&mut bus);
+            owner
+                .bus()
+                .set_cancellation_token(ranvier_core::cancellation::CancellationToken::new());
+            assert!(owner.bus().read::<InvocationTrace>().is_some());
+            panic!("injected invocation unwind");
+        }));
+        assert!(unwind.is_err());
+        assert!(Arc::ptr_eq(
+            &original,
+            &bus.read::<PersistenceHandle>().unwrap().store()
+        ));
+        assert!(bus.read::<InvocationTrace>().is_none());
+        assert!(bus.read::<ActiveObservation>().is_none());
+        parent.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
+        assert!(bus.cancellation_token().unwrap().is_cancelled());
+    }
+
     struct AppliedWithoutAck {
         backing: InMemoryCompensationIdempotencyStore,
         pending: bool,
