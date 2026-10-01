@@ -629,7 +629,7 @@ where
             backoff_ms,
         } = p
         {
-            Some((*max_attempts, *backoff_ms))
+            Some(((*max_attempts).max(1), *backoff_ms))
         } else {
             None
         }
@@ -665,6 +665,7 @@ where
         .await;
     bus.clear_access_policy();
 
+    let mut executed_attempts = 1;
     // DLQ Retry loop: if first attempt faulted and RetryThenDlq is configured,
     // retry with exponential backoff before giving up.
     let result = if let Outcome::Fault(_) = &result {
@@ -674,6 +675,11 @@ where
             let mut final_result = result;
             // attempt 1 already done; retry from 2..=max_attempts
             for attempt in 2..=max_attempts {
+                // A configured retry is not an invocation until typed input can
+                // be restored. Preserve the original fault without fake waits.
+                let Ok(retry_state) = serde_json::from_value::<In>(snapshot.clone()) else {
+                    break;
+                };
                 let delay = backoff_ms.saturating_mul(2u64.saturating_pow(attempt - 2));
 
                 tracing::info!(
@@ -696,7 +702,8 @@ where
 
                 tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
 
-                if let Ok(retry_state) = serde_json::from_value::<In>(snapshot.clone()) {
+                {
+                    executed_attempts = attempt;
                     bus.set_access_policy(label.clone(), bus_policy.clone());
                     let retry_result = trans
                         .run(retry_state, res, bus)
@@ -818,12 +825,12 @@ where
         };
 
         if let Some(sink) = dlq_action {
-            if let Some((max_attempts, _)) = dlq_retry_config
+            if dlq_retry_config.is_some()
                 && let Some(timeline) = bus.read_mut::<Timeline>()
             {
                 timeline.push(TimelineEvent::DlqExhausted {
                     node_id: node_id.to_string(),
-                    total_attempts: max_attempts,
+                    total_attempts: executed_attempts,
                     timestamp: now_ms(),
                 });
             }
@@ -2907,6 +2914,76 @@ mod tests {
             self.letters.lock().await.push(entry);
             Ok(())
         }
+    }
+
+    #[derive(Clone, Debug, serde::Deserialize)]
+    struct UnrestorableRetryInput(i32);
+
+    impl serde::Serialize for UnrestorableRetryInput {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_str("incompatible-input")
+        }
+    }
+
+    #[derive(Clone)]
+    struct UnrestorableRetryTransition(Arc<std::sync::atomic::AtomicU32>);
+
+    #[async_trait]
+    impl Transition<UnrestorableRetryInput, i32> for UnrestorableRetryTransition {
+        type Error = String;
+        type Resources = ();
+        async fn run(
+            &self,
+            input: UnrestorableRetryInput,
+            _: &(),
+            _: &mut Bus,
+        ) -> Outcome<i32, String> {
+            assert_eq!(input.0, 7);
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Outcome::Fault("original_fault".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_unrestorable_input_preserves_fault_and_actual_count() {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let sink = MockDlqSink {
+            letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
+        let axon =
+            Axon::<UnrestorableRetryInput, UnrestorableRetryInput, String>::start("unrestorable")
+                .then(UnrestorableRetryTransition(calls.clone()))
+                .with_dlq_policy(DlqPolicy::RetryThenDlq {
+                    max_attempts: u32::MAX,
+                    backoff_ms: u64::MAX,
+                })
+                .with_dlq_sink(sink.clone());
+        let mut bus = Bus::new();
+        bus.insert(Timeline::new());
+        let report = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            axon.execute(UnrestorableRetryInput(7), &(), &mut bus),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(report, crate::ExecutionReport::Unpersisted {
+            result: Outcome::Fault(error), .. } if error == "original_fault"));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let timeline = bus.read::<Timeline>().unwrap();
+        assert!(
+            !timeline
+                .events
+                .iter()
+                .any(|event| matches!(event, TimelineEvent::NodeRetry { .. }))
+        );
+        assert!(timeline.events.iter().any(|event| matches!(
+            event,
+            TimelineEvent::DlqExhausted {
+                total_attempts: 1,
+                ..
+            }
+        )));
+        assert_eq!(sink.letters.lock().await.len(), 1);
     }
 
     #[tokio::test]
