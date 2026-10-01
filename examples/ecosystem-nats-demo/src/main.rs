@@ -19,7 +19,6 @@ use futures_util::StreamExt;
 use ranvier_core::event::{EventSink, EventSource};
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, timeout};
 
 // Explicit local-demo policy: neither persisted nor incomplete cleanup results
@@ -41,16 +40,15 @@ fn local_demo_outcome<T, E>(
 
 #[derive(Clone)]
 struct AppResources {
-    nats: async_nats::Client,
     inbound_subject: String,
     outbound_subject: String,
 }
 
-fn now_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
+const MAX_EVENT_BYTES: usize = 65536;
+#[derive(Clone)]
+struct RouteContext {
+    inbound: String,
+    outbound: String,
 }
 
 struct NatsSubjectSource {
@@ -58,12 +56,14 @@ struct NatsSubjectSource {
 }
 
 #[async_trait]
-impl EventSource<String> for NatsSubjectSource {
-    async fn next_event(&mut self) -> Option<String> {
-        self.subscriber
-            .next()
-            .await
-            .and_then(|message| String::from_utf8(message.payload.to_vec()).ok())
+impl EventSource<Result<String, String>> for NatsSubjectSource {
+    async fn next_event(&mut self) -> Option<Result<String, String>> {
+        self.subscriber.next().await.map(|message| {
+            if message.payload.len() > MAX_EVENT_BYTES {
+                return Err("Inbound event too large".into());
+            }
+            String::from_utf8(message.payload.to_vec()).map_err(|_| "Invalid inbound UTF-8".into())
+        })
     }
 }
 
@@ -78,11 +78,17 @@ impl EventSink<String> for NatsSubjectSink {
     type Error = String;
 
     async fn send_event(&self, event: String) -> Result<(), Self::Error> {
+        if event.len() > MAX_EVENT_BYTES {
+            return Err("Outbound event too large".into());
+        }
         self.client
             .publish(self.subject.clone(), Bytes::from(event))
             .await
-            .map_err(|e| e.to_string())?;
-        self.client.flush().await.map_err(|e| e.to_string())?;
+            .map_err(|_| "Publication requires reconciliation".to_owned())?;
+        self.client
+            .flush()
+            .await
+            .map_err(|_| "Publication requires reconciliation".to_owned())?;
         Ok(())
     }
 }
@@ -107,13 +113,27 @@ impl Transition<String, ParsedEvent> for ParseEventTransition {
         resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<ParsedEvent, Self::Error> {
-        let mut parts = input.splitn(2, ':');
-        let kind = parts.next().unwrap_or("unknown").trim().to_string();
-        let payload = parts.next().unwrap_or("").trim().to_string();
-        bus.insert(format!(
-            "route {} -> {}",
-            resources.inbound_subject, resources.outbound_subject
-        ));
+        if input.len() > MAX_EVENT_BYTES {
+            return Outcome::Fault("Inbound event too large".into());
+        }
+        let Some((kind, payload)) = input.split_once(':') else {
+            return Outcome::Fault("Invalid event format".into());
+        };
+        let kind = kind.trim().to_string();
+        let payload = payload.trim().to_string();
+        if kind.is_empty()
+            || kind.len() > 128
+            || !kind
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+            || payload.is_empty()
+        {
+            return Outcome::Fault("Invalid event format".into());
+        }
+        bus.insert(RouteContext {
+            inbound: resources.inbound_subject.clone(),
+            outbound: resources.outbound_subject.clone(),
+        });
         Outcome::Next(ParsedEvent { kind, payload })
     }
 }
@@ -132,11 +152,15 @@ impl Transition<ParsedEvent, String> for ProjectToSinkTransition {
         resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<String, Self::Error> {
-        let _client = resources.nats.clone();
-        let route = bus
-            .read::<String>()
-            .cloned()
-            .unwrap_or_else(|| "route unknown".to_string());
+        let Some(route) = bus.read::<RouteContext>() else {
+            return Outcome::Fault("Route context missing".into());
+        };
+        if route.inbound != resources.inbound_subject
+            || route.outbound != resources.outbound_subject
+        {
+            return Outcome::Fault("Route context mismatch".into());
+        }
+        let route = format!("route {} -> {}", route.inbound, route.outbound);
         let projection = format!(
             "projection kind={} payload={} via={} target={}",
             input.kind.to_uppercase(),
@@ -144,6 +168,9 @@ impl Transition<ParsedEvent, String> for ProjectToSinkTransition {
             route,
             resources.outbound_subject
         );
+        if projection.len() > MAX_EVENT_BYTES {
+            return Outcome::Fault("Outbound event too large".into());
+        }
         Outcome::Next(projection)
     }
 }
@@ -154,24 +181,24 @@ async fn main() -> Result<()> {
 
     let nats_url = std::env::var("RANVIER_ECOSYSTEM_NATS_URL")
         .unwrap_or_else(|_| "nats://127.0.0.1:4222".to_string());
-    let client = match async_nats::connect(nats_url.clone()).await {
-        Ok(client) => client,
-        Err(err) => {
-            println!("nats unavailable (url={}): {}", nats_url, err);
-            println!("skip live pub/sub flow");
-            return Ok(());
-        }
-    };
+    let client = timeout(Duration::from_secs(3), async_nats::connect(nats_url))
+        .await
+        .map_err(|_| anyhow!("NATS connection timed out"))?
+        .map_err(|_| anyhow!("NATS connection unavailable"))?;
+    run_demo(client).await
+}
 
-    let prefix = format!("ranvier.m132.nats.{}", now_ms());
+async fn run_demo(client: async_nats::Client) -> Result<()> {
+    let prefix = format!("ranvier.m132.nats.{}", client.new_inbox());
     let inbound_subject = format!("{prefix}.inbound");
     let outbound_subject = format!("{prefix}.outbound");
 
     let inbound_subscriber = client.subscribe(inbound_subject.clone()).await?;
     let mut outbound_observer = client.subscribe(outbound_subject.clone()).await?;
 
+    client.flush().await?; // Confirm subscriptions before publishing demo inputs.
+
     let resources = AppResources {
-        nats: client.clone(),
         inbound_subject: inbound_subject.clone(),
         outbound_subject: outbound_subject.clone(),
     };
@@ -204,15 +231,21 @@ async fn main() -> Result<()> {
         let maybe_event = timeout(Duration::from_secs(3), source.next_event())
             .await
             .map_err(|_| anyhow!("timeout waiting for inbound NATS event"))?;
-        let event = maybe_event.ok_or_else(|| anyhow!("inbound subject closed"))?;
+        let event = maybe_event
+            .ok_or_else(|| anyhow!("inbound subject closed"))?
+            .map_err(|_| anyhow!("Invalid inbound NATS event"))?;
 
         let mut bus = Bus::new();
         match local_demo_outcome(axon.execute(event, &resources, &mut bus).await)? {
             Outcome::Next(projected) => {
-                sink.send_event(projected).await.map_err(|e| anyhow!(e))?;
+                timeout(Duration::from_secs(3), sink.send_event(projected))
+                    .await
+                    .map_err(|_| anyhow!("Publication requires reconciliation"))?
+                    .map_err(|_| anyhow!("Publication requires reconciliation"))?;
             }
             other => {
-                return Err(anyhow!("axon execution failed: {:?}", other));
+                let _ = other;
+                return Err(anyhow!("Event execution requires reconciliation"));
             }
         }
     }
@@ -227,12 +260,181 @@ async fn main() -> Result<()> {
         received.push(payload);
     }
 
+    let expected: Vec<_> = ["ORDER.CREATED", "ORDER.COMPLETED"].into_iter().map(|kind| format!("projection kind={kind} payload=id=o_100 via=route {inbound_subject} -> {outbound_subject} target={outbound_subject}")).collect();
+    anyhow::ensure!(
+        received == expected,
+        "Observed NATS projections did not match the inputs"
+    );
     println!("published_to={}", inbound_subject);
     println!("received_from={}", outbound_subject);
-    for event in received {
-        println!("outbound={}", event);
-    }
+    println!("Observed outbound events: {}", received.len());
     println!("done");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+    use ranvier_runtime::{
+        CompletionConfirmation, EffectBoundary, ExecutionReport, PersistenceOperation,
+        SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep,
+    };
+    fn resources() -> AppResources {
+        AppResources {
+            inbound_subject: "fixture.in".into(),
+            outbound_subject: "fixture.out".into(),
+        }
+    }
+    #[tokio::test]
+    async fn malformed_event_or_missing_route_is_a_fault() {
+        let res = resources();
+        for value in [
+            "",
+            "missing-delimiter",
+            ":payload",
+            "kind:",
+            "bad kind:payload",
+        ] {
+            assert!(matches!(
+                ParseEventTransition
+                    .run(value.into(), &res, &mut Bus::new())
+                    .await,
+                Outcome::Fault(_)
+            ));
+        }
+        let input = ParsedEvent {
+            kind: "order.created".into(),
+            payload: "id=fixture".into(),
+        };
+        assert!(matches!(
+            ProjectToSinkTransition
+                .run(input, &res, &mut Bus::new())
+                .await,
+            Outcome::Fault(_)
+        ));
+        let axon = Axon::<String, String, String, AppResources>::new("local")
+            .then(ParseEventTransition)
+            .then(ProjectToSinkTransition);
+        let result = local_demo_outcome(
+            axon.execute("order.created:id=fixture".into(), &res, &mut Bus::new())
+                .await,
+        )
+        .unwrap();
+        assert!(
+            matches!(result, Outcome::Next(ref projected) if projected.contains("ORDER.CREATED payload=id=fixture"))
+        );
+    }
+    #[tokio::test]
+    #[ignore = "requires an explicitly configured disposable NATS broker"]
+    async fn actual_broker_demo_and_invalid_utf8_are_verified() {
+        let url = std::env::var("RANVIER_ECOSYSTEM_NATS_URL").expect("explicit test broker URL");
+        let client = timeout(Duration::from_secs(3), async_nats::connect(url))
+            .await
+            .unwrap()
+            .unwrap();
+        run_demo(client.clone()).await.unwrap();
+        let subject = client.new_inbox();
+        let subscriber = client.subscribe(subject.clone()).await.unwrap();
+        client.flush().await.unwrap();
+        let mut source = NatsSubjectSource { subscriber };
+        client
+            .publish(subject.clone(), Bytes::from_static(b"\xff"))
+            .await
+            .unwrap();
+        client
+            .publish(
+                subject,
+                Bytes::from_static(b"order.created:id=after-invalid"),
+            )
+            .await
+            .unwrap();
+        client.flush().await.unwrap();
+        let invalid = timeout(Duration::from_secs(3), source.next_event())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(invalid.is_err()); // Invalid bytes are not mistaken for source closure.
+        let valid = timeout(Duration::from_secs(3), source.next_event())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(valid, "order.created:id=after-invalid");
+    }
+
+    #[test]
+    fn local_report_policy_preserves_faults_and_rejects_uncertain_or_incomplete_execution() {
+        let next = || Outcome::<u32, String>::Next(7);
+        let reports = [
+            ExecutionReport::NotRequested {
+                result: next(),
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::Confirmed,
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::NotRequested,
+                cleanup: None,
+            },
+            ExecutionReport::Unconfirmed {
+                result: next(),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::NotInvoked,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+        ];
+        for report in reports {
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        for (finished, outcome) in [
+            (false, SagaRollbackOutcome::Completed),
+            (true, SagaRollbackOutcome::Fault),
+            (true, SagaRollbackOutcome::InProgress),
+        ] {
+            let report = ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: Some(SagaRollbackReport {
+                    trace_id: "private-trace".into(),
+                    finished,
+                    steps: vec![SagaRollbackStep {
+                        node_id: "private-node".into(),
+                        outcome,
+                    }],
+                }),
+            };
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        assert!(matches!(
+            local_demo_outcome(ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: None
+            })
+            .unwrap(),
+            Outcome::Next(7)
+        ));
+        assert!(
+            matches!(local_demo_outcome(ExecutionReport::Unpersisted { result: Outcome::<u32, String>::Fault("expected-domain-failure".into()), cleanup: None }).unwrap(), Outcome::Fault(error) if error == "expected-domain-failure")
+        );
+    }
 }
