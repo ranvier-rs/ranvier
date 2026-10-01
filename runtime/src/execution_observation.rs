@@ -984,16 +984,20 @@ pub(crate) struct StreamInitializationOwner<'a> {
     bus: &'a mut Bus,
     control: Option<ControlScope>,
     iam_scope: Option<IamScope>,
+    config_scope: Option<ConfigurationScope>,
 }
 #[cfg(feature = "streaming")]
 impl<'a> StreamInitializationOwner<'a> {
     pub(crate) fn begin(bus: &'a mut Bus) -> Self {
         let control = ControlScope::begin(bus);
+        let nested = bus.has::<ActiveIamBoundary>() || bus.has::<ActiveObservation>();
+        let config_scope = nested.then(|| ConfigurationScope::begin(bus));
         let iam_scope = IamScope::begin(bus);
         Self {
             bus,
             control: Some(control),
             iam_scope: Some(iam_scope),
+            config_scope,
         }
     }
     pub(crate) fn bus(&mut self) -> &mut Bus {
@@ -1005,6 +1009,9 @@ impl Drop for StreamInitializationOwner<'_> {
     fn drop(&mut self) {
         self.bus.clear_access_policy();
         if let Some(scope) = self.iam_scope.take() {
+            scope.restore(self.bus);
+        }
+        if let Some(scope) = self.config_scope.take() {
             scope.restore(self.bus);
         }
         if let Some(control) = self.control.take() {
