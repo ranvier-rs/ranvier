@@ -29,6 +29,15 @@ mod tests {
         {
             let mut owner = InvocationOwner::begin(&mut bus);
             owner.bus().insert(ranvier_core::timeline::Timeline::new());
+            {
+                let _child = InvocationOwner::begin(owner.bus());
+            }
+            assert!(
+                owner
+                    .bus()
+                    .read::<ranvier_core::timeline::Timeline>()
+                    .is_some()
+            );
         }
         assert!(bus.read::<ranvier_core::timeline::Timeline>().is_none());
         bus.insert(ranvier_core::timeline::Timeline::new());
