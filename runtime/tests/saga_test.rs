@@ -290,3 +290,58 @@ async fn compensated_step_records_fault_before_automatic_compensation() {
     );
     assert_eq!(*results.lock().unwrap(), vec!["Comp_fault:0"]);
 }
+
+#[derive(Clone)]
+struct FaultUndo;
+#[async_trait]
+impl Transition<SagaState, ()> for FaultUndo {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: SagaState, _: &(), _: &mut Bus) -> Outcome<(), String> {
+        Outcome::fault("Undo failed".to_string())
+    }
+}
+
+#[tokio::test]
+async fn failed_automatic_compensation_does_not_claim_success() {
+    use ranvier_runtime::persistence::*;
+    use ranvier_runtime::{CompletionConfirmation, ExecutionReport};
+    let store = Arc::new(InMemoryPersistenceStore::new());
+    let axon = Axon::<SagaState, SagaState, String>::new("FailedAutomaticUndo")
+        .with_saga_policy(SagaPolicy::Enabled)
+        .then_compensated(FailStep, FaultUndo);
+    let mut bus = Bus::new();
+    bus.insert(PersistenceHandle::from_arc(store.clone()));
+    bus.insert(PersistenceTraceId::new("failed-automatic-undo"));
+    let report = axon
+        .execute(
+            SagaState {
+                cnt: 0,
+                log: vec![],
+            },
+            &(),
+            &mut bus,
+        )
+        .await;
+    assert!(matches!(report, ExecutionReport::Recorded {
+        result: Outcome::Fault(ref error), completion: CompletionConfirmation::Confirmed,
+    } if error == "Planned SAGA Failure"));
+    let trace = store.load("failed-automatic-undo").await.unwrap().unwrap();
+    assert_eq!(trace.completion, Some(CompletionState::Fault));
+    assert!(
+        !trace
+            .events
+            .iter()
+            .any(|event| event.outcome_kind == "Compensated")
+    );
+    let incomplete: Vec<_> = trace
+        .events
+        .iter()
+        .filter(|event| event.outcome_kind == "CompensationIncomplete")
+        .collect();
+    assert_eq!(incomplete.len(), 1);
+    assert_eq!(
+        incomplete[0].payload,
+        Some(Outcome::<(), String>::Fault("Undo failed".into()).to_json_value())
+    );
+}

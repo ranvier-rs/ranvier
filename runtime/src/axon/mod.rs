@@ -958,13 +958,24 @@ where
                 });
             }
 
-            // Run compensation
-            let _ = comp.run(state, res, bus).await;
+            // Only a completed linear compensation acknowledges successful undo.
+            // Other control outcomes must remain visible without replacing the
+            // original business fault or claiming that an effect was reversed.
+            let compensation_result = comp.run(state, res, bus).await;
+            let compensation_kind = if matches!(compensation_result, Outcome::Next(())) {
+                "Compensated"
+            } else {
+                "CompensationIncomplete"
+            };
 
             if let Some(timeline) = bus.read_mut::<Timeline>() {
                 timeline.push(TimelineEvent::NodeExit {
                     node_id: comp_node_id.to_string(),
-                    outcome_type: "Compensated".to_string(),
+                    outcome_type: if compensation_kind == "Compensated" {
+                        compensation_kind.to_string()
+                    } else {
+                        outcome_type_name(&compensation_result)
+                    },
                     duration_ms: 0,
                     timestamp: now_ms(),
                 });
@@ -988,8 +999,12 @@ where
                     &version,
                     step_idx + 1, // Compensation node index
                     Some(comp_node_id.to_string()),
-                    "Compensated",
-                    None,
+                    compensation_kind,
+                    if compensation_kind == "Compensated" {
+                        None
+                    } else {
+                        Some(compensation_result.to_json_value())
+                    },
                 )
                 .await;
             }
