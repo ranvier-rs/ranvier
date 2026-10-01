@@ -732,6 +732,16 @@ where
             persistence_handle.as_ref()
         {
             let (next_step, writable, needs_entry) = match handle.store().load(&trace_id).await {
+                Ok(Some(trace)) if has_unusable_recovery_payload(&trace) => {
+                    if let Some(active) =
+                        bus.read::<crate::execution_observation::ActiveObservation>()
+                    {
+                        active.0.block(crate::PersistenceOperation::RecoveryPayload);
+                    }
+                    // Unknown historical effects must be reconciled before
+                    // invoking cleanup or rewriting the recovery record.
+                    return;
+                }
                 Ok(Some(trace)) if trace.completion.is_some() => {
                     tracing::warn!(
                         trace_id = %trace_id,

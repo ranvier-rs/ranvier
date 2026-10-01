@@ -468,6 +468,16 @@ impl std::fmt::Display for RecoveryPayloadUnavailable {
 }
 impl std::error::Error for RecoveryPayloadUnavailable {}
 
+fn has_unusable_recovery_payload(trace: &crate::persistence::PersistedTrace) -> bool {
+    trace.events.iter().any(|event| {
+        event.outcome_kind == "Next"
+            && event
+                .payload
+                .as_ref()
+                .is_some_and(serde_json::Value::is_null)
+    })
+}
+
 async fn load_persistence_version(
     handle: &PersistenceHandle,
     trace_id: &str,
@@ -486,13 +496,7 @@ async fn load_persistence_version(
             // whereas a valid nullable Next is encoded as {"Next": null}.
             // No automatic resume can infer the lost typed result. Preserve
             // the trace for explicit reconciliation instead of using new input.
-            if trace.events.iter().any(|event| {
-                event.outcome_kind == "Next"
-                    && event
-                        .payload
-                        .as_ref()
-                        .is_some_and(serde_json::Value::is_null)
-            }) {
+            if has_unusable_recovery_payload(&trace) {
                 return Err(RecoveryPayloadUnavailable.into());
             }
             let (next_step, last_node_id, last_payload) =

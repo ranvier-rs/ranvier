@@ -456,7 +456,7 @@ struct Count(Arc<AtomicUsize>);
 
 #[tokio::test]
 async fn legacy_bare_null_result_blocks_effects_without_rewriting_history() {
-    for cancellable in [false, true] {
+    for mode in [0, 1, 2] {
         let backing = InMemoryPersistenceStore::new();
         let effects = Arc::new(AtomicUsize::new(0));
         let axon = Axon::<u32, u32, String>::new("legacy-null").then(Count(effects.clone()));
@@ -479,8 +479,11 @@ async fn legacy_bare_null_result_blocks_effects_without_rewriting_history() {
         let mut bus = Bus::new();
         bus.insert(PersistenceTraceId::new("legacy-null"));
         bus.insert(PersistenceHandle::from_store(backing.clone()));
-        if cancellable {
+        if mode != 0 {
             let token = ranvier_core::cancellation::CancellationToken::new();
+            if mode == 2 {
+                let _ = token.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
+            }
             let report = axon.execute_cancellable(7, &(), &mut bus, token).await;
             assert!(matches!(
                 report,
