@@ -129,17 +129,12 @@ async fn authenticate(
         Err(e) => return Outcome::Fault(AppError::Auth(e.to_string())),
     };
 
-    tracing::info!(
-        user_id = %auth_ctx.user_id,
-        roles = ?auth_ctx.roles,
-        "User authenticated successfully"
-    );
-
     // Store AuthContext in Bus for downstream transitions
     if bus.try_insert(auth_ctx.clone()).is_err() {
         return Outcome::Fault(AppError::Auth("Authentication context write denied".into()));
     }
 
+    tracing::info!("Authentication context confirmed");
     Outcome::Next(auth_ctx)
 }
 
@@ -160,12 +155,7 @@ async fn authorize(
     let required_role = "admin";
 
     if !auth.roles.contains(&required_role.to_string()) {
-        tracing::warn!(
-            user_id = %auth.user_id,
-            required_role = %required_role,
-            actual_roles = ?auth.roles,
-            "Authorization failed: missing required role"
-        );
+        tracing::warn!("Authorization failed: missing required role");
         return Outcome::Fault(AppError::Auth(
             AuthError::Unauthorized(required_role.into()).to_string(),
         ));
@@ -416,6 +406,49 @@ mod report_tests {
                 assert_eq!(fork.get::<AuthContext>().unwrap().user_id, "old-admin");
             }
         }
+    }
+
+    #[derive(Clone)]
+    struct DeniedAuthenticationContext;
+    #[async_trait::async_trait]
+    impl Transition<(), AuthContext> for DeniedAuthenticationContext {
+        type Error = AppError;
+        type Resources = AuthResources;
+        fn bus_access_policy(&self) -> Option<ranvier_core::BusAccessPolicy> {
+            Some(ranvier_core::BusAccessPolicy::deny_only(vec![
+                ranvier_core::BusTypeRef::of::<AuthContext>(),
+            ]))
+        }
+        async fn run(
+            &self,
+            input: (),
+            res: &AuthResources,
+            bus: &mut Bus,
+        ) -> Outcome<AuthContext, AppError> {
+            authenticate.run(input, res, bus).await
+        }
+    }
+    #[tokio::test]
+    async fn denied_auth_context_stops_handler_without_replacing_identity() {
+        let resources = AuthResources::new("explicit-local-test-secret".into()).unwrap();
+        let mut bus = Bus::new();
+        bus.insert(AuthContext {
+            user_id: "previous".into(),
+            roles: vec!["admin".into()],
+        });
+        bus.insert(
+            create_test_token("alice", vec!["admin".into()], &resources.jwt_secret).unwrap(),
+        );
+        let flow = Axon::<(), (), AppError, AuthResources>::new("denied-auth-context")
+            .then(DeniedAuthenticationContext)
+            .then(authorize)
+            .then(protected_handler);
+        let outcome = local_demo_outcome(flow.execute((), &resources, &mut bus).await).unwrap();
+        assert!(
+            matches!(outcome, Outcome::Fault(AppError::Auth(error)) if error == "Authentication context access denied")
+        );
+        assert!(bus.read::<HandlerVisited>().is_none());
+        assert_eq!(bus.get::<AuthContext>().unwrap().user_id, "previous");
     }
 
     #[tokio::test]
