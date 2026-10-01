@@ -86,6 +86,7 @@ async fn repeated_cancellable_invocations_persist_separate_traces() {
     let mut bus = Bus::new();
     bus.insert(PersistenceHandle::from_arc(store.clone()));
     let mut identities = Vec::new();
+    let mut snapshots = Vec::new();
     for cancelled in [false, true, false] {
         store.keys.lock().unwrap().clear();
         let token = ranvier_core::cancellation::CancellationToken::new();
@@ -107,6 +108,13 @@ async fn repeated_cancellable_invocations_persist_separate_traces() {
         identities.push(keys[0].clone());
         let trace = store.backing.load(&keys[0]).await.unwrap().unwrap();
         assert!(trace.completion.is_some());
+        snapshots.push(serde_json::to_value(&trace).unwrap());
+        for (identity, snapshot) in identities.iter().zip(&snapshots) {
+            assert_eq!(
+                serde_json::to_value(store.backing.load(identity).await.unwrap().unwrap()).unwrap(),
+                *snapshot
+            );
+        }
         assert!(bus.read::<PersistenceTraceId>().is_none());
     }
     assert_eq!(effects.load(Ordering::SeqCst), 2);
