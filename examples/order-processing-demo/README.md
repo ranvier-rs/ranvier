@@ -106,11 +106,30 @@ refund twice. Failed, panicked or uncertain refund retains the outstanding amoun
 and reservation and returns incomplete cleanup, requiring reconciliation.
 
 Tests exercise a pure downstream rejection after charge with the real refund
-hook, including injected Fault/panic/uncertainty. Shipping itself currently always
-succeeds and has no reversal hook; real dispatch failure/ambiguity and terminal
-fulfillment records remain OPEN. A timeout test drops the local pending payment
-future and verifies replay/refund rejection, but does not prove process crash or
-whole-runtime cancellation recovery. Real gateway/database recovery is unproven.
+hook, including injected Fault/panic/uncertainty. A timeout test drops the local
+pending payment future and verifies replay/refund rejection, but does not prove
+process crash or whole-runtime cancellation recovery.
+
+## Dispatch and fulfillment
+
+ShipOrder validates the recorded active cart, owner and amount. The payment
+ledger authorizes a private dispatch permit tied to its approved receipt and
+records Pending dispatch before the adapter. Refund and dispatch intent use the
+same payment lock: neither can begin after the other has taken authority.
+Shipping records intent and a simulated tracking ID; payment records confirmed
+dispatch and inventory records fulfilled status before returning success.
+Every local ledger retains at most 1000 records; completed records are retained.
+Duplicate/concurrent dispatch is rejected, with one successful local dispatch.
+
+RequireNoDispatch is a compensation gate, not a shipping reversal. Definite
+pre-dispatch rejection records Rejected and permits refund/release. Shipped or
+ambiguous dispatch blocks refund/release and yields incomplete cleanup. The
+uncertain-response fixture deliberately records a tracking ID before returning
+an ambiguous error, proving the local flow retains payment and reservation.
+Dropping a Pending dispatch future likewise blocks refund and repeat dispatch.
+No automatic retry, remote cancellation, recall or delivery proof is implied.
+Real gateway/carrier, persistent atomic transactions, whole-runtime cancellation,
+process crash/restart, operator reconciliation and customer acceptance remain OPEN.
 
 Use one OrderResources/InventorySynapse instance for this process-local fixture.
 Creating separate InventorySynapse instances over the same inventory Arc creates

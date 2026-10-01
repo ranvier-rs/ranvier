@@ -486,4 +486,141 @@ mod price_tests {
             }
         }
     }
+
+    #[tokio::test]
+    async fn complete_dispatch_and_definite_or_uncertain_rejection_have_distinct_recovery() {
+        use crate::synapses::ShippingBehavior;
+        for behavior in [
+            ShippingBehavior::Complete,
+            ShippingBehavior::Reject,
+            ShippingBehavior::Uncertain,
+        ] {
+            let mut res = resources(10);
+            res.shipping.behavior = behavior;
+            let axon =
+                Axon::<OrderRequest, OrderRequest, String, OrderResources>::new("dispatch-test")
+                    .with_saga_policy(SagaPolicy::Enabled)
+                    .then_compensated(ValidateOrder, ValidationNoEffect)
+                    .then_compensated(ReserveInventory, ReleaseInventory)
+                    .then_compensated(ProcessPayment, RefundPayment)
+                    .then_compensated(ShipOrder, RequireNoDispatch);
+            let report = axon
+                .execute(request(vec!["p".into()], 10), &res, &mut Bus::new())
+                .await;
+            match behavior {
+                ShippingBehavior::Complete => {
+                    let outcome = crate::local_demo_outcome(report).unwrap();
+                    let tracking = match outcome {
+                        Outcome::Next(value) => value,
+                        other => panic!("unexpected {other:?}"),
+                    };
+                    assert_eq!(res.shipping.test_tracking("fixture"), Some(tracking));
+                    assert_eq!(res.payment.test_balance("fixture"), (10, false));
+                    assert_eq!(res.inventory.inventory.lock().unwrap()["p"].stock, 4);
+                }
+                ShippingBehavior::Reject => {
+                    assert!(report.cleanup().unwrap().is_complete());
+                    assert!(matches!(
+                        crate::local_demo_outcome(report).unwrap(),
+                        Outcome::Fault(_)
+                    ));
+                    assert_eq!(res.shipping.test_tracking("fixture"), None);
+                    assert_eq!(res.payment.test_balance("fixture"), (0, true));
+                    assert_eq!(res.inventory.inventory.lock().unwrap()["p"].stock, 5);
+                }
+                ShippingBehavior::Uncertain => {
+                    assert!(!report.cleanup().unwrap().is_complete());
+                    assert!(crate::local_demo_outcome(report).is_err());
+                    assert!(res.shipping.test_tracking("fixture").is_some()); // Effect happened, response is ambiguous.
+                    assert_eq!(res.payment.test_balance("fixture"), (10, false));
+                    assert_eq!(res.inventory.inventory.lock().unwrap()["p"].stock, 4);
+                }
+            }
+        }
+    }
+
+    async fn paid_order() -> (OrderResources, ValidatedOrder) {
+        let res = resources(10);
+        let axon = Axon::<OrderRequest, OrderRequest, String, OrderResources>::new("paid")
+            .then(ValidateOrder)
+            .then(ReserveInventory)
+            .then(ProcessPayment);
+        let outcome = crate::local_demo_outcome(
+            axon.execute(request(vec!["p".into()], 10), &res, &mut Bus::new())
+                .await,
+        )
+        .unwrap();
+        match outcome {
+            Outcome::Next(order) => (res, order),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_dispatch_is_single_and_terminal_order_cannot_be_refunded() {
+        let (res, order) = paid_order().await;
+        let mut first_bus = Bus::new();
+        let mut second_bus = Bus::new();
+        let (first, second) = tokio::join!(
+            ShipOrder.run(order.clone(), &res, &mut first_bus),
+            ShipOrder.run(order.clone(), &res, &mut second_bus)
+        );
+        assert_eq!(
+            usize::from(matches!(first, Outcome::Next(_)))
+                + usize::from(matches!(second, Outcome::Next(_))),
+            1
+        );
+        assert!(matches!(
+            ShipOrder.run(order.clone(), &res, &mut Bus::new()).await,
+            Outcome::Fault(_)
+        ));
+        assert!(res.payment.refund(&order).is_err());
+        assert_eq!(res.payment.test_balance("fixture"), (10, false));
+        assert_eq!(res.inventory.inventory.lock().unwrap()["p"].stock, 4);
+    }
+
+    #[tokio::test]
+    async fn dispatch_rejects_wrong_owner_and_amount_before_effect() {
+        let (res, order) = paid_order().await;
+        for tamper in 0..4 {
+            let mut changed = order.clone();
+            match tamper {
+                0 => changed.reservation_owner = "stranger".into(),
+                1 => changed.payable_amount += 1,
+                2 => changed.request.total_amount += 1,
+                _ => changed.request.items = vec!["different-cart".into()],
+            }
+            assert!(matches!(
+                ShipOrder.run(changed, &res, &mut Bus::new()).await,
+                Outcome::Fault(_)
+            ));
+        }
+        assert!(res.shipping.test_tracking("fixture").is_none());
+        assert!(matches!(
+            ShipOrder.run(order, &res, &mut Bus::new()).await,
+            Outcome::Next(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn dropped_dispatch_intent_blocks_refund_and_repeat_dispatch() {
+        let (res, order) = paid_order().await;
+        let mut bus = Bus::new();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                ShipOrder.run(order.clone(), &res, &mut bus)
+            )
+            .await
+            .is_err()
+        );
+        assert!(res.payment.refund(&order).is_err());
+        assert!(matches!(
+            ShipOrder.run(order, &res, &mut Bus::new()).await,
+            Outcome::Fault(_)
+        ));
+        assert!(res.shipping.test_tracking("fixture").is_none());
+        assert_eq!(res.payment.test_balance("fixture"), (10, false));
+        assert_eq!(res.inventory.inventory.lock().unwrap()["p"].stock, 4);
+    }
 }

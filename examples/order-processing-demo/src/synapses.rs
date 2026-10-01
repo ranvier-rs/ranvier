@@ -32,6 +32,13 @@ struct Reservation {
 
 impl InventorySynapse {
     pub fn authorize_shipping(&self, order: &ValidatedOrder) -> Result<(), String> {
+        if order.request.items.is_empty() || order.request.items.len() > 1000 {
+            return Err("Invalid shipment cart".into());
+        }
+        let mut requested_counts = HashMap::new();
+        for id in &order.request.items {
+            *requested_counts.entry(id.clone()).or_insert(0u32) += 1;
+        }
         let ledger = self
             .reservations
             .lock()
@@ -41,6 +48,8 @@ impl InventorySynapse {
             .ok_or_else(|| "Reservation missing".to_owned())?;
         if record.owner != order.reservation_owner
             || record.amount != order.payable_amount
+            || record.amount != order.request.total_amount
+            || record.counts != requested_counts
             || record.released
             || record.fulfilled
             || record.payment != PaymentState::Approved
@@ -392,6 +401,7 @@ impl PaymentSynapse {
             .ok_or_else(|| "Payment record missing".to_owned())?;
         if record.owner != order.reservation_owner
             || record.amount != order.payable_amount
+            || record.amount != order.request.total_amount
             || record.state != ReceiptState::Approved
             || !matches!(record.dispatch, DispatchState::NotStarted)
         {
@@ -598,6 +608,14 @@ pub enum ShippingBehavior {
 }
 
 impl ShippingSynapse {
+    #[cfg(test)]
+    pub fn test_tracking(&self, id: &str) -> Option<String> {
+        self.records
+            .lock()
+            .unwrap()
+            .get(id)
+            .and_then(|record| record.tracking.clone())
+    }
     pub fn confirm_tracking(&self, order: &ValidatedOrder, tracking: &str) -> Result<(), String> {
         let records = self
             .records
