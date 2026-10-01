@@ -458,43 +458,52 @@ struct Count(Arc<AtomicUsize>);
 // acceptance of recovery from an incompatible persisted typed value.
 #[tokio::test]
 async fn checkpoint_fresh_input_can_mask_incompatible_persisted_value() {
-    for payload in [
-        serde_json::json!({"Next": "invalid-u32"}),
-        serde_json::json!({"Next": 99}),
-    ] {
-        let backing = InMemoryPersistenceStore::new();
-        let effects = Arc::new(AtomicUsize::new(0));
-        let axon = Axon::<u32, u32, String>::new("typed-checkpoint")
-            .then(Count(effects.clone()))
-            .then(Count(effects.clone()));
-        backing
-            .append(PersistenceEnvelope {
-                trace_id: "typed-checkpoint".into(),
-                circuit: axon.schematic().name.clone(),
-                schematic_version: axon.schematic().schema_version.clone(),
-                step: 1,
-                node_id: Some(axon.schematic().nodes[1].id.to_string()),
-                outcome_kind: "Next".into(),
-                timestamp_ms: 0,
-                payload_hash: None,
-                payload: Some(payload.clone()),
-            })
-            .await
-            .unwrap();
-        let mut bus = Bus::new();
-        bus.insert(PersistenceTraceId::new("typed-checkpoint"));
-        bus.insert(PersistenceHandle::from_store(backing.clone()));
-        assert!(matches!(
-            axon.execute(7, &(), &mut bus).await,
-            ExecutionReport::Recorded {
-                result: Outcome::Next(8),
-                ..
-            }
-        ));
-        assert_eq!(effects.load(Ordering::SeqCst), 1);
-        let trace = backing.load("typed-checkpoint").await.unwrap().unwrap();
-        assert_eq!(trace.completion, Some(CompletionState::Success));
-        assert_eq!(trace.events[0].payload, Some(payload));
+    for compensated in [false, true] {
+        for payload in [
+            serde_json::json!({"Next": "invalid-u32"}),
+            serde_json::json!({"Next": 99}),
+        ] {
+            let backing = InMemoryPersistenceStore::new();
+            let effects = Arc::new(AtomicUsize::new(0));
+            let undo_inputs = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let prefix = Axon::<u32, u32, String>::new("typed-checkpoint")
+                .with_saga_policy(ranvier_core::saga::SagaPolicy::Enabled)
+                .then(Count(effects.clone()));
+            let axon = if compensated {
+                prefix.then_compensated(Count(effects.clone()), RecordUndo(undo_inputs.clone()))
+            } else {
+                prefix.then(Count(effects.clone()))
+            };
+            backing
+                .append(PersistenceEnvelope {
+                    trace_id: "typed-checkpoint".into(),
+                    circuit: axon.schematic().name.clone(),
+                    schematic_version: axon.schematic().schema_version.clone(),
+                    step: 1,
+                    node_id: Some(axon.schematic().nodes[1].id.to_string()),
+                    outcome_kind: "Next".into(),
+                    timestamp_ms: 0,
+                    payload_hash: None,
+                    payload: Some(payload.clone()),
+                })
+                .await
+                .unwrap();
+            let mut bus = Bus::new();
+            bus.insert(PersistenceTraceId::new("typed-checkpoint"));
+            bus.insert(PersistenceHandle::from_store(backing.clone()));
+            assert!(matches!(
+                axon.execute(7, &(), &mut bus).await,
+                ExecutionReport::Recorded {
+                    result: Outcome::Next(8),
+                    ..
+                }
+            ));
+            assert_eq!(effects.load(Ordering::SeqCst), 1);
+            assert!(undo_inputs.lock().unwrap().is_empty());
+            let trace = backing.load("typed-checkpoint").await.unwrap().unwrap();
+            assert_eq!(trace.completion, Some(CompletionState::Success));
+            assert_eq!(trace.events[0].payload, Some(payload));
+        }
     }
 }
 
