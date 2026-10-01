@@ -20,6 +20,23 @@ use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
+// Explicit local-demo policy: neither persisted nor incomplete cleanup results
+// may be converted into ordinary domain success or automatic retry permission.
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 // ============================================================================
 // 1. Data Types
 // ============================================================================
@@ -131,14 +148,14 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Note: ConnectionBus derefs to Bus, so we can pass it as &mut Bus
-    match axon.execute(req_input, &(), &mut conn_bus).await {
+    match local_demo_outcome(axon.execute(req_input, &(), &mut conn_bus).await)? {
         Outcome::Next(res) => {
             println!("\n[Result] Status: {}, Body: {}", res.status, res.body);
         }
         Outcome::Fault(e) => {
             println!("\n[Result] Fault: {:?}", e);
         }
-        _ => println!("\n[Result] Other outcome"),
+        _ => anyhow::bail!("Unexpected tracing control outcome"),
     }
 
     Ok(())
