@@ -152,34 +152,18 @@ where
                     Some(raw_token) => {
                         match iam.verifier.verify(&raw_token).await {
                             Ok(identity) => {
-                                if let Err(e) = enforce_policy(&iam.policy, &identity) {
-                                    tracing::warn!(
-                                        policy = ?iam.policy,
-                                        subject = %identity.subject,
-                                        "IAM policy enforcement failed: {}",
-                                        e
-                                    );
-                                    return Outcome::emit(
-                                        "iam.policy_denied",
-                                        Some(serde_json::json!({
-                                            "error": e.to_string(),
-                                            "subject": identity.subject,
-                                        })),
-                                    );
+                                if enforce_policy(&iam.policy, &identity).is_err() {
+                                    tracing::warn!("IAM policy enforcement failed");
+                                    return Outcome::emit("iam.policy_denied", None);
                                 }
                                 // Insert verified identity into Bus for downstream access
                                 if bus.try_insert_shared(identity).is_err() {
                                     return Outcome::emit("iam.context_write_denied", None);
                                 }
                             }
-                            Err(e) => {
-                                tracing::warn!("IAM token verification failed: {}", e);
-                                return Outcome::emit(
-                                    "iam.verification_failed",
-                                    Some(serde_json::json!({
-                                        "error": e.to_string()
-                                    })),
-                                );
+                            Err(_) => {
+                                tracing::warn!("IAM token verification failed");
+                                return Outcome::emit("iam.verification_failed", None);
                             }
                         }
                     }

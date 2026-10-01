@@ -4009,7 +4009,7 @@ mod tests {
         impl IamVerifier for MockVerifier {
             async fn verify(&self, _token: &str) -> Result<IamIdentity, IamError> {
                 if self.should_fail {
-                    Err(IamError::InvalidToken("mock verification failure".into()))
+                    Err(IamError::InvalidToken("secret-verifier-detail".into()))
                 } else {
                     Ok(self.identity.clone())
                 }
@@ -4051,10 +4051,52 @@ mod tests {
                 }
                 let report = axon.execute(7, &(), &mut bus).await;
                 assert!(
-                    matches!(report, crate::ExecutionReport::Unpersisted { result: Outcome::Emit(label, _), .. } if label == expected)
+                    matches!(report, crate::ExecutionReport::Unpersisted { result: Outcome::Emit(label, None), .. } if label == expected)
                 );
                 assert!(bus.read::<IamIdentity>().is_none());
                 assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            }
+        }
+
+        #[tokio::test]
+        async fn iam_required_rejects_shared_identity_before_verification_or_effect() {
+            struct NeverVerify;
+            #[async_trait]
+            impl IamVerifier for NeverVerify {
+                async fn verify(&self, _: &str) -> Result<IamIdentity, IamError> {
+                    panic!("unclearable request identity must reject before verification");
+                }
+            }
+            for inherited in [false, true] {
+                for token in [None, Some("valid"), Some("invalid")] {
+                    let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+                    let axon = Axon::<i32, i32, String>::start("required-iam-shared")
+                        .with_iam(IamPolicy::RequireIdentity, NeverVerify)
+                        .then(CountCombinedRetry {
+                            calls: calls.clone(),
+                            failures: 0,
+                        });
+                    let mut parent = Bus::new();
+                    parent.insert_shared(IamIdentity::new("previous-admin").with_role("admin"));
+                    let mut fork = parent.fork_for_parallel();
+                    let bus = if inherited { &mut fork } else { &mut parent };
+                    if let Some(token) = token {
+                        bus.insert(IamToken(token.into()));
+                    }
+                    let report = axon.execute(7, &(), bus).await;
+                    assert!(matches!(report, crate::ExecutionReport::Unpersisted {
+                        result: Outcome::Emit(label, None), ..
+                    } if label == "iam.context_clear_failed"));
+                    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+                    assert_eq!(
+                        parent.read::<IamIdentity>().unwrap().subject,
+                        "previous-admin"
+                    );
+                    assert_eq!(
+                        fork.read::<IamIdentity>().unwrap().subject,
+                        "previous-admin"
+                    );
+                }
             }
         }
 
