@@ -2,7 +2,9 @@ use ranvier_core::prelude::*;
 use ranvier_core::schematic::{
     MigrationRegistry, MigrationStrategy, SchemaMigrationMapper, SnapshotMigration,
 };
-use ranvier_runtime::persistence::{InMemoryPersistenceStore, PersistenceHandle};
+use ranvier_runtime::persistence::{
+    InMemoryPersistenceStore, PersistenceAutoComplete, PersistenceHandle, PersistenceStore,
+};
 use ranvier_runtime::replay::replay_and_recover;
 use ranvier_runtime::{Axon, CompletionConfirmation, ExecutionReport};
 use std::sync::Arc;
@@ -37,6 +39,17 @@ impl Transition<u32, u32> for StepCounter {
 
 #[tokio::test]
 async fn test_migration_resume_from_start() {
+    verify_resume_from_start(false).await;
+}
+
+// Defect reproduction: completed traces still invoke effects under explicit
+// ResumeFromStart, although the store refuses new events. Not acceptance.
+#[tokio::test]
+async fn completed_trace_migration_reports_rejected_writes_after_effects() {
+    verify_resume_from_start(true).await;
+}
+
+async fn verify_resume_from_start(completed: bool) {
     let counter = StepCounter {
         count: Arc::new(Mutex::new(0)),
     };
@@ -49,10 +62,12 @@ async fn test_migration_resume_from_start() {
         .then(counter.clone()) // Node index 1 (after ingress)
         .then(counter.clone()); // Node index 2
 
-    // Run v1.0 but mock completion/interruption after first step
-    // Actually, let's just run it and see it persists.
+    // Run the old graph; only the incomplete fixture omits completion.
     let mut bus = Bus::new();
     bus.insert(handle.clone());
+    if !completed {
+        bus.insert(PersistenceAutoComplete(false));
+    }
     bus.insert(ranvier_runtime::persistence::PersistenceTraceId::new(
         "trace-1",
     ));
@@ -60,10 +75,11 @@ async fn test_migration_resume_from_start() {
     assert!(matches!(
         axon_v10.execute(0, &(), &mut bus).await,
         ExecutionReport::Recorded {
-            result: Outcome::Next(_),
-            completion: CompletionConfirmation::Confirmed
-        }
+            result: Outcome::Next(2),
+            completion
+        } if completion == if completed { CompletionConfirmation::Confirmed } else { CompletionConfirmation::NotRequested }
     ));
+    let before = store.load("trace-1").await.unwrap().unwrap();
 
     // Check counter
     {
@@ -100,13 +116,29 @@ async fn test_migration_resume_from_start() {
     bus_v11.insert(registry);
 
     // This should restart from step 0 because of ResumeFromStart
-    assert!(matches!(
-        axon_v11.execute(0, &(), &mut bus_v11).await,
-        ExecutionReport::Recorded {
-            result: Outcome::Next(_),
-            completion: CompletionConfirmation::Confirmed
-        }
-    ));
+    let report = axon_v11.execute(0, &(), &mut bus_v11).await;
+    if completed {
+        assert!(matches!(
+            report,
+            ExecutionReport::Unconfirmed {
+                result: Outcome::Next(3),
+                operation: ranvier_runtime::PersistenceOperation::Intent,
+                effect: ranvier_runtime::EffectBoundary::MayHaveRun,
+            }
+        ));
+        let after = store.load("trace-1").await.unwrap().unwrap();
+        assert_eq!(after.events, before.events);
+        assert_eq!(after.schematic_version, before.schematic_version);
+        assert_eq!(after.completion, before.completion);
+    } else {
+        assert!(matches!(
+            report,
+            ExecutionReport::Recorded {
+                result: Outcome::Next(3),
+                completion: CompletionConfirmation::Confirmed,
+            }
+        ));
+    }
 
     // Counter should be 3 (all steps of v1.1)
     {
@@ -134,7 +166,7 @@ async fn test_migration_fail_by_default() {
     assert!(matches!(
         axon_v10.execute(0, &(), &mut bus).await,
         ExecutionReport::Recorded {
-            result: Outcome::Next(_),
+            result: Outcome::Next(1),
             completion: CompletionConfirmation::Confirmed
         }
     ));
@@ -192,17 +224,20 @@ async fn test_migration_migrate_active_node() {
     let node1_id = axon_v10.schematic.nodes[1].id.clone();
 
     // Prime the store: Trace finished node 1
-    ranvier_runtime::axon::persist_execution_event(
-        &handle,
-        "trace-active",
-        "ActiveNodeTest",
-        "v1.0",
-        1,
-        Some(node1_id.clone()),
-        "Next",
-        Some(serde_json::json!(1)),
-    )
-    .await;
+    assert_eq!(
+        ranvier_runtime::axon::persist_execution_event(
+            &handle,
+            "trace-active",
+            "ActiveNodeTest",
+            "v1.0",
+            1,
+            Some(node1_id.clone()),
+            "Next",
+            Some(serde_json::json!(1)),
+        )
+        .await,
+        ranvier_runtime::execution_report::StoreConfirmation::Confirmed
+    );
 
     // Define v1.1. Same structure but different IDs.
     let counter_v11 = StepCounter {
@@ -246,7 +281,7 @@ async fn test_migration_migrate_active_node() {
     assert!(matches!(
         axon_v11.execute(0, &(), &mut bus_v11).await,
         ExecutionReport::Recorded {
-            result: Outcome::Next(_),
+            result: Outcome::Next(1),
             completion: CompletionConfirmation::Confirmed
         }
     ));
@@ -273,17 +308,20 @@ async fn test_migration_fallback_to_node() {
     let node1_id = axon_v10.schematic.nodes[1].id.clone();
 
     // Prime the store: Trace finished node 1
-    ranvier_runtime::axon::persist_execution_event(
-        &handle,
-        "trace-fallback",
-        "FallbackTest",
-        "v1.0",
-        1,
-        Some(node1_id.clone()),
-        "Next",
-        Some(serde_json::json!(1)),
-    )
-    .await;
+    assert_eq!(
+        ranvier_runtime::axon::persist_execution_event(
+            &handle,
+            "trace-fallback",
+            "FallbackTest",
+            "v1.0",
+            1,
+            Some(node1_id.clone()),
+            "Next",
+            Some(serde_json::json!(1)),
+        )
+        .await,
+        ranvier_runtime::execution_report::StoreConfirmation::Confirmed
+    );
 
     // Define v1.1.
     let counter_v11 = StepCounter {
@@ -322,7 +360,7 @@ async fn test_migration_fallback_to_node() {
     assert!(matches!(
         axon_v11.execute(0, &(), &mut bus_v11).await,
         ExecutionReport::Recorded {
-            result: Outcome::Next(_),
+            result: Outcome::Next(1),
             completion: CompletionConfirmation::Confirmed
         }
     ));
@@ -373,17 +411,20 @@ async fn test_multi_hop_migration_v10_to_v12_with_payload_evolution() {
 
     let node1_id = axon_v10.schematic.nodes[1].id.clone();
 
-    ranvier_runtime::axon::persist_execution_event(
-        &handle,
-        "trace-multihop",
-        "MultiHopTest",
-        "v1.0",
-        1,
-        Some(node1_id.clone()),
-        "Next",
-        Some(serde_json::json!({ "user_id": 42 })),
-    )
-    .await;
+    assert_eq!(
+        ranvier_runtime::axon::persist_execution_event(
+            &handle,
+            "trace-multihop",
+            "MultiHopTest",
+            "v1.0",
+            1,
+            Some(node1_id.clone()),
+            "Next",
+            Some(serde_json::json!({ "user_id": 42 })),
+        )
+        .await,
+        ranvier_runtime::execution_report::StoreConfirmation::Confirmed
+    );
 
     // Register multi-hop migration: v1.0 → v1.1 → v1.2
     let mut registry = MigrationRegistry::new("MultiHopTest");
@@ -443,17 +484,20 @@ async fn test_replay_and_recover_no_migration_needed() {
         .with_version("v2.0")
         .then(counter.clone());
 
-    ranvier_runtime::axon::persist_execution_event(
-        &handle,
-        "trace-same",
-        "SameVersionTest",
-        "v2.0",
-        1,
-        Some(axon.schematic.nodes[1].id.clone()),
-        "Next",
-        Some(serde_json::json!(100)),
-    )
-    .await;
+    assert_eq!(
+        ranvier_runtime::axon::persist_execution_event(
+            &handle,
+            "trace-same",
+            "SameVersionTest",
+            "v2.0",
+            1,
+            Some(axon.schematic.nodes[1].id.clone()),
+            "Next",
+            Some(serde_json::json!(100)),
+        )
+        .await,
+        ranvier_runtime::execution_report::StoreConfirmation::Confirmed
+    );
 
     let registry = MigrationRegistry::new("SameVersionTest");
     let result = replay_and_recover(&store, "trace-same", "v2.0", &registry)
@@ -478,17 +522,20 @@ async fn test_replay_and_recover_no_path_fails() {
         .with_version("v1.0")
         .then(counter.clone());
 
-    ranvier_runtime::axon::persist_execution_event(
-        &handle,
-        "trace-nopath",
-        "NoPathTest",
-        "v1.0",
-        1,
-        Some(axon.schematic.nodes[1].id.clone()),
-        "Next",
-        Some(serde_json::json!(1)),
-    )
-    .await;
+    assert_eq!(
+        ranvier_runtime::axon::persist_execution_event(
+            &handle,
+            "trace-nopath",
+            "NoPathTest",
+            "v1.0",
+            1,
+            Some(axon.schematic.nodes[1].id.clone()),
+            "Next",
+            Some(serde_json::json!(1)),
+        )
+        .await,
+        ranvier_runtime::execution_report::StoreConfirmation::Confirmed
+    );
 
     let registry = MigrationRegistry::new("NoPathTest");
     // No migrations registered; requesting v3.0 should fail
@@ -517,17 +564,20 @@ async fn test_multi_hop_axon_execution_with_payload_mapping() {
 
     let node1_id = axon_v10.schematic.nodes[1].id.clone();
 
-    ranvier_runtime::axon::persist_execution_event(
-        &handle,
-        "trace-axon-mh",
-        "AxonMultiHop",
-        "v1.0",
-        1,
-        Some(node1_id.clone()),
-        "Next",
-        Some(serde_json::json!({ "user_id": 99 })),
-    )
-    .await;
+    assert_eq!(
+        ranvier_runtime::axon::persist_execution_event(
+            &handle,
+            "trace-axon-mh",
+            "AxonMultiHop",
+            "v1.0",
+            1,
+            Some(node1_id.clone()),
+            "Next",
+            Some(serde_json::json!({ "user_id": 99 })),
+        )
+        .await,
+        ranvier_runtime::execution_report::StoreConfirmation::Confirmed
+    );
 
     // Build v1.2 axon
     let counter_v12 = StepCounter {
