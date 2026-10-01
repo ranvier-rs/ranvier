@@ -88,7 +88,16 @@ impl Transition<String, String> for LoadSession {
         bus: &mut Bus,
     ) -> Outcome<String, Self::Error> {
         // A reused Bus must never retain a previous request's identity.
+        if matches!(
+            bus.get::<UserSession>(),
+            Err(ranvier_core::BusAccessError::Unauthorized { .. })
+        ) {
+            return Outcome::Fault("session_context_access_denied".into());
+        }
         bus.remove::<UserSession>();
+        if bus.has::<UserSession>() {
+            return Outcome::Fault("session_context_clear_failed".into());
+        }
         // This is an explicit simulated envelope, not an HTTP cookie parser.
         let cookie = req
             .strip_prefix("GET /profile (Cookie: ")
@@ -100,7 +109,9 @@ impl Transition<String, String> for LoadSession {
             if let Some(sid) = session_ids.next() {
                 if session_ids.next().is_none() {
                     if let Some(session) = SessionStore::load(sid) {
-                        bus.insert(session);
+                        if bus.try_insert(session).is_err() {
+                            return Outcome::Fault("session_context_write_denied".into());
+                        }
                     }
                 }
             }
@@ -242,6 +253,40 @@ mod tests {
             assert!(!bus.has::<UserSession>());
         }
     }
+    #[derive(Clone)]
+    struct DeniedSessionLoader;
+    #[async_trait]
+    impl Transition<String, String> for DeniedSessionLoader {
+        type Error = String;
+        type Resources = ();
+        fn bus_access_policy(&self) -> Option<ranvier_core::BusAccessPolicy> {
+            Some(ranvier_core::BusAccessPolicy::deny_only(vec![
+                ranvier_core::BusTypeRef::of::<UserSession>(),
+            ]))
+        }
+        async fn run(&self, req: String, res: &(), bus: &mut Bus) -> Outcome<String, String> {
+            LoadSession.run(req, res, bus).await
+        }
+    }
+    #[tokio::test]
+    async fn denied_session_context_stops_actual_profile_chain() {
+        let mut bus = Bus::new();
+        bus.insert(SessionStore::load("valid_sid_123").unwrap());
+        let flow = Axon::<String, String, String>::new("denied-session-context")
+            .then(DeniedSessionLoader)
+            .then(RequireAuth)
+            .then(UserProfile);
+        let outcome = local_demo_outcome(
+            flow.execute("GET /profile (No Cookie)".into(), &(), &mut bus)
+                .await,
+        )
+        .unwrap();
+        assert!(
+            matches!(outcome, Outcome::Fault(error) if error == "session_context_access_denied")
+        );
+        assert_eq!(bus.get::<UserSession>().unwrap().user_id, "u_1");
+    }
+
     #[tokio::test]
     async fn valid_flow_returns_report_checked_profile() {
         let flow = Axon::<String, String, String>::new("valid-session")
