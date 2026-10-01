@@ -454,6 +454,48 @@ async fn verify_cancelled_write(
 #[derive(Clone)]
 struct Count(Arc<AtomicUsize>);
 
+// Characterize the pre-existing fresh-input checkpoint policy. This is not
+// acceptance of recovery from an incompatible persisted typed value.
+#[tokio::test]
+async fn checkpoint_fresh_input_can_mask_incompatible_persisted_value() {
+    let backing = InMemoryPersistenceStore::new();
+    let effects = Arc::new(AtomicUsize::new(0));
+    let axon = Axon::<u32, u32, String>::new("typed-checkpoint")
+        .then(Count(effects.clone()))
+        .then(Count(effects.clone()));
+    backing
+        .append(PersistenceEnvelope {
+            trace_id: "typed-checkpoint".into(),
+            circuit: axon.schematic().name.clone(),
+            schematic_version: axon.schematic().schema_version.clone(),
+            step: 1,
+            node_id: Some(axon.schematic().nodes[1].id.to_string()),
+            outcome_kind: "Next".into(),
+            timestamp_ms: 0,
+            payload_hash: None,
+            payload: Some(serde_json::json!({"Next": "invalid-u32"})),
+        })
+        .await
+        .unwrap();
+    let mut bus = Bus::new();
+    bus.insert(PersistenceTraceId::new("typed-checkpoint"));
+    bus.insert(PersistenceHandle::from_store(backing.clone()));
+    assert!(matches!(
+        axon.execute(7, &(), &mut bus).await,
+        ExecutionReport::Recorded {
+            result: Outcome::Next(8),
+            ..
+        }
+    ));
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    let trace = backing.load("typed-checkpoint").await.unwrap().unwrap();
+    assert_eq!(trace.completion, Some(CompletionState::Success));
+    assert_eq!(
+        trace.events[0].payload,
+        Some(serde_json::json!({"Next": "invalid-u32"}))
+    );
+}
+
 struct CountRecoveryCleanup(Arc<AtomicUsize>);
 #[async_trait::async_trait]
 impl CompensationHook for CountRecoveryCleanup {
