@@ -7,13 +7,16 @@
 //!
 //! ```rust,ignore
 //! use ranvier_test::{TestBus, TestAxon, assert_outcome_ok, assert_outcome_err};
-//! use ranvier_runtime::Axon;
+//! use ranvier_runtime::{Axon, ExecutionReport};
 //!
 //! #[tokio::test]
 //! async fn my_pipeline_test() {
 //!     let bus = TestBus::new().with(42_i32).with("config".to_string());
 //!     let axon = Axon::simple::<String>("test").then(my_transition);
-//!     let outcome = TestAxon::run(axon, (), &(), bus).await;
+//!     let (report, _) = TestAxon::run(axon, (), &(), bus).await;
+//!     let ExecutionReport::Unpersisted { result: outcome } = report else {
+//!         panic!("expected an execution without persistence");
+//!     };
 //!     assert_outcome_ok!(outcome, |val| assert_eq!(val, expected));
 //! }
 //! ```
@@ -75,7 +78,10 @@ impl TestAxon {
     ///
     /// ```rust,ignore
     /// let bus = TestBus::new().with(42_i32);
-    /// let (outcome, bus) = TestAxon::run(axon, (), &(), bus).await;
+    /// let (report, bus) = TestAxon::run(axon, (), &(), bus).await;
+    /// let ranvier_runtime::ExecutionReport::Unpersisted { result: outcome } = report else {
+    ///     panic!("expected an execution without persistence");
+    /// };
     /// assert_outcome_ok!(outcome);
     /// assert!(bus.read::<TransitionErrorContext>().is_none());
     /// ```
@@ -273,7 +279,10 @@ mod tests {
             .then_fn("add-greeting", |_: (), _bus: &mut Bus| {
                 Outcome::Next("hello".to_string())
             });
-        let (outcome, _bus) = TestAxon::run(axon, (), &(), TestBus::new()).await;
+        let (report, _bus) = TestAxon::run(axon, (), &(), TestBus::new()).await;
+        let ranvier_runtime::ExecutionReport::Unpersisted { result: outcome } = report else {
+            panic!("expected an execution without persistence");
+        };
         assert_outcome_ok!(outcome, |val: String| assert_eq!(val, "hello"));
     }
 
@@ -283,7 +292,10 @@ mod tests {
             .then_fn("fail", |_: (), _bus: &mut Bus| {
                 Outcome::<String, String>::Fault("boom".to_string())
             });
-        let (outcome, bus) = TestAxon::run(axon, (), &(), TestBus::new()).await;
+        let (report, bus) = TestAxon::run(axon, (), &(), TestBus::new()).await;
+        let ranvier_runtime::ExecutionReport::Unpersisted { result: outcome } = report else {
+            panic!("expected an execution without persistence");
+        };
         assert_outcome_err!(outcome, |err: String| assert_eq!(err, "boom"));
         // TransitionErrorContext should be in Bus
         let ctx = bus
@@ -301,7 +313,10 @@ mod tests {
                 Outcome::Next(val)
             },
         );
-        let (outcome, _bus) = TestAxon::run(axon, (), &(), TestBus::new().with(99_i32)).await;
+        let (report, _bus) = TestAxon::run(axon, (), &(), TestBus::new().with(99_i32)).await;
+        let ranvier_runtime::ExecutionReport::Unpersisted { result: outcome } = report else {
+            panic!("expected an execution without persistence");
+        };
         assert_outcome_ok!(outcome, |val: i32| assert_eq!(val, 99));
     }
 
