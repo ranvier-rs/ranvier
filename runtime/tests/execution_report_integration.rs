@@ -30,6 +30,194 @@ struct EncodingBusiness {
     effects: Arc<AtomicUsize>,
     terminal_only: bool,
 }
+
+#[derive(Clone)]
+struct EncodingBranch(Arc<AtomicUsize>);
+#[async_trait::async_trait]
+impl Transition<EncodingOutput, EncodingOutput> for EncodingBranch {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: EncodingOutput, _: &(), _: &mut Bus) -> Outcome<EncodingOutput, String> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Outcome::Next(EncodingOutput {
+            terminal_only: false,
+            calls: Arc::new(AtomicUsize::new(0)),
+        })
+    }
+}
+
+#[tokio::test]
+async fn parallel_encoding_failure_observes_branch_effects_and_skips_completion() {
+    let backing = InMemoryPersistenceStore::new();
+    let effects = Arc::new(AtomicUsize::new(0));
+    let mut bus = Bus::new();
+    bus.insert(PersistenceTraceId::new("parallel-encoding"));
+    bus.insert(PersistenceHandle::from_store(backing.clone()));
+    let axon = Axon::<EncodingOutput, EncodingOutput, String>::new("parallel-encoding").parallel(
+        vec![
+            Arc::new(EncodingBranch(effects.clone())),
+            Arc::new(EncodingBranch(effects.clone())),
+        ],
+        ranvier_runtime::ParallelStrategy::AllMustSucceed,
+    );
+    let report = axon
+        .execute(
+            EncodingOutput {
+                terminal_only: true,
+                calls: Arc::new(AtomicUsize::new(0)),
+            },
+            &(),
+            &mut bus,
+        )
+        .await;
+    assert!(matches!(
+        report,
+        ExecutionReport::Unconfirmed {
+            result: Outcome::Next(_),
+            operation: PersistenceOperation::Result,
+            effect: EffectBoundary::MayHaveRun,
+            ..
+        }
+    ));
+    assert_eq!(effects.load(Ordering::SeqCst), 2);
+    let trace = backing.load("parallel-encoding").await.unwrap().unwrap();
+    assert_eq!(trace.completion, None);
+    assert_eq!(trace.events.len(), 1);
+    assert_eq!(trace.events[0].outcome_kind, "Enter");
+}
+
+#[derive(Clone)]
+struct EncodingUndo(Arc<AtomicUsize>);
+#[async_trait::async_trait]
+impl Transition<(), ()> for EncodingUndo {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: (), _: &(), _: &mut Bus) -> Outcome<(), String> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Outcome::Next(())
+    }
+}
+
+#[derive(Clone)]
+struct FaultAfterEncoding;
+#[async_trait::async_trait]
+impl Transition<EncodingOutput, ()> for FaultAfterEncoding {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: EncodingOutput, _: &(), _: &mut Bus) -> Outcome<(), String> {
+        Outcome::Fault("original-business-fault".into())
+    }
+}
+
+#[tokio::test]
+async fn compensated_result_encoding_failure_keeps_undo_and_original_fault() {
+    let backing = InMemoryPersistenceStore::new();
+    let effects = Arc::new(AtomicUsize::new(0));
+    let undos = Arc::new(AtomicUsize::new(0));
+    let mut bus = Bus::new();
+    bus.insert(PersistenceTraceId::new("compensated-encoding"));
+    bus.insert(PersistenceHandle::from_store(backing.clone()));
+    let axon = Axon::<(), (), String>::new("compensated-encoding")
+        .with_saga_policy(ranvier_core::saga::SagaPolicy::Enabled)
+        .then_compensated(
+            EncodingBusiness {
+                effects: effects.clone(),
+                terminal_only: false,
+            },
+            EncodingUndo(undos.clone()),
+        )
+        .then(FaultAfterEncoding);
+    let report = axon.execute((), &(), &mut bus).await;
+    assert!(report.cleanup().unwrap().is_complete());
+    assert!(matches!(report, ExecutionReport::Unconfirmed {
+        result: Outcome::Fault(ref fault), operation: PersistenceOperation::Result,
+        effect: EffectBoundary::MayHaveRun, ..
+    } if fault == "original-business-fault"));
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(undos.load(Ordering::SeqCst), 1);
+    let trace = backing.load("compensated-encoding").await.unwrap().unwrap();
+    assert_eq!(trace.completion, None);
+    assert!(
+        trace
+            .events
+            .iter()
+            .all(|event| event.payload != Some(serde_json::Value::Null))
+    );
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct EncodingFault {
+    private: bool,
+}
+impl serde::Serialize for EncodingFault {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.private {
+            Err(serde::ser::Error::custom(
+                "private-compensation-encoding-probe",
+            ))
+        } else {
+            serializer.serialize_str("original-business-fault")
+        }
+    }
+}
+#[derive(Clone)]
+struct FaultWithEncoding(Arc<AtomicUsize>, bool);
+#[async_trait::async_trait]
+impl Transition<(), ()> for FaultWithEncoding {
+    type Error = EncodingFault;
+    type Resources = ();
+    async fn run(&self, _: (), _: &(), _: &mut Bus) -> Outcome<(), EncodingFault> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Outcome::Fault(EncodingFault { private: self.1 })
+    }
+}
+
+#[tokio::test]
+async fn direct_compensation_encoding_failure_preserves_cleanup_and_domain_fault() {
+    let backing = InMemoryPersistenceStore::new();
+    let effects = Arc::new(AtomicUsize::new(0));
+    let undos = Arc::new(AtomicUsize::new(0));
+    let mut bus = Bus::new();
+    bus.insert(PersistenceTraceId::new("undo-encoding"));
+    bus.insert(PersistenceHandle::from_store(backing.clone()));
+    let axon = Axon::<(), (), EncodingFault>::new("undo-encoding").then_compensated(
+        FaultWithEncoding(effects.clone(), false),
+        FaultWithEncoding(undos.clone(), true),
+    );
+    let report = axon.execute((), &(), &mut bus).await;
+    let cleanup = report.cleanup().unwrap();
+    assert!(cleanup.finished);
+    assert!(!cleanup.is_complete());
+    assert_eq!(cleanup.steps.len(), 1);
+    assert_eq!(
+        cleanup.steps[0].outcome,
+        ranvier_runtime::SagaRollbackOutcome::Fault
+    );
+    assert!(matches!(
+        report,
+        ExecutionReport::Unconfirmed {
+            result: Outcome::Fault(EncodingFault { private: false }),
+            operation: PersistenceOperation::Result,
+            effect: EffectBoundary::MayHaveRun,
+            ..
+        }
+    ));
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(undos.load(Ordering::SeqCst), 1);
+    let trace = backing.load("undo-encoding").await.unwrap().unwrap();
+    assert_eq!(trace.completion, None);
+    assert!(
+        trace
+            .events
+            .iter()
+            .all(|event| event.payload != Some(serde_json::Value::Null))
+    );
+    assert!(
+        !serde_json::to_string(&trace)
+            .unwrap()
+            .contains("private-compensation-encoding-probe")
+    );
+}
 #[async_trait::async_trait]
 impl Transition<(), EncodingOutput> for EncodingBusiness {
     type Error = String;
