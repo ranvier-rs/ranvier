@@ -4487,6 +4487,166 @@ mod tests {
             }
         }
 
+        #[derive(Clone)]
+        struct PanicIamVerifier;
+        #[async_trait]
+        impl IamVerifier for PanicIamVerifier {
+            async fn verify(&self, _: &str) -> Result<IamIdentity, IamError> {
+                panic!("synthetic verifier panic");
+            }
+        }
+        #[derive(Clone)]
+        struct ScopedIdentityEffect {
+            expected: &'static str,
+            pending: bool,
+            entered: Arc<tokio::sync::Notify>,
+            calls: Arc<std::sync::atomic::AtomicU32>,
+        }
+        #[async_trait]
+        impl Transition<i32, i32> for ScopedIdentityEffect {
+            type Error = String;
+            type Resources = ();
+            async fn run(&self, input: i32, _: &(), bus: &mut Bus) -> Outcome<i32, String> {
+                assert_eq!(bus.read::<IamIdentity>().unwrap().subject, self.expected);
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                bus.try_insert_shared(IamIdentity::new("child-local-change"))
+                    .unwrap();
+                bus.try_insert(IamToken("child-local-token".into()))
+                    .unwrap();
+                self.entered.notify_one();
+                if self.pending {
+                    std::future::pending().await
+                } else {
+                    Outcome::Next(input)
+                }
+            }
+        }
+        #[derive(Clone)]
+        struct NestedTerminationParent {
+            mode: u8,
+        }
+        #[async_trait]
+        impl Transition<i32, i32> for NestedTerminationParent {
+            type Error = String;
+            type Resources = ();
+            async fn run(&self, input: i32, _: &(), bus: &mut Bus) -> Outcome<i32, String> {
+                use futures_util::FutureExt;
+                let identity = serde_json::to_value(bus.read::<IamIdentity>().unwrap()).unwrap();
+                let identity_ptr =
+                    bus.read::<IamIdentity>().unwrap() as *const IamIdentity as usize;
+                let token = bus.read::<IamToken>().unwrap().0.clone();
+                let token_ptr = bus.read::<IamToken>().unwrap() as *const IamToken as usize;
+                let entered = Arc::new(tokio::sync::Notify::new());
+                let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+                let mut child = Axon::<i32, i32, String>::start("scope-terminal-child");
+                match self.mode {
+                    0 => child = child.with_iam(IamPolicy::RequireIdentity, PanicIamVerifier),
+                    1 => {
+                        child = child.with_iam(
+                            IamPolicy::RequireIdentity,
+                            MockVerifier {
+                                identity: IamIdentity::new("verified-child"),
+                                should_fail: false,
+                            },
+                        )
+                    }
+                    2 => {}
+                    3 => child = child.with_iam(IamPolicy::None, PanicIamVerifier),
+                    _ => unreachable!("test mode"),
+                }
+                let child = child.then(ScopedIdentityEffect {
+                    expected: if self.mode == 1 {
+                        "verified-child"
+                    } else {
+                        "verified-parent"
+                    },
+                    pending: self.mode == 1,
+                    entered: entered.clone(),
+                    calls: calls.clone(),
+                });
+                if self.mode == 0 {
+                    assert!(
+                        std::panic::AssertUnwindSafe(child.execute(input, &(), bus))
+                            .catch_unwind()
+                            .await
+                            .is_err()
+                    );
+                } else if self.mode == 1 {
+                    // Drop the actual child executor only after its domain
+                    // transition entered and changed both context resources.
+                    let future = child.execute(input, &(), bus);
+                    tokio::pin!(future);
+                    tokio::select! {
+                        biased;
+                        _ = &mut future => panic!("pending child unexpectedly completed"),
+                        _ = entered.notified() => {},
+                    }
+                } else {
+                    let report = child.execute(input, &(), bus).await;
+                    assert!(matches!(
+                        report,
+                        crate::ExecutionReport::Unpersisted {
+                            result: Outcome::Next(_),
+                            ..
+                        }
+                    ));
+                }
+                assert_eq!(
+                    calls.load(std::sync::atomic::Ordering::SeqCst),
+                    if self.mode == 0 { 0 } else { 1 }
+                );
+                assert_eq!(
+                    serde_json::to_value(bus.read::<IamIdentity>().unwrap()).unwrap(),
+                    identity
+                );
+                assert_eq!(
+                    bus.read::<IamIdentity>().unwrap() as *const IamIdentity as usize,
+                    identity_ptr
+                );
+                assert_eq!(bus.read::<IamToken>().unwrap().0, token);
+                assert_eq!(
+                    bus.read::<IamToken>().unwrap() as *const IamToken as usize,
+                    token_ptr
+                );
+                Outcome::Next(input)
+            }
+        }
+        #[tokio::test]
+        async fn nested_iam_verifier_panic_future_drop_and_delegation_restore_context() {
+            for mode in 0..4 {
+                let mut bus = Bus::new();
+                bus.insert(IamToken("parent-fixture-token".into()));
+                let report = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    Axon::<i32, i32, String>::start("scope-terminal-parent")
+                        .with_iam(IamPolicy::RequireIdentity, ParentTokenVerifier)
+                        .then(NestedTerminationParent { mode })
+                        .execute(7, &(), &mut bus),
+                )
+                .await
+                .unwrap();
+                assert!(
+                    matches!(
+                        report,
+                        crate::ExecutionReport::Unpersisted {
+                            result: Outcome::Next(7),
+                            ..
+                        }
+                    ),
+                    "mode {mode}"
+                );
+                assert_eq!(
+                    bus.read::<IamIdentity>().unwrap().subject,
+                    "verified-parent"
+                );
+                assert_eq!(bus.read::<IamToken>().unwrap().0, "parent-fixture-token");
+                assert!(
+                    bus.read::<crate::execution_observation::InvocationTrace>()
+                        .is_none()
+                );
+            }
+        }
+
         #[tokio::test]
         async fn iam_rejected_requests_clear_previous_identity_without_effect() {
             for (policy, fail, token, expected) in [
