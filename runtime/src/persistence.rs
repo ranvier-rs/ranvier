@@ -1649,6 +1649,19 @@ mod tests {
                 ),
                 timestamp_ms: u64::MAX,
             };
+            // Seed existing fields so a winner must preserve earlier caller data too.
+            observer.resume(&trace_id, 2).await.unwrap();
+            observer
+                .save_intervention(
+                    &trace_id,
+                    Intervention {
+                        target_node: "prior-node".to_owned(),
+                        payload_override: Some(serde_json::json!({"prior": true})),
+                        timestamp_ms: 1,
+                    },
+                )
+                .await
+                .unwrap();
             let mut expected = observer.load(&trace_id).await.unwrap().unwrap();
             let original = observer.read_trace(&trace_id).await.unwrap().0;
             let gate = || {
