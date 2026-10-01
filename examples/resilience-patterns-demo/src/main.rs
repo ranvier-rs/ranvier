@@ -250,6 +250,23 @@ impl Transition<ApiRequest, ApiRequest> for ValidateRequest {
 // Main — Run All Scenarios
 // ============================================================================
 
+// Explicit local-demo policy: neither persisted nor incomplete cleanup results
+// may be converted into ordinary domain success or automatic retry permission.
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     println!("=== Resilience Patterns Demo ===\n");
@@ -270,7 +287,7 @@ async fn main() -> anyhow::Result<()> {
         };
         let mut bus = Bus::new();
 
-        match pipeline.execute(request, &(), &mut bus).await {
+        match local_demo_outcome(pipeline.execute(request, &(), &mut bus).await)? {
             Outcome::Next(resp) => {
                 println!(
                     "\n  Result: status={}, attempts={}, body={}",
@@ -303,7 +320,7 @@ async fn main() -> anyhow::Result<()> {
         };
         let mut bus = Bus::new();
 
-        match pipeline.execute(request, &(), &mut bus).await {
+        match local_demo_outcome(pipeline.execute(request, &(), &mut bus).await)? {
             Outcome::Next(resp) => {
                 println!("  Result: status={}, body={}", resp.status, resp.body);
             }
@@ -333,7 +350,7 @@ async fn main() -> anyhow::Result<()> {
         };
         let mut bus = Bus::new();
 
-        match pipeline.execute(request, &(), &mut bus).await {
+        match local_demo_outcome(pipeline.execute(request, &(), &mut bus).await)? {
             Outcome::Next(resp) => {
                 println!("  Result: status={}, body={}", resp.status, resp.body);
             }
@@ -371,7 +388,7 @@ async fn main() -> anyhow::Result<()> {
         };
         let mut bus = Bus::new();
 
-        match pipeline.execute(request, &(), &mut bus).await {
+        match local_demo_outcome(pipeline.execute(request, &(), &mut bus).await)? {
             Outcome::Next(resp) => {
                 println!("  Result: status={}, body={}", resp.status, resp.body);
             }

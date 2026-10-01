@@ -316,6 +316,23 @@ impl Transition<Ticket, Ticket> for EmitAuditEvent {
 // Main — Run All 5 Scenarios
 // ============================================================================
 
+// Explicit local-demo policy: neither persisted nor incomplete cleanup results
+// may be converted into ordinary domain success or automatic retry permission.
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     println!("=== Outcome Variants Demo ===");
@@ -339,7 +356,7 @@ async fn main() -> anyhow::Result<()> {
         };
         let mut bus = Bus::new();
 
-        match pipeline.execute(ticket, &(), &mut bus).await {
+        match local_demo_outcome(pipeline.execute(ticket, &(), &mut bus).await)? {
             Outcome::Next(response) => println!("  Result: {}\n", response),
             other => println!("  Unexpected: {:?}\n", other),
         }
@@ -363,7 +380,7 @@ async fn main() -> anyhow::Result<()> {
         };
         let mut bus = Bus::new();
 
-        match pipeline.execute(bad_ticket, &(), &mut bus).await {
+        match local_demo_outcome(pipeline.execute(bad_ticket, &(), &mut bus).await)? {
             Outcome::Fault(err) => println!("  Fault caught: {}\n", err),
             other => println!("  Unexpected: {:?}\n", other),
         }
@@ -387,7 +404,7 @@ async fn main() -> anyhow::Result<()> {
         };
         let mut bus = Bus::new();
 
-        match pipeline.execute(billing_ticket, &(), &mut bus).await {
+        match local_demo_outcome(pipeline.execute(billing_ticket, &(), &mut bus).await)? {
             Outcome::Branch(dept, payload) => {
                 println!("  Branched to: {}", dept);
                 if let Some(p) = payload {
@@ -407,7 +424,7 @@ async fn main() -> anyhow::Result<()> {
         };
         let mut bus2 = Bus::new();
 
-        match pipeline.execute(general_ticket, &(), &mut bus2).await {
+        match local_demo_outcome(pipeline.execute(general_ticket, &(), &mut bus2).await)? {
             Outcome::Next(ticket) => {
                 println!("  General ticket #{} continued in flow", ticket.id)
             }
@@ -433,7 +450,7 @@ async fn main() -> anyhow::Result<()> {
         };
         let mut bus = Bus::new();
 
-        match pipeline.execute(incomplete_ticket, &(), &mut bus).await {
+        match local_demo_outcome(pipeline.execute(incomplete_ticket, &(), &mut bus).await)? {
             Outcome::Jump(_node_id, payload) => {
                 println!("  Jump requested");
                 if let Some(p) = payload {
@@ -463,7 +480,7 @@ async fn main() -> anyhow::Result<()> {
         };
         let mut bus = Bus::new();
 
-        match pipeline.execute(ticket, &(), &mut bus).await {
+        match local_demo_outcome(pipeline.execute(ticket, &(), &mut bus).await)? {
             Outcome::Emit(event_type, payload) => {
                 println!("  Event emitted: {}", event_type);
                 if let Some(p) = payload {
