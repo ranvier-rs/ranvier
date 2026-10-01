@@ -22,6 +22,21 @@ use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 // ============================================================================
 // 1. Data Types
 // ============================================================================
@@ -179,7 +194,7 @@ async fn main() -> anyhow::Result<()> {
     // println!("{}", serde_json::to_string_pretty(&axon.schematic)?);
 
     let mut bus = Bus::new();
-    let result = axon.execute(req_valid, &(), &mut bus).await;
+    let result = local_demo_outcome(axon.execute(req_valid, &(), &mut bus).await)?;
 
     match result {
         Outcome::Next(profile) => println!("Success: {}", profile),
@@ -198,7 +213,7 @@ async fn main() -> anyhow::Result<()> {
         .then(UserProfile);
 
     let mut bus2 = Bus::new();
-    let result2 = axon2.execute(req_invalid, &(), &mut bus2).await;
+    let result2 = local_demo_outcome(axon2.execute(req_invalid, &(), &mut bus2).await)?;
 
     match result2 {
         Outcome::Next(profile) => println!("Success: {}", profile),
