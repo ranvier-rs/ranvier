@@ -23,6 +23,79 @@ mod tests {
     use super::*;
     use futures_util::FutureExt;
 
+    struct TestDlqSink;
+    #[async_trait::async_trait]
+    impl ranvier_core::event::DlqSink for TestDlqSink {
+        async fn store_dead_letter(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &[u8],
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn nested_config_restores_values_and_absence_after_finish_or_drop() {
+        use ranvier_core::{
+            event::{DlqPolicy, DlqSink},
+            saga::SagaPolicy,
+            schematic::Schematic,
+        };
+        for configured in [false, true] {
+            for finish in [false, true] {
+                let mut bus = Bus::new();
+                let mut parent = InvocationOwner::begin(&mut bus);
+                let parent_sink: Arc<dyn DlqSink> = Arc::new(TestDlqSink);
+                if configured {
+                    parent.bus().insert(DlqPolicy::SendToDlq);
+                    parent.bus().insert(SagaPolicy::Disabled);
+                    parent
+                        .bus()
+                        .insert(crate::Axon::<i32, i32, String>::start("parent").schematic);
+                    parent.bus().insert(parent_sink.clone());
+                }
+                {
+                    let mut child = InvocationOwner::begin(parent.bus());
+                    child.bus().insert(DlqPolicy::Drop);
+                    child.bus().insert(SagaPolicy::Enabled);
+                    child
+                        .bus()
+                        .insert(crate::Axon::<i32, i32, String>::start("child").schematic);
+                    child
+                        .bus()
+                        .insert::<Arc<dyn DlqSink>>(Arc::new(TestDlqSink));
+                    if finish {
+                        let _ = child.finish(());
+                    }
+                }
+                if configured {
+                    assert_eq!(
+                        parent.bus().read::<DlqPolicy>(),
+                        Some(&DlqPolicy::SendToDlq)
+                    );
+                    assert_eq!(
+                        parent.bus().read::<SagaPolicy>(),
+                        Some(&SagaPolicy::Disabled)
+                    );
+                    assert_eq!(parent.bus().read::<Schematic>().unwrap().name, "parent");
+                    assert!(Arc::ptr_eq(
+                        parent.bus().read::<Arc<dyn DlqSink>>().unwrap(),
+                        &parent_sink
+                    ));
+                } else {
+                    assert!(parent.bus().read::<DlqPolicy>().is_none());
+                    assert!(parent.bus().read::<SagaPolicy>().is_none());
+                    assert!(parent.bus().read::<Schematic>().is_none());
+                    assert!(parent.bus().read::<Arc<dyn DlqSink>>().is_none());
+                }
+            }
+        }
+    }
+
     #[test]
     fn owner_restores_caller_jump_and_removes_invocation_jump() {
         for finish in [false, true] {
