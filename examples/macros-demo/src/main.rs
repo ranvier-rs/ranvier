@@ -51,6 +51,21 @@ use ranvier_macros::transition;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> Result<Outcome<T, E>, String> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        return Err("Execution requires reconciliation before retry".into());
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => Err("Execution requires reconciliation before retry".into()),
+    }
+}
+
 // ── Domain types ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,7 +159,7 @@ async fn finalize(
 // ── Main ──────────────────────────────────────────────────────────────────
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), String> {
     println!("=== Ranvier Macros Demo ===");
     println!();
 
@@ -162,7 +177,7 @@ async fn main() {
     };
 
     let mut bus = Bus::new();
-    let result = pipeline.execute(order.clone(), &(), &mut bus).await;
+    let result = local_demo_outcome(pipeline.execute(order.clone(), &(), &mut bus).await)?;
     println!("  Input:  {:?}", order);
     println!("  Output: {:?}", result);
     println!();
@@ -184,9 +199,11 @@ async fn main() {
     let mut bus2 = Bus::new();
     bus2.insert(0.15_f64); // 15% discount
 
-    let result2 = discount_pipeline
-        .execute(order2.clone(), &(), &mut bus2)
-        .await;
+    let result2 = local_demo_outcome(
+        discount_pipeline
+            .execute(order2.clone(), &(), &mut bus2)
+            .await,
+    )?;
     println!("  Input:    {:?}", order2);
     println!("  Discount: 15%");
     println!("  Output:   {:?}", result2);
@@ -209,9 +226,11 @@ async fn main() {
     let mut bus3 = Bus::new();
     bus3.insert("secret-api-key".to_string()); // Present but denied to `finalize`
 
-    let result3 = secure_pipeline
-        .execute(order3.clone(), &(), &mut bus3)
-        .await;
+    let result3 = local_demo_outcome(
+        secure_pipeline
+            .execute(order3.clone(), &(), &mut bus3)
+            .await,
+    )?;
     println!("  Input:  {:?}", order3);
     println!("  Output: {:?}", result3);
     println!();
@@ -226,10 +245,11 @@ async fn main() {
     };
 
     let mut bus4 = Bus::new();
-    let result4 = pipeline.execute(bad_order.clone(), &(), &mut bus4).await;
+    let result4 = local_demo_outcome(pipeline.execute(bad_order.clone(), &(), &mut bus4).await)?;
     println!("  Input:  {:?}", bad_order);
     println!("  Output: {:?}", result4);
 
     println!();
     println!("=== Demo complete ===");
+    Ok(())
 }
