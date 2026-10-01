@@ -45,6 +45,18 @@ async fn cancellable_generated_identity_does_not_escape_invocation() {
         .await;
     assert_eq!(bus.read::<PersistenceTraceId>().unwrap().0, "caller-owned");
     assert_eq!(effects.load(Ordering::SeqCst), 3);
+    let parent = ranvier_core::cancellation::CancellationToken::new();
+    bus.set_cancellation_token(parent.clone());
+    for cancelled in [false, true] {
+        let child = ranvier_core::cancellation::CancellationToken::new();
+        if cancelled {
+            child.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
+        }
+        let _ = axon.execute_cancellable(1, &(), &mut bus, child).await;
+        assert!(!bus.cancellation_token().unwrap().is_cancelled());
+    }
+    parent.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
+    assert!(bus.cancellation_token().unwrap().is_cancelled());
 }
 
 struct IdentityStore {
