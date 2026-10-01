@@ -259,10 +259,7 @@ impl Transition<PaymentRequest, PaymentResult> for CircuitBreakerGateway {
             };
 
             if matches!(&*state, CircuitState::Open { .. }) || failures >= self.failure_threshold {
-                println!(
-                    "  [CB] Failure threshold reached ({}/{}) — opening circuit",
-                    failures, self.failure_threshold
-                );
+                println!("  [CB] Failure — opening circuit");
                 *state = CircuitState::Open {
                     opened_at: tokio::time::Instant::now(),
                 };
@@ -609,6 +606,9 @@ mod tests {
             &*gateway.state.lock().await,
             CircuitState::Open { .. }
         ));
+        assert!(matches!(call_breaker(gateway.clone()).await,
+            Outcome::Fault(error) if error == "circuit_open"));
+        assert_eq!(gateway.inner_fail_count.load(Ordering::SeqCst), 3);
         expire_open_window(&gateway).await;
         assert!(matches!(call_breaker(gateway.clone()).await,
             Outcome::Next(value) if value.order_id == "probe" && value.amount == 1.0));
@@ -619,6 +619,9 @@ mod tests {
             }
         ));
         assert_eq!(gateway.inner_fail_count.load(Ordering::SeqCst), 4);
+        assert!(matches!(call_breaker(gateway.clone()).await,
+            Outcome::Next(value) if value.status == "charged"));
+        assert_eq!(gateway.inner_fail_count.load(Ordering::SeqCst), 5);
     }
 
     #[tokio::test]
