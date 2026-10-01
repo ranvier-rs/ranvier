@@ -24,12 +24,12 @@ async fn read_principal(input: String, bus: &mut Bus) -> Outcome<AuthenticatedRe
         _ => Outcome::Fault(AccessError::Unauthenticated),
     }
 }
-#[transition(resources = AccessPolicy)]
+#[transition]
 async fn check_subscription(input: AuthenticatedRequest, policy: &AccessPolicy) -> Outcome<AuthenticatedRequest, AccessError> {
     if !policy.active_subjects.contains(&input.subject) { return Outcome::Fault(AccessError::SubscriptionRequired); }
     Outcome::Next(input)
 }
-#[transition(resources = AccessPolicy)]
+#[transition]
 async fn require_role(input: AuthenticatedRequest, policy: &AccessPolicy) -> Outcome<AuthenticatedRequest, AccessError> {
     if policy.required_role.trim().is_empty() || !input.roles.iter().any(|role| role == &policy.required_role) {
         return Outcome::Fault(AccessError::Forbidden);
