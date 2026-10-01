@@ -520,7 +520,7 @@ struct AppliedAwaitingAck {
 #[tokio::test]
 async fn dropped_persistence_ack_restores_owner_without_rewriting_history() {
     use futures_util::FutureExt;
-    for block_at in [1, 2, 3] {
+    for block_at in [0, 1, 2, 3, 4] {
         for applied in [false, true] {
             for cancellable in [false, true] {
                 let backing = InMemoryPersistenceStore::new();
@@ -551,7 +551,7 @@ async fn dropped_persistence_ack_restores_owner_without_rewriting_history() {
                 } else {
                     assert!(axon.execute(1, &(), &mut bus).now_or_never().is_none());
                 }
-                assert_eq!(store.calls.load(Ordering::SeqCst), block_at);
+                assert_eq!(store.calls.load(Ordering::SeqCst), block_at.min(3));
                 assert_eq!(bus.read::<PersistenceTraceId>().unwrap().0, "drop-ack");
                 assert_eq!(effects.load(Ordering::SeqCst), usize::from(block_at > 1));
                 assert!(Arc::ptr_eq(
@@ -560,13 +560,24 @@ async fn dropped_persistence_ack_restores_owner_without_rewriting_history() {
                 ));
                 assert!(bus.cancellation_token().is_none());
                 let trace = backing.load("drop-ack").await.unwrap();
-                let expected = block_at - 1 + usize::from(applied);
+                let expected = match block_at {
+                    0 => 0,
+                    4 => 3,
+                    _ => block_at - 1 + usize::from(applied),
+                };
                 if expected == 0 {
                     assert!(trace.is_none());
                 } else {
                     let trace = trace.unwrap();
                     assert_eq!(trace.events.len(), expected);
-                    assert_eq!(trace.completion, None);
+                    assert_eq!(
+                        trace.completion,
+                        if block_at == 4 && applied {
+                            Some(CompletionState::Success)
+                        } else {
+                            None
+                        }
+                    );
                 }
             }
         }
@@ -587,12 +598,21 @@ impl PersistenceStore for AppliedAwaitingAck {
         Ok(())
     }
     async fn load(&self, trace: &str) -> anyhow::Result<Option<PersistedTrace>> {
+        if self.block_at == 0 {
+            std::future::pending::<()>().await;
+        }
         self.backing.load(trace).await
     }
     async fn resume(&self, trace: &str, step: u64) -> anyhow::Result<ResumeCursor> {
         self.backing.resume(trace, step).await
     }
     async fn complete(&self, trace: &str, completion: CompletionState) -> anyhow::Result<()> {
+        if self.block_at == 4 {
+            if self.apply_blocked {
+                self.backing.complete(trace, completion.clone()).await?;
+            }
+            std::future::pending::<()>().await;
+        }
         self.backing.complete(trace, completion).await
     }
     async fn save_intervention(
