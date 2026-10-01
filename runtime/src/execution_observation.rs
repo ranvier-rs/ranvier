@@ -39,6 +39,60 @@ mod tests {
     }
 
     #[test]
+    fn nested_identity_restores_presence_storage_and_absence_after_finish_or_drop() {
+        use ranvier_core::iam::IamIdentity;
+        for present in [false, true] {
+            for shared in [false, true] {
+                for finish in [false, true] {
+                    let mut bus = Bus::new();
+                    let mut parent = InvocationOwner::begin(&mut bus);
+                    if present {
+                        let identity = IamIdentity::new("parent").with_role("parent");
+                        if shared {
+                            parent.bus().insert_shared(identity);
+                        } else {
+                            parent.bus().insert(identity);
+                        }
+                    }
+                    let ptr = parent
+                        .bus()
+                        .read::<IamIdentity>()
+                        .map(|v| v as *const IamIdentity);
+                    {
+                        let mut child = InvocationOwner::begin(parent.bus());
+                        child.bus().insert_shared(IamIdentity::new("child"));
+                        if finish {
+                            let _ = child.finish(());
+                        }
+                    }
+                    assert_eq!(
+                        parent
+                            .bus()
+                            .read::<IamIdentity>()
+                            .map(|v| v as *const IamIdentity),
+                        ptr
+                    );
+                    assert_eq!(
+                        parent
+                            .bus()
+                            .read::<IamIdentity>()
+                            .map(|v| v.subject.as_str()),
+                        if present { Some("parent") } else { None }
+                    );
+                    assert_eq!(
+                        parent
+                            .bus()
+                            .fork_for_parallel()
+                            .read::<IamIdentity>()
+                            .is_some(),
+                        present && shared
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn nested_config_restores_values_and_absence_after_finish_or_drop() {
         use ranvier_core::{
             event::{DlqPolicy, DlqSink},

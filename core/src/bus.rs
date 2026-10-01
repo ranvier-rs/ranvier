@@ -603,6 +603,7 @@ impl Bus {
     /// Unique local/shared values are cloned for the child; already aliased and
     /// inherited values retain their read-only mutation restrictions. Restore
     /// discards child overlays and reinstates the original allocation/absence.
+    /// Scopes must be restored in reverse creation order on the same Bus.
     /// Only use after framework access has been suspended, and restore after
     /// the nested invocation's futures and Bus borrows have been dropped.
     #[doc(hidden)]
@@ -797,6 +798,40 @@ impl std::ops::DerefMut for ConnectionBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_scope_clone_panic_keeps_original_slot_and_lifo_restores() {
+        struct PanicClone(i32);
+        impl Clone for PanicClone {
+            fn clone(&self) -> Self {
+                panic!("synthetic clone panic");
+            }
+        }
+        let mut bus = Bus::new();
+        bus.insert(PanicClone(7));
+        let ptr = bus.read::<PanicClone>().unwrap() as *const PanicClone;
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = bus.begin_resource_scope::<PanicClone>();
+            }))
+            .is_err()
+        );
+        assert_eq!(bus.read::<PanicClone>().unwrap().0, 7);
+        assert_eq!(bus.read::<PanicClone>().unwrap() as *const PanicClone, ptr);
+        bus.insert_shared("parent".to_string());
+        let parent = bus.read::<String>().unwrap() as *const String;
+        let first = bus.begin_resource_scope::<String>();
+        bus.insert_shared("child".to_string());
+        let child = bus.read::<String>().unwrap() as *const String;
+        let second = bus.begin_resource_scope::<String>();
+        bus.insert("grandchild".to_string());
+        bus.restore_resource_scope(second);
+        assert_eq!(bus.read::<String>().unwrap() as *const String, child);
+        assert_eq!(bus.read::<String>().unwrap(), "child");
+        bus.restore_resource_scope(first);
+        assert_eq!(bus.read::<String>().unwrap() as *const String, parent);
+        assert_eq!(bus.read::<String>().unwrap(), "parent");
+    }
 
     #[test]
     fn resource_scope_restores_exact_storage_and_shared_restrictions() {

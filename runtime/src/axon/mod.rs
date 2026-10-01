@@ -3602,6 +3602,17 @@ mod tests {
         }
     }
     #[derive(Clone)]
+    struct NestedIdentityVerifier(&'static str);
+    #[async_trait]
+    impl ranvier_core::iam::IamVerifier for NestedIdentityVerifier {
+        async fn verify(
+            &self,
+            _: &str,
+        ) -> Result<ranvier_core::iam::IamIdentity, ranvier_core::iam::IamError> {
+            Ok(ranvier_core::iam::IamIdentity::new(self.0).with_role(self.0))
+        }
+    }
+    #[derive(Clone)]
     struct NestedTerminalParent {
         panic: bool,
         calls: Arc<std::sync::atomic::AtomicU32>,
@@ -3614,6 +3625,9 @@ mod tests {
             Some(BusAccessPolicy::deny_only(vec![BusTypeRef::of::<String>()]))
         }
         async fn run(&self, input: i32, _: &(), bus: &mut Bus) -> Outcome<i32, String> {
+            let parent_identity =
+                serde_json::to_value(bus.read::<ranvier_core::iam::IamIdentity>().unwrap())
+                    .unwrap();
             let parent_sink = bus.read::<Arc<dyn DlqSink>>().unwrap().clone();
             let parent_trace = bus
                 .read::<crate::execution_observation::InvocationTrace>()
@@ -3621,13 +3635,16 @@ mod tests {
                 .0
                 .clone();
             let entered = Arc::new(tokio::sync::Notify::new());
-            let child = Axon::<i32, i32, String>::start("nested-terminal-child").then(
-                NestedTerminalChild {
+            let child = Axon::<i32, i32, String>::start("nested-terminal-child")
+                .with_iam(
+                    ranvier_core::iam::IamPolicy::RequireIdentity,
+                    NestedIdentityVerifier("child"),
+                )
+                .then(NestedTerminalChild {
                     panic: self.panic,
                     entered: entered.clone(),
                     calls: self.calls.clone(),
-                },
-            );
+                });
             if self.panic {
                 let report = child.execute(input, &(), bus).await;
                 assert!(matches!(report, crate::ExecutionReport::Unpersisted {
@@ -3651,6 +3668,11 @@ mod tests {
                     if context.reason == CancellationReason::Explicit));
                 assert!(!bus.cancellation_token().unwrap().is_cancelled());
             }
+            assert_eq!(
+                serde_json::to_value(bus.read::<ranvier_core::iam::IamIdentity>().unwrap())
+                    .unwrap(),
+                parent_identity
+            );
             assert!(
                 matches!(bus.get::<String>(), Err(BusAccessError::Unauthorized { transition, .. })
                 if transition == "NestedTerminalParent")
@@ -3700,7 +3722,12 @@ mod tests {
             let mut bus = Bus::new();
             bus.set_cancellation_token(token.clone());
             bus.insert("private".to_string());
+            bus.insert(ranvier_core::iam::IamToken("fixture-token".into()));
             let axon = Axon::<i32, i32, String>::start("nested-terminal-parent")
+                .with_iam(
+                    ranvier_core::iam::IamPolicy::RequireIdentity,
+                    NestedIdentityVerifier("parent"),
+                )
                 .then(NestedTerminalParent {
                     panic,
                     calls: calls.clone(),
@@ -4199,6 +4226,22 @@ mod tests {
         }
 
         #[derive(Clone)]
+        struct VerifiedChildEffect {
+            calls: Arc<std::sync::atomic::AtomicU32>,
+        }
+        #[async_trait]
+        impl Transition<i32, i32> for VerifiedChildEffect {
+            type Error = String;
+            type Resources = ();
+            async fn run(&self, input: i32, _: &(), bus: &mut Bus) -> Outcome<i32, String> {
+                if bus.read::<IamIdentity>().map(|v| v.subject.as_str()) != Some("verified-child") {
+                    return Outcome::Fault("child_identity_not_verified".into());
+                }
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Outcome::Next(input + 1)
+            }
+        }
+        #[derive(Clone)]
         struct NestedIamParent {
             present: bool,
             reject: bool,
@@ -4212,6 +4255,7 @@ mod tests {
                     .read::<IamIdentity>()
                     .map(|v| serde_json::to_value(v).unwrap());
                 assert_eq!(before.is_some(), self.present);
+                let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
                 let child = Axon::<i32, i32, String>::start("nested-iam-child")
                     .with_iam(
                         IamPolicy::RequireIdentity,
@@ -4220,9 +4264,8 @@ mod tests {
                             should_fail: self.reject,
                         },
                     )
-                    .then(CountCombinedRetry {
-                        calls: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                        failures: 0,
+                    .then(VerifiedChildEffect {
+                        calls: calls.clone(),
                     });
                 let report = child.execute(input, &(), bus).await;
                 if self.reject {
@@ -4237,6 +4280,10 @@ mod tests {
                         }
                     ));
                 }
+                assert_eq!(
+                    calls.load(std::sync::atomic::Ordering::SeqCst),
+                    if self.reject { 0 } else { 1 }
+                );
                 let after = bus
                     .read::<IamIdentity>()
                     .map(|v| serde_json::to_value(v).unwrap());
