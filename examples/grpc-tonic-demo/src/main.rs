@@ -274,6 +274,59 @@ mod contract_tests {
         .await
         .unwrap();
     }
+
+    #[tokio::test]
+    async fn real_tcp_fault_diagnostics_are_redacted_and_stream_stops() {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let calls = Arc::new(AtomicU64::new(0));
+            let service = GreeterService {
+                axon: Axon::<GreetInput, GreetInput, String>::new("tcp-failure")
+                    .then(FailingGreeting(calls.clone())),
+            };
+            let (stop, stopped) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(
+                tonic::transport::Server::builder()
+                    .add_service(GreeterServer::new(service))
+                    .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                        let _ = stopped.await;
+                    }),
+            );
+            let mut client =
+                greeter::greeter_client::GreeterClient::connect(format!("http://{address}"))
+                    .await
+                    .unwrap();
+            let status = client
+                .say_hello(HelloRequest {
+                    name: "Synthetic".into(),
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(status.code(), tonic::Code::Internal);
+            assert_eq!(status.message(), "Greeting failed");
+            assert!(status.details().is_empty());
+            let mut stream = client
+                .say_hello_stream(HelloRequest {
+                    name: "Synthetic".into(),
+                })
+                .await
+                .unwrap()
+                .into_inner();
+            let status = stream.message().await.unwrap_err();
+            assert_eq!(status.code(), tonic::Code::Internal);
+            assert_eq!(status.message(), "Greeting failed");
+            assert!(status.details().is_empty());
+            assert!(stream.message().await.unwrap().is_none());
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            drop(stream);
+            drop(client);
+            stop.send(()).unwrap();
+            server.await.unwrap().unwrap();
+        })
+        .await
+        .unwrap();
+    }
 }
 
 // Local demo policy: no workflow persistence is configured.
