@@ -1021,7 +1021,7 @@ pub async fn persist_execution_event(
     node_id: Option<String>,
     outcome_kind: &str,
     payload: Option<serde_json::Value>,
-) {
+) -> crate::execution_report::StoreConfirmation {
     let store = handle.store();
     let envelope = PersistenceEnvelope {
         trace_id: trace_id.to_string(),
@@ -1044,6 +1044,9 @@ pub async fn persist_execution_event(
             store_operation = "append",
             "Failed to append persistence envelope"
         );
+        crate::execution_report::StoreConfirmation::Unconfirmed
+    } else {
+        crate::execution_report::StoreConfirmation::Confirmed
     }
 }
 
@@ -1051,7 +1054,7 @@ async fn persist_completion(
     handle: &PersistenceHandle,
     trace_id: &str,
     completion: CompletionState,
-) {
+) -> crate::execution_report::StoreConfirmation {
     let store = handle.store();
     if store.complete(trace_id, completion).await.is_err() {
         tracing::warn!(
@@ -1059,6 +1062,9 @@ async fn persist_completion(
             store_operation = "complete",
             "Failed to complete persistence trace"
         );
+        crate::execution_report::StoreConfirmation::Unconfirmed
+    } else {
+        crate::execution_report::StoreConfirmation::Confirmed
     }
 }
 
@@ -1468,6 +1474,35 @@ mod tests {
 
     const PERSISTENCE_ERROR_SENTINEL: &str = "db_password=ranvier-test-secret";
 
+    #[tokio::test]
+    async fn persistence_helpers_confirm_actual_event_and_completion() {
+        use crate::execution_report::StoreConfirmation;
+        let store = InMemoryPersistenceStore::new();
+        let handle = PersistenceHandle::from_store(store.clone());
+        assert_eq!(
+            persist_execution_event(&handle, "confirmed", "fixture", "1", 0, None, "Enter", None)
+                .await,
+            StoreConfirmation::Confirmed
+        );
+        let before = store.load("confirmed").await.unwrap().unwrap();
+        assert_eq!(before.events.len(), 1);
+        assert_eq!(before.completion, None);
+        assert_eq!(
+            persist_completion(&handle, "confirmed", CompletionState::Success).await,
+            StoreConfirmation::Confirmed
+        );
+        let after = store.load("confirmed").await.unwrap().unwrap();
+        assert_eq!(after.events, before.events);
+        assert_eq!(after.completion, Some(CompletionState::Success));
+        // A later rejected write must not be promoted by earlier acknowledgements.
+        assert_eq!(
+            persist_execution_event(&handle, "confirmed", "fixture", "1", 1, None, "Next", None)
+                .await,
+            StoreConfirmation::Unconfirmed
+        );
+        assert_eq!(store.load("confirmed").await.unwrap().unwrap(), after);
+    }
+
     #[derive(Clone)]
     struct SecretFailingPersistenceStore;
 
@@ -1540,7 +1575,7 @@ mod tests {
         {
             let _guard = tracing::subscriber::set_default(subscriber);
             let _ = load_persistence_version(&handle, "trace-redacted").await;
-            persist_execution_event(
+            let append = persist_execution_event(
                 &handle,
                 "trace-redacted",
                 "RedactedPersistenceTest",
@@ -1551,7 +1586,16 @@ mod tests {
                 None,
             )
             .await;
-            persist_completion(&handle, "trace-redacted", CompletionState::Success).await;
+            let complete =
+                persist_completion(&handle, "trace-redacted", CompletionState::Success).await;
+            assert_eq!(
+                append,
+                crate::execution_report::StoreConfirmation::Unconfirmed
+            );
+            assert_eq!(
+                complete,
+                crate::execution_report::StoreConfirmation::Unconfirmed
+            );
             let compensation_succeeded = run_compensation(
                 &CompensationHandle::from_hook(SecretFailingCompensationHook),
                 CompensationContext {

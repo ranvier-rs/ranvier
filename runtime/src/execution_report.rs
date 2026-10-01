@@ -7,6 +7,13 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Observation of a single store call. An error cannot establish non-commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreConfirmation {
+    Confirmed,
+    Unconfirmed,
+}
+
 /// Store operation classification; backend text and credentials are excluded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
