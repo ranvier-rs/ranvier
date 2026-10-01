@@ -3575,6 +3575,147 @@ mod tests {
         assert!(bus.get::<String>().is_ok());
     }
 
+    #[derive(Clone)]
+    struct NestedTerminalChild {
+        panic: bool,
+        entered: Arc<tokio::sync::Notify>,
+        calls: Arc<std::sync::atomic::AtomicU32>,
+    }
+    #[async_trait]
+    impl Transition<i32, i32> for NestedTerminalChild {
+        type Error = String;
+        type Resources = ();
+        fn bus_access_policy(&self) -> Option<BusAccessPolicy> {
+            Some(BusAccessPolicy::allow_only(vec![BusTypeRef::of::<i32>()]))
+        }
+        async fn run(&self, _: i32, _: &(), bus: &mut Bus) -> Outcome<i32, String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert!(matches!(
+                bus.get::<String>(),
+                Err(BusAccessError::Unauthorized { .. })
+            ));
+            if self.panic {
+                panic!("synthetic_nested_panic");
+            }
+            self.entered.notify_one();
+            std::future::pending().await
+        }
+    }
+    #[derive(Clone)]
+    struct NestedTerminalParent {
+        panic: bool,
+        calls: Arc<std::sync::atomic::AtomicU32>,
+    }
+    #[async_trait]
+    impl Transition<i32, i32> for NestedTerminalParent {
+        type Error = String;
+        type Resources = ();
+        fn bus_access_policy(&self) -> Option<BusAccessPolicy> {
+            Some(BusAccessPolicy::deny_only(vec![BusTypeRef::of::<String>()]))
+        }
+        async fn run(&self, input: i32, _: &(), bus: &mut Bus) -> Outcome<i32, String> {
+            let parent_trace = bus
+                .read::<crate::execution_observation::InvocationTrace>()
+                .unwrap()
+                .0
+                .clone();
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let child = Axon::<i32, i32, String>::start("nested-terminal-child").then(
+                NestedTerminalChild {
+                    panic: self.panic,
+                    entered: entered.clone(),
+                    calls: self.calls.clone(),
+                },
+            );
+            if self.panic {
+                let report = child.execute(input, &(), bus).await;
+                assert!(matches!(report, crate::ExecutionReport::Unpersisted {
+                    result: Outcome::Fault(error), .. } if error.contains("synthetic_nested_panic")));
+            } else {
+                use ranvier_core::cancellation::{CancellationReason, CancellationToken};
+                let token = bus
+                    .cancellation_token()
+                    .map(CancellationToken::child_token)
+                    .unwrap_or_default();
+                let cancel = async {
+                    entered.notified().await;
+                    assert!(token.cancel(CancellationReason::Explicit));
+                };
+                let (report, ()) = tokio::join!(
+                    child.execute_cancellable(input, &(), bus, token.clone()),
+                    cancel
+                );
+                assert!(matches!(report, crate::ExecutionReport::Unpersisted {
+                    result: super::ExecutionTerminal::Cancelled(context), .. }
+                    if context.reason == CancellationReason::Explicit));
+                assert!(!bus.cancellation_token().unwrap().is_cancelled());
+            }
+            assert!(
+                matches!(bus.get::<String>(), Err(BusAccessError::Unauthorized { transition, .. })
+                if transition == "NestedTerminalParent")
+            );
+            assert!(matches!(
+                bus.read::<DlqPolicy>(),
+                Some(DlqPolicy::SendToDlq)
+            ));
+            assert!(matches!(
+                bus.read::<ranvier_core::saga::SagaPolicy>(),
+                Some(ranvier_core::saga::SagaPolicy::Disabled)
+            ));
+            assert_eq!(
+                bus.read::<ranvier_core::schematic::Schematic>()
+                    .unwrap()
+                    .name,
+                "nested-terminal-parent"
+            );
+            assert_eq!(
+                bus.read::<crate::execution_observation::InvocationTrace>()
+                    .unwrap()
+                    .0,
+                parent_trace
+            );
+            Outcome::Next(input)
+        }
+    }
+    #[tokio::test]
+    async fn nested_panic_and_cooperative_cancel_restore_parent_execution_scope() {
+        use ranvier_core::cancellation::CancellationToken;
+        for panic in [false, true] {
+            let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let sink = MockDlqSink {
+                letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            };
+            let token = CancellationToken::new();
+            let mut bus = Bus::new();
+            bus.set_cancellation_token(token.clone());
+            bus.insert("private".to_string());
+            let axon = Axon::<i32, i32, String>::start("nested-terminal-parent")
+                .then(NestedTerminalParent {
+                    panic,
+                    calls: calls.clone(),
+                })
+                .with_dlq_policy(DlqPolicy::SendToDlq)
+                .with_dlq_sink(sink.clone());
+            let report = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                axon.execute(7, &(), &mut bus),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                report,
+                crate::ExecutionReport::Unpersisted {
+                    result: Outcome::Next(7),
+                    ..
+                }
+            ));
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert!(sink.letters.lock().await.is_empty());
+            assert!(!token.is_cancelled());
+            assert!(bus.get::<String>().is_ok());
+        }
+    }
+
     #[tokio::test]
     async fn retry_then_dlq_retries_and_succeeds_before_exhaustion() {
         // Fail 2 times, succeed on 3rd attempt. Policy allows 5 attempts.
