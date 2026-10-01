@@ -122,7 +122,7 @@ impl Transition<OrderRequest, ValidatedOrder> for ValidateOrder {
             metrics::record_global_node_exit("OrderPipeline", "Validate", 0, true);
             return Outcome::Fault("Order has no items".to_string());
         }
-        if input.amount <= 0.0 {
+        if !input.amount.is_finite() || input.amount <= 0.0 {
             metrics::record_global_node_exit("OrderPipeline", "Validate", 0, true);
             return Outcome::Fault("Invalid amount".to_string());
         }
@@ -156,6 +156,14 @@ impl Transition<ValidatedOrder, ProcessedOrder> for ProcessOrder {
     ) -> Outcome<ProcessedOrder, String> {
         let start = std::time::Instant::now();
 
+        if !input.validated
+            || !input.amount.is_finite()
+            || input.amount <= 0.0
+            || input.items.is_empty()
+        {
+            metrics::record_global_node_exit("OrderPipeline", "Process", 0, true);
+            return Outcome::Fault("Invalid validated order".into());
+        }
         // Simulate processing delay
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -199,11 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!();
 
     // Spawn the Inspector server in the background
-    tokio::spawn(async move {
-        if let Err(e) = inspector.serve().await {
-            eprintln!("Inspector server error: {e}");
-        }
-    });
+    let mut server = tokio::spawn(async move { inspector.serve().await });
 
     // Give the server a moment to start
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -237,17 +241,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for order in &sample_orders {
         let mut bus = Bus::new();
         let result = local_demo_outcome(axon.execute(order.clone(), &(), &mut bus).await)?;
-        match &result {
-            Outcome::Next(processed) => {
-                println!(
-                    "  Order {} -> {} (${:.2})",
-                    processed.order_id, processed.status, processed.total
-                );
-            }
-            Outcome::Fault(e) => {
-                println!("  Order failed: {e}");
-            }
-            _ => {}
+        if !matches!(result, Outcome::Next(ref processed) if processed.order_id == order.order_id && processed.total == order.amount && processed.status == "completed")
+        {
+            server.abort();
+            return Err("Inspector sample did not match expected result".into());
         }
     }
 
@@ -272,8 +269,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Try: curl http://localhost:9100/schematic | jq");
 
     // Keep running for interactive exploration
-    tokio::signal::ctrl_c().await?;
+    tokio::select! {
+        result = &mut server => {
+            match result {
+                Ok(Ok(())) => return Err("Inspector server stopped unexpectedly".into()),
+                _ => return Err("Inspector server failed".into()),
+            }
+        }
+        signal = tokio::signal::ctrl_c() => { signal?; }
+    }
+    server.abort();
+    let _ = server.await;
     println!("Shutting down.");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn actual_chain_accepts_sample_and_rejects_nonfinite_amounts() {
+        let flow = Axon::<OrderRequest, OrderRequest, String>::new("test-inspector")
+            .then(ValidateOrder)
+            .then(ProcessOrder);
+        let request = OrderRequest {
+            order_id: "id".into(),
+            customer: "demo".into(),
+            amount: 99.99,
+            items: vec!["item".into()],
+        };
+        let result =
+            local_demo_outcome(flow.execute(request.clone(), &(), &mut Bus::new()).await).unwrap();
+        assert!(
+            matches!(result, Outcome::Next(value) if value.order_id == "id" && value.total == 99.99)
+        );
+        for amount in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0] {
+            let mut invalid = request.clone();
+            invalid.amount = amount;
+            assert!(matches!(
+                local_demo_outcome(flow.execute(invalid, &(), &mut Bus::new()).await).unwrap(),
+                Outcome::Fault(_)
+            ));
+        }
+        let forged = ValidatedOrder {
+            order_id: "id".into(),
+            customer: "demo".into(),
+            amount: 1.0,
+            items: vec!["item".into()],
+            validated: false,
+        };
+        assert!(matches!(
+            ProcessOrder.run(forged, &(), &mut Bus::new()).await,
+            Outcome::Fault(_)
+        ));
+    }
 }
