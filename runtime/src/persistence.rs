@@ -1402,6 +1402,96 @@ mod tests {
 
     #[cfg(feature = "persistence-redis")]
     #[tokio::test]
+    #[ignore = "requires explicitly isolated Redis fixture URL"]
+    async fn redis_public_independent_clients_preserve_acknowledged_appends() {
+        use std::sync::Arc;
+        use tokio::{
+            sync::Barrier,
+            task::JoinSet,
+            time::{Duration, timeout},
+        };
+        let url =
+            std::env::var("RANVIER_ATOMICITY_REDIS_URL").expect("explicit isolated Redis required");
+        let observer = RedisPersistenceStore::connect(&url).await.unwrap();
+        let trace_id = format!("clients-{}", Uuid::new_v4().simple());
+        let mut seed = envelope(0, "Next");
+        seed.trace_id = trace_id.clone();
+        observer.append(seed.clone()).await.unwrap();
+        let barrier = Arc::new(Barrier::new(17));
+        let mut workers = JoinSet::new();
+        // Connect before spawning so connection failures cannot strand the barrier.
+        for step in 1..=16 {
+            let client = RedisPersistenceStore::connect(&url).await.unwrap();
+            let barrier = barrier.clone();
+            let mut event = envelope(step, "Next");
+            event.trace_id = trace_id.clone();
+            workers.spawn(async move {
+                barrier.wait().await;
+                let result = client.append(event.clone()).await;
+                (event, result)
+            });
+        }
+        let results = timeout(Duration::from_secs(10), async {
+            barrier.wait().await;
+            let mut accepted = vec![seed];
+            let mut conflicts = 0;
+            while let Some(result) = workers.join_next().await {
+                let (event, result) = result.unwrap();
+                match result {
+                    Ok(()) => accepted.push(event),
+                    Err(error) => {
+                        assert!(error.to_string().contains("concurrent persistence update"));
+                        conflicts += 1;
+                    }
+                }
+            }
+            (accepted, conflicts)
+        })
+        .await;
+        if results.is_err() {
+            workers.abort_all();
+            while workers.join_next().await.is_some() {}
+        }
+        let (mut accepted, conflicts) = results.expect("bounded independent-client writes");
+        accepted.sort_by_key(|event| event.step);
+        assert!(
+            accepted.len() > 1,
+            "at least one public append must succeed"
+        );
+        let mut expected = observer.load(&trace_id).await.unwrap().unwrap();
+        assert_eq!(
+            expected.events, accepted,
+            "every acknowledged event, and only those events, survive"
+        );
+        assert_eq!(expected.completion, None);
+        observer
+            .complete(&trace_id, CompletionState::Success)
+            .await
+            .unwrap();
+        expected.completion = Some(CompletionState::Success);
+        let late_client = RedisPersistenceStore::connect(&url).await.unwrap();
+        let mut late = envelope(17, "Next");
+        late.trace_id = trace_id.clone();
+        assert!(
+            late_client
+                .append(late)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("already completed")
+        );
+        assert_eq!(observer.load(&trace_id).await.unwrap().unwrap(), expected);
+        println!(
+            "REDIS_CLIENTS_PASS independent-connections acknowledged-events exact-terminal-snapshot"
+        );
+        println!(
+            "Redis clients: accepted={} conflicts={conflicts}",
+            accepted.len() - 1
+        );
+    }
+
+    #[cfg(feature = "persistence-redis")]
+    #[tokio::test]
     async fn redis_store_roundtrip_when_configured() {
         let url = match std::env::var("RANVIER_PERSISTENCE_REDIS_URL") {
             Ok(value) => value,
