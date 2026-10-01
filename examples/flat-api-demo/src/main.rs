@@ -18,6 +18,21 @@ use ranvier_http::prelude::*;
 use ranvier_macros::transition;
 use ranvier_runtime::Axon;
 
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 // 1. Define Resources
 #[derive(Clone, Default)]
 struct MyResources {
@@ -73,7 +88,7 @@ async fn main() -> Result<()> {
     let mut bus = Bus::new();
     let res = MyResources { multiplier: 2 };
 
-    let result = axon.execute((), &res, &mut bus).await;
+    let result = local_demo_outcome(axon.execute((), &res, &mut bus).await)?;
 
     println!("Input: (), Internal Start: 10, Multiplier: 2");
     println!("Result: {:?}", result); // (10 * 2) + 3 = 23 -> "23"
