@@ -144,17 +144,27 @@ impl Transition<CreateUserInput, UserSummary> for CreateUserTransition {
                 username: &username,
                 email: &email,
             };
-            diesel::insert_into(users::table)
-                .values(&insert)
-                .execute(&mut conn)
-                .map_err(|e| anyhow!("{}", e))?;
+            conn.transaction::<_, anyhow::Error, _>(|conn| {
+                diesel::insert_into(users::table)
+                    .values(&insert)
+                    .execute(conn)
+                    .map_err(|e| anyhow!("{}", e))?;
 
-            use self::users::dsl;
-            let row = dsl::users
-                .order(dsl::id.desc())
-                .first::<UserRow>(&mut conn)
-                .map_err(|e| anyhow!("{}", e))?;
-            Ok(UserSummary::from(row))
+                use self::users::dsl;
+                #[derive(QueryableByName)]
+                struct InsertedId {
+                    #[diesel(sql_type = diesel::sql_types::BigInt)]
+                    id: i64,
+                }
+                let inserted = diesel::sql_query("SELECT last_insert_rowid() AS id")
+                    .get_result::<InsertedId>(conn)?;
+                let id = i32::try_from(inserted.id)?;
+                let row = dsl::users
+                    .find(id)
+                    .first::<UserRow>(conn)
+                    .map_err(|e| anyhow!("{}", e))?;
+                Ok(UserSummary::from(row))
+            })
         })
         .await;
 
@@ -186,19 +196,21 @@ impl Transition<UpdateEmailInput, UserSummary> for UpdateUserEmailTransition {
             use self::users::dsl;
 
             let mut conn = pool.get().map_err(|e| anyhow!("{}", e))?;
-            let affected = diesel::update(dsl::users.filter(dsl::id.eq(user_id)))
-                .set(UpdateUserEmail { email: &next_email })
-                .execute(&mut conn)
-                .map_err(|e| anyhow!("{}", e))?;
-            if affected == 0 {
-                return Err(anyhow!("user id={} not found", user_id));
-            }
+            conn.transaction::<_, anyhow::Error, _>(|conn| {
+                let affected = diesel::update(dsl::users.filter(dsl::id.eq(user_id)))
+                    .set(UpdateUserEmail { email: &next_email })
+                    .execute(conn)
+                    .map_err(|e| anyhow!("{}", e))?;
+                if affected == 0 {
+                    return Err(anyhow!("user id={} not found", user_id));
+                }
 
-            let row = dsl::users
-                .find(user_id)
-                .first::<UserRow>(&mut conn)
-                .map_err(|e| anyhow!("{}", e))?;
-            Ok(UserSummary::from(row))
+                let row = dsl::users
+                    .find(user_id)
+                    .first::<UserRow>(conn)
+                    .map_err(|e| anyhow!("{}", e))?;
+                Ok(UserSummary::from(row))
+            })
         })
         .await;
 
@@ -280,125 +292,192 @@ impl Transition<FetchAllInput, Vec<UserSummary>> for ListUsersTransition {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    println!("=== M132 Diesel Reference Demo ===");
-
-    let db_path = "target/m132_diesel_demo.sqlite";
-    if std::path::Path::new(db_path).exists() {
-        let _ = std::fs::remove_file(db_path);
+// Each run exclusively creates its own file; existing databases are never removed.
+struct OwnedDemoDb(std::path::PathBuf);
+impl OwnedDemoDb {
+    fn create() -> Result<Self> {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "ranvier-diesel-{}-{nonce}.sqlite",
+            std::process::id()
+        ));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        Ok(Self(path))
     }
-
-    let manager = ConnectionManager::<SqliteConnection>::new(db_path);
-    let pool = Pool::builder().max_size(4).build(manager)?;
-
+}
+impl Drop for OwnedDemoDb {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+fn require_next<T>(outcome: Outcome<T, String>) -> Result<T> {
+    match outcome {
+        Outcome::Next(value) => Ok(value),
+        _ => Err(anyhow!("Database operation failed; reconcile before retry")),
+    }
+}
+#[derive(Debug)]
+struct SqliteConnectionPolicy;
+impl diesel::r2d2::CustomizeConnection<SqliteConnection, diesel::r2d2::Error>
+    for SqliteConnectionPolicy
+{
+    fn on_acquire(
+        &self,
+        conn: &mut SqliteConnection,
+    ) -> std::result::Result<(), diesel::r2d2::Error> {
+        use diesel::connection::SimpleConnection;
+        conn.batch_execute("PRAGMA busy_timeout = 5000;")
+            .map_err(diesel::r2d2::Error::QueryError)
+    }
+}
+fn resources(path: &std::path::Path) -> Result<AppResources> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| anyhow!("Invalid database path"))?;
+    let manager = ConnectionManager::<SqliteConnection>::new(path);
+    let pool = Pool::builder()
+        .max_size(4)
+        .connection_customizer(Box::new(SqliteConnectionPolicy))
+        .build(manager)?;
     {
         let mut conn = pool.get()?;
         conn.run_pending_migrations(MIGRATIONS)
-            .map_err(|err| anyhow!("failed to run migrations: {err}"))?;
+            .map_err(|_| anyhow!("Database migration failed"))?;
     }
-
-    let resources = AppResources { pool };
-    let mut bus = Bus::new();
-
+    Ok(AppResources { pool })
+}
+async fn run_demo(path: &std::path::Path) -> Result<()> {
+    let resources = resources(path)?;
     let create =
         Axon::<CreateUserInput, CreateUserInput, String, AppResources>::new("diesel.create_user")
             .then(CreateUserTransition);
-
     let list = Axon::<FetchAllInput, FetchAllInput, String, AppResources>::new("diesel.list_users")
         .then(ListUsersTransition);
-
     let update = Axon::<UpdateEmailInput, UpdateEmailInput, String, AppResources>::new(
         "diesel.update_user_email",
     )
     .then(UpdateUserEmailTransition);
-
     let delete =
         Axon::<DeleteUserInput, DeleteUserInput, String, AppResources>::new("diesel.delete_user")
             .then(DeleteUserTransition);
-
-    let alice = local_demo_outcome(
+    let alice = require_next(local_demo_outcome(
         create
             .execute(
                 CreateUserInput {
-                    username: "alice".to_string(),
-                    email: "alice@demo.local".to_string(),
+                    username: "alice".into(),
+                    email: "alice@demo.local".into(),
                 },
                 &resources,
-                &mut bus,
+                &mut Bus::new(),
             )
             .await,
-    )?;
-    let bob = local_demo_outcome(
+    )?)?;
+    let bob = require_next(local_demo_outcome(
         create
             .execute(
                 CreateUserInput {
-                    username: "bob".to_string(),
-                    email: "bob@demo.local".to_string(),
+                    username: "bob".into(),
+                    email: "bob@demo.local".into(),
                 },
                 &resources,
-                &mut bus,
+                &mut Bus::new(),
             )
             .await,
-    )?;
-
-    match (&alice, &bob) {
-        (Outcome::Next(a), Outcome::Next(b)) => {
-            println!("created: {}#{}, {}#{}", a.username, a.id, b.username, b.id);
-        }
-        _ => {
-            return Err(anyhow!("create failed: alice={:?}, bob={:?}", alice, bob));
-        }
+    )?)?;
+    if alice.id == bob.id {
+        return Err(anyhow!("Created identities are not distinct"));
     }
-
-    let before: Outcome<Vec<UserSummary>, String> =
-        local_demo_outcome(list.execute(FetchAllInput, &resources, &mut bus).await)?;
-    if let Outcome::Next(users) = &before {
-        println!("list(before): {} users", users.len());
+    let before = require_next(local_demo_outcome(
+        list.execute(FetchAllInput, &resources, &mut Bus::new())
+            .await,
+    )?)?;
+    if before.len() != 2 {
+        return Err(anyhow!("Unexpected initial row count"));
     }
-
-    let updated = local_demo_outcome(
+    let updated = require_next(local_demo_outcome(
         update
             .execute(
                 UpdateEmailInput {
-                    id: 1,
-                    email: "alice+updated@demo.local".to_string(),
+                    id: alice.id,
+                    email: "alice+updated@demo.local".into(),
                 },
                 &resources,
-                &mut bus,
+                &mut Bus::new(),
             )
             .await,
-    )?;
-    if let Outcome::Next(user) = &updated {
-        println!("updated: {} -> {}", user.username, user.email);
+    )?)?;
+    if updated.id != alice.id || updated.email != "alice+updated@demo.local" {
+        return Err(anyhow!("Updated row does not match request"));
     }
-
-    let deleted = local_demo_outcome(
+    let deleted = require_next(local_demo_outcome(
         delete
-            .execute(DeleteUserInput { id: 2 }, &resources, &mut bus)
+            .execute(DeleteUserInput { id: bob.id }, &resources, &mut Bus::new())
             .await,
-    )?;
-    if let Outcome::Next(id) = &deleted {
-        println!("deleted id={}", id);
+    )?)?;
+    if deleted != bob.id {
+        return Err(anyhow!("Deleted identity does not match request"));
     }
-
-    let after: Outcome<Vec<UserSummary>, String> =
-        local_demo_outcome(list.execute(FetchAllInput, &resources, &mut bus).await)?;
-    match after {
-        Outcome::Next(users) => {
-            println!("list(after): {} users", users.len());
-            for user in users {
-                println!(
-                    "- id={} username={} email={}",
-                    user.id, user.username, user.email
-                );
-            }
-        }
-        other => {
-            return Err(anyhow!("final list failed: {:?}", other));
-        }
+    let after = require_next(local_demo_outcome(
+        list.execute(FetchAllInput, &resources, &mut Bus::new())
+            .await,
+    )?)?;
+    if after.len() != 1 || after[0].id != alice.id || after[0].email != updated.email {
+        return Err(anyhow!("Final database state does not match workflow"));
     }
-
-    println!("done");
+    println!("Diesel file-backed CRUD verified");
     Ok(())
+}
+#[tokio::main]
+async fn main() -> Result<()> {
+    let db = OwnedDemoDb::create()?;
+    run_demo(&db.0).await
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn real_file_crud_and_owned_cleanup() -> Result<()> {
+        let db = OwnedDemoDb::create()?;
+        let path = db.0.clone();
+        run_demo(&path).await?;
+        drop(db);
+        assert!(!path.exists());
+        Ok(())
+    }
+    #[tokio::test]
+    async fn concurrent_creates_return_their_own_rows() -> Result<()> {
+        let db = OwnedDemoDb::create()?;
+        let resources = resources(&db.0)?;
+        let mut bus_a = Bus::new();
+        let mut bus_b = Bus::new();
+        let (a, b) = tokio::join!(
+            CreateUserTransition.run(
+                CreateUserInput {
+                    username: "a".into(),
+                    email: "a@local".into()
+                },
+                &resources,
+                &mut bus_a
+            ),
+            CreateUserTransition.run(
+                CreateUserInput {
+                    username: "b".into(),
+                    email: "b@local".into()
+                },
+                &resources,
+                &mut bus_b
+            )
+        );
+        let a = require_next(a)?;
+        let b = require_next(b)?;
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.username, "a");
+        assert_eq!(b.username, "b");
+        Ok(())
+    }
 }
