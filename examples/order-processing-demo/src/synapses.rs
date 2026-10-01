@@ -97,7 +97,11 @@ impl Synapse for InventorySynapse {
 }
 
 // --- Payment Synapse ---
-pub struct PaymentSynapse;
+#[derive(Default)]
+pub struct PaymentSynapse {
+    // Local fixture evidence only; not a durable payment ledger.
+    pub attempted_amounts: Mutex<Vec<u32>>,
+}
 
 #[async_trait]
 impl Synapse for PaymentSynapse {
@@ -106,6 +110,10 @@ impl Synapse for PaymentSynapse {
     type Error = String;
 
     async fn call(&self, amount: Self::Input) -> Result<Self::Output, Self::Error> {
+        self.attempted_amounts
+            .lock()
+            .map_err(|_| "Payment unavailable".to_owned())?
+            .push(amount);
         println!(
             "\x1b[33m[Payment]\x1b[0m Processing transaction: ${}",
             amount

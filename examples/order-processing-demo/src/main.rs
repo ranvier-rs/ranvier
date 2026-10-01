@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
         inventory: InventorySynapse {
             inventory: inventory_db,
         },
-        payment: PaymentSynapse,
+        payment: PaymentSynapse::default(),
         shipping: ShippingSynapse,
     };
 

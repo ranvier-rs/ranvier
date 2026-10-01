@@ -1,10 +1,12 @@
 # Order Processing Demo
 
-A high-quality demonstration of the **Ranvier Framework**, showcasing a complete business workflow with domain logic, integration points (Synapses), and static analysis (SSG).
+A local simulation of a typed order flow with integration adapters (Synapses)
+and Schematic extraction. It does not implement a production order ledger.
 
 ## Scenario
 This app simulates an e-commerce order processing flow:
-1.  **Validate Order**: Checks amount and items.
+1.  **Validate Order**: Computes the catalog total with checked integer addition
+    and rejects a mismatched client total. Each repeated product ID is one unit.
 2.  **Reserve Inventory**: Connects to a mock Inventory Database (Synapse).
 3.  **Process Payment**: Connects to a mock Payment Gateway (Synapse).
 4.  **Ship Order**: Generates tracking number via Shipping Service (Synapse).
@@ -35,8 +37,7 @@ cargo run -p order-processing-demo
 Incoming Request: OrderRequest { ... }
 [Node] Validating Order #ORD-123...
 [Node] Reserving Inventory...
-[Inventory] Checking stock for 2 items...
-[Inventory] Reserved 'Laptop'. Remaining: 4
+[Inventory] Checking stock for 1 items...
 ...
 [SUCCESS] Order Completed! Tracking: TRK-1234...
 ```
@@ -67,5 +68,29 @@ cargo run -q -p order-processing-demo -- --schematic
 
 - `domain.rs`: Pure domain types (`Order`, `Product`).
 - `synapses.rs`: Integration implementations (`InventorySynapse` etc.).
-- `nodes.rs`: Unit logic implementing `StaticNode` regarding flow connections.
+- `nodes.rs`: Named typed `Transition` implementations.
 - `main.rs`: Wiring and execution.
+
+## Authority and recovery limits
+
+Amounts use whole currency units in this example; there is no fractional price,
+discount or tax rounding. A nonempty cart has at most 1000 units; zero catalog
+prices and u32 sum overflow fail before reservation/payment. `ValidatedOrder`
+carries a per-line price snapshot and the computed payable amount. Reservation
+rechecks every price and total under the same lock as stock validation/deduction.
+An unchanged aggregate total cannot hide changed line prices. Once reserved,
+the quoted amount is honored for that invocation; no live repricing at payment.
+
+This is a process-local snapshot, not a persisted catalog revision or a trusted
+resume authority. The internal serialized type alone does not authorize replay
+or bypassing validation. Real catalog versions, ledger ownership, authentication,
+and idempotency require separate integration work.
+
+Payment records local attempted amounts for regression evidence. Both payment
+and shipping are simulated; this record is not a durable payment receipt.
+Payment decline still leaves a reservation: owned release/compensation and
+uncertain-effect reconciliation remain OPEN. Cancellation, process restart,
+shipping failure and real gateway/database recovery are not proven here.
+
+The local ExecutionReport policy rejects persisted/uncertain reports and
+incomplete cleanup before domain mapping. It never authorizes automatic retry.
