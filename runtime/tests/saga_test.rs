@@ -611,3 +611,88 @@ async fn dropped_pending_rollback_retains_in_progress_without_completed_claim() 
     assert_eq!(report.steps.len(), 1);
     assert_eq!(report.steps[0].outcome, SagaRollbackOutcome::InProgress);
 }
+
+#[tokio::test]
+async fn direct_compensation_failure_survives_successful_stack_rollback() {
+    let undos = Arc::new(Mutex::new(Vec::new()));
+    let axon = Axon::<SagaState, SagaState, String>::new("MixedCleanup")
+        .with_saga_policy(SagaPolicy::Enabled)
+        .then_compensated(
+            SuccStep {
+                id: "earlier".into(),
+            },
+            CompStep {
+                id: "earlier".into(),
+                results: undos.clone(),
+            },
+        )
+        .then_compensated(
+            FailStep,
+            FaultUndo(Outcome::Fault("direct undo failed".into())),
+        );
+    let mut bus = Bus::new();
+    let result = axon
+        .execute(
+            SagaState {
+                cnt: 0,
+                log: vec![],
+            },
+            &(),
+            &mut bus,
+        )
+        .await;
+    let cleanup = result.cleanup().unwrap();
+    assert!(cleanup.finished);
+    assert!(!cleanup.is_complete());
+    assert_eq!(
+        cleanup
+            .steps
+            .iter()
+            .map(|step| step.outcome)
+            .collect::<Vec<_>>(),
+        vec![
+            ranvier_runtime::SagaRollbackOutcome::Fault,
+            ranvier_runtime::SagaRollbackOutcome::Completed
+        ]
+    );
+    assert_eq!(*undos.lock().unwrap(), vec!["Comp_earlier:0"]);
+    assert!(
+        matches!(result, ranvier_runtime::ExecutionReport::Unpersisted { result: Outcome::Fault(ref error), .. } if error == "Planned SAGA Failure")
+    );
+}
+
+#[tokio::test]
+async fn direct_compensation_panic_preserves_original_fault_for_both_saga_policies() {
+    for policy in [SagaPolicy::Enabled, SagaPolicy::Disabled] {
+        let axon = Axon::<SagaState, SagaState, String>::new("DirectPanicCleanup")
+            .with_saga_policy(policy)
+            .then_compensated(FailStep, PanicUndo);
+        let mut bus = Bus::new();
+        let result = axon
+            .execute(
+                SagaState {
+                    cnt: 0,
+                    log: vec![],
+                },
+                &(),
+                &mut bus,
+            )
+            .await;
+        let cleanup = result.cleanup().unwrap();
+        assert!(cleanup.finished);
+        assert!(!cleanup.is_complete());
+        assert_eq!(cleanup.steps.len(), 1);
+        assert_eq!(
+            cleanup.steps[0].outcome,
+            ranvier_runtime::SagaRollbackOutcome::Panicked
+        );
+        assert!(
+            !serde_json::to_string(cleanup)
+                .unwrap()
+                .contains("private-panic")
+        );
+        assert!(
+            matches!(result, ranvier_runtime::ExecutionReport::Unpersisted { result: Outcome::Fault(ref error), .. } if error == "Planned SAGA Failure")
+        );
+    }
+}

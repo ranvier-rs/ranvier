@@ -314,10 +314,39 @@ impl CompensationIdempotencyStore for ObservedCompensationStore {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct InvocationTrace(pub(crate) String);
+
+#[cfg(test)]
+mod invocation_trace_tests {
+    use super::{InvocationTrace, Session};
+    use ranvier_core::Bus;
+
+    #[test]
+    fn invocation_identity_is_stable_unique_and_restored_after_nested_finish() {
+        let mut bus = Bus::new();
+        let parent = Session::begin(&mut bus);
+        let parent_id = bus.read::<InvocationTrace>().unwrap().0.clone();
+        assert_eq!(bus.read::<InvocationTrace>().unwrap().0, parent_id);
+        let child = Session::begin(&mut bus);
+        let child_id = bus.read::<InvocationTrace>().unwrap().0.clone();
+        assert_ne!(parent_id, child_id);
+        let _ = child.finish(&mut bus, ());
+        assert_eq!(bus.read::<InvocationTrace>().unwrap().0, parent_id);
+        let _ = parent.finish(&mut bus, ());
+        assert!(bus.read::<InvocationTrace>().is_none());
+        let next = Session::begin(&mut bus);
+        assert_ne!(bus.read::<InvocationTrace>().unwrap().0, parent_id);
+        let _ = next.finish(&mut bus, ());
+        assert!(bus.read::<InvocationTrace>().is_none());
+    }
+}
+
 pub(crate) struct Session {
     original: Option<PersistenceHandle>,
     original_compensation: Option<CompensationIdempotencyHandle>,
     previous: Option<ActiveObservation>,
+    previous_trace: Option<InvocationTrace>,
     previous_cleanup: Option<crate::saga_report::SagaRollbackJournal>,
     previous_cleanup_report: Option<crate::saga_report::SagaRollbackReport>,
     observation: Arc<Observation>,
@@ -327,6 +356,12 @@ impl Session {
         let original = bus.read::<PersistenceHandle>().cloned();
         let original_compensation = bus.read::<CompensationIdempotencyHandle>().cloned();
         let previous = bus.read::<ActiveObservation>().cloned();
+        let previous_trace = bus.remove::<InvocationTrace>();
+        bus.insert(InvocationTrace(format!(
+            "{}:{}",
+            bus.id,
+            uuid::Uuid::new_v4()
+        )));
         let cleanup_report = bus.remove::<crate::saga_report::SagaRollbackReport>();
         let cleanup = bus.remove::<crate::saga_report::SagaRollbackJournal>();
         let (previous_cleanup, previous_cleanup_report) = if previous.is_some() {
@@ -346,6 +381,7 @@ impl Session {
             original,
             original_compensation,
             previous,
+            previous_trace,
             previous_cleanup,
             previous_cleanup_report,
             observation,
@@ -375,6 +411,10 @@ impl Session {
         }
         if let Some(original) = self.original_compensation {
             bus.insert(original);
+        }
+        let _ = bus.remove::<InvocationTrace>();
+        if let Some(trace) = self.previous_trace {
+            bus.insert(trace);
         }
         if let Some(previous) = self.previous {
             bus.insert(previous);

@@ -419,6 +419,8 @@ fn completion_from_outcome<Out, E>(outcome: &Outcome<Out, E>) -> CompletionState
 fn persistence_trace_id(bus: &Bus) -> String {
     if let Some(explicit) = bus.read::<PersistenceTraceId>() {
         explicit.0.clone()
+    } else if let Some(invocation) = bus.read::<crate::execution_observation::InvocationTrace>() {
+        invocation.0.clone()
     } else {
         format!("{}:{}", bus.id, now_ms())
     }
@@ -970,20 +972,26 @@ where
                 .unwrap_or_else(|| SagaRollbackJournal::new(&trace_id));
             journal.push(comp_node_id.to_string(), SagaRollbackOutcome::InProgress);
             bus.insert(journal.clone());
-            let compensation_result = comp.run(state, res, bus).await;
-            journal.settle(match &compensation_result {
-                Outcome::Next(()) => SagaRollbackOutcome::Completed,
-                Outcome::Fault(_) => SagaRollbackOutcome::Fault,
-                Outcome::Emit(_, _) => SagaRollbackOutcome::Emitted,
-                Outcome::Branch(_, _) => SagaRollbackOutcome::Branched,
-                Outcome::Jump(_, _) => SagaRollbackOutcome::Jumped,
-            });
+            use futures_util::FutureExt as _;
+            let compensation_result =
+                std::panic::AssertUnwindSafe(async { comp.run(state, res, bus).await })
+                    .catch_unwind()
+                    .await;
+            let observation = match &compensation_result {
+                Ok(Outcome::Next(())) => SagaRollbackOutcome::Completed,
+                Ok(Outcome::Fault(_)) => SagaRollbackOutcome::Fault,
+                Ok(Outcome::Emit(_, _)) => SagaRollbackOutcome::Emitted,
+                Ok(Outcome::Branch(_, _)) => SagaRollbackOutcome::Branched,
+                Ok(Outcome::Jump(_, _)) => SagaRollbackOutcome::Jumped,
+                Err(_) => SagaRollbackOutcome::Panicked,
+            };
+            journal.settle(observation);
             if !matches!(bus.read::<SagaPolicy>(), Some(SagaPolicy::Enabled)) {
                 journal.finish();
             }
             bus.insert(journal);
 
-            let compensation_kind = if matches!(compensation_result, Outcome::Next(())) {
+            let compensation_kind = if matches!(compensation_result, Ok(Outcome::Next(()))) {
                 "Compensated"
             } else {
                 "CompensationIncomplete"
@@ -995,7 +1003,10 @@ where
                     outcome_type: if compensation_kind == "Compensated" {
                         compensation_kind.to_string()
                     } else {
-                        outcome_type_name(&compensation_result)
+                        match &compensation_result {
+                            Ok(outcome) => outcome_type_name(outcome),
+                            Err(_) => "Panicked".to_string(),
+                        }
                     },
                     duration_ms: 0,
                     timestamp: now_ms(),
@@ -1024,7 +1035,10 @@ where
                     if compensation_kind == "Compensated" {
                         None
                     } else {
-                        Some(compensation_result.to_json_value())
+                        Some(match &compensation_result {
+                            Ok(outcome) => outcome.to_json_value(),
+                            Err(_) => serde_json::json!({"status": "panicked"}),
+                        })
                     },
                 )
                 .await;
