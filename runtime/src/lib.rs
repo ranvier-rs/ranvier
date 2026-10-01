@@ -10,6 +10,7 @@ pub mod llm;
 pub mod persistence;
 pub mod replay;
 pub mod retry;
+pub mod saga_report;
 #[cfg(feature = "streaming")]
 pub mod streaming_axon;
 pub mod testkit;

@@ -633,6 +633,11 @@ where
     }
 
     async fn rollback_saga(&self, resources: &Res, bus: &mut Bus, trace_id: &str) {
+        use crate::saga_report::{SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep};
+        let mut report = SagaRollbackReport {
+            trace_id: trace_id.to_string(),
+            steps: Vec::new(),
+        };
         while let Some(task) = {
             let mut stack = bus.read_mut::<SagaStack>();
             stack.as_mut().and_then(|stack| stack.pop())
@@ -652,6 +657,17 @@ where
             };
             if let Some(handler) = handler {
                 let result = handler(task.input_snapshot, resources, bus).await;
+                let outcome = match &result {
+                    Outcome::Next(()) => SagaRollbackOutcome::Completed,
+                    Outcome::Fault(_) => SagaRollbackOutcome::Fault,
+                    Outcome::Emit(_, _) => SagaRollbackOutcome::Emitted,
+                    Outcome::Branch(_, _) => SagaRollbackOutcome::Branched,
+                    Outcome::Jump(_, _) => SagaRollbackOutcome::Jumped,
+                };
+                report.steps.push(SagaRollbackStep {
+                    node_id: task.node_id.clone(),
+                    outcome,
+                });
                 match result {
                     Outcome::Fault(error) => {
                         tracing::error!(trace_id = %trace_id, node_id = %task.node_id, "Saga compensation FAILED: {:?}", error);
@@ -668,10 +684,16 @@ where
                     _ => {}
                 }
             } else {
+                report.steps.push(SagaRollbackStep {
+                    node_id: task.node_id.clone(),
+                    outcome: SagaRollbackOutcome::MissingHandler,
+                });
                 tracing::warn!(trace_id = %trace_id, node_id = %task.node_id, "No compensation handler found in registry for saga rollback");
             }
         }
-        tracing::info!(trace_id = %trace_id, "Saga automated rollback completed");
+        let complete = report.is_complete();
+        bus.insert(report);
+        tracing::info!(trace_id = %trace_id, complete, "Saga automated rollback finished");
     }
 
     async fn finish_cancellation(

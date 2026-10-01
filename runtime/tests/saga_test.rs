@@ -177,6 +177,19 @@ async fn saga_compensation_snapshot_mismatch_does_not_panic() {
     };
 
     assert!(matches!(outcome, Outcome::Fault(_)));
+    let report = bus
+        .read::<ranvier_runtime::saga_report::SagaRollbackReport>()
+        .unwrap();
+    assert!(!report.is_complete());
+    assert_eq!(report.steps.len(), 2);
+    assert_eq!(
+        report.steps[0].outcome,
+        ranvier_runtime::saga_report::SagaRollbackOutcome::MissingHandler
+    );
+    assert_eq!(
+        report.steps[1].outcome,
+        ranvier_runtime::saga_report::SagaRollbackOutcome::Emitted
+    );
     assert!(
         results.lock().unwrap().is_empty(),
         "malformed compensation snapshot should emit an event instead of running compensation"
