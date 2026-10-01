@@ -1313,6 +1313,9 @@ mod tests {
     }
     #[derive(Debug, Default)]
     struct FloatTotals {
+        metric_count: usize,
+        minimum: Option<f64>,
+        maximum: Option<f64>,
         counter: f64,
         histogram_sum: f64,
         histogram_count: u64,
@@ -1337,10 +1340,14 @@ mod tests {
             };
             for scope in metrics.scope_metrics() {
                 for metric in scope.metrics() {
+                    totals.metric_count += 1;
                     match metric.data() {
                         AggregatedMetrics::F64(MetricData::Sum(sum)) => {
-                            totals.unexpected |= sum.temporality() != self.temporality;
+                            totals.unexpected |= sum.temporality() != self.temporality
+                                || !sum.is_monotonic()
+                                || metric.name() != "float-counter";
                             for point in sum.data_points() {
+                                totals.unexpected |= !point.value().is_finite();
                                 totals.counter += point.value();
                                 totals.counter_series += 1;
                                 totals.counter_overflow +=
@@ -1348,8 +1355,24 @@ mod tests {
                             }
                         }
                         AggregatedMetrics::F64(MetricData::Histogram(histogram)) => {
-                            totals.unexpected |= histogram.temporality() != self.temporality;
+                            totals.unexpected |= histogram.temporality() != self.temporality
+                                || metric.name() != "float-histogram";
                             for point in histogram.data_points() {
+                                totals.unexpected |= !point.sum().is_finite()
+                                    || point.min().is_none()
+                                    || point.max().is_none();
+                                if let Some(value) = point.min() {
+                                    totals.unexpected |= !value.is_finite();
+                                    totals.minimum = Some(
+                                        totals.minimum.map_or(value, |current| current.min(value)),
+                                    );
+                                }
+                                if let Some(value) = point.max() {
+                                    totals.unexpected |= !value.is_finite();
+                                    totals.maximum = Some(
+                                        totals.maximum.map_or(value, |current| current.max(value)),
+                                    );
+                                }
                                 totals.histogram_sum += point.sum();
                                 totals.histogram_count += point.count();
                                 totals.histogram_series += 1;
@@ -1389,6 +1412,11 @@ mod tests {
         for temporality in [Temporality::Cumulative, Temporality::Delta] {
             for mode in [Mode::Off, Mode::Public, Mode::Strict] {
                 let strict = matches!(mode, Mode::Strict);
+                let mode_name = match mode {
+                    Mode::Off => "off",
+                    Mode::Public => "public",
+                    Mode::Strict => "strict",
+                };
                 let totals = Arc::new(Mutex::new(FloatTotals::default()));
                 let provider = ProtectedMeterProvider {
                     inner: bounded_meter_builder()
@@ -1426,6 +1454,12 @@ mod tests {
                     } else {
                         value * 2048.0
                     };
+                    assert_eq!(actual.metric_count, 2);
+                    assert_eq!(
+                        actual.minimum,
+                        Some(if cumulative_second { 0.5 } else { value })
+                    );
+                    assert_eq!(actual.maximum, Some(value));
                     assert_eq!(actual.counter, expected_sum);
                     assert_eq!(actual.histogram_sum, expected_sum);
                     assert_eq!(
@@ -1452,6 +1486,9 @@ mod tests {
                         assert_eq!(actual.histogram_series, 1);
                     }
                 }
+                eprintln!(
+                    "OTLP_F64_PASS temporality={temporality:?} mode={mode_name} intervals=2 exact-binary-fractions actual-overflow min-max"
+                );
                 assert!(!provider.state.failed());
                 provider.inner.shutdown().unwrap();
             }
