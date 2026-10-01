@@ -182,6 +182,15 @@ pub(crate) fn iam_failure_response(event: &str) -> Option<Response<Full<Bytes>>>
     Some(response)
 }
 
+/// Reserved pre-effect Saga initialization failure; no raw stack or payload data.
+pub(crate) fn saga_failure_response(event: &str) -> Option<Response<Full<Bytes>>> {
+    if event != "saga.context_readonly" { return None; }
+    let mut response = json_value_response(StatusCode::SERVICE_UNAVAILABLE,
+        serde_json::json!({"kind":"saga", "event_type":event, "error":"Saga context is not writable"}));
+    response.headers_mut().insert(http::header::CACHE_CONTROL, http::HeaderValue::from_static("no-store"));
+    Some(response)
+}
+
 fn domain_response_mapper<Out, E>(outcome: Outcome<Out, E>, _bus: &Bus) -> Response<Full<Bytes>>
 where
     Out: serde::Serialize,
@@ -203,7 +212,7 @@ where
             )
         }
         Outcome::Emit(event_type, payload) => {
-            if let Some(response) = iam_failure_response(&event_type) {
+            if let Some(response) = iam_failure_response(&event_type).or_else(|| saga_failure_response(&event_type)) {
                 response
             } else {
                 json_value_response(

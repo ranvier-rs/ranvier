@@ -196,7 +196,8 @@ where
             // Reject reserved IAM failures before typed/fallback route mappers
             // can turn control outcomes into successful or unrelated statuses.
             if let Outcome::Emit(event, _) = &outcome {
-                if let Some(response) = crate::service::iam_failure_response(event) {
+                if let Some(response) = crate::service::iam_failure_response(event)
+                    .or_else(|| crate::service::saga_failure_response(event)) {
                     return Err(response.map(BodyExt::boxed));
                 }
             }

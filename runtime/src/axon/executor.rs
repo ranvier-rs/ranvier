@@ -217,6 +217,14 @@ where
             .unwrap_or_else(|| self.saga_policy.clone());
         bus.insert(effective_saga_policy.clone());
 
+        if effective_saga_policy == SagaPolicy::Enabled
+            && bus.has::<SagaStack>()
+            && bus.read_mut::<SagaStack>().is_none()
+        {
+            tracing::warn!("Saga context is not writable");
+            return Outcome::emit("saga.context_readonly", None);
+        }
+
         // Initialize Saga stack if enabled and not already present (e.g. from resumption)
         if effective_saga_policy == SagaPolicy::Enabled && bus.read::<SagaStack>().is_none() {
             bus.insert(SagaStack::new());
