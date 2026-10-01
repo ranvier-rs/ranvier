@@ -117,10 +117,11 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Starting auth-tower-integration example (Tower + Ranvier)");
 
-    let jwt_secret = env::var("JWT_SECRET").expect(
-        "JWT_SECRET environment variable must be set. \
-         Example: JWT_SECRET=your-secret-here cargo run",
-    );
+    let jwt_secret = env::var("JWT_SECRET")
+        .map_err(|_| anyhow::anyhow!("JWT_SECRET environment variable must be set"))?;
+    if jwt_secret.trim().is_empty() {
+        anyhow::bail!("JWT_SECRET must not be empty");
+    }
 
     // ── Tower Layer Setup ────────────────────────────────────────────────
     //
@@ -179,7 +180,7 @@ async fn demo_execution(
         tracing::info!("Scenario 1: Tower validates token, Ranvier handles request");
 
         // Simulate what Tower middleware does:
-        let token = create_test_token("alice", vec!["admin".into(), "user".into()], &jwt_secret);
+        let token = create_test_token("alice", vec!["admin".into(), "user".into()], &jwt_secret)?;
         let auth_ctx = auth::validate_jwt(&token, &jwt_secret)?;
 
         // In production, Tower puts this in request.extensions()
@@ -188,7 +189,10 @@ async fn demo_execution(
         bus.insert(auth_ctx);
 
         let report = pipeline.execute((), &(), &mut bus).await;
-        if report.cleanup().is_some_and(|cleanup| !cleanup.is_complete()) {
+        if report
+            .cleanup()
+            .is_some_and(|cleanup| !cleanup.is_complete())
+        {
             anyhow::bail!("Execution requires reconciliation before retry");
         }
         let ExecutionReport::Unpersisted { result, .. } = report else {
@@ -215,7 +219,7 @@ async fn demo_execution(
 }
 
 /// Helper to create test JWT tokens.
-fn create_test_token(user_id: &str, roles: Vec<String>, secret: &str) -> String {
+fn create_test_token(user_id: &str, roles: Vec<String>, secret: &str) -> anyhow::Result<String> {
     use jsonwebtoken::{EncodingKey, Header, encode};
     use serde::Serialize;
 
@@ -232,10 +236,41 @@ fn create_test_token(user_id: &str, roles: Vec<String>, secret: &str) -> String 
         exp: (chrono::Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
     };
 
-    encode(
+    Ok(encode(
         &Header::default(),
         &claims,
         &EncodingKey::from_secret(secret.as_bytes()),
-    )
-    .expect("Failed to create test token")
+    )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn missing_identity_returns_fault_without_panicking() {
+        let pipeline = Axon::simple::<AppError>("missing-identity").then(protected_handler);
+        let mut bus = Bus::new();
+        let report = pipeline.execute((), &(), &mut bus).await;
+        assert!(
+            !report
+                .cleanup()
+                .is_some_and(|cleanup| !cleanup.is_complete())
+        );
+        assert!(matches!(
+            report,
+            ExecutionReport::Unpersisted {
+                result: Outcome::Fault(AppError::Unauthenticated),
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn valid_identity_completes_local_demo() {
+        let pipeline = Axon::simple::<AppError>("valid-identity").then(protected_handler);
+        demo_execution(pipeline, "test-only-secret".to_owned())
+            .await
+            .unwrap();
+    }
 }
