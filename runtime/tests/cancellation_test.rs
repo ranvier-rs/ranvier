@@ -7,7 +7,10 @@ use ranvier_runtime::persistence::{
     InMemoryPersistenceStore, Intervention, PersistedTrace, PersistenceEnvelope, PersistenceHandle,
     PersistenceStore, PersistenceTraceId, ResumeCursor,
 };
-use ranvier_runtime::{Axon, ExecutionTerminal, ParallelStrategy};
+use ranvier_runtime::{
+    Axon, CompletionConfirmation, EffectBoundary, ExecutionReport, ExecutionTerminal,
+    ParallelStrategy, PersistenceOperation,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -119,7 +122,14 @@ async fn pre_cancelled_execution_does_not_write_when_persistence_cursor_load_fai
 
     let terminal = axon.execute_cancellable(1, &(), &mut bus, token).await;
 
-    assert!(matches!(terminal, ExecutionTerminal::Cancelled(_)));
+    assert!(matches!(
+        terminal,
+        ExecutionReport::Unconfirmed {
+            result: ExecutionTerminal::Cancelled(_),
+            operation: PersistenceOperation::Load,
+            effect: EffectBoundary::NotInvoked,
+        }
+    ));
     assert_eq!(observed.load(Ordering::SeqCst), 0);
     assert_eq!(store.loads.load(Ordering::SeqCst), 1);
     assert_eq!(store.appends.load(Ordering::SeqCst), 0);
@@ -144,7 +154,13 @@ async fn pre_cancelled_persisted_execution_records_entry_before_terminal() {
     bus.insert(PersistenceTraceId::new("trace-pre-cancelled"));
 
     let terminal = axon.execute_cancellable(1, &(), &mut bus, token).await;
-    assert!(matches!(terminal, ExecutionTerminal::Cancelled(_)));
+    assert!(matches!(
+        terminal,
+        ExecutionReport::Recorded {
+            result: ExecutionTerminal::Cancelled(_),
+            completion: CompletionConfirmation::Confirmed,
+        }
+    ));
     assert_eq!(observed.load(Ordering::SeqCst), 0);
 
     let persisted = store
@@ -190,7 +206,7 @@ async fn in_flight_cancellation_is_structured_persisted_and_policy_visible() {
 
     assert!(matches!(
         terminal,
-        ExecutionTerminal::Cancelled(context)
+        ExecutionReport::Recorded { result: ExecutionTerminal::Cancelled(context), completion: CompletionConfirmation::Confirmed }
             if context.reason == CancellationReason::OperatorShutdown
     ));
     assert_eq!(observed.load(Ordering::SeqCst), 1);
@@ -242,7 +258,13 @@ async fn cancellation_runs_external_compensation_and_marks_compensated() {
 
     let terminal = axon.execute_cancellable(1, &(), &mut bus, token).await;
     trigger.await.expect("cancellation trigger");
-    assert!(matches!(terminal, ExecutionTerminal::Cancelled(_)));
+    assert!(matches!(
+        terminal,
+        ExecutionReport::Recorded {
+            result: ExecutionTerminal::Cancelled(_),
+            completion: CompletionConfirmation::Confirmed,
+        }
+    ));
 
     let persisted = store
         .load("trace-cancel-compensated")
@@ -294,7 +316,7 @@ async fn isolated_parallel_branches_receive_framework_cancellation_control() {
 
     assert!(matches!(
         terminal,
-        ExecutionTerminal::Cancelled(context) if context.reason == CancellationReason::Explicit
+        ExecutionReport::Unpersisted { result: ExecutionTerminal::Cancelled(context) } if context.reason == CancellationReason::Explicit
     ));
     assert_eq!(observed.load(Ordering::SeqCst), 2);
 }
@@ -394,7 +416,12 @@ async fn cancellation_rolls_back_completed_saga_steps_in_lifo_order() {
         .execute_cancellable(SagaState(0), &(), &mut bus, token)
         .await;
     trigger.await.expect("saga cancellation trigger");
-    assert!(matches!(terminal, ExecutionTerminal::Cancelled(_)));
+    assert!(matches!(
+        terminal,
+        ExecutionReport::Unpersisted {
+            result: ExecutionTerminal::Cancelled(_)
+        }
+    ));
     assert_eq!(
         rollback_order.lock().expect("saga result lock").as_slice(),
         ["undo-2", "undo-1"]
