@@ -57,6 +57,22 @@ use ranvier_inspector::payload::PayloadCapturePolicy;
 use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 
+type DemoError = Box<dyn std::error::Error + Send + Sync>;
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> Result<Outcome<T, E>, DemoError> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        return Err("Execution requires reconciliation before retry".into());
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => Err("Execution requires reconciliation before retry".into()),
+    }
+}
+
 // ── Domain types ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,7 +236,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     for order in &sample_orders {
         let mut bus = Bus::new();
-        let result = axon.execute(order.clone(), &(), &mut bus).await;
+        let result = local_demo_outcome(axon.execute(order.clone(), &(), &mut bus).await)?;
         match &result {
             Outcome::Next(processed) => {
                 println!(
