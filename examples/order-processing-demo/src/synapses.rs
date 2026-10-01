@@ -46,6 +46,7 @@ impl InventorySynapse {
             .ok_or_else(|| "Reservation missing".to_owned())?;
         if record.owner != order.reservation_owner
             || record.amount != order.payable_amount
+            || record.amount != order.request.total_amount
             || record.released
             || record.payment != PaymentState::NotAttempted
         {
@@ -320,5 +321,58 @@ mod tests {
         );
         assert_ne!(first.unwrap(), second.unwrap());
         assert_eq!(db.inventory.lock().unwrap()["p"].stock, 0);
+    }
+
+    #[tokio::test]
+    async fn release_uses_recorded_cart_and_rejects_another_owner() {
+        let db = inventory(5);
+        let reserved = order(vec!["p".into(), "p".into()]);
+        assert!(db.call(reserved.clone()).await.unwrap());
+        let mut stranger = reserved.clone();
+        stranger.reservation_owner = "another-invocation".into();
+        assert!(db.release(&stranger).is_err());
+        assert_eq!(db.inventory.lock().unwrap()["p"].stock, 3);
+        let mut altered = reserved.clone();
+        altered.request.items = vec!["missing".into(); 100];
+        db.release(&altered).unwrap();
+        db.release(&reserved).unwrap();
+        assert_eq!(db.inventory.lock().unwrap()["p"].stock, 5);
+        assert!(db.call(reserved).await.is_err()); // Released IDs are not replay permission.
+    }
+
+    #[tokio::test]
+    async fn pending_or_approved_payment_preserves_reservation() {
+        for approved in [None, Some(true)] {
+            let db = inventory(5);
+            let reserved = order(vec!["p".into()]);
+            assert!(db.call(reserved.clone()).await.unwrap());
+            db.begin_payment(&reserved).unwrap();
+            if let Some(approved) = approved {
+                db.confirm_payment(&reserved, approved).unwrap();
+            }
+            assert!(db.release(&reserved).is_err());
+            assert!(db.begin_payment(&reserved).is_err());
+            assert_eq!(db.inventory.lock().unwrap()["p"].stock, 4);
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_restoration_does_not_mutate_other_items() {
+        let db = inventory(5);
+        db.inventory.lock().unwrap().insert(
+            "q".into(),
+            Product {
+                id: "q".into(),
+                name: "other".into(),
+                price: 10,
+                stock: 5,
+            },
+        );
+        let reserved = order(vec!["p".into(), "q".into()]);
+        assert!(db.call(reserved.clone()).await.unwrap());
+        db.inventory.lock().unwrap().get_mut("q").unwrap().stock = u32::MAX;
+        assert!(db.release(&reserved).is_err());
+        assert_eq!(db.inventory.lock().unwrap()["p"].stock, 4);
+        assert!(!db.reservations.lock().unwrap()[&reserved.request.order_id].released);
     }
 }

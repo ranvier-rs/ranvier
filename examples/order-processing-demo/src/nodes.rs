@@ -6,6 +6,18 @@ use ranvier_core::synapse::Synapse;
 #[derive(Clone)]
 pub struct ValidateOrder;
 
+// Validation only reads the catalog; no external effect needs reversal.
+#[derive(Clone)]
+pub struct ValidationNoEffect;
+#[async_trait]
+impl Transition<OrderRequest, ()> for ValidationNoEffect {
+    type Error = String;
+    type Resources = OrderResources;
+    async fn run(&self, _: OrderRequest, _: &OrderResources, _: &mut Bus) -> Outcome<(), String> {
+        Outcome::Next(())
+    }
+}
+
 #[async_trait]
 impl Transition<OrderRequest, ValidatedOrder> for ValidateOrder {
     type Error = String;
@@ -282,5 +294,98 @@ mod price_tests {
         let db = res.inventory.inventory.lock().unwrap();
         assert_eq!((db["p"].stock, db["q"].stock), (5, 5));
         assert!(res.payment.attempted_amounts.lock().unwrap().is_empty());
+    }
+
+    #[derive(Clone)]
+    struct RejectDownstream;
+    #[async_trait]
+    impl Transition<ValidatedOrder, String> for RejectDownstream {
+        type Error = String;
+        type Resources = OrderResources;
+        async fn run(
+            &self,
+            _: ValidatedOrder,
+            _: &OrderResources,
+            _: &mut Bus,
+        ) -> Outcome<String, String> {
+            Outcome::Fault("Injected downstream failure".into())
+        }
+    }
+
+    #[derive(Clone)]
+    struct FailureNoEffect;
+    #[async_trait]
+    impl Transition<ValidatedOrder, ()> for FailureNoEffect {
+        type Error = String;
+        type Resources = OrderResources;
+        async fn run(
+            &self,
+            _: ValidatedOrder,
+            _: &OrderResources,
+            _: &mut Bus,
+        ) -> Outcome<(), String> {
+            Outcome::Next(())
+        }
+    }
+    #[tokio::test]
+    async fn decline_restores_stock_and_fault_before_payment_rolls_back() {
+        let res = resources(1200);
+        let axon = Axon::<OrderRequest, OrderRequest, String, OrderResources>::new("decline")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(ValidateOrder, ValidationNoEffect)
+            .then_compensated(ReserveInventory, ReleaseInventory)
+            .then(ProcessPayment);
+        let outcome = crate::local_demo_outcome(
+            axon.execute(request(vec!["p".into()], 1200), &res, &mut Bus::new())
+                .await,
+        )
+        .unwrap();
+        assert!(matches!(outcome, Outcome::Branch(ref reason, _) if reason == "payment_declined"));
+        assert_eq!(res.inventory.inventory.lock().unwrap()["p"].stock, 5);
+        assert_eq!(*res.payment.attempted_amounts.lock().unwrap(), vec![1200]);
+
+        let res = resources(10);
+        let axon =
+            Axon::<OrderRequest, OrderRequest, String, OrderResources>::new("before-payment")
+                .with_saga_policy(SagaPolicy::Enabled)
+                .then_compensated(ValidateOrder, ValidationNoEffect)
+                .then_compensated(ReserveInventory, ReleaseInventory)
+                .then_compensated(RejectDownstream, FailureNoEffect);
+        let report = axon
+            .execute(request(vec!["p".into()], 10), &res, &mut Bus::new())
+            .await;
+        assert!(
+            report
+                .cleanup()
+                .is_some_and(|cleanup| cleanup.is_complete())
+        );
+        assert!(matches!(
+            crate::local_demo_outcome(report).unwrap(),
+            Outcome::Fault(_)
+        ));
+        assert_eq!(res.inventory.inventory.lock().unwrap()["p"].stock, 5);
+        assert!(res.payment.attempted_amounts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failure_after_charge_requires_reconciliation_and_preserves_stock() {
+        let res = resources(10);
+        let axon = Axon::<OrderRequest, OrderRequest, String, OrderResources>::new("after-payment")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(ValidateOrder, ValidationNoEffect)
+            .then_compensated(ReserveInventory, ReleaseInventory)
+            .then(ProcessPayment)
+            .then_compensated(RejectDownstream, FailureNoEffect);
+        let report = axon
+            .execute(request(vec!["p".into()], 10), &res, &mut Bus::new())
+            .await;
+        assert!(
+            report
+                .cleanup()
+                .is_some_and(|cleanup| !cleanup.is_complete())
+        );
+        assert!(crate::local_demo_outcome(report).is_err());
+        assert_eq!(res.inventory.inventory.lock().unwrap()["p"].stock, 4);
+        assert_eq!(*res.payment.attempted_amounts.lock().unwrap(), vec![10]);
     }
 }

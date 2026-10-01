@@ -88,9 +88,26 @@ and idempotency require separate integration work.
 
 Payment records local attempted amounts for regression evidence. Both payment
 and shipping are simulated; this record is not a durable payment receipt.
-Payment decline still leaves a reservation: owned release/compensation and
-uncertain-effect reconciliation remain OPEN. Cancellation, process restart,
-shipping failure and real gateway/database recovery are not proven here.
+Confirmed payment decline now releases the recorded reservation before returning
+the decline Branch. Runtime automatic Saga compensation runs on Fault, not
+Branch; the reservation step also has an explicit release hook for faults.
+The ledger binds each order ID to a fresh invocation owner and recorded item
+counts. Release uses these counts, checks all restorations before mutation, and
+marks completion so repeated release cannot add stock twice. Order IDs, including
+released IDs, cannot be reserved again in this ledger. The finite demo ledger
+retains at most 1000 records and then requires reconciliation.
+
+Payment starts in Pending before the simulated call. Pending or Approved payment
+prevents release: downstream failure after charge preserves reservation and
+returns incomplete cleanup, requiring reconciliation. Refund and terminal
+fulfillment records remain OPEN. Pending-state tests do not prove actual process
+crash/cancellation recovery. Real gateway/database recovery is not proven here.
+
+Use one OrderResources/InventorySynapse instance for this process-local fixture.
+Creating separate InventorySynapse instances over the same inventory Arc creates
+separate reservation ledgers; it is not a supported shared authority. Persisted
+atomic stock/ledger transactions, tenant ownership, catalog revision history,
+restart recovery and bounded durable retention require further implementation.
 
 The local ExecutionReport policy rejects persisted/uncertain reports and
 incomplete cleanup before domain mapping. It never authorizes automatic retry.

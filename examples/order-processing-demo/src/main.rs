@@ -17,7 +17,10 @@ mod nodes;
 mod synapses;
 
 use crate::domain::{OrderRequest, OrderResources, Product};
-use crate::nodes::{ProcessPayment, ReleaseInventory, ReserveInventory, ShipOrder, ValidateOrder};
+use crate::nodes::{
+    ProcessPayment, ReleaseInventory, ReserveInventory, ShipOrder, ValidateOrder,
+    ValidationNoEffect,
+};
 use crate::synapses::{InventorySynapse, PaymentSynapse, ShippingSynapse};
 use anyhow::Result;
 use ranvier_core::prelude::*;
@@ -75,7 +78,7 @@ async fn main() -> Result<()> {
     // 2) Build Axon execution chain
     let axon = Axon::<OrderRequest, OrderRequest, String, OrderResources>::new("OrderProcessing")
         .with_saga_policy(SagaPolicy::Enabled)
-        .then(ValidateOrder)
+        .then_compensated(ValidateOrder, ValidationNoEffect)
         .then_compensated(ReserveInventory, ReleaseInventory)
         .then(ProcessPayment)
         .then(ShipOrder);
