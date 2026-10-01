@@ -3,7 +3,8 @@ use ranvier_core::cancellation::{CancellationReason, CancellationToken};
 use ranvier_core::saga::SagaPolicy;
 use ranvier_core::{Bus, BusAccessPolicy, Outcome, Transition};
 use ranvier_runtime::persistence::{
-    CompensationContext, CompensationHandle, CompensationHook, CompletionState,
+    CompensationContext, CompensationHandle, CompensationHook, CompensationIdempotencyHandle,
+    CompensationIdempotencyStore, CompletionState, InMemoryCompensationIdempotencyStore,
     InMemoryPersistenceStore, Intervention, PersistedTrace, PersistenceEnvelope, PersistenceHandle,
     PersistenceStore, PersistenceTraceId, ResumeCursor,
 };
@@ -58,6 +59,83 @@ impl CompensationHook for RecordingCompensation {
 async fn cancel_after_entry(entered: Arc<Notify>, token: CancellationToken) {
     entered.notified().await;
     token.cancel(CancellationReason::OperatorShutdown);
+}
+
+struct AppliedCompensationError(InMemoryCompensationIdempotencyStore);
+
+#[async_trait]
+impl CompensationIdempotencyStore for AppliedCompensationError {
+    async fn was_compensated(&self, key: &str) -> anyhow::Result<bool> {
+        self.0.was_compensated(key).await
+    }
+    async fn mark_compensated(&self, key: &str) -> anyhow::Result<()> {
+        self.0.mark_compensated(key).await?;
+        Err(anyhow::anyhow!("private-compensation-error"))
+    }
+}
+
+#[tokio::test]
+async fn pre_cancelled_cleanup_reports_applied_compensation_without_ack() {
+    for with_trace_store in [false, true] {
+        let observed = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let backing = InMemoryCompensationIdempotencyStore::new();
+        let original: Arc<dyn CompensationIdempotencyStore> =
+            Arc::new(AppliedCompensationError(backing.clone()));
+        let trace_store = InMemoryPersistenceStore::new();
+        let mut bus = Bus::new();
+        if with_trace_store {
+            bus.insert(PersistenceHandle::from_store(trace_store.clone()));
+        }
+        bus.insert(PersistenceTraceId::new("pre-cancelled-compensation"));
+        bus.insert(CompensationIdempotencyHandle::from_arc(original.clone()));
+        bus.insert(CompensationHandle::from_hook(RecordingCompensation {
+            calls: calls.clone(),
+        }));
+        let token = CancellationToken::new();
+        token.cancel(CancellationReason::Explicit);
+        let axon =
+            Axon::<i32, i32, String>::start("PreCancelledCompensation").then(WaitForCancellation {
+                entered: Arc::new(Notify::new()),
+                observed_token: observed.clone(),
+            });
+        let report = tokio::time::timeout(
+            Duration::from_secs(2),
+            axon.execute_cancellable(1, &(), &mut bus, token),
+        )
+        .await
+        .expect("cleanup must terminate");
+        assert!(matches!(&report, ExecutionReport::Unconfirmed {
+            result: ExecutionTerminal::Cancelled(context),
+            operation: PersistenceOperation::CompensationWrite,
+            effect: EffectBoundary::MayHaveRun,
+        } if context.reason == CancellationReason::Explicit));
+        assert_eq!(observed.load(Ordering::SeqCst), 0);
+        let recorded = calls.lock().await;
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].fault_kind, "Cancelled");
+        // Current key contract; separate identity migration remains open.
+        let key = format!(
+            "{}:{}:{}",
+            recorded[0].trace_id, recorded[0].circuit, recorded[0].fault_kind
+        );
+        assert!(backing.was_compensated(&key).await.unwrap());
+        let restored = bus.read::<CompensationIdempotencyHandle>().unwrap().store();
+        assert!(Arc::ptr_eq(&restored, &original));
+        assert!(
+            !serde_json::to_string(&report)
+                .unwrap()
+                .contains("private-compensation-error")
+        );
+        if with_trace_store {
+            let trace = trace_store
+                .load("pre-cancelled-compensation")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(trace.completion, Some(CompletionState::Compensated));
+        }
+    }
 }
 
 #[derive(Clone, Default)]
