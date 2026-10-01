@@ -212,8 +212,7 @@ impl Transition<SessionContext, ResponsePayload> for CacheResponseTransition {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+async fn run_demo() -> Result<()> {
     println!("=== M132 Redis Reference Demo ===");
 
     let redis_url = std::env::var("RANVIER_ECOSYSTEM_REDIS_URL")
@@ -279,16 +278,19 @@ async fn main() -> Result<()> {
         .await,
     )?;
 
-    for (label, outcome) in [("first", &first), ("second", &second), ("third", &third)] {
-        match outcome {
-            Outcome::Next(payload) => {
-                println!(
-                    "{}: sid={} route={} cache_hit={} body={}",
-                    label, payload.sid, payload.route, payload.cache_hit, payload.body
-                );
-            }
-            other => return Err(anyhow!("{} request failed: {:?}", label, other)),
+    let (first, second, third) = match (first, second, third) {
+        (Outcome::Next(first), Outcome::Next(second), Outcome::Next(third)) => {
+            (first, second, third)
         }
+        _ => return Err(anyhow!("Redis scenario failed; reconcile before retry")),
+    };
+    if first.cache_hit
+        || !second.cache_hit
+        || third.cache_hit
+        || first.body != second.body
+        || third.route != "/profile/settings"
+    {
+        return Err(anyhow!("Redis cache observation mismatch"));
     }
 
     let mut cleanup = manager.clone();
@@ -300,7 +302,22 @@ async fn main() -> Result<()> {
             route_slot("/profile/settings")
         ),
     ];
-    let _: usize = cleanup.del(keys).await?;
+    for key in &keys {
+        let ttl: i64 = cleanup.ttl(key).await?;
+        if ttl <= 0 || ttl > 1800 {
+            return Err(anyhow!("Unexpected Redis TTL"));
+        }
+    }
+    let deleted: usize = cleanup.del(&keys).await?;
+    if deleted != 3 {
+        return Err(anyhow!("Owned Redis cleanup count mismatch"));
+    }
+    for key in &keys {
+        let exists: bool = cleanup.exists(key).await?;
+        if exists {
+            return Err(anyhow!("Owned Redis key remains"));
+        }
+    }
 
     println!("done");
     Ok(())
@@ -309,6 +326,12 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    #[ignore = "requires explicitly configured isolated Redis"]
+    async fn actual_redis_cache_ttl_and_cleanup() {
+        assert!(std::env::var("RANVIER_ECOSYSTEM_REDIS_URL").is_ok());
+        run_demo().await.unwrap();
+    }
     #[test]
     fn route_encoding_preserves_distinct_cache_identity() {
         let routes = ["/a/b", "/a:b", "/a?b", "/a&b", "a/b", "//a/b", "/한글"];
@@ -316,4 +339,9 @@ mod tests {
             routes.iter().map(|route| route_slot(route)).collect();
         assert_eq!(keys.len(), routes.len());
     }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    run_demo().await
 }
