@@ -456,6 +456,7 @@ where
                             &timeline_node_label,
                             &transition_bus_policy,
                             step_idx,
+                            super::NodeRetryOwner::Runtime,
                         )
                         .await;
                     }
@@ -487,6 +488,7 @@ where
                                 &timeline_node_label,
                                 &transition_bus_policy,
                                 step_idx,
+                                super::NodeRetryOwner::Runtime,
                             )
                             .await;
                         }
@@ -516,6 +518,7 @@ where
                         &timeline_node_label,
                         &transition_bus_policy,
                         step_idx,
+                        super::NodeRetryOwner::Runtime,
                     )
                     .await
                 })
@@ -576,6 +579,10 @@ where
     /// If the transition returns `Outcome::Fault`, it will be retried up to
     /// `policy.max_retries` times with the configured backoff strategy.
     /// Timeline events are recorded for each retry attempt.
+    /// This explicit policy owns this node's budget and backoff, superseding
+    /// RetryThenDlq scheduling for this node. A configured DLQ receives only
+    /// the final exhausted fault. Other nodes retain their own policies.
+    /// Repeating a fault is safe only when the effect contract permits it.
     ///
     /// # Example
     ///
@@ -686,6 +693,10 @@ where
                             &timeline_node_label,
                             &transition_bus_policy,
                             step_idx,
+                            super::NodeRetryOwner::Explicit {
+                                final_attempt: attempt == retry_policy.max_retries,
+                                invocations: u64::from(attempt) + 1,
+                            },
                         )
                         .await;
 
@@ -858,6 +869,7 @@ where
                             &timeline_node_label,
                             &transition_bus_policy,
                             step_idx,
+                            super::NodeRetryOwner::Runtime,
                         ),
                     )
                     .await

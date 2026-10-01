@@ -562,6 +562,16 @@ async fn load_persistence_version(
     }
 }
 
+// Invocation-local retry ownership; never stored in shared/nested Bus state.
+#[derive(Clone, Copy)]
+enum NodeRetryOwner {
+    Runtime,
+    Explicit {
+        final_attempt: bool,
+        invocations: u64,
+    },
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_this_step<In, Out, E, Res>(
     trans: &(impl Transition<In, Out, Resources = Res, Error = E> + Clone + 'static),
@@ -572,6 +582,7 @@ async fn run_this_step<In, Out, E, Res>(
     node_label: &str,
     bus_policy: &Option<ranvier_core::bus::BusAccessPolicy>,
     step_idx: u64,
+    retry_owner: NodeRetryOwner,
 ) -> Outcome<Out, E>
 where
     In: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
@@ -624,6 +635,9 @@ where
 
     // Check DLQ retry policy and pre-serialize state for potential retries
     let dlq_retry_config = bus.read::<DlqPolicy>().and_then(|p| {
+        if !matches!(retry_owner, NodeRetryOwner::Runtime) {
+            return None;
+        }
         if let DlqPolicy::RetryThenDlq {
             max_attempts,
             backoff_ms,
@@ -813,7 +827,15 @@ where
 
     // DLQ reporting — only fires after all retries are exhausted (RetryThenDlq)
     // or immediately (SendToDlq). Drop policy skips entirely.
-    if let Outcome::Fault(f) = &result {
+    if let Outcome::Fault(f) = &result
+        && !matches!(
+            retry_owner,
+            NodeRetryOwner::Explicit {
+                final_attempt: false,
+                ..
+            }
+        )
+    {
         // Read policy and sink, then drop the borrows before mutable timeline access
         let dlq_action = {
             let policy = bus.read::<DlqPolicy>();
@@ -825,12 +847,20 @@ where
         };
 
         if let Some(sink) = dlq_action {
-            if dlq_retry_config.is_some()
+            let exhausted_attempts = match retry_owner {
+                NodeRetryOwner::Runtime => dlq_retry_config.map(|_| executed_attempts),
+                NodeRetryOwner::Explicit { invocations, .. } => matches!(
+                    bus.read::<DlqPolicy>(),
+                    Some(DlqPolicy::RetryThenDlq { .. })
+                )
+                .then(|| u32::try_from(invocations).unwrap_or(u32::MAX)),
+            };
+            if let Some(total_attempts) = exhausted_attempts
                 && let Some(timeline) = bus.read_mut::<Timeline>()
             {
                 timeline.push(TimelineEvent::DlqExhausted {
                     node_id: node_id.to_string(),
-                    total_attempts: executed_attempts,
+                    total_attempts,
                     timestamp: now_ms(),
                 });
             }
@@ -3084,11 +3114,9 @@ mod tests {
         }
     }
 
-    // Defect characterization, not acceptance of multiplicative budgets or
-    // intermediate DLQ writes. Replace expectations with selected composition
-    // contract when the retry scheduler is unified.
+    // Explicit per-node retry owns the invocation budget; DLQ is final-only.
     #[tokio::test]
-    async fn retry_combined_policy_characterizes_intermediate_dlq_on_success() {
+    async fn retry_combined_policy_success_has_one_budget_and_no_dlq() {
         let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let sink = MockDlqSink {
             letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
@@ -3097,7 +3125,7 @@ mod tests {
             .then_with_retry(
                 CountCombinedRetry {
                     calls: calls.clone(),
-                    failures: 3,
+                    failures: 1,
                 },
                 crate::RetryPolicy::fixed(1, std::time::Duration::ZERO),
             )
@@ -3116,8 +3144,8 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
-        assert_eq!(sink.letters.lock().await.len(), 1);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(sink.letters.lock().await.len(), 0);
         assert_eq!(
             bus.read::<Timeline>()
                 .unwrap()
@@ -3131,12 +3159,12 @@ mod tests {
                     }
                 ))
                 .count(),
-            1
+            0
         );
     }
 
     #[tokio::test]
-    async fn retry_combined_policy_characterizes_multiplied_budget_and_duplicate_dlq() {
+    async fn retry_combined_policy_failure_has_one_budget_and_one_dlq() {
         let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let sink = MockDlqSink {
             letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
@@ -3159,8 +3187,8 @@ mod tests {
         let report = axon.execute(7, &(), &mut bus).await;
         assert!(matches!(report, crate::ExecutionReport::Unpersisted {
             result: Outcome::Fault(error), .. } if error == "combined_failure"));
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
-        assert_eq!(sink.letters.lock().await.len(), 2);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(sink.letters.lock().await.len(), 1);
         assert_eq!(
             bus.read::<Timeline>()
                 .unwrap()
@@ -3174,7 +3202,7 @@ mod tests {
                     }
                 ))
                 .count(),
-            2
+            1
         );
     }
 
