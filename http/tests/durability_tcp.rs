@@ -1,0 +1,257 @@
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper_util::rt::TokioIo;
+use ranvier_core::{Bus, Outcome, Transition};
+use ranvier_http::prelude::*;
+use ranvier_runtime::Axon;
+use ranvier_runtime::persistence::*;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use std::time::Duration;
+
+#[derive(Clone, Copy)]
+enum Failure {
+    None,
+    Entry,
+    Result,
+}
+
+struct Store {
+    backing: InMemoryPersistenceStore,
+    failure: Failure,
+    apply_unknown: bool,
+    writes: AtomicUsize,
+    completions: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl PersistenceStore for Store {
+    async fn append(&self, event: PersistenceEnvelope) -> anyhow::Result<()> {
+        self.writes.fetch_add(1, Ordering::SeqCst);
+        let unknown = match self.failure {
+            Failure::None => false,
+            Failure::Entry => event.outcome_kind == "Enter",
+            Failure::Result => event.node_id.is_some() && event.outcome_kind == "Next",
+        };
+        if !unknown || self.apply_unknown {
+            self.backing.append(event).await?;
+        }
+        if unknown {
+            anyhow::bail!("private-backend-probe: rejected or committed without acknowledgement");
+        }
+        Ok(())
+    }
+    async fn load(&self, trace: &str) -> anyhow::Result<Option<PersistedTrace>> {
+        self.backing.load(trace).await
+    }
+    async fn resume(&self, trace: &str, step: u64) -> anyhow::Result<ResumeCursor> {
+        self.backing.resume(trace, step).await
+    }
+    async fn complete(&self, trace: &str, completion: CompletionState) -> anyhow::Result<()> {
+        self.completions.fetch_add(1, Ordering::SeqCst);
+        self.backing.complete(trace, completion).await
+    }
+    async fn save_intervention(
+        &self,
+        trace: &str,
+        intervention: Intervention,
+    ) -> anyhow::Result<()> {
+        self.backing.save_intervention(trace, intervention).await
+    }
+}
+
+#[derive(Clone)]
+struct Business(Arc<AtomicUsize>);
+#[async_trait::async_trait]
+impl Transition<(), u32> for Business {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: (), _: &(), _: &mut Bus) -> Outcome<u32, String> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Outcome::Next(7)
+    }
+}
+#[derive(Clone)]
+struct Fail;
+#[async_trait::async_trait]
+impl Transition<u32, u32> for Fail {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: u32, _: &(), _: &mut Bus) -> Outcome<u32, String> {
+        Outcome::Fault("original-business-fault".into())
+    }
+}
+#[derive(Clone)]
+struct Undo(Arc<AtomicUsize>);
+#[async_trait::async_trait]
+impl Transition<(), ()> for Undo {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: (), _: &(), _: &mut Bus) -> Outcome<(), String> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Outcome::Fault("private-undo-probe".into())
+    }
+}
+
+fn store(failure: Failure, apply_unknown: bool) -> Arc<Store> {
+    Arc::new(Store {
+        backing: InMemoryPersistenceStore::new(),
+        failure,
+        apply_unknown,
+        writes: AtomicUsize::new(0),
+        completions: AtomicUsize::new(0),
+    })
+}
+
+async fn request(
+    axon: Axon<(), u32, String>,
+    store: Arc<Store>,
+) -> (http::StatusCode, serde_json::Value) {
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = probe.local_addr().unwrap();
+    drop(probe);
+    let ingress = HttpIngress::<()>::new()
+        .bind(address.to_string())
+        .bus_injector(move |_, bus| {
+            bus.insert(PersistenceHandle::from_arc(store.clone()));
+            bus.insert(PersistenceTraceId::new("http-report-fixture"));
+        })
+        .get_json_out("/execute", axon);
+    let shutdown = ranvier_core::cancellation::CancellationToken::new();
+    let server_token = shutdown.clone();
+    let server = tokio::spawn(async move { ingress.run_with_cancellation((), server_token).await });
+    let stream = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            match tokio::net::TcpStream::connect(address).await {
+                Ok(stream) => break stream,
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .unwrap();
+    let driver = tokio::spawn(connection);
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        sender.send_request(
+            http::Request::builder()
+                .uri("/execute")
+                .header("host", "fixture")
+                .header("connection", "close")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let status = response.status();
+    let body = tokio::time::timeout(Duration::from_secs(3), response.into_body().collect())
+        .await
+        .unwrap()
+        .unwrap()
+        .to_bytes();
+    let text = std::str::from_utf8(&body).unwrap();
+    assert!(!text.contains("private-backend-probe"));
+    assert!(!text.contains("private-undo-probe"));
+    let payload = serde_json::from_slice(&body).unwrap();
+    drop(sender);
+    let _ = shutdown.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
+    tokio::time::timeout(Duration::from_secs(3), driver)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    (status, payload)
+}
+
+#[tokio::test]
+async fn entry_unknown_returns_503_without_effect_for_applied_and_unapplied_writes() {
+    for applied in [false, true] {
+        let store = store(Failure::Entry, applied);
+        let effects = Arc::new(AtomicUsize::new(0));
+        let axon = Axon::<(), (), String>::new("entry-http").then(Business(effects.clone()));
+        let (status, body) = request(axon, store.clone()).await;
+        assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["durability"], "blocked_before_effect");
+        assert_eq!(body["operation"], "intent");
+        assert_eq!(body["effect"], "not_invoked");
+        assert_eq!(body["reconciliation_required"], false);
+        assert_eq!(effects.load(Ordering::SeqCst), 0);
+        assert_eq!(store.writes.load(Ordering::SeqCst), 1);
+        assert_eq!(store.completions.load(Ordering::SeqCst), 0);
+        let trace = store.backing.load("http-report-fixture").await.unwrap();
+        assert_eq!(trace.is_some(), applied);
+    }
+}
+
+#[tokio::test]
+async fn unknown_result_returns_409_with_known_domain_result_even_after_completion_ack() {
+    for applied in [false, true] {
+        let store = store(Failure::Result, applied);
+        let effects = Arc::new(AtomicUsize::new(0));
+        let axon = Axon::<(), (), String>::new("result-http").then(Business(effects.clone()));
+        let (status, body) = request(axon, store.clone()).await;
+        assert_eq!(status, http::StatusCode::CONFLICT);
+        assert_eq!(body["durability"], "unconfirmed");
+        assert_eq!(body["operation"], "result");
+        assert_eq!(body["effect"], "may_have_run");
+        assert_eq!(body["result"]["terminal"], "outcome");
+        assert_eq!(body["result"]["value"]["Next"], 7);
+        assert_eq!(body["reconciliation_required"], true);
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert_eq!(store.completions.load(Ordering::SeqCst), 1);
+        let trace = store
+            .backing
+            .load("http-report-fixture")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(trace.completion, Some(CompletionState::Success));
+        assert_eq!(
+            trace
+                .events
+                .iter()
+                .any(|event| event.node_id.is_some() && event.outcome_kind == "Next"),
+            applied
+        );
+    }
+}
+
+#[tokio::test]
+async fn failed_saga_cleanup_returns_409_without_replacing_the_original_fault() {
+    let store = store(Failure::None, false);
+    let effects = Arc::new(AtomicUsize::new(0));
+    let undos = Arc::new(AtomicUsize::new(0));
+    let axon = Axon::<(), (), String>::new("cleanup-http")
+        .with_saga_policy(ranvier_core::saga::SagaPolicy::Enabled)
+        .then_compensated(Business(effects.clone()), Undo(undos.clone()))
+        .then(Fail);
+    let (status, body) = request(axon, store.clone()).await;
+    assert_eq!(status, http::StatusCode::CONFLICT);
+    assert_eq!(body["durability"], "recorded");
+    assert_eq!(body["result"]["terminal"], "outcome");
+    assert_eq!(body["result"]["value"]["Fault"], "original-business-fault");
+    assert_eq!(body["cleanup"]["finished"], true);
+    assert_eq!(body["cleanup"]["steps"][0]["outcome"], "fault");
+    assert_eq!(body["reconciliation_required"], true);
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(undos.load(Ordering::SeqCst), 1);
+    let trace = store
+        .backing
+        .load("http-report-fixture")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(trace.completion, Some(CompletionState::Fault));
+}
