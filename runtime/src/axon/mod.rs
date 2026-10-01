@@ -114,11 +114,11 @@ pub struct ManualJump {
 
 /// Start step index for resumption, injected into the Bus.
 #[derive(Debug, Clone, Copy)]
-struct StartStep(u64);
+pub(crate) struct StartStep(pub(crate) u64);
 
 /// Persisted state for resumption, injected into the Bus.
 #[derive(Debug, Clone)]
-struct ResumptionState {
+pub(crate) struct ResumptionState {
     payload: Option<serde_json::Value>,
 }
 

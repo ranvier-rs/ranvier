@@ -554,18 +554,24 @@ pub(crate) struct InvocationOwner<'a> {
     session: Option<Session>,
     token: Option<ranvier_core::cancellation::CancellationToken>,
     caller_timeline: bool,
+    start_step: Option<crate::axon::StartStep>,
+    resumption: Option<crate::axon::ResumptionState>,
 }
 
 impl<'a> InvocationOwner<'a> {
     pub(crate) fn begin(bus: &'a mut Bus) -> Self {
         let token = bus.cancellation_token().cloned();
         let caller_timeline = bus.read::<ranvier_core::timeline::Timeline>().is_some();
+        let start_step = bus.remove::<crate::axon::StartStep>();
+        let resumption = bus.remove::<crate::axon::ResumptionState>();
         let session = Session::begin(bus);
         Self {
             bus,
             session: Some(session),
             token,
             caller_timeline,
+            start_step,
+            resumption,
         }
     }
     pub(crate) fn bus(&mut self) -> &mut Bus {
@@ -589,6 +595,14 @@ impl Drop for InvocationOwner<'_> {
             session.restore(self.bus);
         }
         self.bus.replace_cancellation_token(self.token.take());
+        let _ = self.bus.remove::<crate::axon::StartStep>();
+        let _ = self.bus.remove::<crate::axon::ResumptionState>();
+        if let Some(start) = self.start_step.take() {
+            self.bus.insert(start);
+        }
+        if let Some(resumption) = self.resumption.take() {
+            self.bus.insert(resumption);
+        }
         if !self.caller_timeline {
             let _ = self.bus.remove::<ranvier_core::timeline::Timeline>();
         }
