@@ -1311,6 +1311,152 @@ mod tests {
             Temporality::Cumulative
         }
     }
+    #[derive(Debug, Default)]
+    struct FloatTotals {
+        counter: f64,
+        histogram_sum: f64,
+        histogram_count: u64,
+        counter_series: usize,
+        histogram_series: usize,
+        counter_overflow: usize,
+        histogram_overflow: usize,
+        buckets: Vec<u64>,
+        unexpected: bool,
+    }
+    struct FloatCapture {
+        totals: Arc<Mutex<FloatTotals>>,
+        temporality: Temporality,
+    }
+    impl PushMetricExporter for FloatCapture {
+        async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+            use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+            let mut totals = FloatTotals::default();
+            let overflow = |attribute: &KeyValue| {
+                attribute.key.as_str() == "otel.metric.overflow"
+                    && attribute.value == opentelemetry::Value::Bool(true)
+            };
+            for scope in metrics.scope_metrics() {
+                for metric in scope.metrics() {
+                    match metric.data() {
+                        AggregatedMetrics::F64(MetricData::Sum(sum)) => {
+                            totals.unexpected |= sum.temporality() != self.temporality;
+                            for point in sum.data_points() {
+                                totals.counter += point.value();
+                                totals.counter_series += 1;
+                                totals.counter_overflow +=
+                                    usize::from(point.attributes().any(overflow));
+                            }
+                        }
+                        AggregatedMetrics::F64(MetricData::Histogram(histogram)) => {
+                            totals.unexpected |= histogram.temporality() != self.temporality;
+                            for point in histogram.data_points() {
+                                totals.histogram_sum += point.sum();
+                                totals.histogram_count += point.count();
+                                totals.histogram_series += 1;
+                                totals.histogram_overflow +=
+                                    usize::from(point.attributes().any(overflow));
+                                totals.unexpected |=
+                                    point.bounds().collect::<Vec<_>>() != vec![1.0];
+                                let buckets = point.bucket_counts().collect::<Vec<_>>();
+                                if totals.buckets.is_empty() {
+                                    totals.buckets.resize(buckets.len(), 0);
+                                }
+                                totals.unexpected |= totals.buckets.len() != buckets.len();
+                                for (total, count) in totals.buckets.iter_mut().zip(buckets) {
+                                    *total += count;
+                                }
+                            }
+                        }
+                        _ => totals.unexpected = true,
+                    }
+                }
+            }
+            *self.totals.lock().unwrap() = totals;
+            Ok(())
+        }
+        fn force_flush(&self) -> OTelSdkResult {
+            Ok(())
+        }
+        fn shutdown_with_timeout(&self, _: Duration) -> OTelSdkResult {
+            Ok(())
+        }
+        fn temporality(&self) -> Temporality {
+            self.temporality
+        }
+    }
+    #[test]
+    fn float_capacity_preserves_binary_fraction_totals_in_both_temporalities() {
+        for temporality in [Temporality::Cumulative, Temporality::Delta] {
+            for mode in [Mode::Off, Mode::Public, Mode::Strict] {
+                let strict = matches!(mode, Mode::Strict);
+                let totals = Arc::new(Mutex::new(FloatTotals::default()));
+                let provider = ProtectedMeterProvider {
+                    inner: bounded_meter_builder()
+                        .unwrap()
+                        .with_reader(
+                            PeriodicReader::builder(FloatCapture {
+                                totals: totals.clone(),
+                                temporality,
+                            })
+                            .with_interval(Duration::from_secs(3600))
+                            .build(),
+                        )
+                        .build(),
+                    policy: Policy::new(mode, "").unwrap(),
+                    state: Default::default(),
+                };
+                let meter = provider.meter("float-capacity-fixture");
+                let counter = meter.f64_counter("float-counter").build();
+                let histogram = meter
+                    .f64_histogram("float-histogram")
+                    .with_boundaries(vec![1.0])
+                    .build();
+                // Binary fractions have exact sums here; no broad rounding tolerance can hide dropped values.
+                for (interval, value) in [0.5, 1.5].into_iter().enumerate() {
+                    for index in 0..2048 {
+                        let labels = [KeyValue::new("identity", format!("label-{index}"))];
+                        counter.add(value, &labels);
+                        histogram.record(value, &labels);
+                    }
+                    provider.inner.force_flush().unwrap();
+                    let actual = totals.lock().unwrap();
+                    let cumulative_second = interval == 1 && temporality == Temporality::Cumulative;
+                    let expected_sum = if cumulative_second {
+                        4096.0
+                    } else {
+                        value * 2048.0
+                    };
+                    assert_eq!(actual.counter, expected_sum);
+                    assert_eq!(actual.histogram_sum, expected_sum);
+                    assert_eq!(
+                        actual.histogram_count,
+                        if cumulative_second { 4096 } else { 2048 }
+                    );
+                    assert_eq!(
+                        actual.buckets,
+                        if interval == 0 {
+                            vec![2048, 0]
+                        } else if cumulative_second {
+                            vec![2048, 2048]
+                        } else {
+                            vec![0, 2048]
+                        }
+                    );
+                    assert!(!actual.unexpected, "{actual:?}");
+                    assert!(actual.counter_series > 0 && actual.counter_series <= 1025);
+                    assert!(actual.histogram_series > 0 && actual.histogram_series <= 1025);
+                    assert_eq!(actual.counter_overflow, usize::from(!strict));
+                    assert_eq!(actual.histogram_overflow, usize::from(!strict));
+                    if strict {
+                        assert_eq!(actual.counter_series, 1);
+                        assert_eq!(actual.histogram_series, 1);
+                    }
+                }
+                assert!(!provider.state.failed());
+                provider.inner.shutdown().unwrap();
+            }
+        }
+    }
     #[derive(Default)]
     struct DeltaProperties {
         non_delta: bool,
