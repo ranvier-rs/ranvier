@@ -186,9 +186,47 @@ impl Transition<ValidatedOrder, String> for ShipOrder {
     ) -> Outcome<String, Self::Error> {
         println!("\x1b[1m[Node]\x1b[0m Shipping Order...");
 
-        match resources.shipping.call(request.request.order_id).await {
-            Ok(tracking) => Outcome::Next(tracking),
-            Err(e) => Outcome::Fault(e),
+        if let Err(error) = resources.inventory.authorize_shipping(&request) {
+            return Outcome::Fault(error);
+        }
+        let permit = match resources.payment.begin_dispatch(&request) {
+            Ok(permit) => permit,
+            Err(error) => return Outcome::Fault(error),
+        };
+        let result = resources.shipping.call(permit).await;
+        if let Err(error) = resources.payment.finish_dispatch(&request, &result) {
+            return Outcome::Fault(error);
+        }
+        match result {
+            Ok(tracking) => match resources
+                .payment
+                .confirm_tracking(&request, &tracking)
+                .and_then(|()| resources.shipping.confirm_tracking(&request, &tracking))
+                .and_then(|()| resources.inventory.fulfill(&request))
+            {
+                Ok(()) => Outcome::Next(tracking),
+                Err(error) => Outcome::Fault(error),
+            },
+            Err(_) => Outcome::Fault("Dispatch rejected before effect".into()),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct RequireNoDispatch;
+#[async_trait]
+impl Transition<ValidatedOrder, ()> for RequireNoDispatch {
+    type Error = String;
+    type Resources = OrderResources;
+    async fn run(
+        &self,
+        order: ValidatedOrder,
+        resources: &OrderResources,
+        _: &mut Bus,
+    ) -> Outcome<(), String> {
+        match resources.payment.require_no_dispatch(&order) {
+            Ok(()) => Outcome::Next(()),
+            Err(error) => Outcome::Fault(error),
         }
     }
 }
@@ -216,7 +254,7 @@ mod price_tests {
                 },
             )])))),
             payment: PaymentSynapse::default(),
-            shipping: ShippingSynapse,
+            shipping: ShippingSynapse::default(),
         }
     }
 

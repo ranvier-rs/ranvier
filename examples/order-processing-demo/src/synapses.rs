@@ -27,9 +27,46 @@ struct Reservation {
     amount: u32,
     released: bool,
     payment: PaymentState,
+    fulfilled: bool,
 }
 
 impl InventorySynapse {
+    pub fn authorize_shipping(&self, order: &ValidatedOrder) -> Result<(), String> {
+        let ledger = self
+            .reservations
+            .lock()
+            .map_err(|_| "Reservation ledger unavailable".to_owned())?;
+        let record = ledger
+            .get(&order.request.order_id)
+            .ok_or_else(|| "Reservation missing".to_owned())?;
+        if record.owner != order.reservation_owner
+            || record.amount != order.payable_amount
+            || record.released
+            || record.fulfilled
+            || record.payment != PaymentState::Approved
+        {
+            return Err("Shipment requires reconciliation".into());
+        }
+        Ok(())
+    }
+
+    pub fn fulfill(&self, order: &ValidatedOrder) -> Result<(), String> {
+        let mut ledger = self
+            .reservations
+            .lock()
+            .map_err(|_| "Reservation ledger unavailable".to_owned())?;
+        let record = ledger
+            .get_mut(&order.request.order_id)
+            .ok_or_else(|| "Reservation missing".to_owned())?;
+        if record.owner != order.reservation_owner
+            || record.released
+            || record.payment != PaymentState::Approved
+        {
+            return Err("Fulfillment requires reconciliation".into());
+        }
+        record.fulfilled = true;
+        Ok(())
+    }
     pub fn new(inventory: Arc<Mutex<HashMap<String, Product>>>) -> Self {
         Self {
             inventory,
@@ -246,6 +283,7 @@ impl Synapse for InventorySynapse {
                 amount: order.payable_amount,
                 released: false,
                 payment: PaymentState::NotAttempted,
+                fulfilled: false,
             },
         );
         Ok(true)
@@ -274,6 +312,28 @@ struct PaymentRecord {
     receipt: Option<String>,
     outstanding: u32,
     state: ReceiptState,
+    dispatch: DispatchState,
+}
+
+#[derive(Clone)]
+enum DispatchState {
+    NotStarted,
+    Pending,
+    Rejected,
+    Shipped(String),
+}
+
+pub struct DispatchPermit {
+    order_id: String,
+    owner: String,
+    amount: u32,
+    receipt: String,
+}
+
+#[derive(Debug)]
+pub enum DispatchError {
+    Rejected,
+    Uncertain,
 }
 #[cfg(test)]
 #[derive(Default, Clone, Copy)]
@@ -305,6 +365,94 @@ impl RefundConfirmation {
 }
 
 impl PaymentSynapse {
+    pub fn confirm_tracking(&self, order: &ValidatedOrder, tracking: &str) -> Result<(), String> {
+        let records = self
+            .records
+            .lock()
+            .map_err(|_| "Payment ledger unavailable".to_owned())?;
+        let record = records
+            .get(&order.request.order_id)
+            .ok_or_else(|| "Payment record missing".to_owned())?;
+        if record.owner != order.reservation_owner
+            || record.amount != order.payable_amount
+            || record.state != ReceiptState::Approved
+            || !matches!(&record.dispatch, DispatchState::Shipped(actual) if actual == tracking)
+        {
+            return Err("Fulfillment requires reconciliation".into());
+        }
+        Ok(())
+    }
+    pub fn begin_dispatch(&self, order: &ValidatedOrder) -> Result<DispatchPermit, String> {
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|_| "Payment ledger unavailable".to_owned())?;
+        let record = records
+            .get_mut(&order.request.order_id)
+            .ok_or_else(|| "Payment record missing".to_owned())?;
+        if record.owner != order.reservation_owner
+            || record.amount != order.payable_amount
+            || record.state != ReceiptState::Approved
+            || !matches!(record.dispatch, DispatchState::NotStarted)
+        {
+            return Err("Dispatch requires reconciliation".into());
+        }
+        let receipt = record
+            .receipt
+            .clone()
+            .ok_or_else(|| "Payment receipt missing".to_owned())?;
+        record.dispatch = DispatchState::Pending;
+        Ok(DispatchPermit {
+            order_id: order.request.order_id.clone(),
+            owner: record.owner.clone(),
+            amount: record.amount,
+            receipt,
+        })
+    }
+
+    pub fn finish_dispatch(
+        &self,
+        order: &ValidatedOrder,
+        result: &Result<String, DispatchError>,
+    ) -> Result<(), String> {
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|_| "Payment ledger unavailable".to_owned())?;
+        let record = records
+            .get_mut(&order.request.order_id)
+            .ok_or_else(|| "Payment record missing".to_owned())?;
+        if record.owner != order.reservation_owner
+            || !matches!(record.dispatch, DispatchState::Pending)
+        {
+            return Err("Dispatch requires reconciliation".into());
+        }
+        match result {
+            Ok(tracking) => record.dispatch = DispatchState::Shipped(tracking.clone()),
+            Err(DispatchError::Rejected) => record.dispatch = DispatchState::Rejected,
+            Err(DispatchError::Uncertain) => return Err("Dispatch requires reconciliation".into()),
+        }
+        Ok(())
+    }
+
+    pub fn require_no_dispatch(&self, order: &ValidatedOrder) -> Result<(), String> {
+        let records = self
+            .records
+            .lock()
+            .map_err(|_| "Payment ledger unavailable".to_owned())?;
+        let Some(record) = records.get(&order.request.order_id) else {
+            return Ok(());
+        };
+        if record.owner != order.reservation_owner
+            || !matches!(
+                record.dispatch,
+                DispatchState::NotStarted | DispatchState::Rejected
+            )
+        {
+            return Err("Dispatch requires reconciliation before refund".into());
+        }
+        Ok(())
+    }
     #[cfg(test)]
     pub fn test_balance(&self, id: &str) -> (u32, bool) {
         let ledger = self.records.lock().unwrap();
@@ -322,6 +470,12 @@ impl PaymentSynapse {
             };
             if record.owner != order.reservation_owner || record.amount != order.payable_amount {
                 return Err("Refund owner or amount mismatch".into());
+            }
+            if !matches!(
+                record.dispatch,
+                DispatchState::NotStarted | DispatchState::Rejected
+            ) {
+                return Err("Dispatch requires reconciliation before refund".into());
             }
             match record.state {
                 ReceiptState::Declined => {
@@ -392,6 +546,7 @@ impl Synapse for PaymentSynapse {
                     receipt: None,
                     outstanding: 0,
                     state: ReceiptState::Pending,
+                    dispatch: DispatchState::NotStarted,
                 },
             );
         }
@@ -420,23 +575,91 @@ impl Synapse for PaymentSynapse {
 }
 
 // --- Shipping Synapse ---
-pub struct ShippingSynapse;
+#[derive(Default)]
+pub struct ShippingSynapse {
+    records: Mutex<HashMap<String, ShipmentRecord>>,
+    #[cfg(test)]
+    pub behavior: ShippingBehavior,
+}
+struct ShipmentRecord {
+    owner: String,
+    amount: u32,
+    receipt: String,
+    tracking: Option<String>,
+    rejected: bool,
+}
+#[cfg(test)]
+#[derive(Default, Clone, Copy)]
+pub enum ShippingBehavior {
+    #[default]
+    Complete,
+    Reject,
+    Uncertain,
+}
+
+impl ShippingSynapse {
+    pub fn confirm_tracking(&self, order: &ValidatedOrder, tracking: &str) -> Result<(), String> {
+        let records = self
+            .records
+            .lock()
+            .map_err(|_| "Shipment ledger unavailable".to_owned())?;
+        let record = records
+            .get(&order.request.order_id)
+            .ok_or_else(|| "Shipment record missing".to_owned())?;
+        if record.owner != order.reservation_owner
+            || record.amount != order.payable_amount
+            || record.receipt.is_empty()
+            || record.rejected
+            || record.tracking.as_deref() != Some(tracking)
+        {
+            return Err("Shipment requires reconciliation".into());
+        }
+        Ok(())
+    }
+}
 
 #[async_trait]
 impl Synapse for ShippingSynapse {
-    type Input = String; // Order ID
-    type Output = String; // Tracking Number
-    type Error = String;
-
-    async fn call(&self, order_id: Self::Input) -> Result<Self::Output, Self::Error> {
-        println!(
-            "\x1b[35m[Shipping]\x1b[0m Dispatching Order #{}...",
-            order_id
-        );
+    type Input = DispatchPermit;
+    type Output = String;
+    type Error = DispatchError;
+    async fn call(&self, permit: DispatchPermit) -> Result<String, DispatchError> {
+        {
+            let mut records = self.records.lock().map_err(|_| DispatchError::Uncertain)?;
+            if records.contains_key(&permit.order_id) || records.len() >= 1000 {
+                return Err(DispatchError::Uncertain);
+            }
+            records.insert(
+                permit.order_id.clone(),
+                ShipmentRecord {
+                    owner: permit.owner,
+                    amount: permit.amount,
+                    receipt: permit.receipt,
+                    tracking: None,
+                    rejected: false,
+                },
+            );
+        }
+        #[cfg(test)]
+        if matches!(self.behavior, ShippingBehavior::Reject) {
+            let mut records = self.records.lock().map_err(|_| DispatchError::Uncertain)?;
+            records
+                .get_mut(&permit.order_id)
+                .ok_or(DispatchError::Uncertain)?
+                .rejected = true;
+            return Err(DispatchError::Rejected);
+        }
         sleep(Duration::from_millis(400)).await;
-
         let tracking = format!("TRK-{}", uuid::Uuid::new_v4());
-        println!("\x1b[35m[Shipping]\x1b[0m Shipped! Tracking: {}", tracking);
+        let mut records = self.records.lock().map_err(|_| DispatchError::Uncertain)?;
+        let record = records
+            .get_mut(&permit.order_id)
+            .ok_or(DispatchError::Uncertain)?;
+        record.tracking = Some(tracking.clone());
+        #[cfg(test)]
+        if matches!(self.behavior, ShippingBehavior::Uncertain) {
+            return Err(DispatchError::Uncertain);
+        }
         Ok(tracking)
     }
 }

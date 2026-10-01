@@ -18,8 +18,8 @@ mod synapses;
 
 use crate::domain::{OrderRequest, OrderResources, Product};
 use crate::nodes::{
-    ProcessPayment, RefundPayment, ReleaseInventory, ReserveInventory, ShipOrder, ValidateOrder,
-    ValidationNoEffect,
+    ProcessPayment, RefundPayment, ReleaseInventory, RequireNoDispatch, ReserveInventory,
+    ShipOrder, ValidateOrder, ValidationNoEffect,
 };
 use crate::synapses::{InventorySynapse, PaymentSynapse, ShippingSynapse};
 use anyhow::Result;
@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
     let resources = OrderResources {
         inventory: InventorySynapse::new(inventory_db),
         payment: PaymentSynapse::default(),
-        shipping: ShippingSynapse,
+        shipping: ShippingSynapse::default(),
     };
 
     // 2) Build Axon execution chain
@@ -81,7 +81,7 @@ async fn main() -> Result<()> {
         .then_compensated(ValidateOrder, ValidationNoEffect)
         .then_compensated(ReserveInventory, ReleaseInventory)
         .then_compensated(ProcessPayment, RefundPayment)
-        .then(ShipOrder);
+        .then_compensated(ShipOrder, RequireNoDispatch);
 
     // 3) Schematic mode for CLI integration
     if axon.maybe_export_and_exit()? {
