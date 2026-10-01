@@ -1910,7 +1910,11 @@ mod tests {
             store.append(seed.clone()).await.unwrap();
             let intervention = crate::persistence::Intervention {
                 target_node: axon.schematic.nodes[2].id.clone(),
-                payload_override: if missing { None } else { Some(serde_json::json!("private-payload")) },
+                payload_override: if missing {
+                    None
+                } else {
+                    Some(serde_json::json!("private-payload"))
+                },
                 timestamp_ms: 17,
             };
             store
@@ -1921,20 +1925,29 @@ mod tests {
             bus.insert(PersistenceTraceId::new("stored-jump"));
             bus.insert(PersistenceHandle::from_store(store.clone()));
             let blocked = if cancellable {
-                matches!(axon.execute_cancellable(PrivateJumpInput, &(), &mut bus,
-                    ranvier_core::cancellation::CancellationToken::new()).await,
+                matches!(
+                    axon.execute_cancellable(
+                        PrivateJumpInput,
+                        &(),
+                        &mut bus,
+                        ranvier_core::cancellation::CancellationToken::new()
+                    )
+                    .await,
                     crate::ExecutionReport::BlockedBeforeEffect {
                         operation: crate::PersistenceOperation::RecoveryPayload,
-                        effect: crate::EffectBoundary::MayHaveRun, ..
-                    })
+                        effect: crate::EffectBoundary::MayHaveRun,
+                        ..
+                    }
+                )
             } else {
-                matches!(axon.execute(PrivateJumpInput, &(), &mut bus).await,
-                crate::ExecutionReport::BlockedBeforeEffect {
-                    operation: crate::PersistenceOperation::RecoveryPayload,
-                    effect: crate::EffectBoundary::MayHaveRun,
-                    ..
-                }
-                })
+                matches!(
+                    axon.execute(PrivateJumpInput, &(), &mut bus).await,
+                    crate::ExecutionReport::BlockedBeforeEffect {
+                        operation: crate::PersistenceOperation::RecoveryPayload,
+                        effect: crate::EffectBoundary::MayHaveRun,
+                        ..
+                    }
+                )
             };
             assert!(blocked, "case {case}");
             assert!(bus.cancellation_token().is_none());

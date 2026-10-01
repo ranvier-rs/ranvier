@@ -435,7 +435,9 @@ where
                                 }
                             }
                         } else {
-                            if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>() {
+                            if let Some(active) =
+                                bus.read::<crate::execution_observation::ActiveObservation>()
+                            {
                                 active.0.block(crate::PersistenceOperation::RecoveryPayload);
                             }
                             return Outcome::emit(
@@ -1044,7 +1046,9 @@ where
                                 }
                             }
                         } else {
-                            if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>() {
+                            if let Some(active) =
+                                bus.read::<crate::execution_observation::ActiveObservation>()
+                            {
                                 active.0.block(crate::PersistenceOperation::RecoveryPayload);
                             }
                             return Outcome::emit(
