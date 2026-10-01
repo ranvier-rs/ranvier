@@ -74,9 +74,10 @@ impl Transition<(), DashboardData> for AdminDashboard {
         _resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<DashboardData, Self::Error> {
-        let identity = bus
-            .get_cloned::<IamIdentity>()
-            .expect("IamIdentity should be in Bus after with_iam verification");
+        let identity = match bus.get_cloned::<IamIdentity>() {
+            Ok(identity) => identity,
+            Err(_) => return Outcome::Fault("Authenticated identity is unavailable".into()),
+        };
 
         Outcome::next(DashboardData {
             user: identity.subject.clone(),
@@ -125,9 +126,10 @@ impl Transition<(), serde_json::Value> for UserProfile {
         _resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<serde_json::Value, Self::Error> {
-        let identity = bus
-            .get_cloned::<IamIdentity>()
-            .expect("IamIdentity should be in Bus");
+        let identity = match bus.get_cloned::<IamIdentity>() {
+            Ok(identity) => identity,
+            Err(_) => return Outcome::Fault("Authenticated identity is unavailable".into()),
+        };
 
         Outcome::next(serde_json::json!({
             "subject": identity.subject,
@@ -162,7 +164,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("=== Auth JWT Role Demo ===\n");
 
-    let verifier = auth::JwtVerifier;
+    let verifier = auth::JwtVerifier::from_env().map_err(anyhow::Error::msg)?;
 
     // ── Build Circuits ───────────────────────────────────────────────────
 
@@ -181,22 +183,14 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Issue Tokens ─────────────────────────────────────────────────────
 
-    let admin_token = auth::issue_token("alice", vec!["admin".into(), "user".into()])
+    let admin_token = verifier
+        .issue_token("alice", vec!["admin".into(), "user".into()])
         .map_err(|e| anyhow::anyhow!(e))?;
-    let user_token =
-        auth::issue_token("bob", vec!["user".into()]).map_err(|e| anyhow::anyhow!(e))?;
+    let user_token = verifier
+        .issue_token("bob", vec!["user".into()])
+        .map_err(|e| anyhow::anyhow!(e))?;
 
-    println!("Tokens issued:");
-    println!(
-        "  Alice (admin): {}...{}",
-        &admin_token[..20],
-        &admin_token[admin_token.len() - 10..]
-    );
-    println!(
-        "  Bob   (user):  {}...{}\n",
-        &user_token[..20],
-        &user_token[user_token.len() - 10..]
-    );
+    println!("Two demo tokens issued; token values are not logged.\n");
 
     // ── Demo 1: Public endpoint (no token needed) ────────────────────────
 
@@ -206,7 +200,7 @@ async fn main() -> anyhow::Result<()> {
         let result = local_demo_outcome(public_circuit.execute((), &(), &mut bus).await)?;
         match &result {
             Outcome::Next(profile) => println!("  {}\n", profile.message),
-            other => println!("  {:?}\n", other),
+            _ => println!("  Unexpected execution outcome\n"),
         }
     }
 
@@ -224,13 +218,10 @@ async fn main() -> anyhow::Result<()> {
                 println!("  Active Users: {}", data.stats.active_users);
                 println!("  Pending Tasks: {}\n", data.stats.pending_tasks);
             }
-            Outcome::Emit(event, payload) => {
+            Outcome::Emit(event, _) => {
                 println!("  [AUTH FAILED] Event: {}", event);
-                if let Some(p) = payload {
-                    println!("  Payload: {}\n", p);
-                }
             }
-            other => println!("  {:?}\n", other),
+            _ => println!("  Unexpected execution outcome\n"),
         }
     }
 
@@ -242,13 +233,10 @@ async fn main() -> anyhow::Result<()> {
         bus.insert(IamToken(user_token.clone()));
         let result = local_demo_outcome(admin_circuit.execute((), &(), &mut bus).await)?;
         match &result {
-            Outcome::Emit(event, payload) => {
+            Outcome::Emit(event, _) => {
                 println!("  [DENIED] Event: {}", event);
-                if let Some(p) = payload {
-                    println!("  Payload: {}\n", p);
-                }
             }
-            other => println!("  [UNEXPECTED] {:?}\n", other),
+            _ => println!("  Unexpected execution outcome\n"),
         }
     }
 
@@ -263,7 +251,7 @@ async fn main() -> anyhow::Result<()> {
             Outcome::Next(profile) => {
                 println!("  Profile: {}\n", serde_json::to_string_pretty(profile)?);
             }
-            other => println!("  {:?}\n", other),
+            _ => println!("  Unexpected execution outcome\n"),
         }
     }
 
@@ -274,14 +262,11 @@ async fn main() -> anyhow::Result<()> {
         let mut bus = Bus::new();
         let result = local_demo_outcome(admin_circuit.execute((), &(), &mut bus).await)?;
         match &result {
-            Outcome::Emit(event, payload) => {
+            Outcome::Emit(event, _) => {
                 println!("  [MISSING] Event: {}", event);
-                if let Some(p) = payload {
-                    println!("  Payload: {}", p);
-                }
                 println!();
             }
-            other => println!("  [UNEXPECTED] {:?}\n", other),
+            _ => println!("  Unexpected execution outcome\n"),
         }
     }
 
@@ -293,14 +278,11 @@ async fn main() -> anyhow::Result<()> {
         bus.insert(IamToken("invalid.jwt.token".into()));
         let result = local_demo_outcome(admin_circuit.execute((), &(), &mut bus).await)?;
         match &result {
-            Outcome::Emit(event, payload) => {
+            Outcome::Emit(event, _) => {
                 println!("  [INVALID] Event: {}", event);
-                if let Some(p) = payload {
-                    println!("  Payload: {}", p);
-                }
                 println!();
             }
-            other => println!("  [UNEXPECTED] {:?}\n", other),
+            _ => println!("  Unexpected execution outcome\n"),
         }
     }
 

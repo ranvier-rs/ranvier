@@ -6,20 +6,7 @@ use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use ranvier_core::iam::{IamError, IamIdentity, IamVerifier};
 use serde::{Deserialize, Serialize};
-use std::sync::LazyLock;
-
-/// JWT secret loaded from the `JWT_SECRET` environment variable.
-///
-/// # Panics
-///
-/// Panics at first access if the variable is not set.
-/// Run with: `JWT_SECRET=your-secret-here cargo run --example auth-jwt-role-demo`
-static JWT_SECRET: LazyLock<String> = LazyLock::new(|| {
-    std::env::var("JWT_SECRET").expect(
-        "JWT_SECRET environment variable must be set. \
-         Example: JWT_SECRET=your-secret-here cargo run",
-    )
-});
+use std::sync::Arc;
 
 /// JWT claims payload.
 #[derive(Debug, Serialize, Deserialize)]
@@ -30,31 +17,54 @@ pub struct Claims {
 }
 
 /// Issue a JWT token for the given user with roles.
-pub fn issue_token(username: &str, roles: Vec<String>) -> Result<String, String> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_secs() as usize;
+impl JwtVerifier {
+    pub fn from_secret(secret: &[u8]) -> Result<Self, &'static str> {
+        if secret.is_empty() {
+            return Err("JWT secret must not be empty");
+        }
+        Ok(Self {
+            secret: Arc::from(secret),
+        })
+    }
 
-    let claims = Claims {
-        sub: username.to_string(),
-        roles,
-        exp: now + 3600, // 1 hour
-    };
+    pub fn from_env() -> Result<Self, &'static str> {
+        let secret =
+            std::env::var("JWT_SECRET").map_err(|_| "JWT_SECRET configuration is unavailable")?;
+        Self::from_secret(secret.as_bytes())
+    }
 
-    encode(
-        &Header::new(Algorithm::HS256),
-        &claims,
-        &EncodingKey::from_secret(JWT_SECRET.as_bytes()),
-    )
-    .map_err(|e| e.to_string())
+    pub fn issue_token(&self, username: &str, roles: Vec<String>) -> Result<String, &'static str> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "Token clock is unavailable")?
+            .as_secs();
+        let expiry = now
+            .checked_add(3600)
+            .ok_or("Token expiry is out of range")?;
+        let expiry = usize::try_from(expiry).map_err(|_| "Token expiry is out of range")?;
+
+        let claims = Claims {
+            sub: username.to_string(),
+            roles,
+            exp: expiry, // 1 hour
+        };
+
+        encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(&self.secret),
+        )
+        .map_err(|_| "Token issuance failed")
+    }
 }
 
 /// JWT-based IamVerifier implementation.
 ///
 /// Decodes HS256 tokens and maps JWT claims to `IamIdentity`.
 #[derive(Clone)]
-pub struct JwtVerifier;
+pub struct JwtVerifier {
+    secret: Arc<[u8]>,
+}
 
 #[async_trait]
 impl IamVerifier for JwtVerifier {
@@ -62,12 +72,9 @@ impl IamVerifier for JwtVerifier {
         let mut validation = Validation::new(Algorithm::HS256);
         validation.validate_exp = true;
 
-        let token_data = decode::<Claims>(
-            token,
-            &DecodingKey::from_secret(JWT_SECRET.as_bytes()),
-            &validation,
-        )
-        .map_err(|e| IamError::InvalidToken(format!("JWT decode failed: {}", e)))?;
+        let token_data =
+            decode::<Claims>(token, &DecodingKey::from_secret(&self.secret), &validation)
+                .map_err(|_| IamError::InvalidToken("Authentication failed".into()))?;
 
         let claims = token_data.claims;
 
