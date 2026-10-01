@@ -16,7 +16,7 @@
 //! - `AuditSink` trait — implement for custom sinks (database, queue, etc.)
 //!
 //! ## Output
-//! Creates `./audit-demo-output/audit.jsonl` with HMAC-signed event records.
+//! Creates an exclusively owned temporary directory with signed event records.
 
 use async_trait::async_trait;
 use ranvier_audit::file_sink::FileAuditSink;
@@ -86,7 +86,9 @@ impl Transition<UserAction, ActionResult> for AuditedAction {
         bus: &mut Bus,
     ) -> Outcome<ActionResult, String> {
         // Retrieve the AuditLogger from Bus (injected via Arc wrapper)
-        let logger = bus.get_cloned::<SharedAuditLogger>().ok();
+        let Ok(logger) = bus.get_cloned::<SharedAuditLogger>() else {
+            return Outcome::Fault("Required audit capability missing".into());
+        };
 
         // Create a 5W audit event
         // WHO:   input.user_id
@@ -95,20 +97,21 @@ impl Transition<UserAction, ActionResult> for AuditedAction {
         // WHEN:  auto-timestamped by AuditEvent::new
         // WHY:   input.detail (as intent)
         let event = AuditEvent::new(
-            format!("evt-{}", timestamp_id()),
+            format!(
+                "evt-{}-{}",
+                std::process::id(),
+                EVENT_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ),
             input.user_id.clone(),
             input.action.clone(),
             input.resource.clone(),
         )
         .with_intent(&input.detail)
         .with_metadata("source", "audit-demo")
-        .with_metadata("version", "0.19.0");
+        .with_metadata("version", env!("CARGO_PKG_VERSION"));
 
-        // Log the event if logger is available
-        if let Some(logger) = logger {
-            if let Err(e) = logger.log(event).await {
-                return Outcome::Fault(format!("Audit logging failed: {e}"));
-            }
+        if logger.log(event).await.is_err() {
+            return Outcome::Fault("Audit logging failed; reconcile before retry".into());
         }
 
         Outcome::Next(ActionResult {
@@ -121,25 +124,23 @@ impl Transition<UserAction, ActionResult> for AuditedAction {
     }
 }
 
-fn timestamp_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("{ts:020}")
-}
+// Process-local fixture identity only; not a persisted global event contract.
+static EVENT_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 // ── Main ──────────────────────────────────────────────────────────────────
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let output_dir = "./audit-demo-output";
-    let audit_file = format!("{output_dir}/audit.jsonl");
+async fn run_demo() -> Result<(), DemoError> {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let output_dir =
+        std::env::temp_dir().join(format!("ranvier-audit-{}-{nonce}", std::process::id()));
+    tokio::fs::create_dir(&output_dir).await?;
+    let audit_file = output_dir.join("audit.jsonl");
 
     println!("Audit Demo");
     println!("==========");
-    println!("  Output: {audit_file}");
+    println!("  Output: {audit_file:?}");
     println!();
 
     // Initialize FileAuditSink with HMAC signing key
@@ -178,42 +179,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     ];
 
     for action in actions {
-        let desc = format!("{} {} {}", action.user_id, action.action, action.resource);
         // Inject AuditLogger into a fresh Bus for each execution
         let mut bus = Bus::new();
         bus.insert(logger.clone());
 
         let result = local_demo_outcome(axon.execute(action, &(), &mut bus).await)?;
-        match result {
-            Outcome::Next(r) => println!("  [OK] {desc} -> {}", r.message),
-            Outcome::Fault(e) => println!("  [ERR] {desc} -> {e}"),
-            _ => {}
+        if !matches!(result, Outcome::Next(ref value) if value.success) {
+            return Err("Audit scenario did not succeed; reconcile before retry".into());
         }
     }
 
     // Read back and display the audit log
     println!();
-    println!("Audit log contents ({audit_file}):");
+    println!("Audit log contents ({audit_file:?}):");
     println!("---");
     let contents = tokio::fs::read_to_string(&audit_file).await?;
-    for (i, line) in contents.lines().enumerate() {
-        let parsed: serde_json::Value = serde_json::from_str(line)?;
-        let event = &parsed["event"];
-        println!(
-            "  [{}] {} | {} {} -> {} | sig: {}...",
-            i + 1,
-            event["timestamp"].as_str().unwrap_or("?"),
-            event["actor"].as_str().unwrap_or("?"),
-            event["action"].as_str().unwrap_or("?"),
-            event["target"].as_str().unwrap_or("?"),
-            &parsed["signature"].as_str().unwrap_or("?")[..16],
-        );
+    let records: Vec<serde_json::Value> = contents
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
+    if records.len() != 4
+        || records.iter().any(|record| {
+            record["signature"]
+                .as_str()
+                .is_none_or(|sig| sig.len() != 64)
+        })
+    {
+        return Err("Unexpected audit file records".into());
     }
-    println!("---");
-    println!("Each record is HMAC-SHA256 signed for tamper evidence.");
-
-    // Cleanup
-    let _ = tokio::fs::remove_dir_all(output_dir).await;
+    println!("Four signed records observed (signature shape only; no verification claimed)");
+    drop(logger);
+    tokio::fs::remove_file(&audit_file).await?;
+    tokio::fs::remove_dir(&output_dir).await?;
 
     Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), DemoError> {
+    run_demo().await
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn actual_file_sink_and_scoped_cleanup() {
+        run_demo().await.unwrap();
+    }
+    #[tokio::test]
+    async fn missing_logger_rejects_before_success() {
+        let result = AuditedAction
+            .run(
+                UserAction {
+                    user_id: "private".into(),
+                    action: "CREATE".into(),
+                    resource: "private".into(),
+                    detail: "private".into(),
+                },
+                &(),
+                &mut Bus::new(),
+            )
+            .await;
+        assert!(
+            matches!(result, Outcome::Fault(error) if error == "Required audit capability missing")
+        );
+    }
 }
