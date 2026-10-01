@@ -3207,6 +3207,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retry_explicit_owner_does_not_change_following_nodes_policy() {
+        let explicit_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let regular_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let sink = MockDlqSink {
+            letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
+        let axon = Axon::<i32, i32, String>::start("scoped-budget")
+            .then_with_retry(
+                CountCombinedRetry {
+                    calls: explicit_calls.clone(),
+                    failures: 1,
+                },
+                crate::RetryPolicy::fixed(1, std::time::Duration::ZERO),
+            )
+            .then(CountCombinedRetry {
+                calls: regular_calls.clone(),
+                failures: 2,
+            })
+            .with_dlq_policy(DlqPolicy::RetryThenDlq {
+                max_attempts: 3,
+                backoff_ms: 0,
+            })
+            .with_dlq_sink(sink.clone());
+        let report = axon.execute(7, &(), &mut Bus::new()).await;
+        assert!(matches!(
+            report,
+            crate::ExecutionReport::Unpersisted {
+                result: Outcome::Next(9),
+                ..
+            }
+        ));
+        assert_eq!(explicit_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(regular_calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert!(sink.letters.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn retry_explicit_zero_budget_respects_all_dlq_dispositions() {
+        for (policy, expected_letters) in [
+            (DlqPolicy::Drop, 0),
+            (DlqPolicy::SendToDlq, 1),
+            (
+                DlqPolicy::RetryThenDlq {
+                    max_attempts: 5,
+                    backoff_ms: u64::MAX,
+                },
+                1,
+            ),
+        ] {
+            let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let sink = MockDlqSink {
+                letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            };
+            let axon = Axon::<i32, i32, String>::start("zero-explicit-budget")
+                .then_with_retry(
+                    CountCombinedRetry {
+                        calls: calls.clone(),
+                        failures: 3,
+                    },
+                    crate::RetryPolicy::fixed(0, std::time::Duration::ZERO),
+                )
+                .with_dlq_policy(policy)
+                .with_dlq_sink(sink.clone());
+            let report = axon.execute(7, &(), &mut Bus::new()).await;
+            assert!(matches!(report, crate::ExecutionReport::Unpersisted {
+                result: Outcome::Fault(error), .. } if error == "combined_failure"));
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(sink.letters.lock().await.len(), expected_letters);
+        }
+    }
+
+    #[tokio::test]
     async fn retry_then_dlq_retries_and_succeeds_before_exhaustion() {
         // Fail 2 times, succeed on 3rd attempt. Policy allows 5 attempts.
         let remaining = Arc::new(tokio::sync::Mutex::new(2u32));
