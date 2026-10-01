@@ -18,9 +18,10 @@ This example shows **how to integrate Tower middleware with Ranvier** for authen
 
 ## Verified boundary
 
-`cargo run` validates a demo JWT directly and then runs an Axon with identity in
-Bus. It does not start an HTTP server or exercise the Tower layer. The binary
-tests separately traverse both actual Tower services and verify that denied
+`cargo run` sends a signed demo request and an unauthenticated request through
+the actual JWT Tower layer and Axon adapter. It does not start an HTTP server.
+The adapter transfers verified request extensions into a fresh Bus. The binary
+tests traverse both actual Tower services and verify that denied
 requests never call the inner domain service. Both implementations reject
 duplicate credentials, blank subjects and blank verifier secrets and return a
 fixed 401 response. The manual service preserves the readiness-polled instance.

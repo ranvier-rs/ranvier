@@ -24,6 +24,90 @@ fn response(status: StatusCode, body: &str) -> Response<String> {
     response
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tower::Layer;
+
+    #[ranvier_macros::transition]
+    async fn fail_private(
+        _input: (),
+        _res: &(),
+        _bus: &mut Bus,
+    ) -> Outcome<DomainResponse, AppError> {
+        Outcome::Fault(AppError::Internal("private-backend-secret".into()))
+    }
+
+    #[tokio::test]
+    async fn domain_fault_details_are_not_exposed() {
+        let mut service = AxonService {
+            pipeline: Axon::simple::<AppError>("private-fault").then(fail_private),
+        };
+        let mut request = Request::new(String::new());
+        request.extensions_mut().insert(AuthContext {
+            user_id: "alice".into(),
+            roles: vec![],
+        });
+        std::future::poll_fn(|cx| service.poll_ready(cx))
+            .await
+            .unwrap();
+        let response = service.call(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.body(), "Internal server error");
+    }
+
+    #[tokio::test]
+    async fn missing_extensions_are_rejected_at_adapter_boundary() {
+        let mut service = AxonService {
+            pipeline: Axon::simple::<AppError>("missing-extension")
+                .then(super::super::protected_handler),
+        };
+        std::future::poll_fn(|cx| service.poll_ready(cx))
+            .await
+            .unwrap();
+        let response = service.call(Request::new(String::new())).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.body(), "Unauthorized");
+    }
+
+    #[tokio::test]
+    async fn concurrent_requests_have_isolated_verified_identity() {
+        let pipeline =
+            Axon::simple::<AppError>("isolated-identity").then(super::super::protected_handler);
+        let mut service =
+            super::super::jwt_auth_layer("test-secret".into()).layer(AxonService { pipeline });
+        let mut futures = Vec::new();
+        for subject in ["alice", "bob"] {
+            let token =
+                super::super::create_test_token(subject, vec!["user".into()], "test-secret")
+                    .unwrap();
+            let mut request = Request::new(String::new());
+            request.headers_mut().insert(
+                http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse().unwrap(),
+            );
+            // The layer must replace this unverified upstream identity.
+            request.extensions_mut().insert(AuthContext {
+                user_id: "forged".into(),
+                roles: vec!["admin".into()],
+            });
+            std::future::poll_fn(|cx| service.poll_ready(cx))
+                .await
+                .unwrap();
+            futures.push(service.call(request));
+        }
+        let bob = futures.pop().unwrap();
+        let alice = futures.pop().unwrap();
+        let (alice, bob) = tokio::join!(alice, bob);
+        for (response, subject) in [(alice.unwrap(), "alice"), (bob.unwrap(), "bob")] {
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value = serde_json::from_str(response.body()).unwrap();
+            assert_eq!(body["user_id"], subject);
+            assert_eq!(body["roles"], serde_json::json!(["user"]));
+        }
+    }
+}
+
 impl Service<Request<String>> for AxonService {
     type Response = Response<String>;
     type Error = Infallible;
