@@ -42,6 +42,11 @@ mod tests {
                 });
             }
             assert_eq!(parent.bus().read::<crate::axon::StartStep>().unwrap().0, 7);
+            let mut child = InvocationOwner::begin(parent.bus());
+            child.bus().insert(crate::axon::ResumptionState {
+                payload: Some(serde_json::json!({"finished_child":11})),
+            });
+            let _ = child.finish(());
             assert_eq!(
                 parent
                     .bus()
