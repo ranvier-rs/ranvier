@@ -82,6 +82,17 @@ async fn postgres_executor_terminal_step_collision_is_observable() {
     assert_eq!(trace.events[1].outcome_kind, "Next");
     assert_eq!(trace.events[1].payload, Some(first));
     assert_eq!(trace.events[2].payload, Some(terminal));
+    // Completed readback must not replay the already invoked effects.
+    assert!(matches!(axon.execute(0, &(), &mut bus).await,
+        ranvier_runtime::ExecutionReport::NotRequested {
+            result: Outcome::Emit(event, None),
+        } if event == "execution.resumption.completed_trace"));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        store.load("terminal-collision").await.unwrap().unwrap(),
+        trace
+    );
+    println!("POSTGRES_COMPLETED_COLLISION_REENTRY_BLOCKED effects=2 full-trace-unchanged");
     pool.close().await;
     println!(
         "POSTGRES_TERMINAL_COLLISION_REPRODUCED effects=2 caller-next=2 durability-unconfirmed-terminal completion-success terminal-event-missing"
