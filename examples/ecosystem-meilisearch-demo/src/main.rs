@@ -20,6 +20,21 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, sleep};
 
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 #[derive(Clone)]
 struct AppResources {
     client: reqwest::Client,
@@ -376,15 +391,16 @@ async fn main() -> Result<()> {
         .then(SearchTransition);
 
     let mut bus = Bus::new();
-    let outcome = axon
-        .execute(
+    let outcome = local_demo_outcome(
+        axon.execute(
             SearchInput {
                 query: "ranvier".to_string(),
             },
             &resources,
             &mut bus,
         )
-        .await;
+        .await,
+    )?;
 
     match outcome {
         Outcome::Next(output) => {
