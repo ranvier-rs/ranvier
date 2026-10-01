@@ -240,7 +240,7 @@ mod tests {
             },
             ExecutionReport::BlockedBeforeEffect {
                 operation: PersistenceOperation::Intent,
-                effect: EffectBoundary::NotInvoked,
+                effect: EffectBoundary::MayHaveRun,
                 cleanup: None,
             },
         ] {

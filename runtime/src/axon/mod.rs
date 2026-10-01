@@ -147,8 +147,8 @@ fn type_name_of<T: ?Sized>() -> String {
 /// let mut bus2 = Bus::new();
 /// let res1 = axon.execute(10, &(), &mut bus1).await;
 /// let res2 = axon.execute(20, &(), &mut bus2).await;
-/// assert!(matches!(res1, ExecutionReport::Unpersisted { result: Outcome::Next(11) }));
-/// assert!(matches!(res2, ExecutionReport::Unpersisted { result: Outcome::Next(21) }));
+/// assert!(matches!(res1, ExecutionReport::Unpersisted { result: Outcome::Next(11), .. }));
+/// assert!(matches!(res2, ExecutionReport::Unpersisted { result: Outcome::Next(21), .. }));
 /// # });
 /// ```
 pub struct Axon<In, Out, E, Res = ()> {
@@ -1764,6 +1764,7 @@ mod tests {
             crate::ExecutionReport::Recorded {
                 result: Outcome::Next(11),
                 completion: crate::CompletionConfirmation::Confirmed,
+                ..
             }
         ));
 
