@@ -490,6 +490,64 @@ mod tests {
     use ranvier_core::Outcome;
 
     #[test]
+    fn unconfirmed_report_preserves_domain_and_requires_reconciliation() {
+        let report = ranvier_runtime::ExecutionReport::Unconfirmed {
+            result: Outcome::<u32, String>::Next(7),
+            operation: ranvier_runtime::PersistenceOperation::Complete,
+            effect: ranvier_runtime::EffectBoundary::MayHaveRun,
+        };
+        let (status, payload) = durability_rejection(&report).unwrap();
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            payload["result"],
+            serde_json::to_value(Outcome::<u32, String>::Next(7)).unwrap()
+        );
+        assert_eq!(payload["operation"], "complete");
+        assert_eq!(payload["reconciliation_required"], true);
+    }
+
+    #[test]
+    fn blocked_report_distinguishes_prior_effects() {
+        use ranvier_runtime::{EffectBoundary, ExecutionReport, PersistenceOperation};
+        for (effect, status, reconciliation) in [
+            (
+                EffectBoundary::NotInvoked,
+                StatusCode::SERVICE_UNAVAILABLE,
+                false,
+            ),
+            (EffectBoundary::MayHaveRun, StatusCode::CONFLICT, true),
+        ] {
+            let report = ExecutionReport::<u32>::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect,
+            };
+            let (actual, body) = durability_rejection(&report).unwrap();
+            assert_eq!(actual, status);
+            assert_eq!(body["reconciliation_required"], reconciliation);
+            assert!(body.get("result").is_none());
+        }
+    }
+
+    #[test]
+    fn report_encoding_failure_does_not_expose_serializer_error() {
+        struct Broken;
+        impl Serialize for Broken {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("secret-backend-sentinel"))
+            }
+        }
+        let report = ranvier_runtime::ExecutionReport::Unconfirmed {
+            result: Broken,
+            operation: ranvier_runtime::PersistenceOperation::Result,
+            effect: ranvier_runtime::EffectBoundary::MayHaveRun,
+        };
+        let (status, body) = durability_rejection(&report).unwrap();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["reconciliation_required"], true);
+        assert!(!body.to_string().contains("secret-backend-sentinel"));
+    }
+
+    #[test]
     fn string_into_response_sets_200_and_text_body() {
         let response = "hello".to_string().into_response();
         assert_eq!(response.status(), StatusCode::OK);

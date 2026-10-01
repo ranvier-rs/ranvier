@@ -113,6 +113,14 @@ where
     if let Some((status, payload)) = crate::response::durability_rejection(&report) {
         return json_value_response(status, payload);
     }
+    let completion = match &report {
+        ExecutionReport::Recorded {
+            completion: ranvier_runtime::CompletionConfirmation::Confirmed,
+            ..
+        } => Some("confirmed"),
+        ExecutionReport::Recorded { .. } => Some("not_requested"),
+        _ => None,
+    };
     let (outcome, durability) = match report {
         ExecutionReport::Unpersisted { result } => (result, "unpersisted"),
         ExecutionReport::NotRequested { result } => (result, "not_requested"),
@@ -129,6 +137,12 @@ where
         "ranvier-durability",
         http::HeaderValue::from_static(durability),
     );
+    if let Some(completion) = completion {
+        response.headers_mut().insert(
+            "ranvier-completion",
+            http::HeaderValue::from_static(completion),
+        );
+    }
     response
 }
 

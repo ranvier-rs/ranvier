@@ -87,7 +87,8 @@ pub enum ParallelBusPolicy {
 /// Domain control flow remains represented by [`Outcome`]. Cancellation is a
 /// separate infrastructure terminal so existing exhaustive `Outcome` matches
 /// retain source compatibility.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "terminal", content = "value", rename_all = "snake_case")]
 pub enum ExecutionTerminal<Out, E> {
     /// The Axon reached an ordinary domain outcome.
     Outcome(Outcome<Out, E>),
