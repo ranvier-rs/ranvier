@@ -119,7 +119,7 @@ pub(crate) struct StartStep(pub(crate) u64);
 /// Persisted state for resumption, injected into the Bus.
 #[derive(Debug, Clone)]
 pub(crate) struct ResumptionState {
-    payload: Option<serde_json::Value>,
+    pub(crate) payload: Option<serde_json::Value>,
 }
 
 /// Helper to extract a readable type name from a type.

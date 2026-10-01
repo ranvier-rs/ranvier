@@ -29,14 +29,30 @@ mod tests {
         {
             let mut parent = InvocationOwner::begin(&mut bus);
             parent.bus().insert(crate::axon::StartStep(7));
+            parent.bus().insert(crate::axon::ResumptionState {
+                payload: Some(serde_json::json!({"parent":7})),
+            });
             {
                 let mut child = InvocationOwner::begin(parent.bus());
                 assert!(child.bus().read::<crate::axon::StartStep>().is_none());
                 child.bus().insert(crate::axon::StartStep(9));
+                assert!(child.bus().read::<crate::axon::ResumptionState>().is_none());
+                child.bus().insert(crate::axon::ResumptionState {
+                    payload: Some(serde_json::json!({"child":9})),
+                });
             }
             assert_eq!(parent.bus().read::<crate::axon::StartStep>().unwrap().0, 7);
+            assert_eq!(
+                parent
+                    .bus()
+                    .read::<crate::axon::ResumptionState>()
+                    .unwrap()
+                    .payload,
+                Some(serde_json::json!({"parent":7}))
+            );
         }
         assert!(bus.read::<crate::axon::StartStep>().is_none());
+        assert!(bus.read::<crate::axon::ResumptionState>().is_none());
     }
 
     #[test]
