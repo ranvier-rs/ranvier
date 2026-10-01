@@ -575,6 +575,9 @@ impl Transition<SagaState, ()> for PendingUndo {
 
 #[tokio::test]
 async fn dropped_pending_rollback_retains_in_progress_without_completed_claim() {
+    use ranvier_runtime::persistence::{
+        InMemoryPersistenceStore, PersistenceHandle, PersistenceStore, PersistenceTraceId,
+    };
     use ranvier_runtime::saga_report::SagaRollbackOutcome;
     let started = Arc::new(tokio::sync::Notify::new());
     let axon = Axon::<SagaState, SagaState, String>::new("PendingRollback")
@@ -582,6 +585,12 @@ async fn dropped_pending_rollback_retains_in_progress_without_completed_claim() 
         .then_compensated(SuccStep { id: "one".into() }, PendingUndo(started.clone()))
         .then(FailStep);
     let mut bus = Bus::new();
+    let store = InMemoryPersistenceStore::new();
+    bus.insert(PersistenceHandle::from_store(store.clone()));
+    bus.insert(PersistenceTraceId::new("pending-rollback-owner"));
+    let original = bus.read::<PersistenceHandle>().unwrap().store();
+    let parent = ranvier_core::cancellation::CancellationToken::new();
+    bus.set_cancellation_token(parent.clone());
     {
         let mut execution = Box::pin(axon.execute(
             SagaState {
@@ -610,6 +619,21 @@ async fn dropped_pending_rollback_retains_in_progress_without_completed_claim() 
     assert!(!report.is_complete());
     assert_eq!(report.steps.len(), 1);
     assert_eq!(report.steps[0].outcome, SagaRollbackOutcome::InProgress);
+    assert!(Arc::ptr_eq(
+        &original,
+        &bus.read::<PersistenceHandle>().unwrap().store()
+    ));
+    assert_eq!(
+        store
+            .load("pending-rollback-owner")
+            .await
+            .unwrap()
+            .unwrap()
+            .completion,
+        None
+    );
+    parent.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
+    assert!(bus.cancellation_token().unwrap().is_cancelled());
 }
 
 #[tokio::test]
