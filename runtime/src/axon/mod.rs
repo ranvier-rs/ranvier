@@ -1572,6 +1572,42 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn persistence_load_accepts_wrapped_nullable_next_without_mutation() {
+        for payload in [
+            serde_json::json!({"Next": null}),
+            serde_json::json!({"Next": 7}),
+        ] {
+            let store = InMemoryPersistenceStore::new();
+            let handle = PersistenceHandle::from_store(store.clone());
+            assert_eq!(
+                persist_execution_event(
+                    &handle,
+                    "nullable",
+                    "fixture",
+                    "1",
+                    1,
+                    Some("node".into()),
+                    "Next",
+                    Some(payload.clone())
+                )
+                .await,
+                crate::execution_report::StoreConfirmation::Confirmed
+            );
+            let before = serde_json::to_value(store.load("nullable").await.unwrap()).unwrap();
+            let (step, _, _, node, restored, completion) =
+                load_persistence_version(&handle, "nullable").await.unwrap();
+            assert_eq!(step, 2);
+            assert_eq!(node.as_deref(), Some("node"));
+            assert_eq!(restored, Some(payload["Next"].clone()));
+            assert_eq!(completion, None);
+            assert_eq!(
+                serde_json::to_value(store.load("nullable").await.unwrap()).unwrap(),
+                before
+            );
+        }
+    }
+
     use super::{
         Axon, ParallelBusPolicy, ParallelStrategy, inspector_dev_mode_from_value,
         inspector_enabled_from_value, load_persistence_version, persist_completion,
