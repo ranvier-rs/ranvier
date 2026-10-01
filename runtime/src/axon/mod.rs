@@ -1896,7 +1896,7 @@ mod tests {
             let seed = crate::persistence::PersistenceEnvelope {
                 trace_id: "stored-jump".into(),
                 circuit: axon.schematic.name.clone(),
-                schematic_version: axon.schematic.version.clone(),
+                schematic_version: axon.schematic.schema_version.clone(),
                 step: 0,
                 node_id: None,
                 outcome_kind: "Enter".into(),
