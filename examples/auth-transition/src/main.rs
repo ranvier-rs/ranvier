@@ -35,6 +35,23 @@ use ranvier_runtime::Axon;
 use serde::{Deserialize, Serialize};
 use std::env;
 
+// Explicit local-demo policy: neither persisted nor incomplete cleanup results
+// may be converted into ordinary domain success or automatic retry permission.
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 // ============================================================================
 // Domain Types
 // ============================================================================
@@ -211,7 +228,7 @@ async fn demo_execution(pipeline: Axon<(), Response, AppError, ()>) -> anyhow::R
         let mut bus = Bus::new();
         bus.insert(token); // Put token in Bus (simulating HTTP middleware)
 
-        match pipeline.execute((), &(), &mut bus).await {
+        match local_demo_outcome(pipeline.execute((), &(), &mut bus).await)? {
             Outcome::Next(response) => {
                 tracing::info!("✅ Success: {}", response.body);
             }
@@ -232,7 +249,7 @@ async fn demo_execution(pipeline: Axon<(), Response, AppError, ()>) -> anyhow::R
         let mut bus = Bus::new();
         bus.insert(token);
 
-        match pipeline.execute((), &(), &mut bus).await {
+        match local_demo_outcome(pipeline.execute((), &(), &mut bus).await)? {
             Outcome::Next(_) => {
                 tracing::error!("❌ Should have failed");
             }
@@ -247,7 +264,7 @@ async fn demo_execution(pipeline: Axon<(), Response, AppError, ()>) -> anyhow::R
         tracing::info!("\nScenario 3: Missing token");
         let mut bus = Bus::new(); // Empty bus
 
-        match pipeline.execute((), &(), &mut bus).await {
+        match local_demo_outcome(pipeline.execute((), &(), &mut bus).await)? {
             Outcome::Next(_) => {
                 tracing::error!("❌ Should have failed");
             }
@@ -263,7 +280,7 @@ async fn demo_execution(pipeline: Axon<(), Response, AppError, ()>) -> anyhow::R
         let mut bus = Bus::new();
         bus.insert("invalid-token".to_string());
 
-        match pipeline.execute((), &(), &mut bus).await {
+        match local_demo_outcome(pipeline.execute((), &(), &mut bus).await)? {
             Outcome::Next(_) => {
                 tracing::error!("❌ Should have failed");
             }
