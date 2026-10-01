@@ -40,7 +40,7 @@ mod tower_auth;
 
 use ranvier_core::{Bus, Outcome};
 use ranvier_macros::transition;
-use ranvier_runtime::Axon;
+use ranvier_runtime::{Axon, ExecutionReport};
 use serde::{Deserialize, Serialize};
 use std::env;
 use tower_auth::jwt_auth_layer;
@@ -59,6 +59,8 @@ struct Response {
 /// Application-level errors.
 #[derive(Debug, thiserror::Error, Serialize, Deserialize)]
 enum AppError {
+    #[error("Authentication context is missing")]
+    Unauthenticated,
     #[error("Internal server error: {0}")]
     Internal(String),
 }
@@ -76,9 +78,9 @@ async fn protected_handler(_input: (), _res: &(), bus: &mut Bus) -> Outcome<Resp
     // In a real Tower+Ranvier integration, you'd extract AuthContext from request extensions.
     // For this demo, we simulate by reading from Bus (in production, you'd put it there
     // after extracting from request.extensions()).
-    let auth = bus
-        .read::<auth::AuthContext>()
-        .expect("AuthContext should be in Bus");
+    let Some(auth) = bus.read::<auth::AuthContext>() else {
+        return Outcome::Fault(AppError::Unauthenticated);
+    };
 
     tracing::info!(
         user_id = %auth.user_id,
@@ -185,12 +187,19 @@ async fn demo_execution(
         let mut bus = Bus::new();
         bus.insert(auth_ctx);
 
-        match pipeline.execute((), &(), &mut bus).await {
+        let report = pipeline.execute((), &(), &mut bus).await;
+        if report.cleanup().is_some_and(|cleanup| !cleanup.is_complete()) {
+            anyhow::bail!("Execution requires reconciliation before retry");
+        }
+        let ExecutionReport::Unpersisted { result, .. } = report else {
+            anyhow::bail!("Execution requires reconciliation before retry");
+        };
+        match result {
             Outcome::Next(response) => {
                 tracing::info!("✅ Success: {}", response.body);
             }
-            other => {
-                tracing::error!("❌ Error: {:?}", other);
+            _ => {
+                anyhow::bail!("Protected execution did not complete successfully");
             }
         }
     }
