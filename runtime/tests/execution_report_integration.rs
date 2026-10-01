@@ -10,14 +10,15 @@ use std::sync::{
 
 struct AppliedAwaitingAck {
     backing: InMemoryPersistenceStore,
-    first: std::sync::atomic::AtomicBool,
+    calls: AtomicUsize,
+    block_at: usize,
     applied: Arc<tokio::sync::Notify>,
 }
 #[async_trait::async_trait]
 impl PersistenceStore for AppliedAwaitingAck {
     async fn append(&self, event: PersistenceEnvelope) -> anyhow::Result<()> {
         self.backing.append(event).await?;
-        if self.first.swap(false, Ordering::SeqCst) {
+        if self.calls.fetch_add(1, Ordering::SeqCst) + 1 == self.block_at {
             self.applied.notify_one();
             std::future::pending::<()>().await;
         }
@@ -43,6 +44,32 @@ impl PersistenceStore for AppliedAwaitingAck {
 
 #[tokio::test]
 async fn cancelled_applied_write_is_unconfirmed_without_invoking_transition() {
+    verify_cancelled_write(
+        1,
+        PersistenceOperation::Intent,
+        EffectBoundary::NotInvoked,
+        0,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn cancelled_result_write_preserves_already_invoked_effect_boundary() {
+    verify_cancelled_write(
+        2,
+        PersistenceOperation::Result,
+        EffectBoundary::MayHaveRun,
+        1,
+    )
+    .await;
+}
+
+async fn verify_cancelled_write(
+    block_at: usize,
+    expected_operation: PersistenceOperation,
+    expected_effect: EffectBoundary,
+    effect_count: usize,
+) {
     use ranvier_core::cancellation::{CancellationReason, CancellationToken};
     let backing = InMemoryPersistenceStore::new();
     let applied = Arc::new(tokio::sync::Notify::new());
@@ -51,7 +78,8 @@ async fn cancelled_applied_write_is_unconfirmed_without_invoking_transition() {
     bus.insert(PersistenceTraceId::new("cancelled-ack"));
     bus.insert(PersistenceHandle::from_store(AppliedAwaitingAck {
         backing: backing.clone(),
-        first: std::sync::atomic::AtomicBool::new(true),
+        calls: AtomicUsize::new(0),
+        block_at,
         applied: applied.clone(),
     }));
     let token = CancellationToken::new();
@@ -73,14 +101,15 @@ async fn cancelled_applied_write_is_unconfirmed_without_invoking_transition() {
         report,
         ExecutionReport::Unconfirmed {
             result: ranvier_runtime::ExecutionTerminal::Cancelled(_),
-            operation: PersistenceOperation::Intent,
-            effect: EffectBoundary::NotInvoked
-        }
+            operation,
+            effect
+        } if operation == expected_operation && effect == expected_effect
     ));
-    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    assert_eq!(effects.load(Ordering::SeqCst), effect_count);
     let persisted = backing.load("cancelled-ack").await.unwrap().unwrap();
     assert_eq!(persisted.events[0].outcome_kind, "Enter");
-    assert!(persisted.completion.is_some());
+    assert_eq!(persisted.completion, Some(CompletionState::Cancelled));
+    assert_eq!(persisted.events.len(), block_at + 1);
     assert_eq!(
         bus.read::<PersistenceHandle>()
             .unwrap()
