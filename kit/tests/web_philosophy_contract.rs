@@ -76,7 +76,11 @@ async fn authorize(input: String, bus: &mut Bus) -> Outcome<String, String> {
         let mut bus = Bus::new();
         if let Some(roles) = roles { bus.insert(AuthContext { roles }); }
         let report = axon.execute("payload".into(), &(), &mut bus).await;
-        assert_eq!(matches!(report, ExecutionReport::Unpersisted { result: Outcome::Next(_), .. }), allowed);
+        match report {
+            ExecutionReport::Unpersisted { result: Outcome::Next(value), .. } => { assert!(allowed); assert_eq!(value, "payload"); }
+            ExecutionReport::Unpersisted { result: Outcome::Fault(error), .. } => { assert!(!allowed); assert_eq!(error, "Access denied"); }
+            _ => panic!("unexpected authorization report"),
+        }
     }
 }
 #[tokio::test]
