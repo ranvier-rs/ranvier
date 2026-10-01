@@ -385,6 +385,20 @@ async fn verify_incomplete_automatic_compensation(compensation_result: Outcome<(
             &mut bus,
         )
         .await;
+    let cleanup = report.cleanup().unwrap();
+    assert!(cleanup.finished);
+    assert!(!cleanup.is_complete());
+    assert_eq!(cleanup.steps.len(), 1);
+    assert_eq!(
+        cleanup.steps[0].outcome,
+        match &compensation_result {
+            Outcome::Fault(_) => ranvier_runtime::SagaRollbackOutcome::Fault,
+            Outcome::Emit(_, _) => ranvier_runtime::SagaRollbackOutcome::Emitted,
+            Outcome::Branch(_, _) => ranvier_runtime::SagaRollbackOutcome::Branched,
+            Outcome::Jump(_, _) => ranvier_runtime::SagaRollbackOutcome::Jumped,
+            Outcome::Next(_) => unreachable!(),
+        }
+    );
     assert!(matches!(report, ExecutionReport::Recorded {
         result: Outcome::Fault(ref error), completion: CompletionConfirmation::Confirmed,
      .. } if error == "Planned SAGA Failure"));

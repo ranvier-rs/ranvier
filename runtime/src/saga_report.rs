@@ -64,12 +64,20 @@ impl SagaRollbackJournal {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
-    pub(crate) fn push(&self, node_id: String, outcome: SagaRollbackOutcome) {
+    pub(crate) fn matches_trace(&self, trace_id: &str) -> bool {
         self.0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .steps
-            .push(SagaRollbackStep { node_id, outcome });
+            .trace_id
+            == trace_id
+    }
+    pub(crate) fn push(&self, node_id: String, outcome: SagaRollbackOutcome) {
+        let mut report = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        report.finished = false;
+        report.steps.push(SagaRollbackStep { node_id, outcome });
     }
     pub(crate) fn settle(&self, outcome: SagaRollbackOutcome) {
         let mut report = self

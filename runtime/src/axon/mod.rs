@@ -961,7 +961,28 @@ where
             // Only a completed linear compensation acknowledges successful undo.
             // Other control outcomes must remain visible without replacing the
             // original business fault or claiming that an effect was reversed.
+            use crate::saga_report::{SagaRollbackJournal, SagaRollbackOutcome};
+            let trace_id = persistence_trace_id(bus);
+            let journal = bus
+                .read::<SagaRollbackJournal>()
+                .filter(|journal| journal.matches_trace(&trace_id))
+                .cloned()
+                .unwrap_or_else(|| SagaRollbackJournal::new(&trace_id));
+            journal.push(comp_node_id.to_string(), SagaRollbackOutcome::InProgress);
+            bus.insert(journal.clone());
             let compensation_result = comp.run(state, res, bus).await;
+            journal.settle(match &compensation_result {
+                Outcome::Next(()) => SagaRollbackOutcome::Completed,
+                Outcome::Fault(_) => SagaRollbackOutcome::Fault,
+                Outcome::Emit(_, _) => SagaRollbackOutcome::Emitted,
+                Outcome::Branch(_, _) => SagaRollbackOutcome::Branched,
+                Outcome::Jump(_, _) => SagaRollbackOutcome::Jumped,
+            });
+            if !matches!(bus.read::<SagaPolicy>(), Some(SagaPolicy::Enabled)) {
+                journal.finish();
+            }
+            bus.insert(journal);
+
             let compensation_kind = if matches!(compensation_result, Outcome::Next(())) {
                 "Compensated"
             } else {

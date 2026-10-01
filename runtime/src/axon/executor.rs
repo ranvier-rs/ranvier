@@ -634,7 +634,11 @@ where
 
     async fn rollback_saga(&self, resources: &Res, bus: &mut Bus, trace_id: &str) {
         use crate::saga_report::{SagaRollbackJournal, SagaRollbackOutcome};
-        let journal = SagaRollbackJournal::new(trace_id);
+        let journal = bus
+            .read::<SagaRollbackJournal>()
+            .filter(|journal| journal.matches_trace(trace_id))
+            .cloned()
+            .unwrap_or_else(|| SagaRollbackJournal::new(trace_id));
         bus.insert(journal.clone());
         while let Some(task) = {
             let mut stack = bus.read_mut::<SagaStack>();
