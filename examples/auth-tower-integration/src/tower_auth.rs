@@ -157,6 +157,14 @@ fn unauthorized<B: From<String>>() -> Response<B> {
     let mut response = Response::new(B::from("Unauthorized".to_owned()));
     *response.status_mut() = StatusCode::UNAUTHORIZED;
     response.headers_mut().insert(
+        http::header::CACHE_CONTROL,
+        http::HeaderValue::from_static("no-store"),
+    );
+    response.headers_mut().insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    response.headers_mut().insert(
         http::header::WWW_AUTHENTICATE,
         http::HeaderValue::from_static("Bearer"),
     );
@@ -261,6 +269,11 @@ mod tests {
             let response = service.call(request).await.unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
             assert_eq!(response.body(), "Unauthorized");
+            assert_eq!(response.headers()[http::header::CACHE_CONTROL], "no-store");
+            assert_eq!(
+                response.headers()[http::header::CONTENT_TYPE],
+                "text/plain; charset=utf-8"
+            );
             assert_eq!(response.headers()[http::header::WWW_AUTHENTICATE], "Bearer");
             assert_eq!(calls.load(Ordering::SeqCst), 0);
         }

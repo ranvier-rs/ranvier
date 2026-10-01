@@ -21,6 +21,20 @@ pub(super) struct AxonService {
 fn response(status: StatusCode, body: &str) -> Response<String> {
     let mut response = Response::new(body.to_owned());
     *response.status_mut() = status;
+    response.headers_mut().insert(
+        http::header::CACHE_CONTROL,
+        http::HeaderValue::from_static("no-store"),
+    );
+    response.headers_mut().insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    if status == StatusCode::UNAUTHORIZED {
+        response.headers_mut().insert(
+            http::header::WWW_AUTHENTICATE,
+            http::HeaderValue::from_static("Bearer"),
+        );
+    }
     response
 }
 
@@ -38,6 +52,22 @@ mod tests {
             status: 200,
             body: "private-domain-result".into(),
         })
+    }
+
+    #[test]
+    fn next_cannot_forward_informational_redirect_or_invalid_status() {
+        for status in [100, 101, 302, 401, 500, 0, 1000] {
+            let response = map_local_report(ExecutionReport::Unpersisted {
+                result: Outcome::Next(DomainResponse {
+                    status,
+                    body: "private-body".into(),
+                }),
+                cleanup: None,
+            });
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(response.body(), "Internal server error");
+            assert_eq!(response.headers()[http::header::CACHE_CONTROL], "no-store");
+        }
     }
 
     #[test]
@@ -84,6 +114,7 @@ mod tests {
             let response = map_local_report(report);
             assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
             assert_eq!(response.body(), "Reconciliation required");
+            assert_eq!(response.headers()[http::header::CACHE_CONTROL], "no-store");
             assert!(!response.headers().contains_key(http::header::RETRY_AFTER));
         }
     }
@@ -197,6 +228,11 @@ mod tests {
             let body: serde_json::Value = serde_json::from_str(response.body()).unwrap();
             assert_eq!(body["user_id"], subject);
             assert_eq!(body["roles"], serde_json::json!(["user"]));
+            assert_eq!(
+                response.headers()[http::header::CONTENT_TYPE],
+                "application/json"
+            );
+            assert_eq!(response.headers()[http::header::CACHE_CONTROL], "no-store");
         }
     }
 }
@@ -240,8 +276,15 @@ fn map_local_report(
     };
     match result {
         Outcome::Next(domain) => match StatusCode::from_u16(domain.status) {
-            Ok(status) => response(status, &domain.body),
-            Err(_) => response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+            Ok(status) if status.is_success() => {
+                let mut reply = response(status, &domain.body);
+                reply.headers_mut().insert(
+                    http::header::CONTENT_TYPE,
+                    http::HeaderValue::from_static("application/json"),
+                );
+                reply
+            }
+            _ => response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
         },
         Outcome::Fault(AppError::Unauthenticated) => {
             response(StatusCode::UNAUTHORIZED, "Unauthorized")
