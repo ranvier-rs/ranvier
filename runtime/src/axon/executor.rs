@@ -566,6 +566,15 @@ where
             });
         }
 
+        // A recovery failure raised inside the graph cannot certify terminal
+        // history or completion. Preserve earlier history for reconciliation.
+        if bus
+            .read::<crate::execution_observation::ActiveObservation>()
+            .is_some_and(|active| active.0.is_blocked())
+        {
+            return outcome;
+        }
+
         if let Some(handle) = persistence_handle.as_ref() {
             let fault_step = persistence_start_step.map(|s| s + 1).unwrap_or(1);
             persist_encoded_execution_event(

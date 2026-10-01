@@ -415,6 +415,14 @@ where
                             match serde_json::from_value::<Out>(ow) {
                                 Ok(s) => s,
                                 Err(_) => {
+                                    if let Some(active) =
+                                        bus.read::<crate::execution_observation::ActiveObservation>(
+                                        )
+                                    {
+                                        active
+                                            .0
+                                            .block(crate::PersistenceOperation::RecoveryPayload);
+                                    }
                                     tracing::error!(
                                         operation = "manual_jump_payload_decode",
                                         "Manual jump payload could not be decoded"
@@ -1016,6 +1024,14 @@ where
                             match serde_json::from_value::<Out>(ow) {
                                 Ok(s) => s,
                                 Err(_) => {
+                                    if let Some(active) =
+                                        bus.read::<crate::execution_observation::ActiveObservation>(
+                                        )
+                                    {
+                                        active
+                                            .0
+                                            .block(crate::PersistenceOperation::RecoveryPayload);
+                                    }
                                     tracing::error!(
                                         operation = "manual_jump_payload_decode",
                                         "Manual jump payload could not be decoded"

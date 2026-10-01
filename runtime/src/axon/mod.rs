@@ -1867,6 +1867,86 @@ mod tests {
         assert!(!logs.contains("private-payload"));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn persisted_jump_decode_error_does_not_certify_completion() {
+        let logs = Arc::new(StdMutex::new(Vec::new()));
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(move || CapturedLogWriter(writer.clone()))
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        for compensated in [false, true] {
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let undos = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let prefix = Axon::<PrivateJumpInput, PrivateJumpInput, String>::new("stored-jump")
+                .with_saga_policy(ranvier_core::saga::SagaPolicy::Enabled)
+                .then::<PrivateJumpInput, _>(CountJumpCalls(calls.clone()));
+            let axon = if compensated {
+                prefix.then_compensated::<PrivateJumpInput, _, _>(
+                    CountJumpCalls(calls.clone()),
+                    CountJumpCalls(undos.clone()),
+                )
+            } else {
+                prefix.then::<PrivateJumpInput, _>(CountJumpCalls(calls.clone()))
+            };
+            let store = InMemoryPersistenceStore::new();
+            let seed = crate::persistence::PersistenceEnvelope {
+                trace_id: "stored-jump".into(),
+                circuit: axon.schematic.name.clone(),
+                schematic_version: axon.schematic.version.clone(),
+                step: 0,
+                node_id: None,
+                outcome_kind: "Enter".into(),
+                timestamp_ms: 0,
+                payload_hash: None,
+                payload: None,
+            };
+            store.append(seed.clone()).await.unwrap();
+            let intervention = crate::persistence::Intervention {
+                target_node: axon.schematic.nodes[2].id.clone(),
+                payload_override: Some(serde_json::json!("private-payload")),
+                timestamp_ms: 17,
+            };
+            store
+                .save_intervention("stored-jump", intervention.clone())
+                .await
+                .unwrap();
+            let mut bus = Bus::new();
+            bus.insert(PersistenceTraceId::new("stored-jump"));
+            bus.insert(PersistenceHandle::from_store(store.clone()));
+            let report = axon.execute(PrivateJumpInput, &(), &mut bus).await;
+            assert!(matches!(
+                report,
+                crate::ExecutionReport::BlockedBeforeEffect {
+                    operation: crate::PersistenceOperation::RecoveryPayload,
+                    effect: crate::EffectBoundary::MayHaveRun,
+                    ..
+                }
+            ));
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(undos.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert!(bus.read::<super::ManualJump>().is_none());
+            let trace = store.load("stored-jump").await.unwrap().unwrap();
+            assert_eq!(trace.interventions, vec![intervention]);
+            assert_eq!(trace.events[0], seed);
+            assert_eq!(trace.events.len(), 2); // seed plus this invocation's entry
+            assert!(
+                trace
+                    .events
+                    .iter()
+                    .all(|event| event.outcome_kind == "Enter")
+            );
+            assert_eq!(trace.completion, None);
+        }
+        let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("manual_jump_payload_decode"));
+        assert!(!logs.contains("private-jump-decode-sentinel"));
+        assert!(!logs.contains("private-payload"));
+    }
+
     impl io::Write for CapturedLogWriter {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.0

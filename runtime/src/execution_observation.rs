@@ -368,6 +368,9 @@ impl Observation {
         self.failed(operation);
         self.blocked.store(true, Ordering::SeqCst);
     }
+    pub(crate) fn is_blocked(&self) -> bool {
+        self.blocked.load(Ordering::SeqCst)
+    }
     fn report<T>(&self, result: T) -> ExecutionReport<T> {
         let operation = *self
             .failure
