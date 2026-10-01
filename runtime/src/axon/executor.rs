@@ -100,7 +100,20 @@ where
         token: CancellationToken,
     ) -> crate::ExecutionReport<ExecutionTerminal<Out, E>> {
         let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
-        let bus = owner.bus();
+        let terminal = self
+            .execute_terminal_domain(input, resources, owner.bus(), token)
+            .await;
+        owner.finish(terminal)
+    }
+
+    /// Shared cancellation owner for ordinary execution and typed stream handoff.
+    async fn execute_terminal_domain(
+        &self,
+        input: In,
+        resources: &Res,
+        bus: &mut Bus,
+        token: CancellationToken,
+    ) -> ExecutionTerminal<Out, E> {
         bus.set_cancellation_token(token.clone());
         // Session owns InvocationTrace for both execution and cancellation
         // cleanup. Do not promote its generated identity to caller-owned
@@ -117,7 +130,7 @@ where
             }
         };
 
-        let terminal = match race {
+        match race {
             Err(context) => {
                 // Dropping the execution future releases its mutable Bus
                 // borrow. A transition may have been dropped between
@@ -137,8 +150,86 @@ where
                 ExecutionTerminal::Cancelled(context)
             }
             Ok(outcome) => ExecutionTerminal::Outcome(outcome),
+        }
+    }
+
+    /// Execute a whole configured prefix and its initializer under one context owner.
+    /// The builder/consumer cutover wires this typed boundary instead of the raw executor.
+    #[cfg(feature = "streaming")]
+    pub(crate) async fn initialize_stream<Item, SErr, S>(
+        &self,
+        input: In,
+        resources: &Res,
+        bus: &mut Bus,
+        streaming: &S,
+        cancellation: Option<CancellationToken>,
+    ) -> crate::streaming_initialization::StreamInitializationReport<
+        Out,
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Item> + Send>>,
+        E,
+    >
+    where
+        Item: Send + 'static,
+        SErr: Send + Sync + std::fmt::Debug + 'static,
+        S: ranvier_core::streaming::StreamingTransition<
+                Out,
+                Item = Item,
+                Error = SErr,
+                Resources = Res,
+            >,
+    {
+        use crate::EffectBoundary;
+        use crate::streaming_initialization::{StreamInitializationReport, admit_prefix};
+        let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
+        let terminal = match &cancellation {
+            Some(token) => {
+                self.execute_terminal_domain(input, resources, owner.bus(), token.clone())
+                    .await
+            }
+            None => {
+                ExecutionTerminal::Outcome(self.execute_domain(input, resources, owner.bus()).await)
+            }
         };
-        owner.finish(terminal)
+        // Snapshot while the prefix's IAM, Saga and other context are still owned.
+        // Unknown acknowledgments and non-Next results retain their original typed value.
+        let (output, prefix) = match admit_prefix(owner.prefix_report(terminal)) {
+            Ok(accepted) => accepted,
+            Err(prefix) => return StreamInitializationReport::Rejected { prefix },
+        };
+        if let Some(context) = cancellation.as_ref().and_then(CancellationToken::context) {
+            return StreamInitializationReport::Cancelled {
+                prefix,
+                context,
+                initialization: EffectBoundary::NotInvoked,
+            };
+        }
+        let result = {
+            let initialization = streaming.run_stream(output, resources, owner.bus());
+            tokio::pin!(initialization);
+            match &cancellation {
+                Some(token) => tokio::select! {
+                    biased;
+                    context = token.cancelled() => Err(context),
+                    result = &mut initialization => Ok(result),
+                },
+                None => Ok(initialization.await),
+            }
+        };
+        match result {
+            Ok(Ok(value)) => StreamInitializationReport::Ready { prefix, value },
+            Ok(Err(error)) => StreamInitializationReport::Failed {
+                prefix,
+                error: crate::streaming_axon::StreamingAxonError::StreamInitError(format!(
+                    "{error:?}"
+                )),
+                initialization: EffectBoundary::MayHaveRun,
+            },
+            Err(context) => StreamInitializationReport::Cancelled {
+                prefix,
+                context,
+                initialization: EffectBoundary::MayHaveRun,
+            },
+        }
     }
 
     /// Execute the Axon with the given input and resources.

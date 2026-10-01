@@ -1064,6 +1064,15 @@ impl<'a> InvocationOwner<'a> {
     pub(crate) fn bus(&mut self) -> &mut Bus {
         self.bus
     }
+    /// Snapshot the prefix report without restoring its live initialization context.
+    /// The owner must remain alive until the terminal initializer returns or is dropped.
+    #[cfg(feature = "streaming")]
+    pub(crate) fn prefix_report<T>(&mut self, result: T) -> ExecutionReport<T> {
+        match self.session.as_ref() {
+            Some(session) => session.build_report(self.bus, result),
+            None => unreachable!("invocation session is consumed only by finish"),
+        }
+    }
     pub(crate) fn finish<T>(mut self, result: T) -> ExecutionReport<T> {
         let report = match self.session.as_ref() {
             Some(session) => session.build_report(self.bus, result),
