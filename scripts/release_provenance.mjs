@@ -144,11 +144,18 @@ function runSelfTest(policy) {
 }
 
 function parseArgs(argv) {
-  const args = { selfTest: false, output: null };
+  const args = { selfTest: false, output: null, verifyCrate: null, expectedCommit: null };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--self-test') args.selfTest = true;
     else if (argv[i] === '--output') args.output = argv[++i];
+    else if (argv[i] === '--verify-crate') args.verifyCrate = argv[++i];
+    else if (argv[i] === '--expected-commit') args.expectedCommit = argv[++i];
     else throw new Error(`unknown argument: ${argv[i]}`);
+  }
+  invariant(Boolean(args.verifyCrate) === Boolean(args.expectedCommit), 'verify-crate and expected-commit must be supplied together');
+  if (args.verifyCrate) {
+    invariant(!args.output && !args.selfTest, 'crate verification cannot capture provenance or run self-test');
+    invariant(/^[0-9a-f]{40}$/.test(args.expectedCommit), 'expected-commit must be40 lowercase hexadecimal digits');
   }
   return args;
 }
@@ -157,6 +164,12 @@ const args = parseArgs(process.argv.slice(2));
 const policyBytes = readFileSync(policyPath);
 const policy = JSON.parse(policyBytes);
 validatePolicy(policy);
+if (args.verifyCrate) {
+  const bytes = readFileSync(path.resolve(args.verifyCrate));
+  assertVcsSha(embeddedVcsSha(bytes), args.expectedCommit);
+  console.log(`[release-provenance] CRATE_VCS_PASS commit=${args.expectedCommit} sha256=${sha256(bytes)}`);
+  process.exit(0);
+}
 if (args.selfTest) {
   runSelfTest(policy);
   if (!args.output) process.exit(0);
