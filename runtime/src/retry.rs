@@ -4,6 +4,11 @@
 
 use std::time::Duration;
 
+/// Convert a scheduled delay to bounded telemetry without wrapping milliseconds.
+pub(crate) fn delay_millis_for_observation(delay: Duration) -> u64 {
+    u64::try_from(delay.as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Configurable retry policy for individual Axon transitions.
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
@@ -102,6 +107,20 @@ impl RetryPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delay_observation_saturates_without_wrapping() {
+        assert_eq!(delay_millis_for_observation(Duration::ZERO), 0);
+        assert_eq!(
+            delay_millis_for_observation(Duration::from_millis(125)),
+            125
+        );
+        assert_eq!(
+            delay_millis_for_observation(Duration::from_millis(u64::MAX)),
+            u64::MAX
+        );
+        assert_eq!(delay_millis_for_observation(Duration::MAX), u64::MAX);
+    }
 
     #[test]
     fn fixed_delay_is_constant() {

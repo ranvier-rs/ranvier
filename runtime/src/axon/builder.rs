@@ -697,7 +697,7 @@ where
                                     node_id = %timeline_node_id,
                                     attempt = attempt + 1,
                                     max = retry_policy.max_retries,
-                                    delay_ms = delay.as_millis() as u64,
+                                    delay_ms = crate::retry::delay_millis_for_observation(delay),
                                     "Transition failed, retrying"
                                 );
                                 if let Some(timeline) = bus.read_mut::<Timeline>() {
@@ -705,7 +705,9 @@ where
                                         node_id: timeline_node_id.clone(),
                                         attempt: attempt + 1,
                                         max_attempts: retry_policy.max_retries,
-                                        backoff_ms: delay.as_millis() as u64,
+                                        backoff_ms: crate::retry::delay_millis_for_observation(
+                                            delay,
+                                        ),
                                         timestamp: now_ms(),
                                     });
                                 }
