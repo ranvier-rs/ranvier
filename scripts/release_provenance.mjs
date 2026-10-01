@@ -71,11 +71,17 @@ function tarEntry(bytes, suffix) {
     const text = (start, length) => header.subarray(start, start + length).toString('utf8').replace(/\0.*$/, '');
     const name = [text(345, 155), text(0, 100)].filter(Boolean).join('/');
     const sizeText = text(124, 12).trim();
-    const size = Number.parseInt(sizeText || '0', 8);
-    invariant(Number.isFinite(size), `invalid tar size for ${name}`);
+    invariant(/^[0-7]+$/.test(sizeText), `invalid tar size for ${name}`);
+    const size = Number.parseInt(sizeText, 8);
+    invariant(Number.isSafeInteger(size) && size >= 0, `invalid tar size for ${name}`);
     const bodyStart = offset + 512;
-    if (name.endsWith(suffix)) return bytes.subarray(bodyStart, bodyStart + size);
-    offset = bodyStart + Math.ceil(size / 512) * 512;
+    const next = bodyStart + Math.ceil(size / 512) * 512;
+    invariant(Number.isSafeInteger(next) && next <= bytes.length, `truncated tar entry: ${name}`);
+    if (name.endsWith(suffix)) {
+      invariant(header[156] === 0 || header[156] === 48, `VCS evidence must be a regular file: ${name}`);
+      return bytes.subarray(bodyStart, bodyStart + size);
+    }
+    offset = next;
   }
   throw new Error(`tar entry not found: *${suffix}`);
 }
@@ -83,7 +89,7 @@ function tarEntry(bytes, suffix) {
 function embeddedVcsSha(crateBytes) {
   const tarBytes = gunzipSync(crateBytes);
   const vcs = JSON.parse(tarEntry(tarBytes, '/.cargo_vcs_info.json').toString('utf8'));
-  invariant(typeof vcs.git?.sha1 === 'string', '.cargo_vcs_info.json has no git.sha1');
+  invariant(typeof vcs.git?.sha1 === 'string' && /^[0-9a-f]{40}$/.test(vcs.git.sha1), '.cargo_vcs_info.json has invalid git.sha1');
   return vcs.git.sha1;
 }
 
@@ -106,6 +112,22 @@ function runSelfTest(policy) {
   rejected = false;
   try { assertVcsSha('a'.repeat(40), 'b'.repeat(40)); } catch { rejected = true; }
   invariant(rejected, 'bad embedded VCS SHA passed');
+  const valid = Buffer.alloc(1024);
+  valid.write('fixture/.cargo_vcs_info.json', 0);
+  valid.write('00000000002', 124);
+  valid[156] = 48;
+  valid.write('{}', 512);
+  invariant(tarEntry(valid, '/.cargo_vcs_info.json').toString() === '{}', 'valid regular tar entry rejected');
+  for (const [label, fixture] of [
+    ['truncated', valid.subarray(0, 513)],
+    ['invalid-size', (() => { const b = Buffer.from(valid); b.write('0000000002x', 124); return b; })()],
+    ['link', (() => { const b = Buffer.from(valid); b[156] = 50; return b; })()]
+  ]) {
+    rejected = false;
+    try { tarEntry(fixture, '/.cargo_vcs_info.json'); } catch { rejected = true; }
+    invariant(rejected, `malformed ${label} VCS evidence passed`);
+    console.log(`[release-provenance] TAR_GUARD_PASS ${label}`);
+  }
   console.log('[release-provenance] negative self-test passed');
 }
 
