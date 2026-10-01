@@ -536,6 +536,9 @@ async fn run_demo() -> anyhow::Result<()> {
         }
     }
 
+    if cb.inner_fail_count.load(Ordering::SeqCst) != 2 {
+        anyhow::bail!("Open breaker invoked suppressed gateway");
+    }
     println!("\ndone");
     Ok(())
 }
