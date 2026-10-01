@@ -102,7 +102,20 @@ async fn authenticate(
     _res: &AuthResources,
     bus: &mut Bus,
 ) -> Outcome<AuthContext, AppError> {
+    if matches!(
+        bus.get::<AuthContext>(),
+        Err(ranvier_core::BusAccessError::Unauthorized { .. })
+    ) {
+        return Outcome::Fault(AppError::Auth(
+            "Authentication context access denied".into(),
+        ));
+    }
     bus.remove::<AuthContext>(); // Do not retain identity from a failed prior invocation.
+    if bus.has::<AuthContext>() {
+        return Outcome::Fault(AppError::Auth(
+            "Authentication context could not be cleared".into(),
+        ));
+    }
     // In a real HTTP scenario, token would be extracted from request and put in Bus.
     // For this demo, we'll expect it to already be in Bus as a String.
     let token = match bus.get_cloned::<String>() {
@@ -123,7 +136,9 @@ async fn authenticate(
     );
 
     // Store AuthContext in Bus for downstream transitions
-    bus.insert(auth_ctx.clone());
+    if bus.try_insert(auth_ctx.clone()).is_err() {
+        return Outcome::Fault(AppError::Auth("Authentication context write denied".into()));
+    }
 
     Outcome::Next(auth_ctx)
 }
@@ -368,6 +383,39 @@ mod report_tests {
             .then(authenticate)
             .then(authorize)
             .then(protected_handler)
+    }
+
+    #[tokio::test]
+    async fn shared_or_inherited_admin_context_cannot_authenticate_new_request() {
+        let resources = AuthResources::new("explicit-local-test-secret".into()).unwrap();
+        for inherited in [false, true] {
+            for token in [
+                None,
+                Some("invalid".to_string()),
+                Some(
+                    create_test_token("alice", vec!["admin".into()], &resources.jwt_secret)
+                        .unwrap(),
+                ),
+            ] {
+                let mut parent = Bus::new();
+                parent.insert_shared(AuthContext {
+                    user_id: "old-admin".into(),
+                    roles: vec!["admin".into()],
+                });
+                let mut fork = parent.fork_for_parallel();
+                let bus = if inherited { &mut fork } else { &mut parent };
+                if let Some(token) = token {
+                    bus.insert(token);
+                }
+                let outcome =
+                    local_demo_outcome(pipeline().execute((), &resources, bus).await).unwrap();
+                assert!(matches!(outcome, Outcome::Fault(AppError::Auth(error))
+                    if error == "Authentication context could not be cleared"));
+                assert!(bus.read::<HandlerVisited>().is_none());
+                assert_eq!(parent.get::<AuthContext>().unwrap().user_id, "old-admin");
+                assert_eq!(fork.get::<AuthContext>().unwrap().user_id, "old-admin");
+            }
+        }
     }
 
     #[tokio::test]
