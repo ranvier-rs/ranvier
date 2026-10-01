@@ -100,8 +100,15 @@ async fn validate(
     _res: &(),
     _bus: &mut Bus,
 ) -> Outcome<ValidatedOrder, String> {
-    if input.amount <= 0.0 {
-        return Outcome::fault(format!("Invalid amount: {}", input.amount));
+    if !input.amount.is_finite() || input.amount <= 0.0 {
+        return Outcome::fault("Invalid amount".into());
+    }
+    if input.order_id.trim().is_empty()
+        || input.order_id.len() > 128
+        || input.customer.trim().is_empty()
+        || input.customer.len() > 128
+    {
+        return Outcome::fault("Invalid order identity".into());
     }
     Outcome::next(ValidatedOrder {
         order_id: input.order_id,
@@ -119,7 +126,13 @@ async fn process(
     _res: &(),
     _bus: &mut Bus,
 ) -> Outcome<ProcessedOrder, String> {
+    if !input.validated || !input.amount.is_finite() || input.amount < 0.0 {
+        return Outcome::fault("Invalid validated order".into());
+    }
     let tax = input.amount * 0.1;
+    if !(input.amount + tax).is_finite() {
+        return Outcome::fault("Amount overflow".into());
+    }
     Outcome::next(ProcessedOrder {
         order_id: input.order_id,
         status: "completed".to_string(),
@@ -136,7 +149,17 @@ async fn apply_discount(
     _res: &(),
     bus: &mut Bus,
 ) -> Outcome<ValidatedOrder, String> {
-    let discount = bus.get::<f64>().map(|d| *d).unwrap_or(0.0);
+    if !input.validated || !input.amount.is_finite() || input.amount < 0.0 {
+        return Outcome::fault("Invalid validated order".into());
+    }
+    let discount = match bus.get::<f64>() {
+        Ok(value) => *value,
+        Err(ranvier_core::bus::BusAccessError::NotFound { .. }) => 0.0,
+        Err(_) => return Outcome::fault("Discount capability denied".into()),
+    };
+    if !discount.is_finite() || !(0.0..=1.0).contains(&discount) {
+        return Outcome::fault("Invalid discount".into());
+    }
     Outcome::next(ValidatedOrder {
         amount: input.amount * (1.0 - discount),
         ..input
@@ -154,6 +177,17 @@ async fn finalize(
         status: format!("{} (finalized)", input.status),
         ..input
     })
+}
+
+fn require_order(
+    outcome: Outcome<ProcessedOrder, String>,
+    total: f64,
+    status: &str,
+) -> Result<(), String> {
+    match outcome {
+        Outcome::Next(order) if order.total == total && order.status == status => Ok(()),
+        _ => Err("Unexpected order outcome".into()),
+    }
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────
@@ -178,8 +212,7 @@ async fn main() -> Result<(), String> {
 
     let mut bus = Bus::new();
     let result = local_demo_outcome(pipeline.execute(order.clone(), &(), &mut bus).await)?;
-    println!("  Input:  {:?}", order);
-    println!("  Output: {:?}", result);
+    require_order(result, 220.0, "completed")?;
     println!();
 
     // ── 2. Pipeline with bus_allow discount ───────────────────────
@@ -204,9 +237,8 @@ async fn main() -> Result<(), String> {
             .execute(order2.clone(), &(), &mut bus2)
             .await,
     )?;
-    println!("  Input:    {:?}", order2);
     println!("  Discount: 15%");
-    println!("  Output:   {:?}", result2);
+    require_order(result2, 467.5, "completed")?;
     println!();
 
     // ── 3. Pipeline with bus_deny ─────────────────────────────────
@@ -231,8 +263,7 @@ async fn main() -> Result<(), String> {
             .execute(order3.clone(), &(), &mut bus3)
             .await,
     )?;
-    println!("  Input:  {:?}", order3);
-    println!("  Output: {:?}", result3);
+    require_order(result3, 1100.0, "completed (finalized)")?;
     println!();
 
     // ── 4. Error handling ─────────────────────────────────────────
@@ -246,10 +277,98 @@ async fn main() -> Result<(), String> {
 
     let mut bus4 = Bus::new();
     let result4 = local_demo_outcome(pipeline.execute(bad_order.clone(), &(), &mut bus4).await)?;
-    println!("  Input:  {:?}", bad_order);
-    println!("  Output: {:?}", result4);
+    if !matches!(result4, Outcome::Fault(ref error) if error == "Invalid amount") {
+        return Err("Expected invalid amount rejection".into());
+    }
 
     println!();
     println!("=== Demo complete ===");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ranvier_core::Transition;
+    fn order(amount: f64) -> OrderRequest {
+        OrderRequest {
+            order_id: "id".into(),
+            customer: "customer".into(),
+            amount,
+        }
+    }
+    #[tokio::test]
+    async fn actual_macro_chain_rejects_invalid_amounts() {
+        let flow = Axon::<OrderRequest, OrderRequest, String>::new("amount")
+            .then(validate)
+            .then(process);
+        require_order(
+            local_demo_outcome(flow.execute(order(200.0), &(), &mut Bus::new()).await).unwrap(),
+            220.0,
+            "completed",
+        )
+        .unwrap();
+        for amount in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -1.0,
+            0.0,
+            f64::MAX,
+        ] {
+            assert!(matches!(
+                local_demo_outcome(flow.execute(order(amount), &(), &mut Bus::new()).await)
+                    .unwrap(),
+                Outcome::Fault(_)
+            ));
+        }
+        let mut blank = order(1.0);
+        blank.customer.clear();
+        assert!(matches!(
+            local_demo_outcome(flow.execute(blank, &(), &mut Bus::new()).await).unwrap(),
+            Outcome::Fault(_)
+        ));
+    }
+    #[tokio::test]
+    async fn discounts_and_finalization_are_verified() {
+        let flow = Axon::<OrderRequest, OrderRequest, String>::new("discount")
+            .then(validate)
+            .then(apply_discount)
+            .then(process)
+            .then(finalize);
+        for (discount, total) in [(None, 550.0), (Some(0.15), 467.5), (Some(1.0), 0.0)] {
+            let mut bus = Bus::new();
+            if let Some(rate) = discount {
+                bus.insert(rate);
+            }
+            require_order(
+                local_demo_outcome(flow.execute(order(500.0), &(), &mut bus).await).unwrap(),
+                total,
+                "completed (finalized)",
+            )
+            .unwrap();
+        }
+        for rate in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+            let mut bus = Bus::new();
+            bus.insert(rate);
+            assert!(matches!(
+                local_demo_outcome(flow.execute(order(1.0), &(), &mut bus).await).unwrap(),
+                Outcome::Fault(_)
+            ));
+        }
+        let forged = ValidatedOrder {
+            order_id: "id".into(),
+            customer: "customer".into(),
+            amount: 1.0,
+            validated: false,
+        };
+        assert!(matches!(
+            process.run(forged.clone(), &(), &mut Bus::new()).await,
+            Outcome::Fault(_)
+        ));
+        assert!(matches!(
+            apply_discount.run(forged, &(), &mut Bus::new()).await,
+            Outcome::Fault(_)
+        ));
+    }
 }
