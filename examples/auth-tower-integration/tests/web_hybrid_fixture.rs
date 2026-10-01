@@ -99,7 +99,7 @@ fn build_hybrid_app(credential: &str, origin: &str, requests: u64, period: Durat
     let origin = http::HeaderValue::from_str(origin).map_err(|_| "Invalid CORS origin")?;
     let business = build_bearer_app(credential)?;
     Ok(ServiceBuilder::new()
-        .layer(CorsLayer::new().allow_origin(origin)
+        .layer(CorsLayer::new().allow_origin([origin])
             .allow_methods([http::Method::POST])
             .allow_headers([http::header::AUTHORIZATION, http::header::CONTENT_TYPE]))
         .layer(RateLimitLayer::new(requests, period))
@@ -124,5 +124,29 @@ async fn actual_hybrid_composition_validates_config_cors_and_backpressure() {
     assert_eq!(response.headers()[http::header::ACCESS_CONTROL_ALLOW_ORIGIN], "https://example.test");
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     assert!(app.poll_ready(&mut cx).is_pending());
+}
+
+#[tokio::test]
+async fn hybrid_preflight_and_disallowed_origin_have_explicit_browser_policy() {
+    let mut app = build_hybrid_app("secret", "https://example.test", 10, Duration::from_secs(60)).unwrap();
+    let mut preflight = Request::new(String::new());
+    *preflight.method_mut() = http::Method::OPTIONS;
+    preflight.headers_mut().insert(http::header::ORIGIN, http::HeaderValue::from_static("https://example.test"));
+    preflight.headers_mut().insert(http::header::ACCESS_CONTROL_REQUEST_METHOD, http::HeaderValue::from_static("POST"));
+    preflight.headers_mut().insert(http::header::ACCESS_CONTROL_REQUEST_HEADERS, http::HeaderValue::from_static("authorization,content-type"));
+    std::future::poll_fn(|cx| app.poll_ready(cx)).await.unwrap();
+    let response = app.call(preflight).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[http::header::ACCESS_CONTROL_ALLOW_ORIGIN], "https://example.test");
+    assert_eq!(response.headers()[http::header::ACCESS_CONTROL_ALLOW_METHODS], "POST");
+    assert!(!response.headers().contains_key(http::header::ACCESS_CONTROL_ALLOW_CREDENTIALS));
+    let mut request = Request::new("owned-body".to_owned());
+    request.headers_mut().insert(http::header::ORIGIN, http::HeaderValue::from_static("https://untrusted.test"));
+    request.headers_mut().insert(http::header::AUTHORIZATION, http::HeaderValue::from_static("Bearer secret"));
+    std::future::poll_fn(|cx| app.poll_ready(cx)).await.unwrap();
+    let response = app.call(request).await.unwrap();
+    // CORS controls browser read access; it does not authorize domain execution.
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!response.headers().contains_key(http::header::ACCESS_CONTROL_ALLOW_ORIGIN));
 }
 }
