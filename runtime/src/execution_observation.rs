@@ -30,6 +30,10 @@ mod tests {
             InMemoryPersistenceStore::new(),
         ));
         let original = bus.read::<PersistenceHandle>().unwrap().store();
+        bus.insert(CompensationIdempotencyHandle::from_store(
+            InMemoryCompensationIdempotencyStore::new(),
+        ));
+        let original_compensation = bus.read::<CompensationIdempotencyHandle>().unwrap().store();
         let parent = ranvier_core::cancellation::CancellationToken::new();
         bus.set_cancellation_token(parent.clone());
         let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -47,6 +51,10 @@ mod tests {
         ));
         assert!(bus.read::<InvocationTrace>().is_none());
         assert!(bus.read::<ActiveObservation>().is_none());
+        assert!(Arc::ptr_eq(
+            &original_compensation,
+            &bus.read::<CompensationIdempotencyHandle>().unwrap().store()
+        ));
         parent.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
         assert!(bus.cancellation_token().unwrap().is_cancelled());
     }
