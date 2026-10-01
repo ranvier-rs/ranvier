@@ -4017,6 +4017,48 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn iam_rejected_requests_clear_previous_identity_without_effect() {
+            for (policy, fail, token, expected) in [
+                (IamPolicy::RequireIdentity, false, None, "iam.missing_token"),
+                (
+                    IamPolicy::RequireIdentity,
+                    true,
+                    Some("invalid"),
+                    "iam.verification_failed",
+                ),
+                (
+                    IamPolicy::RequireRole("admin".into()),
+                    false,
+                    Some("valid"),
+                    "iam.policy_denied",
+                ),
+            ] {
+                let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+                let verifier = MockVerifier {
+                    identity: IamIdentity::new("new-user").with_role("user"),
+                    should_fail: fail,
+                };
+                let axon = Axon::<i32, i32, String>::start("required-iam-clear")
+                    .with_iam(policy, verifier)
+                    .then(CountCombinedRetry {
+                        calls: calls.clone(),
+                        failures: 0,
+                    });
+                let mut bus = Bus::new();
+                bus.insert(IamIdentity::new("previous-admin").with_role("admin"));
+                if let Some(token) = token {
+                    bus.insert(IamToken(token.into()));
+                }
+                let report = axon.execute(7, &(), &mut bus).await;
+                assert!(
+                    matches!(report, crate::ExecutionReport::Unpersisted { result: Outcome::Emit(label, _), .. } if label == expected)
+                );
+                assert!(bus.read::<IamIdentity>().is_none());
+                assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            }
+        }
+
+        #[tokio::test]
         async fn iam_require_identity_passes_with_valid_token() {
             let verifier = MockVerifier {
                 identity: IamIdentity::new("alice").with_role("user"),

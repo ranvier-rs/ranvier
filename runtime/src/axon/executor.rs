@@ -136,11 +136,16 @@ where
 
         // ── IAM Boundary Check ────────────────────────────────────
         if let Some(iam) = &self.iam_handle {
-            use ranvier_core::iam::{IamPolicy, IamToken, enforce_policy};
+            use ranvier_core::iam::{IamIdentity, IamPolicy, IamToken, enforce_policy};
 
             if matches!(iam.policy, IamPolicy::None) {
                 // No verification required — skip
             } else {
+                // Required verification cannot reuse a previous request's identity.
+                bus.remove::<IamIdentity>();
+                if bus.has::<IamIdentity>() {
+                    return Outcome::emit("iam.context_clear_failed", None);
+                }
                 let token = bus.read::<IamToken>().map(|t| t.0.clone());
 
                 match token {
@@ -163,7 +168,9 @@ where
                                     );
                                 }
                                 // Insert verified identity into Bus for downstream access
-                                bus.insert_shared(identity);
+                                if bus.try_insert_shared(identity).is_err() {
+                                    return Outcome::emit("iam.context_write_denied", None);
+                                }
                             }
                             Err(e) => {
                                 tracing::warn!("IAM token verification failed: {}", e);
