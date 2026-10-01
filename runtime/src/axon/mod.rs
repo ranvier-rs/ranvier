@@ -137,7 +137,7 @@ fn type_name_of<T: ?Sized>() -> String {
 ///
 /// ```rust
 /// use ranvier_core::prelude::*;
-/// use ranvier_runtime::Axon;
+/// use ranvier_runtime::{Axon, ExecutionReport};
 /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
 /// let axon = Axon::<u32, u32, String>::new("increment")
 ///     .then_fn("add-one", |input, _bus| Outcome::next(input + 1));
@@ -147,8 +147,8 @@ fn type_name_of<T: ?Sized>() -> String {
 /// let mut bus2 = Bus::new();
 /// let res1 = axon.execute(10, &(), &mut bus1).await;
 /// let res2 = axon.execute(20, &(), &mut bus2).await;
-/// assert!(matches!(res1, Outcome::Next(11)));
-/// assert!(matches!(res2, Outcome::Next(21)));
+/// assert!(matches!(res1, ExecutionReport::Unpersisted { result: Outcome::Next(11) }));
+/// assert!(matches!(res2, ExecutionReport::Unpersisted { result: Outcome::Next(21) }));
 /// # });
 /// ```
 pub struct Axon<In, Out, E, Res = ()> {
@@ -3779,7 +3779,7 @@ mod tests {
 
         let mut bus = Bus::new();
         let result = axon.execute((), &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result: result } = result else {
+        let crate::ExecutionReport::Unpersisted { result } = result else {
             panic!("unexpected execution durability");
         };
 
@@ -3823,7 +3823,7 @@ mod tests {
 
         let mut bus = Bus::new();
         let result = axon.execute((), &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result: result } = result else {
+        let crate::ExecutionReport::Unpersisted { result } = result else {
             panic!("unexpected execution durability");
         };
 
@@ -3850,7 +3850,7 @@ mod tests {
         let mut bus = Bus::new();
         bus.insert(80u32);
         let result = axon.execute((), &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result: result } = result else {
+        let crate::ExecutionReport::Unpersisted { result } = result else {
             panic!("unexpected execution durability");
         };
         match result {
@@ -3870,7 +3870,7 @@ mod tests {
 
         let mut bus = Bus::new();
         let result = axon.execute((), &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result: result } = result else {
+        let crate::ExecutionReport::Unpersisted { result } = result else {
             panic!("unexpected execution durability");
         };
         match result {
