@@ -26,9 +26,33 @@ async fn route_by_type(input: BranchRequest) -> Outcome<String, String> {
 #[tokio::test]
 async fn toolbox_branch_encoding_failure_is_explicit_fault() {
     let mut bus = Bus::new();
-    let outcome = route_by_type.run(BranchRequest { category: "urgent".into() }, &(), &mut bus).await;
-    assert!(matches!(outcome, Outcome::Fault(ref error) if error == "Branch input could not be encoded"));
+    let outcome = route_by_type
+        .run(
+            BranchRequest {
+                category: "urgent".into(),
+            },
+            &(),
+            &mut bus,
+        )
+        .await;
+    assert!(
+        matches!(outcome, Outcome::Fault(ref error) if error == "Branch input could not be encoded")
+    );
     assert!(!format!("{outcome:?}").contains("private-toolbox-serializer"));
+    let axon =
+        Axon::<BranchRequest, BranchRequest, String>::new("toolbox-branch").then(route_by_type);
+    let report = axon
+        .execute(
+            BranchRequest {
+                category: "urgent".into(),
+            },
+            &(),
+            &mut bus,
+        )
+        .await;
+    assert!(matches!(report, ranvier::ExecutionReport::Unpersisted {
+        result: Outcome::Fault(ref error), ..
+    } if error == "Branch input could not be encoded"));
 }
 
 #[transition]
@@ -58,7 +82,10 @@ async fn toolbox_multi_step_returns_inspectable_report() {
     let rendered = format!("Execution report: {:?}", report);
     assert!(rendered.contains("Unpersisted"));
     match report {
-        ranvier::ExecutionReport::Unpersisted { result: Outcome::Next(output), .. } => {
+        ranvier::ExecutionReport::Unpersisted {
+            result: Outcome::Next(output),
+            ..
+        } => {
             assert_eq!(output, "SAMPLE");
         }
         other => panic!("unexpected toolbox report: {other:?}"),
