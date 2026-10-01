@@ -8,7 +8,17 @@
 //! ```
 //!
 //! ## Key Concepts
-//! - `#[transition(bus_allow = [T])]` for type whitelisting
+//! - `fn local_demo_outcome<T, E>(report: ranvier_runtime::ExecutionReport<Outcome<T, E>>) -> Result<Outcome<T, E>, String> {
+    if report.cleanup().is_some_and(|cleanup| !cleanup.is_complete()) {
+        return Err("Execution requires reconciliation before retry".into());
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => Err("Execution requires reconciliation before retry".into()),
+    }
+}
+
+#[transition(bus_allow = [T])]` for type whitelisting
 //! - `#[transition(bus_deny = [T])]` for type blacklisting
 //! - Compile-time validation of the declared type list
 //! - Runtime enforcement for actual shared-state access
@@ -34,7 +44,7 @@ async fn blocked_read(_state: (), bus: &mut Bus) -> Outcome<(), String> {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), String> {
     let mut bus = Bus::new();
     bus.insert(7_i32);
     bus.insert("secret".to_string());
@@ -42,9 +52,10 @@ async fn main() {
     let allow_axon = Axon::simple::<String>("AllowRead").then(allowed_read);
     let deny_axon = Axon::simple::<String>("BlockRead").then(blocked_read);
 
-    let allow_result = allow_axon.execute((), &(), &mut bus).await;
-    let deny_result = deny_axon.execute((), &(), &mut bus).await;
+    let allow_result = local_demo_outcome(allow_axon.execute((), &(), &mut bus).await)?;
+    let deny_result = local_demo_outcome(deny_axon.execute((), &(), &mut bus).await)?;
 
     println!("allow_result={allow_result:?}");
     println!("deny_result={deny_result:?}");
+    Ok(())
 }
