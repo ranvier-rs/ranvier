@@ -395,6 +395,7 @@ impl Session {
             observation,
         }
     }
+    #[cfg(test)]
     pub(crate) fn finish<T>(self, bus: &mut Bus, result: T) -> ExecutionReport<T> {
         let report = self.build_report(bus, result);
         self.restore(bus);
