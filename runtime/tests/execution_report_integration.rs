@@ -8,6 +8,90 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+struct AppliedAwaitingAck {
+    backing: InMemoryPersistenceStore,
+    first: std::sync::atomic::AtomicBool,
+    applied: Arc<tokio::sync::Notify>,
+}
+#[async_trait::async_trait]
+impl PersistenceStore for AppliedAwaitingAck {
+    async fn append(&self, event: PersistenceEnvelope) -> anyhow::Result<()> {
+        self.backing.append(event).await?;
+        if self.first.swap(false, Ordering::SeqCst) {
+            self.applied.notify_one();
+            std::future::pending::<()>().await;
+        }
+        Ok(())
+    }
+    async fn load(&self, trace: &str) -> anyhow::Result<Option<PersistedTrace>> {
+        self.backing.load(trace).await
+    }
+    async fn resume(&self, trace: &str, step: u64) -> anyhow::Result<ResumeCursor> {
+        self.backing.resume(trace, step).await
+    }
+    async fn complete(&self, trace: &str, completion: CompletionState) -> anyhow::Result<()> {
+        self.backing.complete(trace, completion).await
+    }
+    async fn save_intervention(
+        &self,
+        trace: &str,
+        intervention: Intervention,
+    ) -> anyhow::Result<()> {
+        self.backing.save_intervention(trace, intervention).await
+    }
+}
+
+#[tokio::test]
+async fn cancelled_applied_write_is_unconfirmed_without_invoking_transition() {
+    use ranvier_core::cancellation::{CancellationReason, CancellationToken};
+    let backing = InMemoryPersistenceStore::new();
+    let applied = Arc::new(tokio::sync::Notify::new());
+    let effects = Arc::new(AtomicUsize::new(0));
+    let mut bus = Bus::new();
+    bus.insert(PersistenceTraceId::new("cancelled-ack"));
+    bus.insert(PersistenceHandle::from_store(AppliedAwaitingAck {
+        backing: backing.clone(),
+        first: std::sync::atomic::AtomicBool::new(true),
+        applied: applied.clone(),
+    }));
+    let token = CancellationToken::new();
+    let axon = Axon::<u32, u32, String, ()>::new("cancelled-report").then(Count(effects.clone()));
+    let execution = async {
+        tokio::join!(
+            axon.execute_cancellable(0, &(), &mut bus, token.clone()),
+            async {
+                applied.notified().await;
+                assert!(token.cancel(CancellationReason::Explicit));
+            }
+        )
+        .0
+    };
+    let report = tokio::time::timeout(std::time::Duration::from_secs(5), execution)
+        .await
+        .unwrap();
+    assert!(matches!(
+        report,
+        ExecutionReport::Unconfirmed {
+            result: ranvier_runtime::ExecutionTerminal::Cancelled(_),
+            operation: PersistenceOperation::Intent,
+            effect: EffectBoundary::NotInvoked
+        }
+    ));
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    let persisted = backing.load("cancelled-ack").await.unwrap().unwrap();
+    assert_eq!(persisted.events[0].outcome_kind, "Enter");
+    assert!(persisted.completion.is_some());
+    assert_eq!(
+        bus.read::<PersistenceHandle>()
+            .unwrap()
+            .store()
+            .load("cancelled-ack")
+            .await
+            .unwrap(),
+        Some(persisted)
+    );
+}
+
 #[derive(Clone)]
 struct Count(Arc<AtomicUsize>);
 #[async_trait::async_trait]

@@ -17,15 +17,18 @@ pub(crate) struct Observation {
 }
 
 impl Observation {
+    fn failed(&self, operation: PersistenceOperation) {
+        let mut failure = self
+            .failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if failure.is_none() {
+            *failure = Some(operation);
+        }
+    }
     fn observe<T>(&self, operation: PersistenceOperation, result: &anyhow::Result<T>) {
         if result.is_err() {
-            let mut failure = self
-                .failure
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if failure.is_none() {
-                *failure = Some(operation);
-            }
+            self.failed(operation);
         }
     }
     pub(crate) fn effect(&self) {
@@ -61,6 +64,33 @@ impl Observation {
     }
 }
 
+// Dropping a polled store future cannot establish non-commit or acknowledgement.
+struct ObservedCall<'a> {
+    observation: &'a Observation,
+    operation: PersistenceOperation,
+    settled: bool,
+}
+impl<'a> ObservedCall<'a> {
+    fn new(observation: &'a Observation, operation: PersistenceOperation) -> Self {
+        Self {
+            observation,
+            operation,
+            settled: false,
+        }
+    }
+    fn finish<T>(mut self, result: &anyhow::Result<T>) {
+        self.observation.observe(self.operation, result);
+        self.settled = true;
+    }
+}
+impl Drop for ObservedCall<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.observation.failed(self.operation);
+        }
+    }
+}
+
 pub(crate) struct ObservedStore {
     pub(crate) inner: Arc<dyn PersistenceStore>,
     pub(crate) observation: Arc<Observation>,
@@ -78,29 +108,30 @@ impl PersistenceStore for ObservedStore {
         self.observation
             .attempted_write
             .store(true, Ordering::SeqCst);
+        let call = ObservedCall::new(&self.observation, operation);
         let result = self.inner.append(envelope).await;
-        self.observation.observe(operation, &result);
+        call.finish(&result);
         result
     }
     async fn load(&self, trace: &str) -> anyhow::Result<Option<PersistedTrace>> {
+        let call = ObservedCall::new(&self.observation, PersistenceOperation::Load);
         let result = self.inner.load(trace).await;
-        self.observation
-            .observe(PersistenceOperation::Load, &result);
+        call.finish(&result);
         result
     }
     async fn resume(&self, trace: &str, step: u64) -> anyhow::Result<ResumeCursor> {
+        let call = ObservedCall::new(&self.observation, PersistenceOperation::Load);
         let result = self.inner.resume(trace, step).await;
-        self.observation
-            .observe(PersistenceOperation::Load, &result);
+        call.finish(&result);
         result
     }
     async fn complete(&self, trace: &str, completion: CompletionState) -> anyhow::Result<()> {
         self.observation
             .attempted_write
             .store(true, Ordering::SeqCst);
+        let call = ObservedCall::new(&self.observation, PersistenceOperation::Complete);
         let result = self.inner.complete(trace, completion).await;
-        self.observation
-            .observe(PersistenceOperation::Complete, &result);
+        call.finish(&result);
         if result.is_ok() {
             self.observation.completed.store(true, Ordering::SeqCst);
         }
@@ -114,9 +145,9 @@ impl PersistenceStore for ObservedStore {
         self.observation
             .attempted_write
             .store(true, Ordering::SeqCst);
+        let call = ObservedCall::new(&self.observation, PersistenceOperation::Result);
         let result = self.inner.save_intervention(trace, intervention).await;
-        self.observation
-            .observe(PersistenceOperation::Result, &result);
+        call.finish(&result);
         result
     }
 }
