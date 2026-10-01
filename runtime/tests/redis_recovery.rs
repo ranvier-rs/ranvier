@@ -245,6 +245,11 @@ async fn redis_legacy_null_blocks_execution_and_pre_cancelled_cleanup() {
             .expect("explicit isolated database required");
         let store = RedisPersistenceStore::connect(&url).await.unwrap();
         let prefix = uuid::Uuid::new_v4().simple().to_string();
+        use redis::AsyncCommands;
+        let mut raw =
+            redis::aio::ConnectionManager::new(redis::Client::open(url.as_str()).unwrap())
+                .await
+                .unwrap();
         for mode in [0, 1, 2] {
             let trace_id = format!("null-{prefix}-mode-{mode}");
             let effects = Arc::new(AtomicUsize::new(0));
@@ -263,6 +268,14 @@ async fn redis_legacy_null_blocks_execution_and_pre_cancelled_cleanup() {
             };
             store.append(seed).await.unwrap();
             let before = store.load(&trace_id).await.unwrap().unwrap();
+            assert_eq!(before.events[0].payload, None);
+            let key = format!("ranvier:persistence:{trace_id}");
+            let before_wire: String = raw.get(&key).await.unwrap();
+            let wire: serde_json::Value = serde_json::from_str(&before_wire).unwrap();
+            assert_eq!(
+                wire["events"][0].get("payload"),
+                Some(&serde_json::Value::Null)
+            );
             let mut bus = Bus::new();
             bus.insert(PersistenceTraceId::new(trace_id.clone()));
             bus.insert(PersistenceHandle::from_store(store.clone()));
@@ -293,6 +306,8 @@ async fn redis_legacy_null_blocks_execution_and_pre_cancelled_cleanup() {
             assert_eq!(effects.load(Ordering::SeqCst), 0);
             assert_eq!(cleanup.load(Ordering::SeqCst), 0);
             assert_eq!(store.load(&trace_id).await.unwrap().unwrap(), before);
+            let after_wire: String = raw.get(&key).await.unwrap();
+            assert_eq!(after_wire, before_wire);
         }
         println!("REDIS_LEGACY_NULL modes=3 effects=0 cleanup=0 full-traces-unchanged");
     })

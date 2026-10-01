@@ -2506,7 +2506,8 @@ mod tests {
         let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
 
         let trace_id = "v-migration";
-        // Create an existing trace with an older version at step 5
+        // Migration restarts from caller input despite a valid older result.
+        // Missing results require reconciliation before migration is considered.
         let old_envelope = crate::persistence::PersistenceEnvelope {
             trace_id: trace_id.to_string(),
             circuit: "TestCircuit".to_string(),
@@ -2516,7 +2517,7 @@ mod tests {
             outcome_kind: "Next".to_string(),
             timestamp_ms: 0,
             payload_hash: None,
-            payload: None,
+            payload: Some(serde_json::json!({"Next": 99})),
         };
         store_impl.append(old_envelope).await.unwrap();
 

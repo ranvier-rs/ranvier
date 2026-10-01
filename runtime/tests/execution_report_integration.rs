@@ -464,67 +464,70 @@ impl CompensationHook for CountRecoveryCleanup {
 }
 
 #[tokio::test]
-async fn legacy_bare_null_result_blocks_effects_without_rewriting_history() {
-    for mode in [0, 1, 2] {
-        let backing = InMemoryPersistenceStore::new();
-        let effects = Arc::new(AtomicUsize::new(0));
-        let cleanup_calls = Arc::new(AtomicUsize::new(0));
-        let axon = Axon::<u32, u32, String>::new("legacy-null").then(Count(effects.clone()));
-        let schematic = axon.schematic();
-        backing
-            .append(PersistenceEnvelope {
-                trace_id: "legacy-null".into(),
-                circuit: schematic.name.clone(),
-                schematic_version: schematic.schema_version.clone(),
-                step: 1,
-                node_id: Some(schematic.nodes[1].id.to_string()),
-                outcome_kind: "Next".into(),
-                timestamp_ms: 0,
-                payload_hash: None,
-                payload: Some(serde_json::Value::Null),
-            })
-            .await
-            .unwrap();
-        let before = serde_json::to_value(backing.load("legacy-null").await.unwrap()).unwrap();
-        let mut bus = Bus::new();
-        bus.insert(PersistenceTraceId::new("legacy-null"));
-        bus.insert(PersistenceHandle::from_store(backing.clone()));
-        bus.insert(CompensationHandle::from_hook(CountRecoveryCleanup(
-            cleanup_calls.clone(),
-        )));
-        if mode != 0 {
-            let token = ranvier_core::cancellation::CancellationToken::new();
-            if mode == 2 {
-                let _ = token.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
+async fn legacy_missing_or_null_result_blocks_effects_without_rewriting_history() {
+    for payload in [None, Some(serde_json::Value::Null)] {
+        for mode in [0, 1, 2] {
+            let backing = InMemoryPersistenceStore::new();
+            let effects = Arc::new(AtomicUsize::new(0));
+            let cleanup_calls = Arc::new(AtomicUsize::new(0));
+            let axon = Axon::<u32, u32, String>::new("legacy-null").then(Count(effects.clone()));
+            let schematic = axon.schematic();
+            backing
+                .append(PersistenceEnvelope {
+                    trace_id: "legacy-null".into(),
+                    circuit: schematic.name.clone(),
+                    schematic_version: schematic.schema_version.clone(),
+                    step: 1,
+                    node_id: Some(schematic.nodes[1].id.to_string()),
+                    outcome_kind: "Next".into(),
+                    timestamp_ms: 0,
+                    payload_hash: None,
+                    payload: payload.clone(),
+                })
+                .await
+                .unwrap();
+            let before = serde_json::to_value(backing.load("legacy-null").await.unwrap()).unwrap();
+            let mut bus = Bus::new();
+            bus.insert(PersistenceTraceId::new("legacy-null"));
+            bus.insert(PersistenceHandle::from_store(backing.clone()));
+            bus.insert(CompensationHandle::from_hook(CountRecoveryCleanup(
+                cleanup_calls.clone(),
+            )));
+            if mode != 0 {
+                let token = ranvier_core::cancellation::CancellationToken::new();
+                if mode == 2 {
+                    let _ = token.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
+                }
+                let report = axon.execute_cancellable(7, &(), &mut bus, token).await;
+                assert!(matches!(
+                    report,
+                    ExecutionReport::BlockedBeforeEffect {
+                        operation: PersistenceOperation::RecoveryPayload,
+                        effect: EffectBoundary::NotInvoked,
+                        ..
+                    }
+                ));
+            } else {
+                let report = axon.execute(7, &(), &mut bus).await;
+                assert!(matches!(
+                    report,
+                    ExecutionReport::BlockedBeforeEffect {
+                        operation: PersistenceOperation::RecoveryPayload,
+                        effect: EffectBoundary::NotInvoked,
+                        ..
+                    }
+                ));
             }
-            let report = axon.execute_cancellable(7, &(), &mut bus, token).await;
-            assert!(matches!(
-                report,
-                ExecutionReport::BlockedBeforeEffect {
-                    operation: PersistenceOperation::RecoveryPayload,
-                    effect: EffectBoundary::NotInvoked,
-                    ..
-                }
-            ));
-        } else {
-            let report = axon.execute(7, &(), &mut bus).await;
-            assert!(matches!(
-                report,
-                ExecutionReport::BlockedBeforeEffect {
-                    operation: PersistenceOperation::RecoveryPayload,
-                    effect: EffectBoundary::NotInvoked,
-                    ..
-                }
-            ));
+            assert_eq!(effects.load(Ordering::SeqCst), 0);
+            assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                serde_json::to_value(backing.load("legacy-null").await.unwrap()).unwrap(),
+                before
+            );
         }
-        assert_eq!(effects.load(Ordering::SeqCst), 0);
-        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(
-            serde_json::to_value(backing.load("legacy-null").await.unwrap()).unwrap(),
-            before
-        );
     }
 }
+
 #[async_trait::async_trait]
 impl Transition<u32, u32> for Count {
     type Error = String;
