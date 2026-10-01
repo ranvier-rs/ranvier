@@ -1,4 +1,5 @@
 // Actual public JWT example, tested against existing auth-jwt-role-demo dependencies.
+#[rustfmt::skip] // Preserve the exact exported source for drift checking.
 #[tokio::test]
 async fn public_typed_jwt_chain() {
 use ranvier_core::{Bus, Outcome, Transition};
