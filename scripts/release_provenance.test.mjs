@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
@@ -27,4 +28,20 @@ test('tar self-test requires all malformed archive receipts', () => {
   for (const marker of ['truncated', 'checksum', 'invalid-size', 'link']) {
     assert.ok(result.stdout.split(/\r?\n/).includes(`[release-provenance] TAR_GUARD_PASS ${marker}`));
   }
+});
+
+test('guard CI uses readonly scope and attestation is excluded from PR events', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/release-provenance.yml', import.meta.url), 'utf8');
+  const guards = workflow.split('  provenance-guards:')[1].split('  provenance:')[0];
+  assert.match(guards, /shell: bash/);
+  assert.match(guards, /node --test scripts\/release_provenance.test.mjs/);
+  assert.match(guards, /if: always\(\)/);
+  assert.match(guards, /persist-credentials: false/);
+  assert.match(guards, /provenance-guard-identities.txt/);
+  assert.doesNotMatch(guards, /id-token: write|attestations: write/);
+  const top = workflow.split('jobs:')[0];
+  assert.doesNotMatch(top, /id-token: write|attestations: write/);
+  assert.match(top, /pull_request:/);
+  assert.match(workflow, /if: github.event_name != 'pull_request'/);
+  assert.match(workflow, /needs: provenance-guards/);
 });

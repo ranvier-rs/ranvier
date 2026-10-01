@@ -14,6 +14,9 @@ jobs:
   provenance-guards:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v5
         with:
@@ -22,13 +25,20 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - name: Record guard identities
+        run: |
+          git rev-parse HEAD > provenance-guard-identities.txt
+          node --version >> provenance-guard-identities.txt
+          sha256sum scripts/release_provenance.mjs scripts/release_provenance.test.mjs .ranvier-supply-chain-policy.json >> provenance-guard-identities.txt
       - name: Verify provenance guards
         run: node --test scripts/release_provenance.test.mjs 2>&1 | tee provenance-guards.log
       - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: provenance-guards
-          path: provenance-guards.log
+          path: |
+            provenance-guards.log
+            provenance-guard-identities.txt
   provenance:
     if: github.event_name != 'pull_request'
     needs: provenance-guards
