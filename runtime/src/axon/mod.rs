@@ -624,6 +624,9 @@ where
         ranvier.outcome_target = tracing::field::Empty
     );
     let started = std::time::Instant::now();
+    if let Some(observation) = bus.read::<crate::execution_observation::ActiveObservation>() {
+        observation.0.effect();
+    }
     bus.set_access_policy(label.clone(), bus_policy.clone());
     let result = trans
         .run(state, res, bus)

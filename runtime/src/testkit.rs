@@ -58,7 +58,7 @@ where
         &mut self,
         axon: &Axon<In, Out, E, R>,
         input: In,
-    ) -> Outcome<Out, E>
+    ) -> crate::ExecutionReport<Outcome<Out, E>>
     where
         In: Send + Sync + Serialize + DeserializeOwned + 'static,
         Out: Send + Sync + Serialize + DeserializeOwned + 'static,

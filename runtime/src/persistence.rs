@@ -459,6 +459,7 @@ pub trait PersistenceStore: Send + Sync {
 #[derive(Clone)]
 pub struct PersistenceHandle {
     inner: Arc<dyn PersistenceStore>,
+    observation: Option<Arc<crate::execution_observation::Observation>>,
 }
 
 impl std::fmt::Debug for PersistenceHandle {
@@ -475,17 +476,36 @@ impl PersistenceHandle {
     {
         Self {
             inner: Arc::new(store),
+            observation: None,
         }
     }
 
     /// Create a handle from an existing trait-object Arc.
     pub fn from_arc(store: Arc<dyn PersistenceStore>) -> Self {
-        Self { inner: store }
+        Self {
+            inner: store,
+            observation: None,
+        }
     }
 
     /// Access the shared persistence store.
     pub fn store(&self) -> Arc<dyn PersistenceStore> {
-        self.inner.clone()
+        match &self.observation {
+            Some(observation) => Arc::new(crate::execution_observation::ObservedStore {
+                inner: self.inner.clone(),
+                observation: observation.clone(),
+            }),
+            None => self.inner.clone(),
+        }
+    }
+    pub(crate) fn observed(
+        &self,
+        observation: Arc<crate::execution_observation::Observation>,
+    ) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            observation: Some(observation),
+        }
     }
 }
 

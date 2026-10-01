@@ -60,6 +60,8 @@ pub enum CompletionConfirmation {
 pub enum ExecutionReport<T> {
     /// No persistence store was configured. No durable success is implied.
     Unpersisted { result: T },
+    /// A store was configured, but execution returned without requesting writes.
+    NotRequested { result: T },
     /// Selected event writes were acknowledged. Completion may be app-owned.
     Recorded {
         result: T,

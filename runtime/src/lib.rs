@@ -4,6 +4,7 @@ pub mod axon;
 pub mod closure_transition;
 pub mod cluster;
 pub mod distributed;
+mod execution_observation;
 pub mod execution_report;
 pub mod llm;
 pub mod persistence;

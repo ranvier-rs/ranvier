@@ -41,7 +41,8 @@ where
         resources: &Res,
         bus: &mut Bus,
         token: CancellationToken,
-    ) -> ExecutionTerminal<Out, E> {
+    ) -> crate::ExecutionReport<ExecutionTerminal<Out, E>> {
+        let session = crate::execution_observation::Session::begin(bus);
         bus.set_cancellation_token(token.clone());
         if bus
             .read::<crate::persistence::PersistenceTraceId>()
@@ -53,7 +54,7 @@ where
         let caller_owned_timeline = bus.read::<Timeline>().is_some();
 
         let race = {
-            let execution = self.execute(input, resources, bus);
+            let execution = self.execute_domain(input, resources, bus);
             tokio::pin!(execution);
             tokio::select! {
                 biased;
@@ -62,7 +63,7 @@ where
             }
         };
 
-        match race {
+        let terminal = match race {
             Err(context) => {
                 // Dropping the execution future releases its mutable Bus
                 // borrow. A transition may have been dropped between
@@ -82,11 +83,23 @@ where
                 ExecutionTerminal::Cancelled(context)
             }
             Ok(outcome) => ExecutionTerminal::Outcome(outcome),
-        }
+        };
+        session.finish(bus, terminal)
     }
 
     /// Execute the Axon with the given input and resources.
-    pub async fn execute(&self, input: In, resources: &Res, bus: &mut Bus) -> Outcome<Out, E> {
+    pub async fn execute(
+        &self,
+        input: In,
+        resources: &Res,
+        bus: &mut Bus,
+    ) -> crate::ExecutionReport<Outcome<Out, E>> {
+        let session = crate::execution_observation::Session::begin(bus);
+        let outcome = self.execute_domain(input, resources, bus).await;
+        session.finish(bus, outcome)
+    }
+
+    async fn execute_domain(&self, input: In, resources: &Res, bus: &mut Bus) -> Outcome<Out, E> {
         if let ExecutionMode::Singleton {
             lock_key,
             ttl_ms,
@@ -801,7 +814,11 @@ where
     /// assert!(matches!(explicit, Outcome::Next(7)));
     /// # });
     /// ```
-    pub async fn execute_simple(&self, input: In, bus: &mut Bus) -> Outcome<Out, E> {
+    pub async fn execute_simple(
+        &self,
+        input: In,
+        bus: &mut Bus,
+    ) -> crate::ExecutionReport<Outcome<Out, E>> {
         self.execute(input, &(), bus).await
     }
 
@@ -811,7 +828,7 @@ where
         input: In,
         bus: &mut Bus,
         token: CancellationToken,
-    ) -> ExecutionTerminal<Out, E> {
+    ) -> crate::ExecutionReport<ExecutionTerminal<Out, E>> {
         self.execute_cancellable(input, &(), bus, token).await
     }
 }
