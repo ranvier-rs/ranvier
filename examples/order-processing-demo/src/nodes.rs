@@ -1,4 +1,4 @@
-use crate::domain::{OrderRequest, OrderResources};
+use crate::domain::{OrderRequest, OrderResources, ValidatedOrder};
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_core::synapse::Synapse;
@@ -7,16 +7,16 @@ use ranvier_core::synapse::Synapse;
 pub struct ValidateOrder;
 
 #[async_trait]
-impl Transition<OrderRequest, OrderRequest> for ValidateOrder {
+impl Transition<OrderRequest, ValidatedOrder> for ValidateOrder {
     type Error = String;
     type Resources = OrderResources;
 
     async fn run(
         &self,
         request: OrderRequest,
-        _resources: &Self::Resources,
+        resources: &Self::Resources,
         _bus: &mut Bus,
-    ) -> Outcome<OrderRequest, Self::Error> {
+    ) -> Outcome<ValidatedOrder, Self::Error> {
         println!(
             "\x1b[1m[Node]\x1b[0m Validating Order #{}...",
             request.order_id
@@ -29,7 +29,17 @@ impl Transition<OrderRequest, OrderRequest> for ValidateOrder {
             return Outcome::Branch("empty_cart".into(), None);
         }
 
-        Outcome::Next(request)
+        match resources.inventory.quote(&request.items) {
+            Ok((catalog_prices, payable_amount)) if payable_amount == request.total_amount => {
+                Outcome::Next(ValidatedOrder {
+                    request,
+                    catalog_prices,
+                    payable_amount,
+                })
+            }
+            Ok(_) => Outcome::Fault("Catalog amount mismatch".into()),
+            Err(error) => Outcome::Fault(error),
+        }
     }
 }
 
@@ -37,24 +47,21 @@ impl Transition<OrderRequest, OrderRequest> for ValidateOrder {
 pub struct ReserveInventory;
 
 #[async_trait]
-impl Transition<OrderRequest, OrderRequest> for ReserveInventory {
+impl Transition<ValidatedOrder, ValidatedOrder> for ReserveInventory {
     type Error = String;
     type Resources = OrderResources;
 
     async fn run(
         &self,
-        request: OrderRequest,
+        request: ValidatedOrder,
         resources: &Self::Resources,
         _bus: &mut Bus,
-    ) -> Outcome<OrderRequest, Self::Error> {
+    ) -> Outcome<ValidatedOrder, Self::Error> {
         println!("\x1b[1m[Node]\x1b[0m Reserving Inventory...");
 
-        match resources.inventory.call(request.items.clone()).await {
+        match resources.inventory.call(request.clone()).await {
             Ok(true) => Outcome::Next(request),
-            Ok(false) => Outcome::Branch(
-                "out_of_stock".into(),
-                Some(serde_json::to_value(&request.items).unwrap_or_default()),
-            ),
+            Ok(false) => Outcome::Branch("out_of_stock".into(), None),
             Err(e) => Outcome::Fault(e),
         }
     }
@@ -64,19 +71,19 @@ impl Transition<OrderRequest, OrderRequest> for ReserveInventory {
 pub struct ProcessPayment;
 
 #[async_trait]
-impl Transition<OrderRequest, OrderRequest> for ProcessPayment {
+impl Transition<ValidatedOrder, ValidatedOrder> for ProcessPayment {
     type Error = String;
     type Resources = OrderResources;
 
     async fn run(
         &self,
-        request: OrderRequest,
+        request: ValidatedOrder,
         resources: &Self::Resources,
         _bus: &mut Bus,
-    ) -> Outcome<OrderRequest, Self::Error> {
+    ) -> Outcome<ValidatedOrder, Self::Error> {
         println!("\x1b[1m[Node]\x1b[0m Processing Payment...");
 
-        match resources.payment.call(request.total_amount).await {
+        match resources.payment.call(request.payable_amount).await {
             Ok(true) => Outcome::Next(request),
             Ok(false) => Outcome::Branch("payment_declined".into(), None),
             Err(e) => Outcome::Fault(e),
@@ -88,7 +95,7 @@ impl Transition<OrderRequest, OrderRequest> for ProcessPayment {
 pub struct ShipOrder;
 
 #[async_trait]
-impl Transition<OrderRequest, String> for ShipOrder {
+impl Transition<ValidatedOrder, String> for ShipOrder {
     type Error = String;
     type Resources = OrderResources;
 
@@ -98,13 +105,13 @@ impl Transition<OrderRequest, String> for ShipOrder {
 
     async fn run(
         &self,
-        request: OrderRequest,
+        request: ValidatedOrder,
         resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<String, Self::Error> {
         println!("\x1b[1m[Node]\x1b[0m Shipping Order...");
 
-        match resources.shipping.call(request.order_id).await {
+        match resources.shipping.call(request.request.order_id).await {
             Ok(tracking) => Outcome::Next(tracking),
             Err(e) => Outcome::Fault(e),
         }

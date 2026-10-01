@@ -90,15 +90,15 @@ async fn main() -> Result<()> {
 
     let success_case = OrderRequest {
         order_id: "ORD-123".into(),
-        items: vec!["p1".into()],
-        total_amount: 950,
+        items: vec!["p2".into()],
+        total_amount: 50,
     };
     run_order_flow("Success Case", success_case, &axon, &resources).await?;
 
     let payment_declined_case = OrderRequest {
         order_id: "ORD-124".into(),
         items: vec!["p1".into()],
-        total_amount: 1250,
+        total_amount: 1200,
     };
     run_order_flow(
         "Payment Declined Case",

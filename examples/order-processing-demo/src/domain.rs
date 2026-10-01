@@ -17,6 +17,14 @@ pub struct OrderRequest {
     pub total_amount: u32,
 }
 
+// Internal handoff: client totals never reach the payment adapter directly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidatedOrder {
+    pub request: OrderRequest,
+    pub catalog_prices: Vec<u32>,
+    pub payable_amount: u32,
+}
+
 pub struct OrderResources {
     pub inventory: InventorySynapse,
     pub payment: PaymentSynapse,
