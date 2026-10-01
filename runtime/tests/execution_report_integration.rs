@@ -516,6 +516,61 @@ struct AppliedAwaitingAck {
     apply_blocked: bool,
     applied: Arc<tokio::sync::Notify>,
 }
+
+#[tokio::test]
+async fn dropped_persistence_ack_restores_owner_without_rewriting_history() {
+    use futures_util::FutureExt;
+    for block_at in [1, 2, 3] {
+        for applied in [false, true] {
+            for cancellable in [false, true] {
+                let backing = InMemoryPersistenceStore::new();
+                let store = Arc::new(AppliedAwaitingAck {
+                    backing: backing.clone(),
+                    calls: AtomicUsize::new(0),
+                    block_at,
+                    apply_blocked: applied,
+                    applied: Arc::new(tokio::sync::Notify::new()),
+                });
+                let effects = Arc::new(AtomicUsize::new(0));
+                let axon = Axon::<u32, u32, String>::new("drop-ack").then(Count(effects.clone()));
+                let mut bus = Bus::new();
+                bus.insert(PersistenceHandle::from_arc(store.clone()));
+                bus.insert(PersistenceTraceId::new("drop-ack"));
+                let original = bus.read::<PersistenceHandle>().unwrap().store();
+                if cancellable {
+                    assert!(
+                        axon.execute_cancellable(
+                            1,
+                            &(),
+                            &mut bus,
+                            ranvier_core::cancellation::CancellationToken::new()
+                        )
+                        .now_or_never()
+                        .is_none()
+                    );
+                } else {
+                    assert!(axon.execute(1, &(), &mut bus).now_or_never().is_none());
+                }
+                assert_eq!(store.calls.load(Ordering::SeqCst), block_at);
+                assert_eq!(effects.load(Ordering::SeqCst), usize::from(block_at > 1));
+                assert!(Arc::ptr_eq(
+                    &original,
+                    &bus.read::<PersistenceHandle>().unwrap().store()
+                ));
+                assert!(bus.cancellation_token().is_none());
+                let trace = backing.load("drop-ack").await.unwrap();
+                let expected = block_at - 1 + usize::from(applied);
+                if expected == 0 {
+                    assert!(trace.is_none());
+                } else {
+                    let trace = trace.unwrap();
+                    assert_eq!(trace.events.len(), expected);
+                    assert_eq!(trace.completion, None);
+                }
+            }
+        }
+    }
+}
 #[async_trait::async_trait]
 impl PersistenceStore for AppliedAwaitingAck {
     async fn append(&self, event: PersistenceEnvelope) -> anyhow::Result<()> {
