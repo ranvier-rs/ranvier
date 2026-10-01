@@ -24,7 +24,11 @@ pub enum DlqPolicy {
     Drop,
     /// Send the event to a configured DLQ.
     SendToDlq,
-    /// Retry a specific number of times with an exponential backoff before sending to DLQ.
+    /// Attempt a node up to `max_attempts` times, including the initial call,
+    /// with exponential backoff before sending its final fault to DLQ.
+    /// Zero permits the initial call only. Typed input restoration failure stops
+    /// further retries; exhaustion telemetry reports actual invocations.
+    /// A retry policy alone does not establish that a business effect is safe to repeat.
     RetryThenDlq { max_attempts: u32, backoff_ms: u64 },
 }
 

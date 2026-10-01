@@ -2921,6 +2921,9 @@ mod tests {
 
     impl serde::Serialize for UnrestorableRetryInput {
         fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            if self.0 == 0 {
+                return Err(serde::ser::Error::custom("input cannot be encoded"));
+            }
             serializer.serialize_str("incompatible-input")
         }
     }
@@ -2938,7 +2941,7 @@ mod tests {
             _: &(),
             _: &mut Bus,
         ) -> Outcome<i32, String> {
-            assert_eq!(input.0, 7);
+            assert!(input.0 == 7 || input.0 == 0);
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Outcome::Fault("original_fault".into())
         }
@@ -2969,6 +2972,81 @@ mod tests {
         assert!(matches!(report, crate::ExecutionReport::Unpersisted {
             result: Outcome::Fault(error), .. } if error == "original_fault"));
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let timeline = bus.read::<Timeline>().unwrap();
+        assert!(
+            !timeline
+                .events
+                .iter()
+                .any(|event| matches!(event, TimelineEvent::NodeRetry { .. }))
+        );
+        assert!(timeline.events.iter().any(|event| matches!(
+            event,
+            TimelineEvent::DlqExhausted {
+                total_attempts: 1,
+                ..
+            }
+        )));
+        assert_eq!(sink.letters.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn retry_snapshot_encoding_failure_does_not_fabricate_attempts() {
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let sink = MockDlqSink {
+            letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
+        let axon =
+            Axon::<UnrestorableRetryInput, UnrestorableRetryInput, String>::start("unencodable")
+                .then(UnrestorableRetryTransition(calls.clone()))
+                .with_dlq_policy(DlqPolicy::RetryThenDlq {
+                    max_attempts: 5,
+                    backoff_ms: u64::MAX,
+                })
+                .with_dlq_sink(sink.clone());
+        let mut bus = Bus::new();
+        bus.insert(Timeline::new());
+        let report = axon.execute(UnrestorableRetryInput(0), &(), &mut bus).await;
+        assert!(matches!(report, crate::ExecutionReport::Unpersisted {
+            result: Outcome::Fault(error), .. } if error == "original_fault"));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let timeline = bus.read::<Timeline>().unwrap();
+        assert!(
+            !timeline
+                .events
+                .iter()
+                .any(|event| matches!(event, TimelineEvent::NodeRetry { .. }))
+        );
+        assert!(timeline.events.iter().any(|event| matches!(
+            event,
+            TimelineEvent::DlqExhausted {
+                total_attempts: 1,
+                ..
+            }
+        )));
+        assert_eq!(sink.letters.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn retry_zero_budget_still_reports_one_initial_invocation() {
+        let remaining = Arc::new(tokio::sync::Mutex::new(2));
+        let sink = MockDlqSink {
+            letters: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
+        let axon = Axon::<i32, i32, String>::start("zero-budget")
+            .then(FailNThenSucceed {
+                remaining: remaining.clone(),
+            })
+            .with_dlq_policy(DlqPolicy::RetryThenDlq {
+                max_attempts: 0,
+                backoff_ms: u64::MAX,
+            })
+            .with_dlq_sink(sink.clone());
+        let mut bus = Bus::new();
+        bus.insert(Timeline::new());
+        let report = axon.execute(7, &(), &mut bus).await;
+        assert!(matches!(report, crate::ExecutionReport::Unpersisted {
+            result: Outcome::Fault(error), .. } if error == "transient failure"));
+        assert_eq!(*remaining.lock().await, 1);
         let timeline = bus.read::<Timeline>().unwrap();
         assert!(
             !timeline
