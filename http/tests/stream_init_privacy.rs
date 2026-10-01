@@ -5,10 +5,18 @@ use ranvier_runtime::Axon;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 #[derive(Clone)]
-struct Fail;
+struct Fail {
+    init: bool,
+}
+struct PrivateItem;
+impl serde::Serialize for PrivateItem {
+    fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+        Err(serde::ser::Error::custom("private-item-encode-marker"))
+    }
+}
 #[async_trait::async_trait]
 impl StreamingTransition<()> for Fail {
-    type Item = String;
+    type Item = PrivateItem;
     type Error = String;
     type Resources = ();
     async fn run_stream(
@@ -16,17 +24,28 @@ impl StreamingTransition<()> for Fail {
         _: (),
         _: &(),
         _: &mut Bus,
-    ) -> Result<Pin<Box<dyn futures_util::Stream<Item = String> + Send>>, String> {
-        Err("private-stream-init-marker".into())
+    ) -> Result<Pin<Box<dyn futures_util::Stream<Item = PrivateItem> + Send>>, String> {
+        if self.init {
+            Err("private-stream-init-marker".into())
+        } else {
+            Ok(Box::pin(futures_util::stream::iter(vec![PrivateItem])))
+        }
     }
 }
-struct Capture(Arc<Mutex<String>>);
+struct Capture {
+    logs: Arc<Mutex<String>>,
+    spans: std::sync::atomic::AtomicU64,
+}
 impl tracing::Subscriber for Capture {
     fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
         true
     }
     fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
+        tracing::span::Id::from_u64(
+            self.spans
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1,
+        )
     }
     fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
     fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
@@ -40,7 +59,7 @@ impl tracing::Subscriber for Capture {
                 write!(self.0, "{}={value:?} ", field.name()).unwrap();
             }
         }
-        event.record(&mut Visit(&mut self.0.lock().unwrap()));
+        event.record(&mut Visit(&mut self.logs.lock().unwrap()));
     }
 }
 #[tokio::test]
@@ -66,8 +85,12 @@ async fn streaming_init_failure_redacts_response_and_actual_runtime_logs() {
         return;
     }
     let logs = Arc::new(Mutex::new(String::new()));
-    tracing::subscriber::set_global_default(Capture(logs.clone())).unwrap();
-    let stream = Axon::<(), (), String>::start("private-init").then_stream(Fail);
+    tracing::subscriber::set_global_default(Capture {
+        logs: logs.clone(),
+        spans: std::sync::atomic::AtomicU64::new(0),
+    })
+    .unwrap();
+    let stream = Axon::<(), (), String>::start("private-init").then_stream(Fail { init: true });
     let app = TestApp::new(Ranvier::http::<()>().post_sse("/stream", stream), ());
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(3),
@@ -77,6 +100,7 @@ async fn streaming_init_failure_redacts_response_and_actual_runtime_logs() {
     .unwrap()
     .unwrap();
     assert_eq!(response.status(), 500);
+    let logs_handle = logs.clone();
     let logs = logs.lock().unwrap().clone();
     assert!(
         logs.contains("Streaming"),
@@ -89,4 +113,30 @@ async fn streaming_init_failure_redacts_response_and_actual_runtime_logs() {
     let body: serde_json::Value = response.json().unwrap();
     assert!(!body.to_string().contains("private-stream-init-marker"));
     assert_eq!(body["error"], "Streaming initialization failed");
+    let stream = Axon::<(), (), String>::start("private-item").then_stream(Fail { init: false });
+    let app = TestApp::new(Ranvier::http::<()>().post_sse("/stream", stream), ());
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        app.send(TestRequest::post("/stream")),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(response.text().unwrap().contains("serialize_error"));
+    assert!(
+        !response
+            .text()
+            .unwrap()
+            .contains("private-item-encode-marker")
+    );
+    let logs = logs_handle.lock().unwrap().clone();
+    assert!(
+        !logs.contains("private-item-encode-marker"),
+        "item encoder leaked into logs"
+    );
+    assert!(
+        logs.contains("stream_item_encode"),
+        "late failure operational event must be captured"
+    );
 }

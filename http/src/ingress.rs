@@ -3265,8 +3265,8 @@ where
                         while let Some(item) = futures_util::StreamExt::next(&mut pinned).await {
                             let text = match serde_json::to_string(&item) {
                                 Ok(json) => format!("data: {}\n\n", json),
-                                Err(e) => {
-                                    tracing::error!("SSE item serialization error: {}", e);
+                                Err(_) => {
+                                    tracing::error!(failure_source = "stream_item_encode", "SSE item encoding failed");
                                     let err_text = "event: error\ndata: {\"message\":\"serialization error\",\"code\":\"serialize_error\"}\n\n".to_string();
                                     let _ = tx.send(Bytes::from(err_text)).await;
                                     break;
