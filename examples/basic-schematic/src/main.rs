@@ -51,6 +51,21 @@ use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
 
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 // ============================================================================
 // 1. Define Transitions (Atomic Steps)
 // ============================================================================
@@ -144,7 +159,7 @@ async fn main() -> anyhow::Result<()> {
     // Execute the Axon
     println!("=== Running Axon ===");
     let mut bus = Bus::new();
-    let result = axon.execute((), &(), &mut bus).await;
+    let result = local_demo_outcome(axon.execute((), &(), &mut bus).await)?;
     println!("Final Result: {:?}", result);
 
     // Demonstrate Axon helper methods
