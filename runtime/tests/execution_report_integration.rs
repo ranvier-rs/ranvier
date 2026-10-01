@@ -18,7 +18,18 @@ async fn cancellable_generated_identity_does_not_escape_invocation() {
         if cancelled {
             token.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
         }
-        let _report = axon.execute_cancellable(1, &(), &mut bus, token).await;
+        let report = axon.execute_cancellable(1, &(), &mut bus, token).await;
+        match report {
+            ExecutionReport::Unpersisted { result, .. } => match result {
+                ranvier_runtime::ExecutionTerminal::Cancelled(_) => assert!(cancelled),
+                ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Next(value)) => {
+                    assert!(!cancelled);
+                    assert_eq!(value, 2);
+                }
+                other => panic!("unexpected terminal: {other:?}"),
+            },
+            other => panic!("unexpected report: {other:?}"),
+        }
         assert!(bus.read::<PersistenceTraceId>().is_none());
     }
     assert_eq!(effects.load(Ordering::SeqCst), 2);
@@ -32,6 +43,7 @@ async fn cancellable_generated_identity_does_not_escape_invocation() {
         )
         .await;
     assert_eq!(bus.read::<PersistenceTraceId>().unwrap().0, "caller-owned");
+    assert_eq!(effects.load(Ordering::SeqCst), 3);
 }
 
 #[derive(Clone, serde::Deserialize)]
