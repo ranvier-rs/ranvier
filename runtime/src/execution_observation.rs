@@ -59,6 +59,40 @@ mod tests {
         assert!(bus.cancellation_token().unwrap().is_cancelled());
     }
 
+    #[test]
+    fn dropped_child_owner_restores_parent_invocation() {
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_store(
+            InMemoryPersistenceStore::new(),
+        ));
+        let original = bus.read::<PersistenceHandle>().unwrap().store();
+        let mut parent = InvocationOwner::begin(&mut bus);
+        let parent_trace = parent.bus().read::<InvocationTrace>().unwrap().0.clone();
+        let parent_observation = parent.bus().read::<ActiveObservation>().unwrap().0.clone();
+        {
+            let mut child = InvocationOwner::begin(parent.bus());
+            assert_ne!(
+                child.bus().read::<InvocationTrace>().unwrap().0,
+                parent_trace
+            );
+        }
+        assert_eq!(
+            parent.bus().read::<InvocationTrace>().unwrap().0,
+            parent_trace
+        );
+        assert!(Arc::ptr_eq(
+            &parent_observation,
+            &parent.bus().read::<ActiveObservation>().unwrap().0
+        ));
+        let _ = parent.finish("parent result");
+        assert!(Arc::ptr_eq(
+            &original,
+            &bus.read::<PersistenceHandle>().unwrap().store()
+        ));
+        assert!(bus.read::<InvocationTrace>().is_none());
+        assert!(bus.read::<ActiveObservation>().is_none());
+    }
+
     struct AppliedWithoutAck {
         backing: InMemoryCompensationIdempotencyStore,
         pending: bool,
