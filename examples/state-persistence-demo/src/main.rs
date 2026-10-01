@@ -181,20 +181,28 @@ fn build_order_axon() -> Axon<OrderState, String, String> {
         .then(FinalizeOrder)
 }
 
-fn print_trace(label: &str, trace: &ranvier_runtime::PersistedTrace) {
-    println!(
-        "  [Trace:{}] id={} circuit={}",
-        label, trace.trace_id, trace.circuit
-    );
-    println!("    events: {}", trace.events.len());
-    for event in &trace.events {
-        println!(
-            "      step={} outcome={} ts={}",
-            event.step, event.outcome_kind, event.timestamp_ms
-        );
+fn verify_trace(
+    trace: &ranvier_runtime::PersistedTrace,
+    id: &str,
+    completion: Option<ranvier_runtime::CompletionState>,
+) -> anyhow::Result<()> {
+    if trace.trace_id != id
+        || trace.circuit != "order.pipeline"
+        || trace.completion != completion
+        || trace.events.is_empty()
+    {
+        anyhow::bail!("Stored trace identity or completion mismatch");
     }
-    println!("    resumed_from_step: {:?}", trace.resumed_from_step);
-    println!("    completion: {:?}", trace.completion);
+    if trace.events.iter().any(|event| {
+        event.trace_id != id || event.circuit != trace.circuit || event.node_id.is_none()
+    }) || trace
+        .events
+        .windows(2)
+        .any(|events| events[0].step >= events[1].step)
+    {
+        anyhow::bail!("Stored event identity/order mismatch");
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -239,7 +247,14 @@ async fn run_demo() -> anyhow::Result<()> {
         .load(trace_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("missing trace"))?;
-    print_trace("after phase 1", &trace);
+    verify_trace(&trace, trace_id, None)?;
+    if trace
+        .events
+        .last()
+        .is_none_or(|event| event.outcome_kind != "Fault")
+    {
+        anyhow::bail!("Initial fault event missing");
+    }
 
     // --- Phase 2: Resume from checkpoint (fix condition, complete) ---
     println!("\n--- Phase 2: Resume — fix payment condition and complete ---");
@@ -250,9 +265,10 @@ async fn run_demo() -> anyhow::Result<()> {
         .iter()
         .rev()
         .find(|event| event.outcome_kind == "Next")
-        .or_else(|| trace.events.last())
         .map(|event| event.step)
-        .unwrap_or(0);
+        .ok_or_else(|| {
+            anyhow::anyhow!("Successful checkpoint missing; operator reconciliation required")
+        })?;
     let cursor = store_impl.resume(trace_id, resume_from).await?;
     println!(
         "  Resume cursor: trace={} next_step={}",
@@ -285,7 +301,19 @@ async fn run_demo() -> anyhow::Result<()> {
         .load(trace_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("missing trace"))?;
-    print_trace("after phase 2", &trace);
+    verify_trace(
+        &trace,
+        trace_id,
+        Some(ranvier_runtime::CompletionState::Success),
+    )?;
+    if trace.resumed_from_step != Some(resume_from)
+        || trace
+            .events
+            .last()
+            .is_none_or(|event| event.outcome_kind != "Next")
+    {
+        anyhow::bail!("Resume observation mismatch");
+    }
 
     // --- Phase 3: Compensation hook on irrecoverable fault ---
     println!("\n--- Phase 3: Compensation hook on irrecoverable fault ---");
@@ -320,7 +348,11 @@ async fn run_demo() -> anyhow::Result<()> {
         .load(comp_trace_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("missing trace"))?;
-    print_trace("after compensation", &trace);
+    verify_trace(
+        &trace,
+        comp_trace_id,
+        Some(ranvier_runtime::CompletionState::Compensated),
+    )?;
 
     println!("\ndone");
     Ok(())
