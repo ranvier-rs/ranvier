@@ -908,6 +908,31 @@ where
         });
     }
 
+    // Record every transition result independently of Saga snapshot policy.
+    if let Some(handle) = bus.read::<PersistenceHandle>() {
+        let trace_id = persistence_trace_id(bus);
+        let circuit = bus
+            .read::<ranvier_core::schematic::Schematic>()
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        let version = bus
+            .read::<ranvier_core::schematic::Schematic>()
+            .map(|s| s.schema_version.clone())
+            .unwrap_or_default();
+
+        persist_execution_event(
+            handle,
+            &trace_id,
+            &circuit,
+            &version,
+            step_idx,
+            Some(node_id.to_string()),
+            outcome_kind_name(&result),
+            Some(result.to_json_value()),
+        )
+        .await;
+    }
+
     // Automated Compensation Trigger
     if let Outcome::Fault(ref err) = result {
         if compensation_auto_trigger(bus) {
@@ -966,30 +991,6 @@ where
         // Push to Saga Stack if Next outcome and snapshot taken
         if let Some(stack) = bus.read_mut::<SagaStack>() {
             stack.push(node_id.to_string(), label.clone(), snapshot);
-        }
-
-        if let Some(handle) = bus.read::<PersistenceHandle>() {
-            let trace_id = persistence_trace_id(bus);
-            let circuit = bus
-                .read::<ranvier_core::schematic::Schematic>()
-                .map(|s| s.name.clone())
-                .unwrap_or_default();
-            let version = bus
-                .read::<ranvier_core::schematic::Schematic>()
-                .map(|s| s.schema_version.clone())
-                .unwrap_or_default();
-
-            persist_execution_event(
-                handle,
-                &trace_id,
-                &circuit,
-                &version,
-                step_idx,
-                Some(node_id.to_string()),
-                outcome_kind_name(&result),
-                Some(result.to_json_value()),
-            )
-            .await;
         }
     }
 

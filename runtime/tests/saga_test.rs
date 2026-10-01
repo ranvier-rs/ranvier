@@ -182,3 +182,56 @@ async fn saga_compensation_snapshot_mismatch_does_not_panic() {
         "malformed compensation snapshot should emit an event instead of running compensation"
     );
 }
+
+#[tokio::test]
+async fn compensated_step_records_result_when_saga_is_disabled() {
+    use ranvier_runtime::persistence::*;
+    use ranvier_runtime::{CompletionConfirmation, ExecutionReport};
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let store = Arc::new(InMemoryPersistenceStore::default());
+    let axon = Axon::<SagaState, SagaState, String, ()>::new("SagaDisabledPersistence")
+        .with_saga_policy(SagaPolicy::Disabled)
+        .then_compensated(
+            SuccStep {
+                id: "persist".into(),
+            },
+            CompStep {
+                id: "persist".into(),
+                results: results.clone(),
+            },
+        );
+    let mut bus = Bus::new();
+    bus.insert(PersistenceHandle::from_arc(store.clone()));
+    bus.insert(PersistenceTraceId::new("saga-disabled-result"));
+    let report = axon
+        .execute(
+            SagaState {
+                cnt: 0,
+                log: vec![],
+            },
+            &(),
+            &mut bus,
+        )
+        .await;
+    let ExecutionReport::Recorded {
+        result: Outcome::Next(state),
+        completion: CompletionConfirmation::Confirmed,
+    } = report
+    else {
+        panic!("expected acknowledged transition and completion");
+    };
+    assert_eq!(state.cnt, 1);
+    let trace = store.load("saga-disabled-result").await.unwrap().unwrap();
+    let events: Vec<_> = trace
+        .events
+        .iter()
+        .filter(|event| event.node_id.is_some() && event.outcome_kind == "Next")
+        .collect();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].outcome_kind, "Next");
+    assert_eq!(
+        events[0].payload,
+        Some(Outcome::<SagaState, String>::Next(state).to_json_value())
+    );
+    assert!(results.lock().unwrap().is_empty());
+}
