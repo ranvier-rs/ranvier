@@ -25,22 +25,29 @@ impl Synapse for InventorySynapse {
         );
         sleep(Duration::from_millis(300)).await; // Latency
 
-        let mut db = self.inventory.lock().unwrap();
+        if item_ids.is_empty() || item_ids.len() > 1000 {
+            return Err("Invalid reservation size".into());
+        }
+        let mut counts: HashMap<String, u32> = HashMap::new();
         for id in item_ids {
-            if let Some(product) = db.get_mut(&id) {
-                if product.stock > 0 {
-                    product.stock -= 1;
-                    println!(
-                        "\x1b[36m[Inventory]\x1b[0m Reserved '{}'. Remaining: {}",
-                        product.name, product.stock
-                    );
-                } else {
-                    println!("\x1b[31m[Inventory]\x1b[0m Out of stock: {}", product.name);
-                    return Ok(false);
-                }
-            } else {
-                return Err(format!("Product not found: {}", id));
+            *counts.entry(id).or_default() += 1;
+        }
+        let mut db = self
+            .inventory
+            .lock()
+            .map_err(|_| "Inventory unavailable".to_owned())?;
+        // Validate the whole cart before mutation under the same lock.
+        for (id, count) in &counts {
+            let product = db.get(id).ok_or_else(|| "Product not found".to_owned())?;
+            if product.stock < *count {
+                return Ok(false);
             }
+        }
+        for (id, count) in counts {
+            let product = db
+                .get_mut(&id)
+                .ok_or_else(|| "Inventory changed".to_owned())?;
+            product.stock -= count;
         }
         Ok(true)
     }
@@ -91,5 +98,45 @@ impl Synapse for ShippingSynapse {
         let tracking = format!("TRK-{}", uuid::Uuid::new_v4());
         println!("\x1b[35m[Shipping]\x1b[0m Shipped! Tracking: {}", tracking);
         Ok(tracking)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn inventory(stock: u32) -> InventorySynapse {
+        InventorySynapse {
+            inventory: Arc::new(Mutex::new(HashMap::from([(
+                "p".into(),
+                Product {
+                    id: "p".into(),
+                    name: "fixture".into(),
+                    price: 10,
+                    stock,
+                },
+            )]))),
+        }
+    }
+    #[tokio::test]
+    async fn failed_carts_do_not_partially_consume_stock() {
+        for items in [
+            vec!["p".into(), "p".into(), "p".into()],
+            vec!["p".into(), "missing".into()],
+        ] {
+            let db = inventory(2);
+            let result = db.call(items).await;
+            assert!(!matches!(result, Ok(true)));
+            assert_eq!(db.inventory.lock().unwrap()["p"].stock, 2);
+        }
+    }
+    #[tokio::test]
+    async fn concurrent_carts_cannot_oversell_the_same_stock() {
+        let db = inventory(2);
+        let (first, second) = tokio::join!(
+            db.call(vec!["p".into(), "p".into()]),
+            db.call(vec!["p".into(), "p".into()])
+        );
+        assert_ne!(first.unwrap(), second.unwrap());
+        assert_eq!(db.inventory.lock().unwrap()["p"].stock, 0);
     }
 }

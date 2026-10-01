@@ -97,7 +97,7 @@ pub async fn demo_path_routing() -> anyhow::Result<()> {
         match local_demo_outcome(axon.execute(req, &(), &mut bus).await)? {
             Outcome::Next(resp) => println!("    {} {}", resp.status, resp.body),
             Outcome::Fault(e) => println!("    Error: {:?}", e),
-            _ => {}
+            _ => anyhow::bail!("Unexpected routing control flow"),
         }
     }
     Ok(())
@@ -133,7 +133,7 @@ pub async fn demo_nested_routing() -> anyhow::Result<()> {
                 println!("    Branch: {} => {:?}", route, resp_box);
             }
             Outcome::Fault(e) => println!("    Error: {:?}", e),
-            _ => {}
+            _ => anyhow::bail!("Unexpected routing control flow"),
         }
     }
     Ok(())
@@ -167,7 +167,7 @@ pub async fn demo_branch_routing() -> anyhow::Result<()> {
             }
             Outcome::Next(req) => println!("    Default route (path: {})", req.path),
             Outcome::Fault(e) => println!("    Error: {:?}", e),
-            _ => {}
+            _ => anyhow::bail!("Unexpected routing control flow"),
         }
     }
 
@@ -227,7 +227,7 @@ impl Transition<RouteRequest, RouteResponse> for ApiRoute {
         _bus: &mut Bus,
     ) -> Outcome<RouteResponse, Self::Error> {
         let full_path = req.path.clone();
-        if !full_path.starts_with("/api") {
+        if !path_prefix(&full_path, "/api") {
             return Outcome::Fault(RouteError::NotFound(full_path));
         }
 
@@ -239,7 +239,10 @@ impl Transition<RouteRequest, RouteResponse> for ApiRoute {
             });
         }
 
-        if let Some(v1_path) = api_path.strip_prefix("/v1") {
+        if let Some(v1_path) = api_path
+            .strip_prefix("/v1")
+            .filter(|rest| rest.is_empty() || rest.starts_with('/'))
+        {
             return match api::v1::route_v1(req, v1_path).await {
                 Ok(outcome) => outcome,
                 Err(error) => Outcome::Fault(RouteError::BadRequest(format!(
@@ -267,18 +270,160 @@ impl Transition<RouteRequest, RouteRequest> for BranchRoute {
         _resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<RouteRequest, Self::Error> {
-        // Route based on path prefix using Branch outcome
-        if req.path.starts_with("/admin") {
-            let p = serde_json::to_value(&req).ok();
-            Outcome::Branch("admin".to_string(), p)
-        } else if req.path.starts_with("/api") {
-            let p = serde_json::to_value(&req).ok();
-            Outcome::Branch("api".to_string(), p)
-        } else if req.path.starts_with("/public") {
-            let p = serde_json::to_value(&req).ok();
-            Outcome::Branch("public".to_string(), p)
+        let route = if path_prefix(&req.path, "/admin") {
+            "admin"
+        } else if path_prefix(&req.path, "/api") {
+            "api"
+        } else if path_prefix(&req.path, "/public") {
+            "public"
         } else {
-            Outcome::Next(req)
+            return Outcome::Next(req);
+        };
+        match serde_json::to_value(&req) {
+            Ok(payload) => Outcome::Branch(route.into(), Some(payload)),
+            Err(_) => Outcome::Fault(RouteError::BadRequest(
+                "Route payload encoding failed".into(),
+            )),
         }
+    }
+}
+
+fn path_prefix(path: &str, prefix: &str) -> bool {
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+#[cfg(test)]
+mod execution_contract_tests {
+    use super::*;
+    use ranvier_runtime::{
+        CompletionConfirmation, EffectBoundary, ExecutionReport, PersistenceOperation,
+        SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep,
+    };
+
+    #[tokio::test]
+    async fn route_prefixes_match_whole_segments_only() {
+        for (path, expected) in [
+            ("/admin", Some("admin")),
+            ("/admin/users", Some("admin")),
+            ("/administrator", None),
+            ("/apiary", None),
+            ("/publicity", None),
+        ] {
+            let mut bus = Bus::new();
+            let result = BranchRoute
+                .run(
+                    RouteRequest {
+                        method: HttpMethod::GET,
+                        path: path.into(),
+                    },
+                    &(),
+                    &mut bus,
+                )
+                .await;
+            match result {
+                Outcome::Branch(route, Some(_)) => assert_eq!(Some(route.as_str()), expected),
+                Outcome::Next(_) => assert!(expected.is_none()),
+                _ => panic!("unexpected routing result"),
+            }
+        }
+        let mut bus = Bus::new();
+        assert!(matches!(
+            ApiRoute
+                .run(
+                    RouteRequest {
+                        method: HttpMethod::GET,
+                        path: "/api/v10/users".into()
+                    },
+                    &(),
+                    &mut bus
+                )
+                .await,
+            Outcome::Fault(RouteError::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn declared_routing_scenarios_run_through_the_report_policy() {
+        demo_path_routing().await.unwrap();
+        demo_nested_routing().await.unwrap();
+        demo_branch_routing().await.unwrap();
+    }
+
+    #[test]
+    fn local_report_policy_preserves_faults_and_rejects_uncertain_or_incomplete_execution() {
+        let next = || Outcome::<u32, String>::Next(7);
+        let reports = [
+            ExecutionReport::NotRequested {
+                result: next(),
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::Confirmed,
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::NotRequested,
+                cleanup: None,
+            },
+            ExecutionReport::Unconfirmed {
+                result: next(),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::NotInvoked,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+        ];
+        for report in reports {
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        for (finished, outcome) in [
+            (false, SagaRollbackOutcome::Completed),
+            (true, SagaRollbackOutcome::Fault),
+            (true, SagaRollbackOutcome::InProgress),
+        ] {
+            let report = ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: Some(SagaRollbackReport {
+                    trace_id: "private-trace".into(),
+                    finished,
+                    steps: vec![SagaRollbackStep {
+                        node_id: "private-node".into(),
+                        outcome,
+                    }],
+                }),
+            };
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        assert!(matches!(
+            local_demo_outcome(ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: None
+            })
+            .unwrap(),
+            Outcome::Next(7)
+        ));
+        assert!(
+            matches!(local_demo_outcome(ExecutionReport::Unpersisted { result: Outcome::<u32, String>::Fault("expected-domain-failure".into()), cleanup: None }).unwrap(), Outcome::Fault(error) if error == "expected-domain-failure")
+        );
     }
 }
