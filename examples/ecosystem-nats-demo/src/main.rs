@@ -22,6 +22,23 @@ use ranvier_runtime::Axon;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, timeout};
 
+// Explicit local-demo policy: neither persisted nor incomplete cleanup results
+// may be converted into ordinary domain success or automatic retry permission.
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 #[derive(Clone)]
 struct AppResources {
     nats: async_nats::Client,
@@ -190,7 +207,7 @@ async fn main() -> Result<()> {
         let event = maybe_event.ok_or_else(|| anyhow!("inbound subject closed"))?;
 
         let mut bus = Bus::new();
-        match axon.execute(event, &resources, &mut bus).await {
+        match local_demo_outcome(axon.execute(event, &resources, &mut bus).await)? {
             Outcome::Next(projected) => {
                 sink.send_event(projected).await.map_err(|e| anyhow!(e))?;
             }
