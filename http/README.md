@@ -144,3 +144,24 @@ probably too deep or too broad for Ranvier's explicitness goals.
 ## MSRV
 
 - Rust `1.93.0` or newer (Edition 2024).
+
+## Default IAM failure responses
+
+The default RanvierService mapper reserves these exact framework event labels:
+
+| Event | HTTP status |
+|---|---:|
+| iam.missing_token, iam.verification_failed |401|
+| iam.policy_denied |403|
+| iam.context_clear_failed, iam.context_write_denied, iam.verifier_panicked |500|
+
+Responses contain fixed `kind: iam`, `event_type` and `error` fields; arbitrary
+failure payloads are discarded. IAM failures use Cache-Control: no-store;401
+adds WWW-Authenticate: Bearer. Other Emit labels retain202 and their application
+payloads, including unrelated iam-prefixed events. Durability rejection is checked
+before domain mapping. with_response_mapper replaces this behavior; custom mappers
+must define appropriate authentication scheme, denial and infrastructure status
+handling. A verifier panic is an infrastructure failure, not invalid credentials
+or permission to retry a possibly poisoned verifier. Runtime panic-hook privacy,
+issuer/audience, tenant membership and production key/revocation policy remain
+separate responsibilities. This change belongs to the API B release cohort.

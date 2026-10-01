@@ -431,6 +431,67 @@ mod tests {
         serde_json::from_slice(&body).unwrap()
     }
 
+    #[tokio::test]
+    async fn iam_failure_mapping_discards_payload_and_preserves_ordinary_events() {
+        for (label, status) in [
+            ("iam.missing_token", StatusCode::UNAUTHORIZED),
+            ("iam.verification_failed", StatusCode::UNAUTHORIZED),
+            ("iam.policy_denied", StatusCode::FORBIDDEN),
+            (
+                "iam.context_clear_failed",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                "iam.context_write_denied",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            ("iam.verifier_panicked", StatusCode::INTERNAL_SERVER_ERROR),
+        ] {
+            for payload in [
+                None,
+                Some(serde_json::json!({"token":"private-payload-marker"})),
+            ] {
+                let response = default_response_mapper::<serde_json::Value, TestError>(
+                    ExecutionReport::Unpersisted {
+                        result: Outcome::Emit(label.into(), payload),
+                        cleanup: None,
+                    },
+                    &Bus::new(),
+                );
+                assert_eq!(response.status(), status);
+                assert_eq!(response.headers()["cache-control"], "no-store");
+                assert_eq!(response.headers()["ranvier-durability"], "unpersisted");
+                if status == StatusCode::UNAUTHORIZED {
+                    assert_eq!(response.headers()["www-authenticate"], "Bearer");
+                } else {
+                    assert!(response.headers().get("www-authenticate").is_none());
+                }
+                let body = response_body_json(response).await;
+                assert_eq!(body["kind"], "iam");
+                assert_eq!(body["event_type"], label);
+                assert!(body["error"].is_string());
+                assert!(body.get("payload").is_none());
+                assert!(!body.to_string().contains("private-payload-marker"));
+            }
+        }
+        for label in ["order.created", "iam.application_event"] {
+            let payload = serde_json::json!({"event":"ordinary-event-data"});
+            let response = default_response_mapper::<serde_json::Value, TestError>(
+                ExecutionReport::Unpersisted {
+                    result: Outcome::Emit(label.into(), Some(payload.clone())),
+                    cleanup: None,
+                },
+                &Bus::new(),
+            );
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            assert!(response.headers().get("www-authenticate").is_none());
+            assert_eq!(
+                response_body_json(response).await,
+                serde_json::json!({"kind":"emit", "event_type":label, "payload":payload})
+            );
+        }
+    }
+
     fn request() -> Request<Full<Bytes>> {
         Request::new(Full::new(Bytes::new()))
     }
