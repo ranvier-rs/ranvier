@@ -59,6 +59,23 @@ async fn postgres_recovery_worker() {
                 .await
                 .unwrap();
             let trace = store.load("recovery").await.unwrap().unwrap();
+            assert_eq!(
+                trace.events,
+                vec![
+                    event("recovery", 0, "seed"),
+                    event("recovery", 1, "acknowledged")
+                ]
+            );
+            assert_eq!(trace.schematic_version, "acknowledged");
+            assert_eq!(trace.completion, Some(CompletionState::Success));
+            assert_eq!(
+                trace.interventions,
+                vec![Intervention {
+                    target_node: "recovery-node".into(),
+                    payload_override: Some(serde_json::json!({"fixture": [1, true, "retained"]})),
+                    timestamp_ms: 1100
+                }]
+            );
             let file = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
