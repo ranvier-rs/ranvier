@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_runtime::Axon;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, Database, DatabaseConnection, EntityTrait, ModelTrait,
+    ActiveModelTrait, ActiveValue::Set, Database, DatabaseConnection, EntityTrait, TransactionTrait,
 };
 use sea_orm_migration::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -176,33 +176,29 @@ impl Transition<UpdateEmailInput, UserSummary> for UpdateUserEmailTransition {
         resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<UserSummary, Self::Error> {
-        let found = user::Entity::find_by_id(input.id)
-            .one(&resources.db)
-            .await
-            .map_err(|e| e.to_string());
-
-        let model = match found {
-            Ok(Some(model)) => model,
-            Ok(None) => return Outcome::Fault(format!("user id={} not found", input.id)),
-            Err(err) => return Outcome::Fault(err),
+        let transaction = match resources.db.begin().await {
+            Ok(transaction) => transaction,
+            Err(_) => return Outcome::Fault("Update transaction unavailable".into()),
         };
-
+        let model = match user::Entity::find_by_id(input.id).one(&transaction).await {
+            Ok(Some(model)) => model,
+            Ok(None) => return Outcome::Fault("User not found".into()),
+            Err(_) => return Outcome::Fault("Update lookup failed".into()),
+        };
         let mut active: user::ActiveModel = model.into();
         active.email = Set(input.email);
-
-        let updated = active
-            .update(&resources.db)
-            .await
-            .map_err(|e| e.to_string());
-
-        match updated {
-            Ok(updated) => Outcome::Next(UserSummary {
-                id: updated.id,
-                username: updated.username,
-                email: updated.email,
-            }),
-            Err(err) => Outcome::Fault(err.to_string()),
+        let updated = match active.update(&transaction).await {
+            Ok(model) => model,
+            Err(_) => return Outcome::Fault("Update failed; reconcile before retry".into()),
+        };
+        if transaction.commit().await.is_err() {
+            return Outcome::Fault("Update commit unconfirmed; reconcile before retry".into());
         }
+        Outcome::Next(UserSummary {
+            id: updated.id,
+            username: updated.username,
+            email: updated.email,
+        })
     }
 }
 
@@ -220,23 +216,13 @@ impl Transition<DeleteUserInput, i32> for DeleteUserTransition {
         resources: &Self::Resources,
         _bus: &mut Bus,
     ) -> Outcome<i32, Self::Error> {
-        let found = user::Entity::find_by_id(input.id)
-            .one(&resources.db)
+        match user::Entity::delete_by_id(input.id)
+            .exec(&resources.db)
             .await
-            .map_err(|e| e.to_string());
-
-        let model = match found {
-            Ok(Some(model)) => model,
-            Ok(None) => return Outcome::Fault(format!("user id={} not found", input.id)),
-            Err(err) => return Outcome::Fault(err),
-        };
-
-        let deleted_id = model.id;
-        let deleted = model.delete(&resources.db).await.map_err(|e| e.to_string());
-
-        match deleted {
-            Ok(_) => Outcome::Next(deleted_id),
-            Err(err) => Outcome::Fault(err.to_string()),
+        {
+            Ok(result) if result.rows_affected == 1 => Outcome::Next(input.id),
+            Ok(_) => Outcome::Fault("User not found".into()),
+            Err(_) => Outcome::Fault("Delete failed; reconcile before retry".into()),
         }
     }
 }
