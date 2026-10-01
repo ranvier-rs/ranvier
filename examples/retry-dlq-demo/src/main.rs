@@ -258,7 +258,7 @@ impl Transition<PaymentRequest, PaymentResult> for CircuitBreakerGateway {
                 _ => 1,
             };
 
-            if failures >= self.failure_threshold {
+            if matches!(&*state, CircuitState::Open { .. }) || failures >= self.failure_threshold {
                 println!(
                     "  [CB] Failure threshold reached ({}/{}) — opening circuit",
                     failures, self.failure_threshold
@@ -550,6 +550,77 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    async fn expire_open_window(gateway: &CircuitBreakerGateway) {
+        let mut state = gateway.state.lock().await;
+        assert!(matches!(&*state, CircuitState::Open { .. }));
+        *state = CircuitState::Open {
+            opened_at: tokio::time::Instant::now()
+                .checked_sub(gateway.reset_timeout)
+                .unwrap(),
+        };
+    }
+
+    async fn call_breaker(gateway: CircuitBreakerGateway) -> Outcome<PaymentResult, String> {
+        let axon = Axon::<PaymentRequest, PaymentRequest, String, ()>::new("breaker.reset.test")
+            .then(gateway);
+        local_demo_outcome(
+            axon.execute(
+                PaymentRequest {
+                    order_id: "probe".into(),
+                    amount: 1.0,
+                },
+                &(),
+                &mut Bus::new(),
+            )
+            .await,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn failed_reset_probe_reopens_and_serializes_concurrent_requests() {
+        let gateway = CircuitBreakerGateway::new(2, std::time::Duration::from_secs(60), 3);
+        for _ in 0..2 {
+            assert!(matches!(call_breaker(gateway.clone()).await,
+                Outcome::Fault(error) if error.starts_with("gateway_error")));
+        }
+        expire_open_window(&gateway).await;
+        let (first, second) =
+            tokio::join!(call_breaker(gateway.clone()), call_breaker(gateway.clone()));
+        let results = [first, second];
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result,
+            Outcome::Fault(error) if error.starts_with("gateway_error")))
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result,
+            Outcome::Fault(error) if error == "circuit_open"))
+                .count(),
+            1
+        );
+        assert_eq!(gateway.inner_fail_count.load(Ordering::SeqCst), 3);
+        assert!(matches!(
+            &*gateway.state.lock().await,
+            CircuitState::Open { .. }
+        ));
+        expire_open_window(&gateway).await;
+        assert!(matches!(call_breaker(gateway.clone()).await,
+            Outcome::Next(value) if value.order_id == "probe" && value.amount == 1.0));
+        assert!(matches!(
+            &*gateway.state.lock().await,
+            CircuitState::Closed {
+                consecutive_failures: 0
+            }
+        ));
+        assert_eq!(gateway.inner_fail_count.load(Ordering::SeqCst), 4);
+    }
+
     #[tokio::test]
     async fn actual_retry_dlq_timeout_and_breaker_scenarios() {
         run_demo().await.unwrap();
