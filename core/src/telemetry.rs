@@ -6,7 +6,6 @@ use crate::bus::Bus;
 use crate::outcome::Outcome;
 use crate::transition::Transition;
 use async_trait::async_trait;
-use std::fmt::Debug;
 
 /// Represents the context of a Trace (e.g., Trace ID, Span ID).
 /// In a real OTLP implementation, this would hold the actual SpanContext.
@@ -33,6 +32,8 @@ impl TraceContext {
 
 /// A wrapper Transition that adds telemetry (tracing) to any inner Transition.
 /// This demonstrates the "Decorator" pattern for observability.
+/// Default logs contain static outcome kinds and durations, never input/output,
+/// error text or control identifiers. Node labels must be safe operational metadata.
 #[derive(Clone)]
 pub struct Traced<T> {
     inner: T,
@@ -52,8 +53,8 @@ impl<T> Traced<T> {
 impl<T, From, To> Transition<From, To> for Traced<T>
 where
     T: Transition<From, To>,
-    From: Send + 'static + Debug,
-    To: Send + 'static + Debug,
+    From: Send + 'static,
+    To: Send + 'static,
 {
     type Error = T::Error;
     type Resources = T::Resources;
@@ -73,27 +74,29 @@ where
         );
 
         async move {
-            tracing::debug!(?input, "Entering node transition");
+            tracing::debug!("Entering node transition");
             let start = std::time::Instant::now();
 
             let result = self.inner.run(input, resources, bus).await;
 
             let duration = start.elapsed();
+            // Payloads, error text and control identifiers may contain private data.
+            // Default telemetry records only the static outcome kind and duration.
             match &result {
-                Outcome::Next(val) => {
-                    tracing::info!(?val, ?duration, "Transition completed: Next");
+                Outcome::Next(_) => {
+                    tracing::info!(outcome_kind = "Next", ?duration, "Transition completed")
                 }
-                Outcome::Branch(id, _) => {
-                    tracing::info!(?id, ?duration, "Transition completed: Branch");
+                Outcome::Branch(_, _) => {
+                    tracing::info!(outcome_kind = "Branch", ?duration, "Transition completed")
                 }
-                Outcome::Jump(id, _) => {
-                    tracing::info!(?id, ?duration, "Transition completed: Jump");
+                Outcome::Jump(_, _) => {
+                    tracing::info!(outcome_kind = "Jump", ?duration, "Transition completed")
                 }
-                Outcome::Emit(event_type, _) => {
-                    tracing::info!(?event_type, ?duration, "Transition completed: Emit");
+                Outcome::Emit(_, _) => {
+                    tracing::info!(outcome_kind = "Emit", ?duration, "Transition completed")
                 }
-                Outcome::Fault(e) => {
-                    tracing::error!(error = ?e, ?duration, "Transition failed: Fault");
+                Outcome::Fault(_) => {
+                    tracing::error!(outcome_kind = "Fault", ?duration, "Transition failed")
                 }
             }
             result
@@ -143,4 +146,100 @@ pub enum InterventionEvent {
 pub trait AuditLogger: Send + Sync {
     /// Log an intervention event permanently and securely.
     async fn log_intervention(&self, event: InterventionEvent) -> Result<(), String>;
+}
+
+#[cfg(test)]
+mod privacy_tests {
+    use super::*;
+    use std::{
+        io::Write,
+        sync::{Arc, Mutex},
+    };
+
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    #[derive(Clone)]
+    struct Fixed(Outcome<String, String>);
+    #[async_trait]
+    impl Transition<String, String> for Fixed {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, _: String, _: &(), _: &mut Bus) -> Outcome<String, String> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn traced_logs_preserve_outcome_without_recording_private_values() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let output = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(move || Capture(output.clone()))
+            .finish();
+        let jump = uuid::Uuid::new_v4();
+        let outcomes = [
+            Outcome::Next("private-next".into()),
+            Outcome::Branch(
+                "private-branch".into(),
+                Some(serde_json::json!({"value":"private-payload"})),
+            ),
+            Outcome::Jump(jump, Some(serde_json::json!({"value":"private-payload"}))),
+            Outcome::Emit(
+                "private-event".into(),
+                Some(serde_json::json!({"value":"private-payload"})),
+            ),
+            Outcome::Fault("private-error".into()),
+        ];
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(async {
+                for expected in outcomes {
+                    let actual = Traced::new(Fixed(expected.clone()), "safe-node")
+                        .run("private-input".into(), &(), &mut Bus::new())
+                        .await;
+                    assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+                }
+            })
+        });
+        let bytes = captured.lock().unwrap();
+        let logs = std::str::from_utf8(&bytes).unwrap();
+        assert!(!logs.contains("private-"));
+        assert!(!logs.contains(&jump.to_string()));
+        for kind in ["Next", "Branch", "Jump", "Emit", "Fault"] {
+            assert!(logs.contains(kind), "missing {kind}: {logs}");
+        }
+    }
+
+    struct NoDebug(u32);
+    #[derive(Clone)]
+    struct Pass;
+    #[async_trait]
+    impl Transition<NoDebug, NoDebug> for Pass {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, input: NoDebug, _: &(), _: &mut Bus) -> Outcome<NoDebug, String> {
+            Outcome::Next(input)
+        }
+    }
+    #[tokio::test]
+    async fn traced_does_not_require_payload_debug_formatting() {
+        match Traced::new(Pass, "safe-node")
+            .run(NoDebug(7), &(), &mut Bus::new())
+            .await
+        {
+            Outcome::Next(value) => assert_eq!(value.0, 7),
+            _ => panic!("unexpected outcome"),
+        }
+    }
 }

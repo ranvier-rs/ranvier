@@ -126,15 +126,12 @@ async fn main() -> anyhow::Result<()> {
     println!("=== OTLP Tracing Concept ===\n");
 
     // 1. Setup Request and Connection Context
-    let _req = http::Request::new(());
     let conn_id = ConnectionId::new();
     let bus = Bus::new();
     let mut conn_bus = ConnectionBus::from_bus(conn_id, bus);
 
     println!("[System] Connection ID: {:?}", conn_bus.connection_id());
 
-    // 2. Define Axon with Tracing Wrappers
-    // Provide a name for each span
     // 2. Define Axon with Tracing Wrappers
     // Provide a name for each span
     let axon = Axon::<HttpRequest, HttpRequest, String>::new("HttpTransaction")
@@ -159,4 +156,91 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+    use ranvier_runtime::{
+        CompletionConfirmation, EffectBoundary, ExecutionReport, PersistenceOperation,
+        SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep,
+    };
+    #[test]
+    fn declared_demo_executes_with_report_policy() {
+        main().unwrap();
+    }
+    #[test]
+    fn local_report_policy_preserves_faults_and_rejects_uncertain_or_incomplete_execution() {
+        let next = || Outcome::<u32, String>::Next(7);
+        let reports = [
+            ExecutionReport::NotRequested {
+                result: next(),
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::Confirmed,
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::NotRequested,
+                cleanup: None,
+            },
+            ExecutionReport::Unconfirmed {
+                result: next(),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::NotInvoked,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+        ];
+        for report in reports {
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        for (finished, outcome) in [
+            (false, SagaRollbackOutcome::Completed),
+            (true, SagaRollbackOutcome::Fault),
+            (true, SagaRollbackOutcome::InProgress),
+        ] {
+            let report = ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: Some(SagaRollbackReport {
+                    trace_id: "private-trace".into(),
+                    finished,
+                    steps: vec![SagaRollbackStep {
+                        node_id: "private-node".into(),
+                        outcome,
+                    }],
+                }),
+            };
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        assert!(matches!(
+            local_demo_outcome(ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: None
+            })
+            .unwrap(),
+            Outcome::Next(7)
+        ));
+        assert!(
+            matches!(local_demo_outcome(ExecutionReport::Unpersisted { result: Outcome::<u32, String>::Fault("expected-domain-failure".into()), cleanup: None }).unwrap(), Outcome::Fault(error) if error == "expected-domain-failure")
+        );
+    }
 }
