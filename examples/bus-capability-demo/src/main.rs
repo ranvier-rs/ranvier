@@ -107,22 +107,40 @@ mod tests {
     #[tokio::test]
     async fn macro_policy_blocks_write_aliases_and_preserves_existing_storage() {
         for shared in [false, true] {
-            let mut bus = Bus::new();
-            if shared {
-                bus.insert_shared("original".to_string());
-            } else {
-                bus.insert("original".to_string());
+            for existing in [false, true] {
+                let mut bus = Bus::new();
+                if existing {
+                    if shared {
+                        bus.insert_shared("original".to_string());
+                    } else {
+                        bus.insert("original".to_string());
+                    }
+                }
+                let axon =
+                    Axon::simple::<String>("guarded-write-test").then(attempt_guarded_writes);
+                assert!(matches!(
+                    local_demo_outcome(axon.execute((), &(), &mut bus).await).unwrap(),
+                    Outcome::Next(())
+                ));
+                assert_eq!(
+                    bus.read::<String>().map(String::as_str),
+                    if existing { Some("original") } else { None }
+                );
+                assert_eq!(*bus.get::<i32>().unwrap(), 42);
+                // A denied local insertion must not remove an existing shared
+                // entry or make a local value shareable in the next fork.
+                let fork = bus.fork_for_parallel();
+                assert_eq!(
+                    fork.read::<String>().map(String::as_str),
+                    if existing && shared {
+                        Some("original")
+                    } else {
+                        None
+                    }
+                );
             }
-            let axon = Axon::simple::<String>("guarded-write-test").then(attempt_guarded_writes);
-            assert!(matches!(
-                local_demo_outcome(axon.execute((), &(), &mut bus).await).unwrap(),
-                Outcome::Next(())
-            ));
-            assert_eq!(bus.get::<String>().unwrap(), "original");
-            assert_eq!(*bus.get::<i32>().unwrap(), 42);
         }
     }
-
     #[tokio::test]
     async fn missing_allowed_capability_is_fault() {
         let axon = Axon::simple::<String>("missing").then(allowed_read);
