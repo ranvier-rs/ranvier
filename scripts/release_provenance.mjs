@@ -145,11 +145,16 @@ function runSelfTest(policy) {
 
 function parseArgs(argv) {
   const args = { selfTest: false, output: null, verifyCrate: null, expectedCommit: null };
+  const valueAt = (index) => {
+    const value = argv[index];
+    invariant(typeof value === 'string' && value.length > 0 && !value.startsWith('--'), 'option requires a nonempty value');
+    return value;
+  };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--self-test') args.selfTest = true;
-    else if (argv[i] === '--output') args.output = argv[++i];
-    else if (argv[i] === '--verify-crate') args.verifyCrate = argv[++i];
-    else if (argv[i] === '--expected-commit') args.expectedCommit = argv[++i];
+    else if (argv[i] === '--output') args.output = valueAt(++i);
+    else if (argv[i] === '--verify-crate') args.verifyCrate = valueAt(++i);
+    else if (argv[i] === '--expected-commit') args.expectedCommit = valueAt(++i);
     else throw new Error(`unknown argument: ${argv[i]}`);
   }
   invariant(Boolean(args.verifyCrate) === Boolean(args.expectedCommit), 'verify-crate and expected-commit must be supplied together');
