@@ -489,8 +489,18 @@ impl Transition<SagaState, ()> for PanicUndo {
 #[tokio::test]
 async fn rollback_panic_preserves_business_fault_and_incomplete_cleanup() {
     use ranvier_runtime::saga_report::{SagaRollbackOutcome, SagaRollbackReport};
+    let completed_undo = Arc::new(Mutex::new(Vec::new()));
     let axon = Axon::<SagaState, SagaState, String>::new("PanicRollback")
         .with_saga_policy(SagaPolicy::Enabled)
+        .then_compensated(
+            SuccStep {
+                id: "earlier".into(),
+            },
+            CompStep {
+                id: "earlier".into(),
+                results: completed_undo.clone(),
+            },
+        )
         .then_compensated(SuccStep { id: "one".into() }, PanicUndo)
         .then(FailStep);
     let mut bus = Bus::new();
@@ -510,11 +520,61 @@ async fn rollback_panic_preserves_business_fault_and_incomplete_cleanup() {
     let report = bus.read::<SagaRollbackReport>().unwrap();
     assert!(report.finished);
     assert!(!report.is_complete());
-    assert_eq!(report.steps.len(), 1);
+    assert_eq!(report.steps.len(), 2);
     assert_eq!(report.steps[0].outcome, SagaRollbackOutcome::Panicked);
+    assert_eq!(report.steps[1].outcome, SagaRollbackOutcome::Completed);
+    assert_eq!(*completed_undo.lock().unwrap(), vec!["Comp_earlier:0"]);
     assert!(
         !serde_json::to_string(report)
             .unwrap()
             .contains("private-panic")
     );
+}
+
+#[derive(Clone)]
+struct PendingUndo(Arc<tokio::sync::Notify>);
+#[async_trait]
+impl Transition<SagaState, ()> for PendingUndo {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: SagaState, _: &(), _: &mut Bus) -> Outcome<(), String> {
+        self.0.notify_one();
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn dropped_pending_rollback_retains_in_progress_without_completed_claim() {
+    use ranvier_runtime::saga_report::{SagaRollbackOutcome, SagaRollbackReport};
+    let started = Arc::new(tokio::sync::Notify::new());
+    let axon = Axon::<SagaState, SagaState, String>::new("PendingRollback")
+        .with_saga_policy(SagaPolicy::Enabled)
+        .then_compensated(SuccStep { id: "one".into() }, PendingUndo(started.clone()))
+        .then(FailStep);
+    let mut bus = Bus::new();
+    {
+        let mut execution = Box::pin(axon.execute(
+            SagaState {
+                cnt: 0,
+                log: vec![],
+            },
+            &(),
+            &mut bus,
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::select! {
+                _ = started.notified() => {},
+                _ = &mut execution => panic!("pending cleanup unexpectedly returned"),
+            }
+        })
+        .await
+        .unwrap();
+        // Dropping the polled executor releases its Bus borrow. No ACK or
+        // known cleanup completion follows this interruption.
+    }
+    let report = bus.read::<SagaRollbackReport>().unwrap();
+    assert!(!report.finished);
+    assert!(!report.is_complete());
+    assert_eq!(report.steps.len(), 1);
+    assert_eq!(report.steps[0].outcome, SagaRollbackOutcome::InProgress);
 }
