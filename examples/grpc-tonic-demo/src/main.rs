@@ -78,6 +78,204 @@ fn validate_name(name: &str) -> Result<(), Status> {
     Ok(())
 }
 
+#[cfg(test)]
+include!("web_catalog_fixture.rs");
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use ranvier_runtime::{
+        CompletionConfirmation as C, EffectBoundary, PersistenceOperation,
+        SagaRollbackOutcome as O, SagaRollbackReport, SagaRollbackStep,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    use tokio_stream::{StreamExt, wrappers::TcpListenerStream};
+
+    #[derive(Clone)]
+    struct FailingGreeting(Arc<AtomicU64>);
+    #[async_trait]
+    impl Transition<GreetInput, GreetOutput> for FailingGreeting {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, _: GreetInput, _: &(), _: &mut Bus) -> Outcome<GreetOutput, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Outcome::Fault("private-resolver-sentinel".into())
+        }
+    }
+
+    #[test]
+    fn report_policy_preserves_safe_statuses_and_cleanup() {
+        let next = || {
+            Outcome::Next(GreetOutput {
+                message: "public".into(),
+            })
+        };
+        assert_eq!(
+            map_local_report(ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: None
+            })
+            .unwrap()
+            .message,
+            "public"
+        );
+        let fault = map_local_report(ExecutionReport::Unpersisted {
+            result: Outcome::Fault("private".into()),
+            cleanup: None,
+        })
+        .unwrap_err();
+        assert_eq!(fault.code(), tonic::Code::Internal);
+        assert_eq!(fault.message(), "Greeting failed");
+        for report in [
+            ExecutionReport::NotRequested {
+                result: next(),
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: C::Confirmed,
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: C::NotRequested,
+                cleanup: None,
+            },
+            ExecutionReport::Unconfirmed {
+                result: next(),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::NotInvoked,
+                cleanup: None,
+            },
+        ] {
+            let status = map_local_report(report).unwrap_err();
+            assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+            assert_eq!(
+                status.message(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+        for finished in [false, true] {
+            for outcome in [
+                O::InProgress,
+                O::Panicked,
+                O::Completed,
+                O::Fault,
+                O::Emitted,
+                O::Branched,
+                O::Jumped,
+                O::MissingHandler,
+            ] {
+                let result = map_local_report(ExecutionReport::Unpersisted {
+                    result: next(),
+                    cleanup: Some(SagaRollbackReport {
+                        trace_id: "private".into(),
+                        finished,
+                        steps: vec![SagaRollbackStep {
+                            node_id: "private".into(),
+                            outcome,
+                        }],
+                    }),
+                });
+                assert_eq!(result.is_ok(), finished && outcome == O::Completed);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_stream_stops_after_one_effect() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let service = GreeterService {
+            axon: Axon::<GreetInput, GreetInput, String>::new("failure")
+                .then(FailingGreeting(calls.clone())),
+        };
+        let mut stream = service
+            .say_hello_stream(Request::new(HelloRequest {
+                name: "Synthetic".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let status = stream.next().await.unwrap().unwrap_err();
+        assert_eq!(status.message(), "Greeting failed");
+        assert!(stream.next().await.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn real_tcp_unary_stream_and_invalid_input() {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let service = GreeterService {
+                axon: Axon::<GreetInput, GreetInput, String>::new("tcp-greeting")
+                    .then(BuildGreeting),
+            };
+            let (stop, stopped) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(
+                tonic::transport::Server::builder()
+                    .add_service(GreeterServer::new(service))
+                    .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                        let _ = stopped.await;
+                    }),
+            );
+            let mut client =
+                greeter::greeter_client::GreeterClient::connect(format!("http://{address}"))
+                    .await
+                    .unwrap();
+            let reply = client
+                .say_hello(HelloRequest {
+                    name: "World".into(),
+                })
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(reply.message, "Hello, World! (from Ranvier Axon pipeline)");
+            for name in [" ".into(), "x".repeat(1025)] {
+                let status = client
+                    .say_hello(HelloRequest { name: name.clone() })
+                    .await
+                    .unwrap_err();
+                assert_eq!(status.code(), tonic::Code::InvalidArgument);
+                let status = client
+                    .say_hello_stream(HelloRequest { name })
+                    .await
+                    .unwrap_err();
+                assert_eq!(status.code(), tonic::Code::InvalidArgument);
+            }
+            let mut stream = client
+                .say_hello_stream(HelloRequest {
+                    name: "World".into(),
+                })
+                .await
+                .unwrap()
+                .into_inner();
+            for index in 1..=3 {
+                let reply = stream.message().await.unwrap().unwrap();
+                assert_eq!(
+                    reply.message,
+                    format!("Hello, World (stream #{index})! (from Ranvier Axon pipeline)")
+                );
+            }
+            assert!(stream.message().await.unwrap().is_none());
+            drop(stream);
+            drop(client);
+            stop.send(()).unwrap();
+            server.await.unwrap().unwrap();
+        })
+        .await
+        .unwrap();
+    }
+}
+
 // Local demo policy: no workflow persistence is configured.
 fn map_local_report(
     report: ExecutionReport<Outcome<GreetOutput, String>>,
