@@ -29,6 +29,23 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+// Explicit local-demo policy: neither persisted nor incomplete cleanup results
+// may be converted into ordinary domain success or automatic retry permission.
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 // ============================================================================
 // 1. Data Types
 // ============================================================================
@@ -183,7 +200,7 @@ async fn main() -> anyhow::Result<()> {
 
         let mut bus = Bus::new();
         // 4. Execute Axon
-        match axon.execute(msg, &(), &mut bus).await {
+        match local_demo_outcome(axon.execute(msg, &(), &mut bus).await)? {
             Outcome::Next(response) => {
                 // 5. Send result to Sink
                 if let Err(e) = ws.send_event(response).await {
