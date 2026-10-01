@@ -44,13 +44,9 @@ where
     ) -> crate::ExecutionReport<ExecutionTerminal<Out, E>> {
         let session = crate::execution_observation::Session::begin(bus);
         bus.set_cancellation_token(token.clone());
-        if bus
-            .read::<crate::persistence::PersistenceTraceId>()
-            .is_none()
-        {
-            let trace_id = persistence_trace_id(bus);
-            bus.insert(crate::persistence::PersistenceTraceId(trace_id));
-        }
+        // Session owns InvocationTrace for both execution and cancellation
+        // cleanup. Do not promote its generated identity to caller-owned
+        // PersistenceTraceId: that would leak into later uses of this Bus.
         let caller_owned_timeline = bus.read::<Timeline>().is_some();
 
         let race = {

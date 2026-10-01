@@ -8,6 +8,32 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+#[tokio::test]
+async fn cancellable_generated_identity_does_not_escape_invocation() {
+    let effects = Arc::new(AtomicUsize::new(0));
+    let axon = Axon::<u32, u32, String>::new("identity-lifetime").then(Count(effects.clone()));
+    let mut bus = Bus::new();
+    for cancelled in [false, true, false] {
+        let token = ranvier_core::cancellation::CancellationToken::new();
+        if cancelled {
+            token.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
+        }
+        let _report = axon.execute_cancellable(1, &(), &mut bus, token).await;
+        assert!(bus.read::<PersistenceTraceId>().is_none());
+    }
+    assert_eq!(effects.load(Ordering::SeqCst), 2);
+    bus.insert(PersistenceTraceId::new("caller-owned"));
+    let _report = axon
+        .execute_cancellable(
+            1,
+            &(),
+            &mut bus,
+            ranvier_core::cancellation::CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(bus.read::<PersistenceTraceId>().unwrap().0, "caller-owned");
+}
+
 #[derive(Clone, serde::Deserialize)]
 struct EncodingOutput {
     terminal_only: bool,
