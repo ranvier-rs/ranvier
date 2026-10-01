@@ -1311,16 +1311,59 @@ mod tests {
             Temporality::Cumulative
         }
     }
-    struct DeltaNumericCapture(NumericCapture);
+    #[derive(Default)]
+    struct DeltaProperties {
+        non_delta: bool,
+        sum_overflow: usize,
+        histogram_overflow: usize,
+    }
+    struct DeltaNumericCapture {
+        numeric: NumericCapture,
+        properties: Arc<Mutex<DeltaProperties>>,
+    }
     impl PushMetricExporter for DeltaNumericCapture {
         async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
-            self.0.export(metrics).await
+            use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+            let mut properties = DeltaProperties::default();
+            let overflow = |attribute: &KeyValue| {
+                attribute.key.as_str() == "otel.metric.overflow"
+                    && attribute.value == opentelemetry::Value::Bool(true)
+            };
+            for scope in metrics.scope_metrics() {
+                for metric in scope.metrics() {
+                    if let AggregatedMetrics::U64(data) = metric.data() {
+                        match data {
+                            MetricData::Sum(sum) => {
+                                properties.non_delta |=
+                                    !matches!(sum.temporality(), Temporality::Delta);
+                                properties.sum_overflow += sum
+                                    .data_points()
+                                    .filter(|point| point.attributes().any(overflow))
+                                    .count();
+                            }
+                            MetricData::Histogram(histogram) => {
+                                properties.non_delta |=
+                                    !matches!(histogram.temporality(), Temporality::Delta);
+                                properties.histogram_overflow += histogram
+                                    .data_points()
+                                    .filter(|point| point.attributes().any(overflow))
+                                    .count();
+                            }
+                            _ => properties.non_delta = true,
+                        }
+                    } else {
+                        properties.non_delta = true;
+                    }
+                }
+            }
+            *self.properties.lock().unwrap() = properties;
+            self.numeric.export(metrics).await
         }
         fn force_flush(&self) -> OTelSdkResult {
-            self.0.force_flush()
+            self.numeric.force_flush()
         }
         fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
-            self.0.shutdown_with_timeout(timeout)
+            self.numeric.shutdown_with_timeout(timeout)
         }
         fn temporality(&self) -> Temporality {
             Temporality::Delta
@@ -1330,14 +1373,21 @@ mod tests {
     fn bounded_delta_view_resets_interval_totals_without_losing_overflow() {
         for mode in [Mode::Off, Mode::Public, Mode::Strict] {
             let strict = matches!(mode, Mode::Strict);
+            let mode_name = match mode {
+                Mode::Off => "off",
+                Mode::Public => "public",
+                Mode::Strict => "strict",
+            };
             let totals = Arc::new(Mutex::new(Totals::default()));
+            let properties = Arc::new(Mutex::new(DeltaProperties::default()));
             let provider = ProtectedMeterProvider {
                 inner: bounded_meter_builder()
                     .unwrap()
                     .with_reader(
-                        PeriodicReader::builder(DeltaNumericCapture(NumericCapture(
-                            totals.clone(),
-                        )))
+                        PeriodicReader::builder(DeltaNumericCapture {
+                            numeric: NumericCapture(totals.clone()),
+                            properties: properties.clone(),
+                        })
                         .with_interval(Duration::from_secs(3600))
                         .build(),
                     )
@@ -1373,11 +1423,18 @@ mod tests {
                 assert!(!actual.unexpected_data);
                 assert!(actual.counter_series > 0 && actual.counter_series <= 1025);
                 assert!(actual.histogram_series > 0 && actual.histogram_series <= 1025);
+                let exported = properties.lock().unwrap();
+                assert!(!exported.non_delta);
+                assert_eq!(exported.sum_overflow, usize::from(!strict));
+                assert_eq!(exported.histogram_overflow, usize::from(!strict));
                 if strict {
                     assert_eq!(actual.counter_series, 1);
                     assert_eq!(actual.histogram_series, 1);
                 }
             }
+            eprintln!(
+                "OTLP_DELTA_PASS mode={mode_name} intervals=2 counter=4096,16384 histogram-count=2048,2048 actual-temporality actual-overflow"
+            );
             assert!(!provider.state.failed());
             provider.inner.shutdown().unwrap();
         }
