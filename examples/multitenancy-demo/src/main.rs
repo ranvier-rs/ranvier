@@ -33,6 +33,21 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 // ============================================================================
 // Tenant-Scoped Store (simulates per-tenant data isolation)
 // ============================================================================
@@ -215,8 +230,8 @@ async fn main() -> anyhow::Result<()> {
         let mut bus = Bus::new();
         bus.insert(TenantId::new("tenant-a"));
 
-        let result = axon
-            .execute(
+        let result = local_demo_outcome(
+            axon.execute(
                 CreateItemRequest {
                     name: name.into(),
                     description: desc.into(),
@@ -224,7 +239,8 @@ async fn main() -> anyhow::Result<()> {
                 &store,
                 &mut bus,
             )
-            .await;
+            .await,
+        )?;
 
         match &result {
             Outcome::Next(created) => {
@@ -242,8 +258,8 @@ async fn main() -> anyhow::Result<()> {
         let mut bus = Bus::new();
         bus.insert(TenantId::new("tenant-b"));
 
-        let result = axon
-            .execute(
+        let result = local_demo_outcome(
+            axon.execute(
                 CreateItemRequest {
                     name: name.into(),
                     description: desc.into(),
@@ -251,7 +267,8 @@ async fn main() -> anyhow::Result<()> {
                 &store,
                 &mut bus,
             )
-            .await;
+            .await,
+        )?;
 
         match &result {
             Outcome::Next(created) => {
@@ -266,8 +283,8 @@ async fn main() -> anyhow::Result<()> {
     println!("\n--- No tenant context: Strict rejection ---");
     {
         let mut bus = Bus::new();
-        let result = axon
-            .execute(
+        let result = local_demo_outcome(
+            axon.execute(
                 CreateItemRequest {
                     name: "Orphan".into(),
                     description: "No tenant".into(),
@@ -275,7 +292,8 @@ async fn main() -> anyhow::Result<()> {
                 &store,
                 &mut bus,
             )
-            .await;
+            .await,
+        )?;
 
         match &result {
             Outcome::Fault(e) => println!("    Rejected: {}", e),
@@ -291,9 +309,11 @@ async fn main() -> anyhow::Result<()> {
 
     for tenant in ["tenant-a", "tenant-b", "tenant-c"] {
         let mut bus = Bus::new();
-        let result = report_axon
-            .execute(tenant.to_string(), &store, &mut bus)
-            .await;
+        let result = local_demo_outcome(
+            report_axon
+                .execute(tenant.to_string(), &store, &mut bus)
+                .await,
+        )?;
 
         match &result {
             Outcome::Next(report) => {
