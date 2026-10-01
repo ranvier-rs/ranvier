@@ -619,6 +619,7 @@ async fn dropped_pending_rollback_retains_in_progress_without_completed_claim() 
     assert!(!report.is_complete());
     assert_eq!(report.steps.len(), 1);
     assert_eq!(report.steps[0].outcome, SagaRollbackOutcome::InProgress);
+    assert_eq!(report.trace_id, "pending-rollback-owner");
     assert!(Arc::ptr_eq(
         &original,
         &bus.read::<PersistenceHandle>().unwrap().store()
