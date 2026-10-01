@@ -507,6 +507,12 @@ where
         );
         let outcome = {
             use futures_util::FutureExt as _;
+            // Collected streams and raw executor bodies need not traverse
+            // run_this_step. Conservatively mark the graph invocation itself
+            // after persistence entry gates, before user executor code runs.
+            if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>() {
+                active.0.effect();
+            }
             let fut = (self.executor)(input, resources, bus).instrument(circuit_span.clone());
             match AssertUnwindSafe(fut).catch_unwind().await {
                 Ok(outcome) => outcome,
