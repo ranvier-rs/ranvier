@@ -263,3 +263,101 @@ async fn main() -> anyhow::Result<()> {
     println!("\ndone");
     Ok(())
 }
+
+#[cfg(test)]
+include!("web_catalog_fixture.rs");
+#[cfg(test)]
+mod report_policy_tests {
+    use super::*;
+    use ranvier_runtime::{
+        CompletionConfirmation, EffectBoundary, PersistenceOperation, SagaRollbackReport,
+    };
+
+    #[test]
+    fn local_policy_preserves_domain_and_rejects_other_durability() {
+        let next = || Outcome::<u32, String>::Next(7);
+        assert!(matches!(
+            local_demo_outcome(ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: None
+            }),
+            Ok(Outcome::Next(7))
+        ));
+        assert!(
+            matches!(local_demo_outcome(ExecutionReport::Unpersisted { result: Outcome::<u32,String>::Fault("domain".into()), cleanup: None }), Ok(Outcome::Fault(error)) if error == "domain")
+        );
+        for report in [
+            ExecutionReport::NotRequested {
+                result: next(),
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::Confirmed,
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::NotRequested,
+                cleanup: None,
+            },
+            ExecutionReport::Unconfirmed {
+                result: next(),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::NotInvoked,
+                cleanup: None,
+            },
+            ExecutionReport::Unpersisted {
+                result: next(),
+                cleanup: Some(SagaRollbackReport {
+                    trace_id: "private".into(),
+                    finished: false,
+                    steps: vec![],
+                }),
+            },
+        ] {
+            assert_eq!(
+                local_demo_outcome(report).unwrap_err().to_string(),
+                "Execution requires reconciliation before retry"
+            );
+        }
+    }
+
+    #[test]
+    fn local_policy_checks_every_cleanup_state() {
+        use ranvier_runtime::{SagaRollbackOutcome as O, SagaRollbackStep};
+        for finished in [false, true] {
+            for outcome in [
+                O::InProgress,
+                O::Panicked,
+                O::Completed,
+                O::Fault,
+                O::Emitted,
+                O::Branched,
+                O::Jumped,
+                O::MissingHandler,
+            ] {
+                let report = ExecutionReport::Unpersisted {
+                    result: Outcome::<u32, String>::Next(7),
+                    cleanup: Some(SagaRollbackReport {
+                        trace_id: "private".into(),
+                        finished,
+                        steps: vec![SagaRollbackStep {
+                            node_id: "private".into(),
+                            outcome,
+                        }],
+                    }),
+                };
+                assert_eq!(
+                    local_demo_outcome(report).is_ok(),
+                    finished && outcome == O::Completed
+                );
+            }
+        }
+    }
+}
