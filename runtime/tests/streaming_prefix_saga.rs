@@ -75,12 +75,20 @@ async fn configured_saga_survives_then_stream_conversion() {
         .execute((), &(), &mut Bus::new())
         .await;
     assert!(
-        matches!(result, ranvier_runtime::StreamInitializationReport::Rejected {
+        matches!(&result, ranvier_runtime::StreamInitializationReport::Rejected {
         prefix: ExecutionReport::Unpersisted {
-            result: ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Fault(ref error)), ..
+            result: ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Fault(error)), ..
         }
     } if error == "prefix-fault")
     );
+    let ranvier_runtime::StreamInitializationReport::Rejected { prefix } = &result else {
+        panic!("expected rejected prefix report");
+    };
+    let cleanup = prefix
+        .cleanup()
+        .expect("converted prefix must retain cleanup evidence");
+    assert!(cleanup.is_complete());
+    assert_eq!(cleanup.steps.len(), 1);
     assert_eq!(effects.load(Ordering::SeqCst), 1);
     assert_eq!(initialized.load(Ordering::SeqCst), 0);
     assert_eq!(

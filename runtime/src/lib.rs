@@ -48,10 +48,10 @@ pub mod prelude {
     };
     #[cfg(feature = "streaming")]
     pub use crate::streaming_axon::{
-        CancellableStreamingError, CollectedStreamingAxon, StreamTimeoutKind, StreamingAxon, StreamingAxonError,
+        CollectedStreamingAxon, StreamTimeoutKind, StreamingAxon,
     };
     #[cfg(feature = "streaming")]
-    pub use crate::streaming_initialization::StreamInitializationReport;
+    pub use crate::streaming_initialization::{StreamInitializationError, StreamInitializationReport};
     pub use crate::testkit::AxonTestKit;
     pub use crate::{InfallibleAxon, SimpleAxon, TypedAxon};
 }
@@ -97,8 +97,8 @@ pub use saga_report::{
 };
 #[cfg(feature = "streaming")]
 pub use streaming_axon::{
-    CancellableStreamingError, CollectedStreamingAxon, StreamTimeoutKind, StreamingAxon, StreamingAxonError,
+    CollectedStreamingAxon, StreamTimeoutKind, StreamingAxon,
 };
 #[cfg(feature = "streaming")]
-pub use streaming_initialization::StreamInitializationReport;
+pub use streaming_initialization::{StreamInitializationError, StreamInitializationReport};
 pub use testkit::AxonTestKit;

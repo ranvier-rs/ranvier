@@ -2,6 +2,21 @@
 use crate::{EffectBoundary, ExecutionReport, ExecutionTerminal};
 use ranvier_core::{CancellationContext, Outcome};
 
+/// Owned initializer error detail for application diagnostics. Adapters must use
+/// a fixed public classification rather than exposing this potentially private text.
+#[derive(Debug)]
+pub enum StreamInitializationError {
+    Transition(String),
+}
+impl std::fmt::Display for StreamInitializationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transition(detail) => write!(f, "Stream initialization failed: {detail}"),
+        }
+    }
+}
+impl std::error::Error for StreamInitializationError {}
+
 /// Initialization evidence, retaining rejected prefix results without serialization or cloning.
 /// `Value` can be an owned stream or a collected value; it need not implement Serialize.
 #[must_use = "inspect prefix durability and initialization state before acknowledging success"]
@@ -15,7 +30,7 @@ pub enum StreamInitializationReport<Out, Value, E> {
     },
     Failed {
         prefix: ExecutionReport<()>,
-        error: crate::streaming_axon::StreamingAxonError<E>,
+        error: StreamInitializationError,
         initialization: EffectBoundary,
     },
     Cancelled {
@@ -636,9 +651,7 @@ mod tests {
                     result: (),
                     cleanup: None,
                 },
-                error: crate::streaming_axon::StreamingAxonError::StreamInitError(
-                    "synthetic".into(),
-                ),
+                error: StreamInitializationError::Transition("synthetic".into()),
                 initialization: EffectBoundary::MayHaveRun,
             },
             StreamInitializationReport::Cancelled {
@@ -677,7 +690,7 @@ mod tests {
                         },
                 } => assert_eq!(index, 1),
                 StreamInitializationReport::Failed {
-                    error: crate::streaming_axon::StreamingAxonError::StreamInitError(error),
+                    error: StreamInitializationError::Transition(error),
                     prefix:
                         ExecutionReport::Unpersisted {
                             result: (),

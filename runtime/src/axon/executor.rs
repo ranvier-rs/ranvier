@@ -219,9 +219,9 @@ where
             Ok(Ok(value)) => StreamInitializationReport::Ready { prefix, value },
             Ok(Err(error)) => StreamInitializationReport::Failed {
                 prefix,
-                error: crate::streaming_axon::StreamingAxonError::StreamInitError(format!(
-                    "{error:?}"
-                )),
+                error: crate::streaming_initialization::StreamInitializationError::Transition(
+                    format!("{error:?}"),
+                ),
                 initialization: EffectBoundary::MayHaveRun,
             },
             Err(context) => StreamInitializationReport::Cancelled {

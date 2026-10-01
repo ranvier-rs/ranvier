@@ -212,8 +212,8 @@ where
     }
 }
 
-fn cancellation_http_response(context: &CancellationContext) -> HttpResponse {
-    let (status, message) = match context.reason {
+fn cancellation_status_message(context: &CancellationContext) -> (StatusCode, &'static str) {
+    match context.reason {
         CancellationReason::DeadlineExceeded => (
             StatusCode::REQUEST_TIMEOUT,
             "Request timeout: pipeline deadline exceeded",
@@ -230,7 +230,10 @@ fn cancellation_http_response(context: &CancellationContext) -> HttpResponse {
             StatusCode::SERVICE_UNAVAILABLE,
             "Request execution cancelled",
         ),
-    };
+    }
+}
+fn cancellation_http_response(context: &CancellationContext) -> HttpResponse {
+    let (status, message) = cancellation_status_message(context);
     json_error_response(status, message)
 }
 
@@ -3284,20 +3287,24 @@ where
                                 }
                                 _ => {},
                             }
-                            return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Streaming prefix rejected initialization");
+                            return stream_reconciliation_response(StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({"error": "Streaming prefix rejected initialization"}));
                         }
-                        StreamInitializationReport::Cancelled { prefix, context, .. } => {
+                        StreamInitializationReport::Cancelled { prefix, context, initialization } => {
                             if let Some((status, payload)) = crate::response::durability_rejection(&prefix) {
                                 return stream_reconciliation_response(status, payload);
                             }
-                            return cancellation_http_response(&context);
+                            let (status, message) = cancellation_status_message(&context);
+                            return stream_reconciliation_response(status, serde_json::json!({
+                                "error": message, "reason": context.reason, "prefix": prefix,
+                                "initialization": initialization, "reconciliation_required": true
+                            }));
                         }
-                        StreamInitializationReport::Failed { prefix, .. } => {
+                        StreamInitializationReport::Failed { prefix, initialization, .. } => {
                             if let Some((status, payload)) = crate::response::durability_rejection(&prefix) {
                                 return stream_reconciliation_response(status, payload);
                             }
                             tracing::error!(failure_source = "stream_init", "Streaming initialization failed");
-                            return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Streaming initialization failed");
+                            return stream_reconciliation_response(StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({"error": "Streaming initialization failed", "prefix": prefix, "initialization": initialization, "reconciliation_required": true}));
                         }
                     };
 

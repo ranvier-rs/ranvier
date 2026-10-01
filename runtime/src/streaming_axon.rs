@@ -30,51 +30,12 @@ pub type StreamExecutorType<In, Out, Item, E, Res> = Arc<
         + Sync,
 >;
 
-/// Initialization failures are separate from retained prefix outcomes.
-#[derive(Debug)]
-pub enum StreamingAxonError<E> {
-    IamRejected(&'static str),
-    PipelineFault(E),
-    UnexpectedOutcome(String),
-    StreamInitError(String),
-    Timeout(StreamTimeoutKind),
-}
-#[derive(Debug)]
-pub enum CancellableStreamingError<E> {
-    Stream(StreamingAxonError<E>),
-    Cancelled(CancellationContext),
-}
+/// Timeout phase for stream lifecycle observations (not a prefix acknowledgment).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamTimeoutKind {
     Init,
     Idle,
     Total,
-}
-impl<E: Debug> std::fmt::Display for StreamingAxonError<E> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::IamRejected(event) => write!(f, "IAM rejected: {event}"),
-            Self::PipelineFault(error) => write!(f, "Pipeline fault: {error:?}"),
-            Self::UnexpectedOutcome(message) => write!(f, "Unexpected outcome: {message}"),
-            Self::StreamInitError(message) => write!(f, "Stream init error: {message}"),
-            Self::Timeout(kind) => write!(f, "Stream timeout: {kind:?}"),
-        }
-    }
-}
-impl<E: Debug> std::error::Error for StreamingAxonError<E> {}
-impl<E: Debug> std::fmt::Display for CancellableStreamingError<E> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Stream(error) => write!(f, "{error}"),
-            Self::Cancelled(context) => write!(f, "stream cancelled: {:?}", context.reason),
-        }
-    }
-}
-impl<E: Debug> std::error::Error for CancellableStreamingError<E> {}
-impl<E> From<StreamingAxonError<E>> for CancellableStreamingError<E> {
-    fn from(error: StreamingAxonError<E>) -> Self {
-        Self::Stream(error)
-    }
 }
 impl<In, Out, Item, E, Res> Clone for StreamingAxon<In, Out, Item, E, Res> {
     fn clone(&self) -> Self {
@@ -202,8 +163,10 @@ where
             buffer_size: self.buffer_size,
         }
     }
-    /// Collect Ready items while retaining the prefix report. This is a terminal
-    /// collection owner, not an ordinary Axon whose raw executor discards evidence.
+    /// Collect observed Ready items while retaining the prefix report.
+    /// Ready describes initialization only: timeout or other late termination can
+    /// truncate these items. This does not certify complete or durable collection.
+    /// The terminal collection owner cannot be chained as an ordinary Axon.
     pub fn collect_into_vec(self) -> CollectedStreamingAxon<In, Out, Item, E, Res> {
         CollectedStreamingAxon { streaming: self }
     }

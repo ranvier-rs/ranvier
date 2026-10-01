@@ -1304,8 +1304,9 @@ where
 
     /// Append a streaming transition as the **terminal** step.
     ///
-    /// The returned `StreamingAxon` produces a `Stream<Item>` when executed,
-    /// instead of a single `Outcome`. No further `.then()` calls are allowed.
+    /// Execution returns a typed initialization report with a stream only in Ready.
+    /// Rejected execution retains the original typed prefix result and durability.
+    /// No further `.then()` calls are allowed.
     ///
     /// ## Example
     ///
@@ -1314,7 +1315,8 @@ where
     ///     .then(ClassifyIntent)
     ///     .then_stream(SynthesizeStream);
     ///
-    /// let stream = streaming.execute((), &res, &mut bus).await?;
+    /// let report = streaming.execute((), &res, &mut bus).await;
+    /// // Inspect prefix durability and initialization state before consuming Ready items.
     /// ```
     #[cfg(feature = "streaming")]
     #[track_caller]
