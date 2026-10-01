@@ -41,7 +41,8 @@ struct LockLease {
 
 impl DistributedLockHandle {
     fn new(redis_url: &str, ttl_ms: u64) -> Result<Self, String> {
-        if ttl_ms == 0 || ttl_ms > i64::MAX as u64 {
+        // Bound this demo's lease and monotonic deadline arithmetic.
+        if ttl_ms == 0 || ttl_ms > 60_000 {
             return Err("Invalid lease duration".into());
         }
         let client = redis::Client::open(redis_url)
@@ -101,6 +102,9 @@ impl DistributedLockHandle {
             .map_err(|_| "Lock release timed out; reconcile before retry".to_string())?
     }
 }
+
+#[cfg(test)]
+include!("web_catalog_fixture.rs");
 // ============================================================================
 // Transitions
 // ============================================================================
