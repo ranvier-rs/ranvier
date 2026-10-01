@@ -827,6 +827,7 @@ pub(crate) struct Session {
     original: Option<PersistenceHandle>,
     original_compensation: Option<CompensationIdempotencyHandle>,
     previous: Option<ActiveObservation>,
+    nested: bool,
     previous_trace: Option<InvocationTrace>,
     iam_scope: IamScope,
     previous_dlq_policy: Option<ranvier_core::event::DlqPolicy>,
@@ -842,6 +843,7 @@ impl Session {
         let original = bus.read::<PersistenceHandle>().cloned();
         let original_compensation = bus.read::<CompensationIdempotencyHandle>().cloned();
         let previous = bus.read::<ActiveObservation>().cloned();
+        let nested = previous.is_some() || bus.has::<ActiveIamBoundary>();
         let iam_scope = IamScope::begin(bus);
         let previous_dlq_policy = bus.read::<ranvier_core::event::DlqPolicy>().cloned();
         let previous_dlq_sink = bus.read::<Arc<dyn ranvier_core::event::DlqSink>>().cloned();
@@ -855,7 +857,7 @@ impl Session {
         )));
         let cleanup_report = bus.remove::<crate::saga_report::SagaRollbackReport>();
         let cleanup = bus.remove::<crate::saga_report::SagaRollbackJournal>();
-        let (previous_cleanup, previous_cleanup_report) = if previous.is_some() {
+        let (previous_cleanup, previous_cleanup_report) = if nested {
             (cleanup, cleanup_report)
         } else {
             (None, None)
@@ -872,6 +874,7 @@ impl Session {
             original,
             original_compensation,
             previous,
+            nested,
             previous_trace,
             iam_scope,
             previous_dlq_policy,
@@ -925,7 +928,7 @@ impl Session {
             bus.insert(trace);
         }
         self.iam_scope.restore(bus);
-        if let Some(previous) = self.previous {
+        if self.nested {
             // Child execution config must not become the parent's final policy
             // or attribution. Restore absence as well as configured values.
             bus.remove::<ranvier_core::event::DlqPolicy>();
@@ -944,7 +947,6 @@ impl Session {
             if let Some(value) = self.previous_saga_policy {
                 bus.insert(value);
             }
-            bus.insert(previous);
             let _ = bus.remove::<crate::saga_report::SagaRollbackJournal>();
             let _ = bus.remove::<crate::saga_report::SagaRollbackReport>();
             if let Some(journal) = self.previous_cleanup {
@@ -953,6 +955,9 @@ impl Session {
             if let Some(report) = self.previous_cleanup_report {
                 bus.insert(report);
             }
+        }
+        if let Some(previous) = self.previous {
+            bus.insert(previous);
         } else {
             let _ = bus.remove::<ActiveObservation>();
         }
