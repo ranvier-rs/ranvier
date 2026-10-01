@@ -16,7 +16,7 @@
 
 use async_trait::async_trait;
 use ranvier_core::prelude::*;
-use ranvier_runtime::Axon;
+use ranvier_runtime::{Axon, ExecutionReport};
 use serde::{Deserialize, Serialize};
 use tonic::{Request, Response, Status};
 
@@ -69,23 +69,62 @@ struct GreeterService {
     axon: Axon<GreetInput, GreetOutput, String>,
 }
 
+fn validate_name(name: &str) -> Result<(), Status> {
+    if name.trim().is_empty() || name.len() > 1024 {
+        return Err(Status::invalid_argument(
+            "Name must contain 1 to 1024 bytes",
+        ));
+    }
+    Ok(())
+}
+
+// Local demo policy: no workflow persistence is configured.
+fn map_local_report(
+    report: ExecutionReport<Outcome<GreetOutput, String>>,
+) -> Result<HelloReply, Status> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        return Err(Status::failed_precondition(
+            "Execution requires reconciliation before retry",
+        ));
+    }
+    match report {
+        ExecutionReport::Unpersisted {
+            result: Outcome::Next(output),
+            ..
+        } => Ok(HelloReply {
+            message: output.message,
+        }),
+        ExecutionReport::Unpersisted {
+            result: Outcome::Fault(_),
+            ..
+        } => Err(Status::internal("Greeting failed")),
+        _ => Err(Status::failed_precondition(
+            "Execution requires reconciliation before retry",
+        )),
+    }
+}
+
+async fn handle_hello(
+    axon: &Axon<GreetInput, GreetOutput, String>,
+    request: Request<HelloRequest>,
+) -> Result<Response<HelloReply>, Status> {
+    let name = request.into_inner().name;
+    validate_name(&name)?;
+    let mut bus = Bus::new();
+    let report = axon.execute(GreetInput { name }, &(), &mut bus).await;
+    map_local_report(report).map(Response::new)
+}
+
 #[tonic::async_trait]
 impl Greeter for GreeterService {
     async fn say_hello(
         &self,
         request: Request<HelloRequest>,
     ) -> Result<Response<HelloReply>, Status> {
-        let name = request.into_inner().name;
-        let mut bus = Bus::new();
-        let result = self.axon.execute(GreetInput { name }, &(), &mut bus).await;
-
-        match result {
-            Outcome::Next(output) => Ok(Response::new(HelloReply {
-                message: output.message,
-            })),
-            Outcome::Fault(e) => Err(Status::internal(e)),
-            _ => Err(Status::internal("Unexpected outcome")),
-        }
+        handle_hello(&self.axon, request).await
     }
 
     type SayHelloStreamStream = tokio_stream::wrappers::ReceiverStream<Result<HelloReply, Status>>;
@@ -95,23 +134,27 @@ impl Greeter for GreeterService {
         request: Request<HelloRequest>,
     ) -> Result<Response<Self::SayHelloStreamStream>, Status> {
         let name = request.into_inner().name;
+        validate_name(&name)?;
         let axon = self.axon.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(4);
 
         tokio::spawn(async move {
             for i in 1..=3 {
+                if tx.is_closed() {
+                    break;
+                }
                 let mut bus = Bus::new();
                 let input = GreetInput {
                     name: format!("{} (stream #{})", name, i),
                 };
-                let result = axon.execute(input, &(), &mut bus).await;
-                let reply = match result {
-                    Outcome::Next(output) => Ok(HelloReply {
-                        message: output.message,
-                    }),
-                    _ => Err(Status::internal("Pipeline error")),
-                };
+                // Observe an already-started effect before stopping on disconnect.
+                let report = axon.execute(input, &(), &mut bus).await;
+                let reply = map_local_report(report);
+                let failed = reply.is_err();
                 if tx.send(reply).await.is_err() {
+                    break;
+                }
+                if failed {
                     break;
                 }
             }
@@ -134,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
     let axon = Axon::<GreetInput, GreetInput, String>::new("grpc-greeter").then(BuildGreeting);
 
     let addr = std::env::var("GRPC_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:50051".into())
+        .unwrap_or_else(|_| "127.0.0.1:50051".into())
         .parse()
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
