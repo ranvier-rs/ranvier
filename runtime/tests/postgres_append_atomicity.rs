@@ -17,6 +17,73 @@ fn event(trace: &str, step: u64, version: &str) -> PersistenceEnvelope {
     }
 }
 
+// Reproduces current best-effort executor behavior; this is defect evidence,
+// not acceptance of missing terminal events or a new persistence contract.
+#[tokio::test]
+#[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
+async fn postgres_executor_terminal_step_collision_is_observable() {
+    use ranvier_core::prelude::*;
+    use ranvier_runtime::persistence::{PersistenceHandle, PersistenceTraceId};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[derive(Clone)]
+    struct CountStep(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl Transition<u32, u32> for CountStep {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, input: u32, _: &(), _: &mut Bus) -> Outcome<u32, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Outcome::next(input + 1)
+        }
+    }
+    let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL")
+        .expect("explicit isolated database required");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .acquire_timeout(std::time::Duration::from_secs(3))
+        .connect(&url)
+        .await
+        .unwrap();
+    let prefix = format!("terminal_{}", uuid::Uuid::new_v4().simple());
+    let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
+    store.ensure_schema().await.unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let axon = ranvier_runtime::Axon::<u32, u32, String, ()>::new("TerminalCollisionFixture")
+        .then(CountStep(calls.clone()))
+        .then(CountStep(calls.clone()));
+    let mut bus = Bus::new();
+    bus.insert(PersistenceHandle::from_store(store.clone()));
+    bus.insert(PersistenceTraceId::new("terminal-collision"));
+    assert!(matches!(
+        axon.execute(0, &(), &mut bus).await,
+        Outcome::Next(2)
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let trace = store.load("terminal-collision").await.unwrap().unwrap();
+    assert_eq!(trace.completion, Some(CompletionState::Success));
+    assert_eq!(
+        trace.events.iter().map(|e| e.step).collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    assert_eq!(trace.events[0].outcome_kind, "Enter");
+    assert!(trace.events[1..].iter().all(|e| e.node_id.is_some()));
+    assert!(
+        trace
+            .events
+            .iter()
+            .all(|e| e.step == 0 || e.node_id.is_some()),
+        "terminal event with no node context is missing despite successful completion"
+    );
+    pool.close().await;
+    println!(
+        "POSTGRES_TERMINAL_COLLISION_REPRODUCED effects=2 caller-next=2 completion-success terminal-event-missing"
+    );
+}
+
 // External owned-container rehearsal selects this worker in a new process per phase.
 #[tokio::test]
 async fn postgres_recovery_worker() {
