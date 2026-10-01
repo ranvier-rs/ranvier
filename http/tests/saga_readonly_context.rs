@@ -2,7 +2,7 @@ use ranvier_core::{
     Bus, Outcome, Transition,
     saga::{SagaPolicy, SagaStack},
 };
-use ranvier_runtime::{Axon, ExecutionReport};
+use ranvier_runtime::Axon;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},

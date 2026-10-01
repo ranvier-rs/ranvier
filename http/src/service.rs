@@ -184,10 +184,17 @@ pub(crate) fn iam_failure_response(event: &str) -> Option<Response<Full<Bytes>>>
 
 /// Reserved pre-effect Saga initialization failure; no raw stack or payload data.
 pub(crate) fn saga_failure_response(event: &str) -> Option<Response<Full<Bytes>>> {
-    if event != "saga.context_readonly" { return None; }
-    let mut response = json_value_response(StatusCode::SERVICE_UNAVAILABLE,
-        serde_json::json!({"kind":"saga", "event_type":event, "error":"Saga context is not writable"}));
-    response.headers_mut().insert(http::header::CACHE_CONTROL, http::HeaderValue::from_static("no-store"));
+    if event != "saga.context_readonly" {
+        return None;
+    }
+    let mut response = json_value_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        serde_json::json!({"kind":"saga", "event_type":event, "error":"Saga context is not writable"}),
+    );
+    response.headers_mut().insert(
+        http::header::CACHE_CONTROL,
+        http::HeaderValue::from_static("no-store"),
+    );
     Some(response)
 }
 
@@ -212,7 +219,9 @@ where
             )
         }
         Outcome::Emit(event_type, payload) => {
-            if let Some(response) = iam_failure_response(&event_type).or_else(|| saga_failure_response(&event_type)) {
+            if let Some(response) =
+                iam_failure_response(&event_type).or_else(|| saga_failure_response(&event_type))
+            {
                 response
             } else {
                 json_value_response(
@@ -498,6 +507,32 @@ mod tests {
                 response_body_json(response).await,
                 serde_json::json!({"kind":"emit", "event_type":label, "payload":payload})
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn readonly_saga_failure_discards_payload_and_preserves_other_events() {
+        for label in ["saga.context_readonly", "saga.application_event"] {
+            let response = default_response_mapper::<serde_json::Value, TestError>(
+                ExecutionReport::Unpersisted {
+                    result: Outcome::Emit(
+                        label.into(),
+                        Some(serde_json::json!({"secret":"private-stack-marker"})),
+                    ),
+                    cleanup: None,
+                },
+                &Bus::new(),
+            );
+            if label == "saga.context_readonly" {
+                assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+                assert_eq!(response.headers()["cache-control"], "no-store");
+                assert!(response.headers().get("www-authenticate").is_none());
+                let body = response_body_json(response).await;
+                assert_eq!(body["kind"], "saga");
+                assert!(!body.to_string().contains("private-stack-marker"));
+            } else {
+                assert_eq!(response.status(), StatusCode::ACCEPTED);
+            }
         }
     }
 
