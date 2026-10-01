@@ -474,7 +474,7 @@ fn has_unusable_recovery_payload(trace: &crate::persistence::PersistedTrace) -> 
             && event
                 .payload
                 .as_ref()
-                .is_some_and(serde_json::Value::is_null)
+                .is_none_or(serde_json::Value::is_null)
     })
 }
 
