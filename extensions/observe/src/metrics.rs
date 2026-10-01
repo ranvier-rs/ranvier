@@ -1662,7 +1662,16 @@ mod tests {
     fn actual_float_observable_callbacks_reject_nonfinite_measurements() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         for mode in [Mode::Off, Mode::Public, Mode::Strict] {
-            for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mode_name = match mode {
+                Mode::Off => "off",
+                Mode::Public => "public",
+                Mode::Strict => "strict",
+            };
+            for (invalid_name, invalid) in [
+                ("nan", f64::NAN),
+                ("positive-infinity", f64::INFINITY),
+                ("negative-infinity", f64::NEG_INFINITY),
+            ] {
                 for up_down in [false, true] {
                     let captured = Arc::new(Mutex::new(Vec::new()));
                     let calls = Arc::new(AtomicUsize::new(0));
@@ -1706,7 +1715,103 @@ mod tests {
                     provider.inner.force_flush().unwrap();
                     provider.inner.shutdown().unwrap();
                     assert_eq!(calls.load(Ordering::SeqCst), 1);
+                    eprintln!(
+                        "OTLP_INVALID_NUMBER_PASS mode={mode_name} up-down={up_down} input={invalid_name} sticky-failure no-export no-later-callback"
+                    );
                 }
+            }
+        }
+    }
+    struct ExtremeCapture(Arc<Mutex<Vec<f64>>>);
+    impl PushMetricExporter for ExtremeCapture {
+        async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+            use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+            for scope in metrics.scope_metrics() {
+                for metric in scope.metrics() {
+                    if let AggregatedMetrics::F64(MetricData::Sum(sum)) = metric.data() {
+                        assert_eq!(sum.temporality(), Temporality::Cumulative);
+                        for point in sum.data_points() {
+                            self.0.lock().unwrap().push(point.value());
+                        }
+                    } else {
+                        panic!("unexpected extreme-value metric data");
+                    }
+                }
+            }
+            Ok(())
+        }
+        fn force_flush(&self) -> OTelSdkResult {
+            Ok(())
+        }
+        fn shutdown_with_timeout(&self, _: Duration) -> OTelSdkResult {
+            Ok(())
+        }
+        fn temporality(&self) -> Temporality {
+            Temporality::Cumulative
+        }
+    }
+    #[test]
+    fn masked_float_callback_sum_overflow_is_detected_before_export() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for mode in [Mode::Off, Mode::Public, Mode::Strict] {
+            let off = matches!(mode, Mode::Off);
+            let mode_name = match mode {
+                Mode::Off => "off",
+                Mode::Public => "public",
+                Mode::Strict => "strict",
+            };
+            for up_down in [false, true] {
+                let captured = Arc::new(Mutex::new(Vec::new()));
+                let calls = Arc::new(AtomicUsize::new(0));
+                let provider = ProtectedMeterProvider {
+                    inner: bounded_meter_builder()
+                        .unwrap()
+                        .with_reader(
+                            PeriodicReader::builder(ExtremeCapture(captured.clone()))
+                                .with_interval(Duration::from_secs(3600))
+                                .build(),
+                        )
+                        .build(),
+                    policy: Policy::new(mode.clone(), "").unwrap(),
+                    state: Default::default(),
+                };
+                let callback_calls = calls.clone();
+                let callback = move |instrument: &dyn AsyncInstrument<f64>| {
+                    callback_calls.fetch_add(1, Ordering::SeqCst);
+                    instrument
+                        .observe(f64::MAX, &[KeyValue::new("email", "first@example.invalid")]);
+                    instrument.observe(
+                        f64::MAX,
+                        &[KeyValue::new("email", "second@example.invalid")],
+                    );
+                };
+                let meter = provider.meter("masked-overflow-fixture");
+                if up_down {
+                    let _instrument = meter
+                        .f64_observable_up_down_counter("extreme")
+                        .with_callback(callback)
+                        .build();
+                } else {
+                    let _instrument = meter
+                        .f64_observable_counter("extreme")
+                        .with_callback(callback)
+                        .build();
+                }
+                provider.inner.force_flush().unwrap();
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+                assert_eq!(provider.state.failed(), !off);
+                if off {
+                    assert_eq!(*captured.lock().unwrap(), vec![f64::MAX, f64::MAX]);
+                } else {
+                    assert!(captured.lock().unwrap().is_empty());
+                    provider.inner.force_flush().unwrap();
+                    assert_eq!(calls.load(Ordering::SeqCst), 1);
+                }
+                eprintln!(
+                    "OTLP_MASKED_OVERFLOW_PASS mode={mode_name} up-down={up_down} separate-finite-series={off} failed-before-export={}",
+                    !off
+                );
+                provider.inner.shutdown().unwrap();
             }
         }
     }
