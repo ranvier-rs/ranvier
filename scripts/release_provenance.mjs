@@ -70,6 +70,10 @@ function tarEntry(bytes, suffix) {
     if (header.every((byte) => byte === 0)) break;
     const text = (start, length) => header.subarray(start, start + length).toString('utf8').replace(/\0.*$/, '');
     const name = [text(345, 155), text(0, 100)].filter(Boolean).join('/');
+    const checksumText = text(148, 8).trim();
+    invariant(/^[0-7]+$/.test(checksumText), 'invalid tar header checksum');
+    const checksum = header.reduce((sum, byte, index) => sum + (index >= 148 && index < 156 ? 32 : byte), 0);
+    invariant(checksum === Number.parseInt(checksumText, 8), 'tar header checksum mismatch');
     const sizeText = text(124, 12).trim();
     invariant(/^[0-7]+$/.test(sizeText), `invalid tar size for ${name}`);
     const size = Number.parseInt(sizeText, 8);
@@ -117,11 +121,19 @@ function runSelfTest(policy) {
   valid.write('00000000002', 124);
   valid[156] = 48;
   valid.write('{}', 512);
+  const seal = (b) => {
+    b.fill(32, 148, 156);
+    const checksum = b.subarray(0, 512).reduce((sum, byte) => sum + byte, 0);
+    b.write(checksum.toString(8).padStart(6, '0') + '\0 ', 148);
+    return b;
+  };
+  seal(valid);
   invariant(tarEntry(valid, '/.cargo_vcs_info.json').toString() === '{}', 'valid regular tar entry rejected');
   for (const [label, fixture] of [
     ['truncated', valid.subarray(0, 513)],
-    ['invalid-size', (() => { const b = Buffer.from(valid); b.write('0000000002x', 124); return b; })()],
-    ['link', (() => { const b = Buffer.from(valid); b[156] = 50; return b; })()]
+    ['checksum', (() => { const b = Buffer.from(valid); b[0] ^= 1; return b; })()],
+    ['invalid-size', (() => { const b = Buffer.from(valid); b.write('0000000002x', 124); return seal(b); })()],
+    ['link', (() => { const b = Buffer.from(valid); b[156] = 50; return seal(b); })()]
   ]) {
     rejected = false;
     try { tarEntry(fixture, '/.cargo_vcs_info.json'); } catch { rejected = true; }
