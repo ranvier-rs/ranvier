@@ -35,6 +35,7 @@
 //! - `examples/auth-transition/` — Pure Ranvier approach (recommended)
 //! - `docs/guides/auth-comparison.md` — Detailed comparison
 
+mod adapter;
 mod auth;
 mod tower_auth;
 
@@ -43,6 +44,7 @@ use ranvier_macros::transition;
 use ranvier_runtime::{Axon, ExecutionReport};
 use serde::{Deserialize, Serialize};
 use std::env;
+use tower::{Layer, Service};
 use tower_auth::jwt_auth_layer;
 
 // ============================================================================
@@ -69,15 +71,9 @@ enum AppError {
 // Transitions
 // ============================================================================
 
-/// Protected handler — reads `AuthContext` from request extensions (not Bus).
-///
-/// Tower already validated the JWT and stored `AuthContext` in request extensions.
-/// This transition extracts it and uses it for business logic.
+/// Protected handler reads identity transferred by the adapter to a fresh Bus.
 #[transition]
 async fn protected_handler(_input: (), _res: &(), bus: &mut Bus) -> Outcome<Response, AppError> {
-    // In a real Tower+Ranvier integration, you'd extract AuthContext from request extensions.
-    // For this demo, we simulate by reading from Bus (in production, you'd put it there
-    // after extracting from request.extensions()).
     let Some(auth) = bus.read::<auth::AuthContext>() else {
         return Outcome::Fault(AppError::Unauthenticated);
     };
@@ -123,98 +119,41 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("JWT_SECRET must not be empty");
     }
 
-    // ── Tower Layer Setup ────────────────────────────────────────────────
-    //
-    // This is where Tower handles authentication:
-    // 1. Extract Authorization header
-    // 2. Validate JWT
-    // 3. Store AuthContext in request extensions
-    // 4. Return 401 if invalid
-    //
-    // Note: This auth layer is NOT visible in Ranvier Schematic.
-    let _auth_layer = jwt_auth_layer(jwt_secret.clone());
-
-    // ── Ranvier Pipeline Setup ───────────────────────────────────────────
-    //
-    // Ranvier handles business logic AFTER Tower validates the token.
-    // Tower + Ranvier integration pattern:
-    //
-    // HTTP Request → Tower Auth Layer → Ranvier Handler
-    //                (JWT validation)    (Business logic)
-    //
-    // The Ranvier pipeline assumes AuthContext is already validated.
     let ranvier_pipeline = Axon::simple::<AppError>("protected-handler").then(protected_handler);
 
     if ranvier_pipeline.maybe_export_and_exit()? {
         return Ok(());
     }
 
-    tracing::info!("Tower auth layer configured (JWT validation)");
-    tracing::info!("Ranvier pipeline configured (business logic)");
-    tracing::info!("\nIn production, you'd wrap this with Tower ServiceBuilder:");
-    tracing::info!("  ServiceBuilder::new()");
-    tracing::info!("    .layer(CorsLayer::permissive())");
-    tracing::info!("    .layer(jwt_auth_layer(secret))");
-    tracing::info!("    .service(ranvier_adapter)");
-
-    // For demonstration, simulate Tower+Ranvier integration
+    // Traverse the actual layer and adapter without starting an HTTP server.
     demo_execution(ranvier_pipeline, jwt_secret).await?;
 
     Ok(())
 }
 
-/// Demonstration of Tower + Ranvier integration.
-///
-/// In production:
-/// 1. Tower middleware validates JWT → stores AuthContext in request.extensions()
-/// 2. Adapter extracts AuthContext from extensions → puts in Bus
-/// 3. Ranvier transitions read from Bus
+/// Traverse Tower validation, extensions-to-Bus handoff and Axon execution.
 async fn demo_execution(
     pipeline: Axon<(), Response, AppError, ()>,
     jwt_secret: String,
 ) -> anyhow::Result<()> {
-    tracing::info!("\n=== Demo Execution ===\n");
-
-    // Scenario 1: Valid admin token
-    {
-        tracing::info!("Scenario 1: Tower validates token, Ranvier handles request");
-
-        // Simulate what Tower middleware does:
-        let token = create_test_token("alice", vec!["admin".into(), "user".into()], &jwt_secret)?;
-        let auth_ctx = auth::validate_jwt(&token, &jwt_secret)?;
-
-        // In production, Tower puts this in request.extensions()
-        // Then adapter extracts and puts in Bus
-        let mut bus = Bus::new();
-        bus.insert(auth_ctx);
-
-        let report = pipeline.execute((), &(), &mut bus).await;
-        if report
-            .cleanup()
-            .is_some_and(|cleanup| !cleanup.is_complete())
-        {
-            anyhow::bail!("Execution requires reconciliation before retry");
-        }
-        let ExecutionReport::Unpersisted { result, .. } = report else {
-            anyhow::bail!("Execution requires reconciliation before retry");
-        };
-        match result {
-            Outcome::Next(response) => {
-                tracing::info!("✅ Success: {}", response.body);
-            }
-            _ => {
-                anyhow::bail!("Protected execution did not complete successfully");
-            }
-        }
+    let token = create_test_token("alice", vec!["admin".into(), "user".into()], &jwt_secret)?;
+    let mut service = jwt_auth_layer(jwt_secret).layer(adapter::AxonService { pipeline });
+    let mut request = http::Request::new(String::new());
+    request.headers_mut().insert(
+        http::header::AUTHORIZATION,
+        format!("Bearer {token}").parse()?,
+    );
+    std::future::poll_fn(|cx| service.poll_ready(cx)).await?;
+    let response = service.call(request).await?;
+    if response.status() != http::StatusCode::OK {
+        anyhow::bail!("Protected execution did not complete successfully");
     }
-
-    // Scenario 2: Tower would reject invalid token (never reaches Ranvier)
-    {
-        tracing::info!("\nScenario 2: Tower rejects invalid token (doesn't reach Ranvier)");
-        tracing::info!("  In production, Tower returns 401 before calling Ranvier");
-        tracing::info!("  Ranvier pipeline never executes");
+    tracing::info!("Authenticated request completed through Tower and Axon");
+    std::future::poll_fn(|cx| service.poll_ready(cx)).await?;
+    let denied = service.call(http::Request::new(String::new())).await?;
+    if denied.status() != http::StatusCode::UNAUTHORIZED || denied.body() != "Unauthorized" {
+        anyhow::bail!("Unauthenticated request was not safely rejected");
     }
-
     Ok(())
 }
 
