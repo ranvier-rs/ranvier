@@ -454,11 +454,21 @@ async fn verify_cancelled_write(
 #[derive(Clone)]
 struct Count(Arc<AtomicUsize>);
 
+struct CountRecoveryCleanup(Arc<AtomicUsize>);
+#[async_trait::async_trait]
+impl CompensationHook for CountRecoveryCleanup {
+    async fn compensate(&self, _: CompensationContext) -> anyhow::Result<()> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn legacy_bare_null_result_blocks_effects_without_rewriting_history() {
     for mode in [0, 1, 2] {
         let backing = InMemoryPersistenceStore::new();
         let effects = Arc::new(AtomicUsize::new(0));
+        let cleanup_calls = Arc::new(AtomicUsize::new(0));
         let axon = Axon::<u32, u32, String>::new("legacy-null").then(Count(effects.clone()));
         let schematic = axon.schematic();
         backing
@@ -479,6 +489,9 @@ async fn legacy_bare_null_result_blocks_effects_without_rewriting_history() {
         let mut bus = Bus::new();
         bus.insert(PersistenceTraceId::new("legacy-null"));
         bus.insert(PersistenceHandle::from_store(backing.clone()));
+        bus.insert(CompensationHandle::from_hook(CountRecoveryCleanup(
+            cleanup_calls.clone(),
+        )));
         if mode != 0 {
             let token = ranvier_core::cancellation::CancellationToken::new();
             if mode == 2 {
@@ -505,6 +518,7 @@ async fn legacy_bare_null_result_blocks_effects_without_rewriting_history() {
             ));
         }
         assert_eq!(effects.load(Ordering::SeqCst), 0);
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 0);
         assert_eq!(
             serde_json::to_value(backing.load("legacy-null").await.unwrap()).unwrap(),
             before
