@@ -4,13 +4,13 @@ use crate::execution_report::{
 use crate::persistence::*;
 use ranvier_core::Bus;
 use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU8, Ordering},
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 
 #[derive(Default)]
 pub(crate) struct Observation {
-    failure: AtomicU8,
+    failure: Mutex<Option<PersistenceOperation>>,
     effect: AtomicBool,
     attempted_write: AtomicBool,
     completed: AtomicBool,
@@ -19,29 +19,23 @@ pub(crate) struct Observation {
 impl Observation {
     fn observe<T>(&self, operation: PersistenceOperation, result: &anyhow::Result<T>) {
         if result.is_err() {
-            let _ = self.failure.compare_exchange(
-                0,
-                operation as u8 + 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            );
+            let mut failure = self
+                .failure
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if failure.is_none() {
+                *failure = Some(operation);
+            }
         }
     }
     pub(crate) fn effect(&self) {
         self.effect.store(true, Ordering::SeqCst);
     }
     fn report<T>(&self, result: T) -> ExecutionReport<T> {
-        let operation = match self.failure.load(Ordering::SeqCst) {
-            0 => None,
-            1 => Some(PersistenceOperation::Load),
-            2 => Some(PersistenceOperation::Intent),
-            3 => Some(PersistenceOperation::Result),
-            4 => Some(PersistenceOperation::Terminal),
-            5 => Some(PersistenceOperation::Complete),
-            6 => Some(PersistenceOperation::CompensationRead),
-            7 => Some(PersistenceOperation::CompensationWrite),
-            _ => Some(PersistenceOperation::CancellationCursor),
-        };
+        let operation = *self
+            .failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(operation) = operation {
             return ExecutionReport::Unconfirmed {
                 result,

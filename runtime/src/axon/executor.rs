@@ -31,7 +31,7 @@ where
 {
     /// Execute with an explicit cooperative cancellation owner.
     ///
-    /// The existing [`execute`](Self::execute) path is unchanged. When
+    /// Both execution paths return domain/infrastructure and durability reports. When
     /// cancellation wins, the in-flight executor future is dropped and this
     /// outer owner performs persistence and compensation cleanup before
     /// returning the structured terminal.

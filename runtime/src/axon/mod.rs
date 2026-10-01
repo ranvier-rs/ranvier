@@ -882,6 +882,9 @@ where
         None
     };
 
+    if let Some(observation) = bus.read::<crate::execution_observation::ActiveObservation>() {
+        observation.0.effect();
+    }
     let node_span = tracing::info_span!("Node", ranvier.node = %label);
     bus.set_access_policy(label.clone(), bus_policy.clone());
     let result = trans
