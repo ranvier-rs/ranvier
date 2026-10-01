@@ -17,8 +17,8 @@ fn event(trace: &str, step: u64, version: &str) -> PersistenceEnvelope {
     }
 }
 
-// Reproduces current best-effort executor behavior; this is defect evidence,
-// not acceptance of missing terminal events or a new persistence contract.
+// Retains terminal collision defect evidence while requiring the versioned
+// caller report to expose uncertainty. Missing terminal data is not acceptance.
 #[tokio::test]
 #[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
 async fn postgres_executor_terminal_step_collision_is_observable() {
@@ -60,7 +60,11 @@ async fn postgres_executor_terminal_step_collision_is_observable() {
     bus.insert(PersistenceTraceId::new("terminal-collision"));
     assert!(matches!(
         axon.execute(0, &(), &mut bus).await,
-        Outcome::Next(2)
+        ranvier_runtime::ExecutionReport::Unconfirmed {
+            result: Outcome::Next(2),
+            operation: ranvier_runtime::PersistenceOperation::Terminal,
+            effect: ranvier_runtime::EffectBoundary::MayHaveRun,
+        }
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     let trace = store.load("terminal-collision").await.unwrap().unwrap();
@@ -80,7 +84,7 @@ async fn postgres_executor_terminal_step_collision_is_observable() {
     assert_eq!(trace.events[2].payload, Some(terminal));
     pool.close().await;
     println!(
-        "POSTGRES_TERMINAL_COLLISION_REPRODUCED effects=2 caller-next=2 completion-success terminal-event-missing"
+        "POSTGRES_TERMINAL_COLLISION_REPRODUCED effects=2 caller-next=2 durability-unconfirmed-terminal completion-success terminal-event-missing"
     );
 }
 
