@@ -1498,6 +1498,7 @@ mod tests {
     }
     #[derive(Debug, Default)]
     struct UpDownSnapshot {
+        metric_count: usize,
         signed: i64,
         fraction: f64,
         signed_series: usize,
@@ -1507,19 +1508,37 @@ mod tests {
     struct UpDownCapture {
         snapshots: Arc<Mutex<Vec<UpDownSnapshot>>>,
         requested: Temporality,
+        strict: bool,
     }
     impl PushMetricExporter for UpDownCapture {
         async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
             use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
             let mut snapshot = UpDownSnapshot::default();
+            let valid_attribute = |attribute: &KeyValue| {
+                attribute.key.as_str() == "identity"
+                    && match &attribute.value {
+                        opentelemetry::Value::String(value) if self.strict => {
+                            value.as_str() == "[REDACTED]"
+                        }
+                        opentelemetry::Value::String(value) => value
+                            .as_str()
+                            .strip_prefix("label-")
+                            .and_then(|suffix| suffix.parse::<usize>().ok())
+                            .is_some_and(|index| index < 1024),
+                        _ => false,
+                    }
+            };
             for scope in metrics.scope_metrics() {
                 for metric in scope.metrics() {
+                    snapshot.metric_count += 1;
                     match metric.data() {
                         AggregatedMetrics::I64(MetricData::Sum(sum)) => {
                             snapshot.unexpected |= metric.name() != "signed"
                                 || sum.temporality() != Temporality::Cumulative
                                 || sum.is_monotonic();
                             for point in sum.data_points() {
+                                snapshot.unexpected |= point.attributes().count() != 1
+                                    || !point.attributes().all(valid_attribute);
                                 snapshot.signed += point.value();
                                 snapshot.signed_series += 1;
                             }
@@ -1529,6 +1548,9 @@ mod tests {
                                 || sum.temporality() != Temporality::Cumulative
                                 || sum.is_monotonic();
                             for point in sum.data_points() {
+                                snapshot.unexpected |= !point.value().is_finite()
+                                    || point.attributes().count() != 1
+                                    || !point.attributes().all(valid_attribute);
                                 snapshot.fraction += point.value();
                                 snapshot.fraction_series += 1;
                             }
@@ -1556,6 +1578,11 @@ mod tests {
         for requested in [Temporality::Cumulative, Temporality::Delta] {
             for mode in [Mode::Off, Mode::Public, Mode::Strict] {
                 let strict = matches!(mode, Mode::Strict);
+                let mode_name = match mode {
+                    Mode::Off => "off",
+                    Mode::Public => "public",
+                    Mode::Strict => "strict",
+                };
                 let snapshots = Arc::new(Mutex::new(Vec::new()));
                 let values = Arc::new(Mutex::new((2_i64, 0.5_f64)));
                 let signed_calls = Arc::new(AtomicUsize::new(0));
@@ -1567,6 +1594,7 @@ mod tests {
                             PeriodicReader::builder(UpDownCapture {
                                 snapshots: snapshots.clone(),
                                 requested,
+                                strict,
                             })
                             .with_interval(Duration::from_secs(3600))
                             .build(),
@@ -1615,6 +1643,7 @@ mod tests {
                     let captured = snapshots.lock().unwrap();
                     assert_eq!(captured.len(), interval + 1);
                     let actual = captured.last().unwrap();
+                    assert_eq!(actual.metric_count, 2);
                     assert_eq!(actual.signed, value.0 * 1024);
                     assert_eq!(actual.fraction, value.1 * 1024.0);
                     assert_eq!(actual.signed_series, if strict { 1 } else { 1024 });
@@ -1622,6 +1651,9 @@ mod tests {
                     assert!(!actual.unexpected, "{actual:?}");
                     assert!(!provider.state.failed());
                 }
+                eprintln!(
+                    "OTLP_UPDOWN_PASS requested={requested:?} actual=Cumulative mode={mode_name} signed=2048,-3072,-3072 fraction=512,-1536,-1536 policy-labels no-overflow"
+                );
                 provider.inner.shutdown().unwrap();
             }
         }
