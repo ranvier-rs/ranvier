@@ -60,17 +60,17 @@ impl Transition<UserRequest, AuditedResult> for AuditingTransition {
         _resources: &Self::Resources,
         bus: &mut Bus,
     ) -> Outcome<AuditedResult, String> {
-        let logger = bus.read::<Arc<AuditLogger<InMemoryAuditSink>>>().cloned();
-        if let Some(logger) = logger {
-            let event = AuditEvent::new(
-                format!("evt-{}", input.user_id),
-                input.user_id.clone(),
-                input.action.clone(),
-                "test-resource".into(),
-            );
-            if let Err(e) = logger.log(event).await {
-                return Outcome::Fault(format!("Audit failed: {e}"));
-            }
+        let Some(logger) = bus.read::<Arc<AuditLogger<InMemoryAuditSink>>>().cloned() else {
+            return Outcome::Fault("Required audit capability missing".into());
+        };
+        let event = AuditEvent::new(
+            format!("evt-{}-{}", input.user_id, input.action),
+            input.user_id.clone(),
+            input.action.clone(),
+            "test-resource".into(),
+        );
+        if logger.log(event).await.is_err() {
+            return Outcome::Fault("Audit operation failed".into());
         }
         Outcome::Next(AuditedResult {
             success: true,
@@ -97,9 +97,10 @@ impl Transition<UserRequest, UserRequest> for AccessLogVerifier {
     ) -> Outcome<UserRequest, String> {
         // Verify AccessLogEntry was written by AccessLogGuard
         let has_entry = bus.read::<AccessLogEntry>().is_some();
-        if has_entry {
-            bus.insert("access_log_verified".to_string());
+        if !has_entry {
+            return Outcome::Fault("Required access log entry missing".into());
         }
+        bus.insert("access_log_verified".to_string());
         Outcome::Next(input)
     }
 }
@@ -128,7 +129,9 @@ async fn test_audit_pipeline_integration() {
     };
 
     let result = axon.execute(input, &(), &mut bus).await;
-    assert!(matches!(local_result(result), Outcome::Next(_)));
+    assert!(
+        matches!(local_result(result), Outcome::Next(value) if value.success && value.message == "CREATE completed")
+    );
 
     // Verify audit event was recorded
     let events = sink.get_events().await;
@@ -411,4 +414,27 @@ async fn test_audit_query_across_executions() {
     let read_events = logger.query(&query).await.unwrap();
     assert_eq!(read_events.len(), 1);
     assert_eq!(read_events[0].actor, "viewer");
+}
+
+#[tokio::test]
+async fn missing_operating_capabilities_fail_closed() {
+    let input = UserRequest {
+        user_id: "private-user".into(),
+        email: "private@email".into(),
+        action: "CREATE".into(),
+    };
+    let audit =
+        Axon::<UserRequest, UserRequest, String>::new("missing-audit").then(AuditingTransition);
+    let outcome = local_result(audit.execute(input.clone(), &(), &mut Bus::new()).await);
+    assert!(
+        matches!(outcome, Outcome::Fault(error) if error == "Required audit capability missing")
+    );
+    let access =
+        Axon::<UserRequest, UserRequest, String>::new("missing-access").then(AccessLogVerifier);
+    let mut bus = Bus::new();
+    let outcome = local_result(access.execute(input, &(), &mut bus).await);
+    assert!(
+        matches!(outcome, Outcome::Fault(error) if error == "Required access log entry missing")
+    );
+    assert!(!bus.has::<String>());
 }
