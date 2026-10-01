@@ -570,7 +570,12 @@ async fn dropped_persistence_ack_restores_owner_without_rewriting_history() {
                 } else {
                     let trace = trace.unwrap();
                     assert_eq!(trace.events.len(), expected);
-                    assert!(trace.events.iter().all(|event| event.trace_id == "drop-ack"));
+                    assert!(
+                        trace
+                            .events
+                            .iter()
+                            .all(|event| event.trace_id == "drop-ack")
+                    );
                     assert_eq!(
                         trace.completion,
                         if block_at == 4 && applied {
