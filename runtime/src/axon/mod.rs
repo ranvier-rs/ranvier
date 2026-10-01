@@ -466,6 +466,7 @@ async fn load_persistence_version(
     Option<crate::persistence::Intervention>,
     Option<String>,
     Option<serde_json::Value>,
+    Option<CompletionState>,
 ) {
     let store = handle.store();
     match store.load(trace_id).await {
@@ -518,16 +519,17 @@ async fn load_persistence_version(
                 trace.interventions.last().cloned(),
                 last_node_id,
                 last_payload,
+                trace.completion,
             )
         }
-        Ok(None) => (0, None, None, None, None),
+        Ok(None) => (0, None, None, None, None, None),
         Err(_) => {
             tracing::warn!(
                 trace_id = %trace_id,
                 store_operation = "load",
                 "Failed to load persistence trace; falling back to step=0"
             );
-            (0, None, None, None, None)
+            (0, None, None, None, None, None)
         }
     }
 }

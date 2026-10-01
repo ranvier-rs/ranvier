@@ -42,10 +42,9 @@ async fn test_migration_resume_from_start() {
     verify_resume_from_start(false).await;
 }
 
-// Defect reproduction: completed traces still invoke effects under explicit
-// ResumeFromStart, although the store refuses new events. Not acceptance.
+// Completed trace resumption must reject before new effects or writes.
 #[tokio::test]
-async fn completed_trace_migration_reports_rejected_writes_after_effects() {
+async fn completed_trace_migration_rejects_before_effects() {
     verify_resume_from_start(true).await;
 }
 
@@ -120,11 +119,9 @@ async fn verify_resume_from_start(completed: bool) {
     if completed {
         assert!(matches!(
             report,
-            ExecutionReport::Unconfirmed {
-                result: Outcome::Next(3),
-                operation: ranvier_runtime::PersistenceOperation::Intent,
-                effect: ranvier_runtime::EffectBoundary::MayHaveRun,
-            }
+            ExecutionReport::NotRequested {
+                result: Outcome::Emit(event, None),
+            } if event == "execution.resumption.completed_trace"
         ));
         let after = store.load("trace-1").await.unwrap().unwrap();
         assert_eq!(after.events, before.events);
@@ -143,7 +140,7 @@ async fn verify_resume_from_start(completed: bool) {
     // Counter should be 3 (all steps of v1.1)
     {
         let count = *counter_v11.count.lock().await;
-        assert_eq!(count, 3);
+        assert_eq!(count, if completed { 0 } else { 3 });
     }
 }
 
@@ -160,6 +157,7 @@ async fn test_migration_fail_by_default() {
 
     let mut bus = Bus::new();
     bus.insert(handle.clone());
+    bus.insert(PersistenceAutoComplete(false));
     bus.insert(ranvier_runtime::persistence::PersistenceTraceId::new(
         "trace-fail",
     ));
@@ -167,7 +165,7 @@ async fn test_migration_fail_by_default() {
         axon_v10.execute(0, &(), &mut bus).await,
         ExecutionReport::Recorded {
             result: Outcome::Next(1),
-            completion: CompletionConfirmation::Confirmed
+            completion: CompletionConfirmation::NotRequested
         }
     ));
 

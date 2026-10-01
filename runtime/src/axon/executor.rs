@@ -224,8 +224,20 @@ where
             .cloned();
 
         let persistence_start_step = if let Some(handle) = persistence_handle.as_ref() {
-            let (mut start_step, trace_version, intervention, last_node_id, mut last_payload) =
-                load_persistence_version(handle, &trace_id).await;
+            let (
+                mut start_step,
+                trace_version,
+                intervention,
+                last_node_id,
+                mut last_payload,
+                completion,
+            ) = load_persistence_version(handle, &trace_id).await;
+
+            // Migration and interventions do not create a new execution identity.
+            // An authoritative terminal trace cannot authorize further effects.
+            if completion.is_some() {
+                return Outcome::emit("execution.resumption.completed_trace", None);
+            }
 
             if let Some(interv) = intervention {
                 tracing::info!(
@@ -666,15 +678,9 @@ where
                         completion = ?trace.completion,
                         "Cancellation cleanup will not overwrite an already completed trace"
                     );
-                    (
-                        trace
-                            .events
-                            .last()
-                            .map(|event| event.step.saturating_add(1))
-                            .unwrap_or(0),
-                        false,
-                        false,
-                    )
+                    // No new undo or external compensation may be replayed for
+                    // an execution already known to be terminal.
+                    return;
                 }
                 Ok(Some(trace)) => (
                     trace
