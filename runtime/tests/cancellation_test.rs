@@ -674,3 +674,50 @@ async fn cancellation_rolls_back_completed_saga_steps_in_lifo_order() {
     // After returning, restore the caller's originally absent owner.
     assert!(bus.cancellation_token().is_none());
 }
+
+#[derive(Clone)]
+struct PendingShieldUndo(Arc<AtomicUsize>);
+#[async_trait]
+impl Transition<SagaState, ()> for PendingShieldUndo {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: SagaState, _: &(), bus: &mut Bus) -> Outcome<(), String> {
+        assert!(
+            bus.cancellation_token()
+                .is_some_and(|token| !token.is_cancelled())
+        );
+        self.0.fetch_add(1, Ordering::SeqCst);
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn dropped_shielded_undo_restores_parent_and_keeps_in_progress_journal() {
+    use futures_util::FutureExt;
+    use ranvier_runtime::saga_report::{SagaRollbackJournal, SagaRollbackOutcome};
+    let undos = Arc::new(AtomicUsize::new(0));
+    let axon = Axon::<SagaState, SagaState, String>::new("shielded-drop")
+        .with_saga_policy(SagaPolicy::Enabled)
+        .then_compensated(SagaStep("step"), PendingShieldUndo(undos.clone()))
+        .then(WaitSaga {
+            entered: Arc::new(Notify::new()),
+        });
+    let mut bus = Bus::new();
+    let parent = CancellationToken::new();
+    bus.set_cancellation_token(parent.clone());
+    let child = CancellationToken::new();
+    {
+        let mut execution =
+            Box::pin(axon.execute_cancellable(SagaState(0), &(), &mut bus, child.clone()));
+        assert!(execution.as_mut().now_or_never().is_none());
+        child.cancel(CancellationReason::Explicit);
+        assert!(execution.as_mut().now_or_never().is_none());
+    }
+    assert_eq!(undos.load(Ordering::SeqCst), 1);
+    let journal = bus.read::<SagaRollbackJournal>().unwrap().snapshot();
+    assert!(!journal.finished);
+    assert_eq!(journal.steps[0].outcome, SagaRollbackOutcome::InProgress);
+    assert!(!bus.cancellation_token().unwrap().is_cancelled());
+    parent.cancel(CancellationReason::Explicit);
+    assert!(bus.cancellation_token().unwrap().is_cancelled());
+}
