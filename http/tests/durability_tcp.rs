@@ -138,14 +138,26 @@ async fn request(
     axon: Axon<(), u32, String>,
     store: Arc<Store>,
 ) -> (http::StatusCode, serde_json::Value) {
+    request_with_store(axon, Some(store)).await
+}
+
+async fn request_with_store<T>(
+    axon: Axon<(), T, String>,
+    store: Option<Arc<Store>>,
+) -> (http::StatusCode, serde_json::Value)
+where
+    T: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+{
     let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = probe.local_addr().unwrap();
     drop(probe);
     let ingress = HttpIngress::<()>::new()
         .bind(address.to_string())
         .bus_injector(move |_, bus| {
-            bus.insert(PersistenceHandle::from_arc(store.clone()));
-            bus.insert(PersistenceTraceId::new("http-report-fixture"));
+            if let Some(store) = &store {
+                bus.insert(PersistenceHandle::from_arc(store.clone()));
+                bus.insert(PersistenceTraceId::new("http-report-fixture"));
+            }
         })
         .get_json_out("/execute", axon);
     let shutdown = ranvier_core::cancellation::CancellationToken::new();
@@ -194,6 +206,7 @@ async fn request(
     let text = std::str::from_utf8(&body).unwrap();
     assert!(!text.contains("private-backend-probe"));
     assert!(!text.contains("private-undo-probe"));
+    assert!(!text.contains("private-serializer-probe"));
     let payload = serde_json::from_slice(&body).unwrap();
     drop(sender);
     let _ = shutdown.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
@@ -364,4 +377,56 @@ async fn fully_acknowledged_execution_keeps_normal_json_success() {
     assert_eq!(body, 7);
     assert_eq!(effects.load(Ordering::SeqCst), 1);
     assert_eq!(store.completions.load(Ordering::SeqCst), 1);
+}
+
+#[derive(serde::Deserialize)]
+struct BrokenOutput;
+impl serde::Serialize for BrokenOutput {
+    fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+        Err(serde::ser::Error::custom("private-serializer-probe"))
+    }
+}
+
+#[derive(Clone)]
+struct BrokenBusiness(Arc<AtomicUsize>);
+#[async_trait::async_trait]
+impl Transition<(), BrokenOutput> for BrokenBusiness {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: (), _: &(), _: &mut Bus) -> Outcome<BrokenOutput, String> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Outcome::Next(BrokenOutput)
+    }
+}
+
+#[tokio::test]
+async fn output_encoding_failure_after_effect_is_safe_over_tcp() {
+    for persisted in [false, true] {
+        let store = store(Failure::None, false);
+        let effects = Arc::new(AtomicUsize::new(0));
+        let axon =
+            Axon::<(), (), String>::new("broken-output-http").then(BrokenBusiness(effects.clone()));
+        let (status, body) = request_with_store(axon, persisted.then(|| store.clone())).await;
+        assert_eq!(status, http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"], "JSON response could not be encoded");
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            store.completions.load(Ordering::SeqCst),
+            usize::from(persisted)
+        );
+        if persisted {
+            // Characterize the current recovery defect explicitly: acknowledged
+            // completion does not prove a usable serialized result exists.
+            let trace = store
+                .backing
+                .load("http-report-fixture")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(trace.completion, Some(CompletionState::Success));
+            assert!(trace.events.iter().any(|event| {
+                event.outcome_kind == "Next" && event.payload == Some(serde_json::Value::Null)
+            }));
+        }
+    }
 }
