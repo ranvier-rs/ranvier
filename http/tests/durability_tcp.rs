@@ -16,6 +16,8 @@ enum Failure {
     None,
     Entry,
     Result,
+    Terminal,
+    Complete,
 }
 
 struct Store {
@@ -34,6 +36,8 @@ impl PersistenceStore for Store {
             Failure::None => false,
             Failure::Entry => event.outcome_kind == "Enter",
             Failure::Result => event.node_id.is_some() && event.outcome_kind == "Next",
+            Failure::Terminal => event.node_id.is_none() && event.outcome_kind != "Enter",
+            Failure::Complete => false,
         };
         if !unknown || self.apply_unknown {
             self.backing.append(event).await?;
@@ -51,7 +55,14 @@ impl PersistenceStore for Store {
     }
     async fn complete(&self, trace: &str, completion: CompletionState) -> anyhow::Result<()> {
         self.completions.fetch_add(1, Ordering::SeqCst);
-        self.backing.complete(trace, completion).await
+        let unknown = matches!(self.failure, Failure::Complete);
+        if !unknown || self.apply_unknown {
+            self.backing.complete(trace, completion).await?;
+        }
+        if unknown {
+            anyhow::bail!("private-backend-probe: completion acknowledgement unknown");
+        }
+        Ok(())
     }
     async fn save_intervention(
         &self,
@@ -84,6 +95,17 @@ impl Transition<u32, u32> for Fail {
     }
 }
 #[derive(Clone)]
+struct FirstFault(Arc<AtomicUsize>);
+#[async_trait::async_trait]
+impl Transition<(), u32> for FirstFault {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: (), _: &(), _: &mut Bus) -> Outcome<u32, String> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Outcome::Fault("original-business-fault".into())
+    }
+}
+#[derive(Clone)]
 struct Undo(Arc<AtomicUsize>);
 #[async_trait::async_trait]
 impl Transition<(), ()> for Undo {
@@ -105,6 +127,13 @@ fn store(failure: Failure, apply_unknown: bool) -> Arc<Store> {
     })
 }
 
+struct AbortTask<T>(tokio::task::JoinHandle<T>);
+impl<T> Drop for AbortTask<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 async fn request(
     axon: Axon<(), u32, String>,
     store: Arc<Store>,
@@ -121,7 +150,9 @@ async fn request(
         .get_json_out("/execute", axon);
     let shutdown = ranvier_core::cancellation::CancellationToken::new();
     let server_token = shutdown.clone();
-    let server = tokio::spawn(async move { ingress.run_with_cancellation((), server_token).await });
+    let mut server = AbortTask(tokio::spawn(async move {
+        ingress.run_with_cancellation((), server_token).await
+    }));
     let stream = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             match tokio::net::TcpStream::connect(address).await {
@@ -135,7 +166,7 @@ async fn request(
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
         .unwrap();
-    let driver = tokio::spawn(connection);
+    let mut driver = AbortTask(tokio::spawn(connection));
     let response = tokio::time::timeout(
         Duration::from_secs(3),
         sender.send_request(
@@ -151,6 +182,10 @@ async fn request(
     .unwrap()
     .unwrap();
     let status = response.status();
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "application/json"
+    );
     let body = tokio::time::timeout(Duration::from_secs(3), response.into_body().collect())
         .await
         .unwrap()
@@ -162,12 +197,12 @@ async fn request(
     let payload = serde_json::from_slice(&body).unwrap();
     drop(sender);
     let _ = shutdown.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
-    tokio::time::timeout(Duration::from_secs(3), driver)
+    tokio::time::timeout(Duration::from_secs(3), &mut driver.0)
         .await
         .unwrap()
         .unwrap()
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), server)
+    tokio::time::timeout(Duration::from_secs(3), &mut server.0)
         .await
         .unwrap()
         .unwrap()
@@ -254,4 +289,79 @@ async fn failed_saga_cleanup_returns_409_without_replacing_the_original_fault() 
         .unwrap()
         .unwrap();
     assert_eq!(trace.completion, Some(CompletionState::Fault));
+}
+
+#[tokio::test]
+async fn later_terminal_and_completion_unknowns_never_become_http_success() {
+    for (failure, operation) in [
+        (Failure::Terminal, "terminal"),
+        (Failure::Complete, "complete"),
+    ] {
+        for applied in [false, true] {
+            let store = store(failure, applied);
+            let effects = Arc::new(AtomicUsize::new(0));
+            let axon = Axon::<(), (), String>::new("late-http").then(Business(effects.clone()));
+            let (status, body) = request(axon, store.clone()).await;
+            assert_eq!(status, http::StatusCode::CONFLICT);
+            assert_eq!(body["operation"], operation);
+            assert_eq!(body["durability"], "unconfirmed");
+            assert_eq!(body["effect"], "may_have_run");
+            assert_eq!(body["result"]["terminal"], "outcome");
+            assert_eq!(body["result"]["value"]["Next"], 7);
+            assert_eq!(body["reconciliation_required"], true);
+            assert_eq!(effects.load(Ordering::SeqCst), 1);
+            let trace = store
+                .backing
+                .load("http-report-fixture")
+                .await
+                .unwrap()
+                .unwrap();
+            if operation == "terminal" {
+                assert_eq!(
+                    trace
+                        .events
+                        .iter()
+                        .any(|event| event.node_id.is_none() && event.outcome_kind != "Enter"),
+                    applied
+                );
+                assert_eq!(trace.completion, Some(CompletionState::Success));
+            } else {
+                assert_eq!(
+                    trace.completion,
+                    applied.then_some(CompletionState::Success)
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn direct_failed_compensation_is_owned_by_the_http_report() {
+    let store = store(Failure::None, false);
+    let effects = Arc::new(AtomicUsize::new(0));
+    let undos = Arc::new(AtomicUsize::new(0));
+    let axon = Axon::<(), (), String>::new("direct-cleanup-http")
+        .with_saga_policy(ranvier_core::saga::SagaPolicy::Disabled)
+        .then_compensated(FirstFault(effects.clone()), Undo(undos.clone()));
+    let (status, body) = request(axon, store).await;
+    assert_eq!(status, http::StatusCode::CONFLICT);
+    assert_eq!(body["durability"], "recorded");
+    assert_eq!(body["result"]["value"]["Fault"], "original-business-fault");
+    assert_eq!(body["cleanup"]["finished"], true);
+    assert_eq!(body["cleanup"]["steps"].as_array().unwrap().len(), 1);
+    assert_eq!(body["cleanup"]["steps"][0]["outcome"], "fault");
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(undos.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn fully_acknowledged_execution_keeps_normal_json_success() {
+    let store = store(Failure::None, false);
+    let effects = Arc::new(AtomicUsize::new(0));
+    let axon = Axon::<(), (), String>::new("confirmed-http").then(Business(effects.clone()));
+    let (status, body) = request(axon, store.clone()).await;
+    assert_eq!(status, http::StatusCode::OK);
+    assert_eq!(body, 7);
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(store.completions.load(Ordering::SeqCst), 1);
 }
