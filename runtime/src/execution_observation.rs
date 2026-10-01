@@ -823,16 +823,24 @@ impl IamScope {
     }
 }
 
-/// Preserve configuration allocation, sharing and absence across nested execution.
+/// Preserve nested configuration and the parent Saga task stack.
+/// Each child owns independent rollback tasks; root recovery state stays untouched.
 struct ConfigurationScope(Vec<ranvier_core::bus::BusResourceScope>);
 impl ConfigurationScope {
     fn begin(bus: &mut Bus) -> Self {
-        Self(vec![
+        let scope = Self(vec![
             bus.begin_resource_scope::<ranvier_core::event::DlqPolicy>(),
             bus.begin_resource_scope::<Arc<dyn ranvier_core::event::DlqSink>>(),
             bus.begin_resource_scope::<ranvier_core::schematic::Schematic>(),
             bus.begin_resource_scope::<ranvier_core::saga::SagaPolicy>(),
-        ])
+            bus.begin_resource_scope::<ranvier_core::saga::SagaStack>(),
+        ]);
+        if bus.has::<ranvier_core::saga::SagaStack>() {
+            // A clone of the parent's tasks is not a valid child rollback stack.
+            // Shadow inherited/aliased storage without mutating its owner.
+            bus.insert(ranvier_core::saga::SagaStack::new());
+        }
+        scope
     }
     fn restore(mut self, bus: &mut Bus) {
         while let Some(scope) = self.0.pop() {
