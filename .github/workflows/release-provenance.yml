@@ -29,7 +29,7 @@ jobs:
         run: |
           git rev-parse HEAD > provenance-guard-identities.txt
           node --version >> provenance-guard-identities.txt
-          sha256sum scripts/release_provenance.mjs scripts/release_provenance.test.mjs .ranvier-supply-chain-policy.json >> provenance-guard-identities.txt
+          sha256sum scripts/release_provenance.mjs scripts/release_provenance_package_args.mjs scripts/release_provenance.test.mjs .ranvier-supply-chain-policy.json >> provenance-guard-identities.txt
       - name: Verify provenance guards
         run: node --test scripts/release_provenance.test.mjs 2>&1 | tee provenance-guards.log
       - uses: actions/upload-artifact@v6
