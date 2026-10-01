@@ -22,6 +22,21 @@ use sea_orm::{
 use sea_orm_migration::prelude::*;
 use serde::{Deserialize, Serialize};
 
+fn local_demo_outcome<T, E>(
+    report: ranvier_runtime::ExecutionReport<Outcome<T, E>>,
+) -> anyhow::Result<Outcome<T, E>> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        anyhow::bail!("Execution requires reconciliation before retry");
+    }
+    match report {
+        ranvier_runtime::ExecutionReport::Unpersisted { result, .. } => Ok(result),
+        _ => anyhow::bail!("Execution requires reconciliation before retry"),
+    }
+}
+
 #[derive(Clone)]
 struct AppResources {
     db: DatabaseConnection,
@@ -175,7 +190,7 @@ impl Transition<UpdateEmailInput, UserSummary> for UpdateUserEmailTransition {
         let mut active: user::ActiveModel = model.into();
         active.email = Set(input.email);
 
-        let updated = active
+        let updated = local_demo_outcome(active
             .update(&resources.db)
             .await
             .map_err(|e| e.to_string());
@@ -217,7 +232,7 @@ impl Transition<DeleteUserInput, i32> for DeleteUserTransition {
         };
 
         let deleted_id = model.id;
-        let deleted = model.delete(&resources.db).await.map_err(|e| e.to_string());
+        let deleted = local_demo_outcome(model.delete(&resources.db).await.map_err(|e| e.to_string());
 
         match deleted {
             Ok(_) => Outcome::Next(deleted_id),
@@ -289,7 +304,7 @@ async fn main() -> Result<()> {
         Axon::<DeleteUserInput, DeleteUserInput, String, AppResources>::new("seaorm.delete_user")
             .then(DeleteUserTransition);
 
-    let alice = create
+    let alice = local_demo_outcome(create
         .execute(
             CreateUserInput {
                 username: "alice".to_string(),
@@ -298,8 +313,8 @@ async fn main() -> Result<()> {
             &resources,
             &mut bus,
         )
-        .await;
-    let bob = create
+        .await)?;
+    let bob = local_demo_outcome(create
         .execute(
             CreateUserInput {
                 username: "bob".to_string(),
@@ -308,7 +323,7 @@ async fn main() -> Result<()> {
             &resources,
             &mut bus,
         )
-        .await;
+        .await)?;
 
     let (alice_id, bob_id) = match (&alice, &bob) {
         (Outcome::Next(a), Outcome::Next(b)) => {
@@ -325,7 +340,7 @@ async fn main() -> Result<()> {
     };
 
     let before: Outcome<Vec<UserSummary>, String> =
-        list.execute(FetchAllInput, &resources, &mut bus).await;
+        list.execute(FetchAllInput, &resources, &mut bus).await)?;
     match &before {
         Outcome::Next(users) if users.len() == 2 => println!("list(before): {} users", users.len()),
         _ => return Err(anyhow::anyhow!("initial list outcome mismatch")),
@@ -340,7 +355,7 @@ async fn main() -> Result<()> {
             &resources,
             &mut bus,
         )
-        .await;
+        .await)?;
     match &updated {
         Outcome::Next(user) if user.id == alice_id && user.email == "alice+updated@demo.local" => {
             println!("updated: {} -> {}", user.username, user.email)
@@ -357,7 +372,7 @@ async fn main() -> Result<()> {
     }
 
     let after: Outcome<Vec<UserSummary>, String> =
-        list.execute(FetchAllInput, &resources, &mut bus).await;
+        local_demo_outcome(list.execute(FetchAllInput, &resources, &mut bus).await)?;
     match after {
         Outcome::Next(users)
             if users.len() == 1
