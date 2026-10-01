@@ -368,8 +368,7 @@ fn print_timeline(bus: &Bus) {
 // Main
 // ============================================================================
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn run_demo() -> anyhow::Result<()> {
     println!("=== Retry, Timeout & DLQ Demo ===\n");
 
     let dlq = InMemoryDlqSink::new();
@@ -392,6 +391,10 @@ async fn main() -> anyhow::Result<()> {
         amount: 49.99,
     };
     let result = local_demo_outcome(axon.execute(request, &(), &mut bus).await)?;
+    if !matches!(&result, Outcome::Next(value) if value.order_id == "ORD-001" && value.status == "charged" && value.amount == 49.99)
+    {
+        anyhow::bail!("Retry success mismatch");
+    }
     match &result {
         Outcome::Next(r) => println!("  Result: {} ({})", r.status, r.order_id),
         Outcome::Fault(e) => println!("  Result: FAULT — {}", e),
@@ -417,6 +420,9 @@ async fn main() -> anyhow::Result<()> {
         amount: 99.99,
     };
     let result = local_demo_outcome(axon.execute(request, &(), &mut bus).await)?;
+    if !matches!(&result, Outcome::Fault(error) if error == "service_unavailable") {
+        anyhow::bail!("DLQ exhaustion mismatch");
+    }
     match &result {
         Outcome::Fault(e) => println!("  Result: FAULT — {}", e),
         _ => println!("  Result: unexpected"),
@@ -424,7 +430,10 @@ async fn main() -> anyhow::Result<()> {
     print_timeline(&bus);
 
     let letters = dlq.letters.lock().await;
-    println!("  DLQ entries: {}", letters.len());
+    if letters.len() != 1 || !letters[0].contains("service_unavailable") {
+        anyhow::bail!("DLQ record mismatch");
+    }
+    drop(letters);
 
     // --- Demo 3: Timeout pattern ---
     println!("\n--- Demo 3: Timeout — slow operation exceeds deadline ---");
@@ -439,6 +448,9 @@ async fn main() -> anyhow::Result<()> {
         amount: 25.00,
     };
     let result = local_demo_outcome(axon.execute(request, &(), &mut bus).await)?;
+    if !matches!(&result, Outcome::Fault(error) if error.starts_with("validation_timeout")) {
+        anyhow::bail!("Timeout rejection mismatch");
+    }
     match &result {
         Outcome::Fault(e) => println!("  Result: FAULT — {}", e),
         Outcome::Next(_) => println!("  Result: unexpected success"),
@@ -457,6 +469,9 @@ async fn main() -> anyhow::Result<()> {
         amount: 25.00,
     };
     let result = local_demo_outcome(axon.execute(request, &(), &mut bus).await)?;
+    if !matches!(&result, Outcome::Next(value) if value.order_id == "ORD-004") {
+        anyhow::bail!("Fast validation mismatch");
+    }
     match &result {
         Outcome::Next(r) => println!("  Result: validated ({})", r.order_id),
         Outcome::Fault(e) => println!("  Result: FAULT — {}", e),
@@ -482,6 +497,10 @@ async fn main() -> anyhow::Result<()> {
 
         println!("  Request #{}", i);
         let result = local_demo_outcome(axon.execute(request, &(), &mut bus).await)?;
+        if !matches!(&result, Outcome::Fault(error) if if i <= 2 { error.starts_with("gateway_error") } else { error == "circuit_open" })
+        {
+            anyhow::bail!("Circuit breaker mismatch");
+        }
         match &result {
             Outcome::Next(r) => println!("    -> {} ({})", r.status, r.order_id),
             Outcome::Fault(e) => println!("    -> FAULT: {}", e),
@@ -491,4 +510,17 @@ async fn main() -> anyhow::Result<()> {
 
     println!("\ndone");
     Ok(())
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    run_demo().await
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn actual_retry_dlq_timeout_and_breaker_scenarios() {
+        run_demo().await.unwrap();
+    }
 }
