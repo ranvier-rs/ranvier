@@ -27,7 +27,100 @@ fn response(status: StatusCode, body: &str) -> Response<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ranvier_runtime::{
+        CompletionConfirmation, EffectBoundary, PersistenceOperation, SagaRollbackOutcome,
+        SagaRollbackReport, SagaRollbackStep,
+    };
     use tower::Layer;
+
+    fn next() -> Outcome<DomainResponse, AppError> {
+        Outcome::Next(DomainResponse {
+            status: 200,
+            body: "private-domain-result".into(),
+        })
+    }
+
+    #[test]
+    fn local_policy_rejects_every_persisted_report_variant() {
+        let reports = [
+            ExecutionReport::NotRequested {
+                result: next(),
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::Confirmed,
+                cleanup: None,
+            },
+            ExecutionReport::Recorded {
+                result: next(),
+                completion: CompletionConfirmation::NotRequested,
+                cleanup: None,
+            },
+            ExecutionReport::Unconfirmed {
+                result: next(),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::Unconfirmed {
+                result: Outcome::Fault(AppError::Internal("private-failure".into())),
+                operation: PersistenceOperation::Complete,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::NotInvoked,
+                cleanup: None,
+            },
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::MayHaveRun,
+                cleanup: None,
+            },
+        ];
+        for report in reports {
+            let response = map_local_report(report);
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(response.body(), "Reconciliation required");
+            assert!(!response.headers().contains_key(http::header::RETRY_AFTER));
+        }
+    }
+
+    #[test]
+    fn cleanup_must_finish_and_complete_every_hook_before_success() {
+        for finished in [false, true] {
+            for outcome in [
+                SagaRollbackOutcome::InProgress,
+                SagaRollbackOutcome::Panicked,
+                SagaRollbackOutcome::Completed,
+                SagaRollbackOutcome::Fault,
+                SagaRollbackOutcome::Emitted,
+                SagaRollbackOutcome::Branched,
+                SagaRollbackOutcome::Jumped,
+                SagaRollbackOutcome::MissingHandler,
+            ] {
+                let response = map_local_report(ExecutionReport::Unpersisted {
+                    result: next(),
+                    cleanup: Some(SagaRollbackReport {
+                        trace_id: "private-trace".into(),
+                        finished,
+                        steps: vec![SagaRollbackStep {
+                            node_id: "private-node".into(),
+                            outcome,
+                        }],
+                    }),
+                });
+                if finished && outcome == SagaRollbackOutcome::Completed {
+                    assert_eq!(response.status(), StatusCode::OK);
+                } else {
+                    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+                    assert_eq!(response.body(), "Reconciliation required");
+                }
+            }
+        }
+    }
 
     #[ranvier_macros::transition]
     async fn fail_private(
@@ -128,31 +221,31 @@ impl Service<Request<String>> for AxonService {
             let mut bus = Bus::new();
             bus.insert(identity);
             let report = pipeline.execute((), &(), &mut bus).await;
-            if report
-                .cleanup()
-                .is_some_and(|cleanup| !cleanup.is_complete())
-            {
-                return Ok(response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "Reconciliation required",
-                ));
-            }
-            let ExecutionReport::Unpersisted { result, .. } = report else {
-                return Ok(response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "Reconciliation required",
-                ));
-            };
-            Ok(match result {
-                Outcome::Next(domain) => match StatusCode::from_u16(domain.status) {
-                    Ok(status) => response(status, &domain.body),
-                    Err(_) => response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
-                },
-                Outcome::Fault(AppError::Unauthenticated) => {
-                    response(StatusCode::UNAUTHORIZED, "Unauthorized")
-                }
-                _ => response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
-            })
+            Ok(map_local_report(report))
         })
+    }
+}
+
+fn map_local_report(
+    report: ExecutionReport<Outcome<DomainResponse, AppError>>,
+) -> Response<String> {
+    if report
+        .cleanup()
+        .is_some_and(|cleanup| !cleanup.is_complete())
+    {
+        return response(StatusCode::SERVICE_UNAVAILABLE, "Reconciliation required");
+    }
+    let ExecutionReport::Unpersisted { result, .. } = report else {
+        return response(StatusCode::SERVICE_UNAVAILABLE, "Reconciliation required");
+    };
+    match result {
+        Outcome::Next(domain) => match StatusCode::from_u16(domain.status) {
+            Ok(status) => response(status, &domain.body),
+            Err(_) => response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+        },
+        Outcome::Fault(AppError::Unauthenticated) => {
+            response(StatusCode::UNAUTHORIZED, "Unauthorized")
+        }
+        _ => response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
     }
 }
