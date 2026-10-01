@@ -2,9 +2,9 @@ use ranvier_core::prelude::*;
 use ranvier_core::schematic::{
     MigrationRegistry, MigrationStrategy, SchemaMigrationMapper, SnapshotMigration,
 };
-use ranvier_runtime::Axon;
 use ranvier_runtime::persistence::{InMemoryPersistenceStore, PersistenceHandle};
 use ranvier_runtime::replay::replay_and_recover;
+use ranvier_runtime::{Axon, CompletionConfirmation, ExecutionReport};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -57,7 +57,13 @@ async fn test_migration_resume_from_start() {
         "trace-1",
     ));
 
-    let _ = axon_v10.execute(0, &(), &mut bus).await;
+    assert!(matches!(
+        axon_v10.execute(0, &(), &mut bus).await,
+        ExecutionReport::Recorded {
+            result: Outcome::Next(_),
+            completion: CompletionConfirmation::Confirmed
+        }
+    ));
 
     // Check counter
     {
@@ -94,7 +100,13 @@ async fn test_migration_resume_from_start() {
     bus_v11.insert(registry);
 
     // This should restart from step 0 because of ResumeFromStart
-    let _ = axon_v11.execute(0, &(), &mut bus_v11).await;
+    assert!(matches!(
+        axon_v11.execute(0, &(), &mut bus_v11).await,
+        ExecutionReport::Recorded {
+            result: Outcome::Next(_),
+            completion: CompletionConfirmation::Confirmed
+        }
+    ));
 
     // Counter should be 3 (all steps of v1.1)
     {
@@ -119,7 +131,13 @@ async fn test_migration_fail_by_default() {
     bus.insert(ranvier_runtime::persistence::PersistenceTraceId::new(
         "trace-fail",
     ));
-    let _ = axon_v10.execute(0, &(), &mut bus).await;
+    assert!(matches!(
+        axon_v10.execute(0, &(), &mut bus).await,
+        ExecutionReport::Recorded {
+            result: Outcome::Next(_),
+            completion: CompletionConfirmation::Confirmed
+        }
+    ));
 
     let axon_v11 = Axon::<u32, u32, TestError, ()>::new("FailTest")
         .with_version("v1.1")
@@ -134,7 +152,10 @@ async fn test_migration_fail_by_default() {
     ));
     // No migration registered
 
-    let outcome = axon_v11.execute(0, &(), &mut bus_v11).await;
+    let report = axon_v11.execute(0, &(), &mut bus_v11).await;
+    let ExecutionReport::NotRequested { result: outcome } = report else {
+        panic!("expected migration rejection without persistence writes");
+    };
 
     // Should be Outcome::Emit with version_mismatch_failed (based on axon.rs:870)
     match outcome {
@@ -222,7 +243,13 @@ async fn test_migration_migrate_active_node() {
     bus_v11.insert(registry);
 
     // Execute v1.1. It should find node 1 was last, map it to node 2, and start node 2.
-    let _ = axon_v11.execute(0, &(), &mut bus_v11).await;
+    assert!(matches!(
+        axon_v11.execute(0, &(), &mut bus_v11).await,
+        ExecutionReport::Recorded {
+            result: Outcome::Next(_),
+            completion: CompletionConfirmation::Confirmed
+        }
+    ));
 
     // Counter for v11 should be 1 (only node 2 ran)
     {
@@ -292,7 +319,13 @@ async fn test_migration_fallback_to_node() {
     bus_v11.insert(registry);
 
     // Execute v1.1. It should ignore v1.0 and jump to v1.1 node 2.
-    let _ = axon_v11.execute(0, &(), &mut bus_v11).await;
+    assert!(matches!(
+        axon_v11.execute(0, &(), &mut bus_v11).await,
+        ExecutionReport::Recorded {
+            result: Outcome::Next(_),
+            completion: CompletionConfirmation::Confirmed
+        }
+    ));
 
     // Counter for v11 should be 1 (only node 2 ran)
     {
@@ -533,7 +566,13 @@ async fn test_multi_hop_axon_execution_with_payload_mapping() {
     bus.insert(registry);
 
     // Execute v1.2; should apply multi-hop migration and ResumeFromStart
-    let _ = axon_v12.execute(0, &(), &mut bus).await;
+    assert!(matches!(
+        axon_v12.execute(0, &(), &mut bus).await,
+        ExecutionReport::Recorded {
+            result: Outcome::Next(3),
+            completion: CompletionConfirmation::Confirmed
+        }
+    ));
 
     // All 3 v1.2 steps should have run (ResumeFromStart means start_step=0)
     {
