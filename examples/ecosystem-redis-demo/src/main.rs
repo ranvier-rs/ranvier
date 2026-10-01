@@ -227,7 +227,8 @@ async fn run_demo() -> Result<()> {
     .map_err(|_| anyhow!("Redis connection timed out"))?
     .map_err(|_| anyhow!("Redis connection failed"))?;
 
-    let prefix = format!("ranvier:m132:redis-demo:{}", now_ms());
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let prefix = format!("ranvier:m132:redis-demo:{}:{nonce}", std::process::id());
     let resources = AppResources {
         redis: manager.clone(),
         key_prefix: prefix.clone(),
@@ -304,7 +305,8 @@ async fn run_demo() -> Result<()> {
     ];
     for key in &keys {
         let ttl: i64 = cleanup.ttl(key).await?;
-        if ttl <= 0 || ttl > 1800 {
+        let maximum = if key.contains(":session:") { 1800 } else { 60 };
+        if ttl <= 0 || ttl > maximum {
             return Err(anyhow!("Unexpected Redis TTL"));
         }
     }
