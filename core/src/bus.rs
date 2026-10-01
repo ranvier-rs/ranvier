@@ -210,8 +210,13 @@ impl Bus {
     /// let mut bus = Bus::new();
     /// bus.insert(db_pool);
     /// ```
+    /// Denied insertion is logged and leaves the original resource unchanged.
     #[inline]
     pub fn insert<T: Any + Send + Sync + 'static>(&mut self, resource: T) {
+        if let Err(err) = self.ensure_access::<T>() {
+            tracing::error!("{err}");
+            return;
+        }
         let type_id = std::any::TypeId::of::<T>();
         self.shared_resources.remove(&type_id);
         self.resources.insert(type_id, Box::new(resource));
@@ -222,9 +227,13 @@ impl Bus {
     /// A fork reads the value through a reference-counted, structurally
     /// read-only handle. Branch-local inserts may shadow it, but branch writes
     /// are not merged back into this Bus. The value does not need to implement
-    /// `Clone`.
+    /// `Clone`. Denied insertion is logged and preserves the original value.
     #[inline]
     pub fn insert_shared<T: Any + Send + Sync + 'static>(&mut self, resource: T) {
+        if let Err(err) = self.ensure_access::<T>() {
+            tracing::error!("{err}");
+            return;
+        }
         let type_id = TypeId::of::<T>();
         self.resources.remove(&type_id);
         self.shared_resources.insert(type_id, Arc::new(resource));
@@ -798,6 +807,33 @@ mod tests {
         let mut bus = Bus::new();
         bus.provide("hello".to_string());
         assert_eq!(bus.try_require::<String>().unwrap(), "hello");
+    }
+
+    #[test]
+    fn denied_insertions_preserve_local_shared_and_absent_resources() {
+        for shared in [false, true] {
+            for existing in [false, true] {
+                let mut bus = Bus::new();
+                if existing {
+                    if shared {
+                        bus.insert_shared("original".to_string());
+                    } else {
+                        bus.insert("original".to_string());
+                    }
+                }
+                bus.set_access_policy(
+                    "restricted",
+                    Some(BusAccessPolicy::deny_only(vec![BusTypeRef::of::<String>()])),
+                );
+                bus.insert("local-overwrite".to_string());
+                bus.insert_shared("shared-overwrite".to_string());
+                bus.clear_access_policy();
+                assert_eq!(
+                    bus.read::<String>().map(String::as_str),
+                    if existing { Some("original") } else { None }
+                );
+            }
+        }
     }
 
     #[test]
