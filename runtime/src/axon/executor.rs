@@ -231,7 +231,18 @@ where
                 last_node_id,
                 mut last_payload,
                 completion,
-            ) = load_persistence_version(handle, &trace_id).await;
+            ) = match load_persistence_version(handle, &trace_id).await {
+                Ok(cursor) => cursor,
+                Err(_) => {
+                    if let Some(active) =
+                        bus.read::<crate::execution_observation::ActiveObservation>()
+                    {
+                        active.0.block(crate::PersistenceOperation::Load);
+                    }
+                    // Internal control signal is discarded by the blocking report.
+                    return Outcome::emit("execution.persistence.load_unconfirmed", None);
+                }
+            };
 
             // Migration and interventions do not create a new execution identity.
             // An authoritative terminal trace cannot authorize further effects.

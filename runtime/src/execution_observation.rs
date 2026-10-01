@@ -14,6 +14,7 @@ pub(crate) struct Observation {
     effect: AtomicBool,
     attempted_write: AtomicBool,
     completed: AtomicBool,
+    blocked: AtomicBool,
 }
 
 #[cfg(test)]
@@ -108,12 +109,26 @@ impl Observation {
     pub(crate) fn effect(&self) {
         self.effect.store(true, Ordering::SeqCst);
     }
+    pub(crate) fn block(&self, operation: PersistenceOperation) {
+        self.failed(operation);
+        self.blocked.store(true, Ordering::SeqCst);
+    }
     fn report<T>(&self, result: T) -> ExecutionReport<T> {
         let operation = *self
             .failure
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(operation) = operation {
+            if self.blocked.load(Ordering::SeqCst) {
+                return ExecutionReport::BlockedBeforeEffect {
+                    operation,
+                    effect: if self.effect.load(Ordering::SeqCst) {
+                        EffectBoundary::MayHaveRun
+                    } else {
+                        EffectBoundary::NotInvoked
+                    },
+                };
+            }
             return ExecutionReport::Unconfirmed {
                 result,
                 operation,

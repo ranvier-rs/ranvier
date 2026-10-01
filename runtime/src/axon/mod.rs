@@ -460,14 +460,14 @@ fn unwrap_outcome_payload(payload: Option<&serde_json::Value>) -> Option<serde_j
 async fn load_persistence_version(
     handle: &PersistenceHandle,
     trace_id: &str,
-) -> (
+) -> anyhow::Result<(
     u64,
     Option<String>,
     Option<crate::persistence::Intervention>,
     Option<String>,
     Option<serde_json::Value>,
     Option<CompletionState>,
-) {
+)> {
     let store = handle.store();
     match store.load(trace_id).await {
         Ok(Some(trace)) => {
@@ -513,23 +513,23 @@ async fn load_persistence_version(
                     )
                 };
 
-            (
+            Ok((
                 next_step,
                 Some(trace.schematic_version),
                 trace.interventions.last().cloned(),
                 last_node_id,
                 last_payload,
                 trace.completion,
-            )
+            ))
         }
-        Ok(None) => (0, None, None, None, None, None),
+        Ok(None) => Ok((0, None, None, None, None, None)),
         Err(_) => {
             tracing::warn!(
                 trace_id = %trace_id,
                 store_operation = "load",
-                "Failed to load persistence trace; falling back to step=0"
+                "Failed to load persistence trace; execution cannot resume"
             );
-            (0, None, None, None, None, None)
+            Err(anyhow::anyhow!("persistence load unconfirmed"))
         }
     }
 }
