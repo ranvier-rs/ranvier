@@ -1,4 +1,7 @@
 #![cfg(feature = "streaming")]
+#[cfg(feature = "streaming")]
+#[path = "support/stream_reports.rs"]
+mod stream_reports;
 use ranvier_core::{
     Bus, BusAccessError, BusAccessPolicy, BusTypeRef, CancellationReason, CancellationToken,
     streaming::StreamingTransition,
@@ -63,9 +66,8 @@ async fn stream_initialization_restores_caller_control_after_return_unwind_or_dr
                             circuit
                                 .execute_cancellable((), &(), &mut bus, CancellationToken::new())
                                 .await
-                                .map_err(|_| ())
                         } else {
-                            circuit.execute((), &(), &mut bus).await.map_err(|_| ())
+                            circuit.execute((), &(), &mut bus).await
                         }
                     };
                     let caught = std::panic::AssertUnwindSafe(execution).catch_unwind();
@@ -80,7 +82,10 @@ async fn stream_initialization_restores_caller_control_after_return_unwind_or_dr
                         let result = caught.await;
                         assert_eq!(result.is_err(), mode == 2);
                         if let Ok(initialized) = result {
-                            assert_eq!(initialized.is_err(), mode == 1);
+                            assert_eq!(
+                                stream_reports::initialized(initialized).is_err(),
+                                mode == 1
+                            );
                         }
                     }
                 }
@@ -127,7 +132,7 @@ async fn init_cancellation_restores_caller_token_and_guard_after_mutation() {
     .unwrap();
     assert!(matches!(
         result,
-        Err(ranvier_runtime::streaming_axon::CancellableStreamingError::Cancelled(_))
+        ranvier_runtime::StreamInitializationReport::Cancelled { .. }
     ));
     assert!(!caller.is_cancelled());
     assert!(!bus.cancellation_token().unwrap().is_cancelled());
@@ -150,17 +155,19 @@ async fn initialized_stream_keeps_execution_token_after_caller_bus_restoration()
     let caller = CancellationToken::new();
     bus.set_cancellation_token(caller.clone());
     let execution_token = CancellationToken::new();
-    let mut stream = circuit
-        .execute_cancellable((), &(), &mut bus, execution_token.clone())
-        .await
-        .unwrap();
+    let mut stream = stream_reports::ready(
+        circuit
+            .execute_cancellable((), &(), &mut bus, execution_token.clone())
+            .await,
+    );
     caller.cancel(CancellationReason::Explicit);
     assert!(!execution_token.is_cancelled());
     assert_eq!(stream.next().await, Some("ok".into()));
-    let mut stream = circuit
-        .execute_cancellable((), &(), &mut bus, execution_token.clone())
-        .await
-        .unwrap();
+    let mut stream = stream_reports::ready(
+        circuit
+            .execute_cancellable((), &(), &mut bus, execution_token.clone())
+            .await,
+    );
     execution_token.cancel(CancellationReason::ClientDisconnected);
     assert!(stream.next().await.is_none());
     assert_eq!(

@@ -180,7 +180,10 @@ macro_rules! assert_outcome_err {
 /// # Examples
 ///
 /// ```rust,ignore
-/// let items = TestAxon::run_stream(streaming_axon, input, &(), TestBus::new()).await.unwrap();
+/// let report = TestAxon::run_stream(streaming_axon, input, &(), TestBus::new()).await;
+/// let ranvier_runtime::StreamInitializationReport::Ready { value: items, prefix } = report else {
+///     panic!("inspect the retained rejection report");
+/// };
 /// assert_stream_items!(items, 3);
 /// assert_stream_items!(items, 3, |first| assert_eq!(first.text, "Hello"));
 /// ```
@@ -214,30 +217,34 @@ macro_rules! assert_stream_items {
 impl TestAxon {
     /// Execute a `StreamingAxon` and collect all items into a `Vec`.
     ///
-    /// Returns the collected items or a `StreamingAxonError`.
+    /// Returns the typed initialization report with collected items only in Ready.
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// let items = TestAxon::run_stream(streaming_axon, input, &(), TestBus::new()).await.unwrap();
+    /// let report = TestAxon::run_stream(streaming_axon, input, &(), TestBus::new()).await;
+/// let ranvier_runtime::StreamInitializationReport::Ready { value: items, prefix } = report else {
+///     panic!("inspect the retained rejection report");
+/// };
     /// assert_stream_items!(items, 5);
     /// ```
-    pub async fn run_stream<In, Item, E, Res>(
-        axon: ranvier_runtime::StreamingAxon<In, Item, E, Res>,
+    pub async fn run_stream<In, Out, Item, E, Res>(
+        axon: ranvier_runtime::StreamingAxon<In, Out, Item, E, Res>,
         input: In,
         resources: &Res,
         test_bus: TestBus,
-    ) -> Result<Vec<Item>, ranvier_runtime::StreamingAxonError<E>>
+    ) -> ranvier_runtime::StreamInitializationReport<Out, Vec<Item>, E>
     where
         In: Send + Sync + 'static,
+        Out: Send + Sync + 'static,
         Item: Send + 'static,
         E: Send + Sync + std::fmt::Debug + 'static,
         Res: Send + Sync + 'static,
     {
-        use futures_util::StreamExt;
         let mut bus = test_bus.build();
-        let stream = axon.execute(input, resources, &mut bus).await?;
-        Ok(stream.collect().await)
+        axon.collect_into_vec()
+            .execute(input, resources, &mut bus)
+            .await
     }
 }
 

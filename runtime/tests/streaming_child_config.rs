@@ -1,4 +1,7 @@
 #![cfg(feature = "streaming")]
+#[cfg(feature = "streaming")]
+#[path = "support/stream_reports.rs"]
+mod stream_reports;
 use ranvier_core::{
     Bus, event::DlqPolicy, saga::SagaPolicy, schematic::Schematic, streaming::StreamingTransition,
 };
@@ -101,7 +104,10 @@ impl StreamingTransition<()> for Parent {
                 let result = future.await;
                 assert_eq!(result.is_err(), self.mode == 2);
                 if let Ok(initialized) = result {
-                    assert_eq!(initialized.is_err(), self.mode == 1);
+                    assert_eq!(
+                        stream_reports::initialized(initialized).is_err(),
+                        self.mode == 1
+                    );
                 }
             }
         }
@@ -170,7 +176,8 @@ async fn streaming_parent_config_survives_stream_child_return_unwind_and_drop() 
                     shared,
                     mode,
                 });
-                let mut stream = circuit.execute((), &(), &mut Bus::new()).await.unwrap();
+                let mut stream =
+                    stream_reports::ready(circuit.execute((), &(), &mut Bus::new()).await);
                 assert_eq!(stream.next().await, Some("restored".into()));
             }
         }

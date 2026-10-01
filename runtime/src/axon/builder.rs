@@ -1321,7 +1321,7 @@ where
     pub fn then_stream<Item, SErr, S>(
         self,
         streaming: S,
-    ) -> crate::streaming_axon::StreamingAxon<In, Item, E, Res>
+    ) -> crate::streaming_axon::StreamingAxon<In, Out, Item, E, Res>
     where
         Item: Send + 'static,
         SErr: Send + Sync + std::fmt::Debug + 'static,
@@ -1341,7 +1341,7 @@ where
         self,
         streaming: S,
         timeout_config: StreamTimeoutConfig,
-    ) -> crate::streaming_axon::StreamingAxon<In, Item, E, Res>
+    ) -> crate::streaming_axon::StreamingAxon<In, Out, Item, E, Res>
     where
         Item: Send + 'static,
         SErr: Send + Sync + std::fmt::Debug + 'static,
@@ -1359,7 +1359,7 @@ where
         self,
         streaming: S,
         timeout_config: Option<StreamTimeoutConfig>,
-    ) -> crate::streaming_axon::StreamingAxon<In, Item, E, Res>
+    ) -> crate::streaming_axon::StreamingAxon<In, Out, Item, E, Res>
     where
         Item: Send + 'static,
         SErr: Send + Sync + std::fmt::Debug + 'static,
@@ -1369,17 +1369,13 @@ where
             + Sync
             + 'static,
     {
-        use crate::streaming_axon::{StreamingAxon, StreamingAxonError};
+        use crate::streaming_axon::StreamingAxon;
         use ranvier_core::schematic::{Edge, EdgeType, Node, NodeKind, SourceLocation};
 
         let caller = std::panic::Location::caller();
 
-        let Axon {
-            mut schematic,
-            executor: prev_executor,
-            iam_handle,
-            ..
-        } = self;
+        let mut schematic = self.schematic.clone();
+        let prefix = self;
 
         // Add streaming node to schematic
         let stream_node_id = uuid::Uuid::new_v4().to_string();
@@ -1416,51 +1412,18 @@ where
             label: Some("Stream".to_string()),
         });
 
-        // Build stream executor
-        let stream_executor: crate::streaming_axon::StreamExecutorType<In, Item, E, Res> = Arc::new(
-            move |input: In,
-                  res: &Res,
-                  bus: &mut Bus|
-                  -> BoxFuture<
-                '_,
-                Result<
-                    std::pin::Pin<Box<dyn futures_core::Stream<Item = Item> + Send>>,
-                    StreamingAxonError<E>,
-                >,
-            > {
-                let prev = prev_executor.clone();
+        // Capture the complete configured prefix. A single owner retains its
+        // live context through initialization and preserves rejected typed reports.
+        let stream_executor: crate::streaming_axon::StreamExecutorType<In, Out, Item, E, Res> =
+            Arc::new(move |input, resources, bus, token| {
+                let prefix = prefix.clone();
                 let streaming = streaming.clone();
-                let iam = iam_handle.clone();
-
                 Box::pin(async move {
-                    if let Some(event) = super::executor::check_iam_boundary(&iam, bus).await {
-                        return Err(StreamingAxonError::IamRejected(event));
-                    }
-                    // Execute prefix Axon
-                    let outcome = prev(input, res, bus).await;
-
-                    // Only Next outcome is valid for streaming
-                    let intermediate = match outcome {
-                        Outcome::Next(val) => val,
-                        Outcome::Fault(e) => {
-                            return Err(StreamingAxonError::PipelineFault(e));
-                        }
-                        other => {
-                            return Err(StreamingAxonError::UnexpectedOutcome(format!(
-                                "{:?}",
-                                std::mem::discriminant(&other)
-                            )));
-                        }
-                    };
-
-                    // Initialize stream
-                    streaming
-                        .run_stream(intermediate, res, bus)
+                    prefix
+                        .initialize_stream(input, resources, bus, &streaming, token)
                         .await
-                        .map_err(|e| StreamingAxonError::StreamInitError(format!("{:?}", e)))
                 })
-            },
-        );
+            });
 
         StreamingAxon {
             schematic,

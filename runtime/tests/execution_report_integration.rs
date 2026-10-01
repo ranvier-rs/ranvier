@@ -880,7 +880,7 @@ impl ranvier_core::streaming::StreamingTransition<u32> for CountStream {
 
 #[cfg(feature = "streaming")]
 #[tokio::test]
-async fn collected_stream_terminal_failure_retains_invoked_effect_boundary() {
+async fn collected_stream_prefix_terminal_failure_blocks_initialization_and_retains_known_result() {
     let backing = InMemoryPersistenceStore::new();
     let writes = Arc::new(AtomicUsize::new(0));
     let effects = Arc::new(AtomicUsize::new(0));
@@ -894,11 +894,13 @@ async fn collected_stream_terminal_failure_retains_invoked_effect_boundary() {
         .then_stream(CountStream(effects.clone()))
         .collect_into_vec();
     let report = axon.execute(7, &(), &mut bus).await;
-    assert!(matches!(report, ExecutionReport::Unconfirmed {
-        result: Outcome::Next(ref items), operation: PersistenceOperation::Terminal,
-        effect: EffectBoundary::MayHaveRun,
-     .. } if items == &[7, 8]));
-    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert!(matches!(report, ranvier_runtime::StreamInitializationReport::Rejected {
+        prefix: ExecutionReport::Unconfirmed {
+            result: ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Next(7)),
+            operation: PersistenceOperation::Terminal, effect: EffectBoundary::MayHaveRun, ..
+        }
+    }));
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
     assert_eq!(writes.load(Ordering::SeqCst), 2);
     let trace = backing.load("stream-report").await.unwrap().unwrap();
     assert_eq!(trace.events.len(), 1);

@@ -225,7 +225,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .guard(CorsGuard::<()>::permissive())
         .guard(AccessLogGuard::<()>::new())
         .guard(RequestIdGuard::<()>::new())
-        .post_sse_typed::<ChatRequest, _, _>("/api/chat/stream", streaming_pipeline)
+        .post_sse_typed::<ChatRequest, _, _, _>("/api/chat/stream", streaming_pipeline)
         .post_typed::<ChatRequest, _, _>("/api/chat", batch_pipeline)
         .health_endpoint("/health")
         .readiness_liveness_default()

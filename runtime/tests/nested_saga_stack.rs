@@ -1,3 +1,6 @@
+#[cfg(feature = "streaming")]
+#[path = "support/stream_reports.rs"]
+mod stream_reports;
 use ranvier_core::{
     Bus, Outcome, Transition,
     saga::{SagaPolicy, SagaStack},
@@ -165,7 +168,7 @@ async fn streaming_parent_keeps_its_tasks_after_ordinary_saga_child() {
         for mode in 0..4 {
             let parent = Axon::<(), (), String>::start("stream-parent")
                 .then_stream(Parent { storage, mode });
-            let mut stream = parent.execute((), &(), &mut Bus::new()).await.unwrap();
+            let mut stream = stream_reports::ready(parent.execute((), &(), &mut Bus::new()).await);
             assert_eq!(stream.next().await, Some("parent-intact".into()));
         }
     }

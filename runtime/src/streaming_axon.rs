@@ -1,133 +1,82 @@
-//! # StreamingAxon: Streaming Pipeline Executor
-//!
-//! `StreamingAxon` is created by calling `Axon::then_stream()`. It represents
-//! a pipeline that ends with a `StreamingTransition` — the final step produces
-//! a `Stream` of items instead of a single `Outcome`.
-//!
-//! ## Terminal Semantics
-//!
-//! A `StreamingAxon` is always terminal — you cannot chain `.then()` after it.
-//! Use `collect_into_vec()` to collapse the stream back into a regular `Axon`.
-
-use crate::axon::{Axon, BoxFuture};
+//! Report-aware execution of a configured Axon prefix and terminal stream initializer.
+//! Prefix acknowledgments do not certify stream items or late completion.
+use crate::axon::BoxFuture;
+use crate::streaming_initialization::StreamInitializationReport;
 use futures_core::Stream;
 use futures_util::StreamExt;
-use ranvier_core::bus::Bus;
-use ranvier_core::cancellation::{CancellationContext, CancellationToken};
-use ranvier_core::outcome::Outcome;
 use ranvier_core::schematic::Schematic;
 use ranvier_core::streaming::StreamTimeoutConfig;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use std::fmt::Debug;
-use std::pin::Pin;
-use std::sync::Arc;
+use ranvier_core::{Bus, CancellationContext, CancellationToken};
+use std::{fmt::Debug, pin::Pin, sync::Arc};
 
-/// A streaming pipeline that produces a `Stream` of items.
-///
-/// Created via `Axon::then_stream()`. The pipeline executes all preceding
-/// Axon steps, then invokes the `StreamingTransition` to produce a stream.
-///
-/// ## Backpressure
-///
-/// The stream is wrapped in a bounded `tokio::sync::mpsc::channel` with a
-/// configurable buffer size (default: 64 items).
-pub struct StreamingAxon<In, Item, E, Res = ()> {
-    /// The Axon prefix (all steps before the streaming transition).
+/// Terminal stream with its typed prefix output retained for rejected execution.
+pub struct StreamingAxon<In, Out, Item, E, Res = ()> {
     pub schematic: Schematic,
-    /// Executor that runs the prefix Axon and produces a stream.
-    pub(crate) stream_executor: StreamExecutor<In, Item, E, Res>,
-    /// Optional timeout configuration for streaming phases.
+    pub(crate) stream_executor: StreamExecutorType<In, Out, Item, E, Res>,
     pub timeout_config: Option<StreamTimeoutConfig>,
-    /// Backpressure buffer size for the bounded channel.
     pub buffer_size: usize,
 }
 
-/// Public type alias for use by `Axon::then_stream()`.
-pub type StreamExecutorType<In, Item, E, Res> = StreamExecutor<In, Item, E, Res>;
-
-/// Type alias for the stream executor closure.
-type StreamExecutor<In, Item, E, Res> = Arc<
+pub type StreamExecutorType<In, Out, Item, E, Res> = Arc<
     dyn for<'a> Fn(
             In,
             &'a Res,
             &'a mut Bus,
+            Option<CancellationToken>,
         ) -> BoxFuture<
             'a,
-            Result<Pin<Box<dyn Stream<Item = Item> + Send>>, StreamingAxonError<E>>,
+            StreamInitializationReport<Out, Pin<Box<dyn Stream<Item = Item> + Send>>, E>,
         > + Send
         + Sync,
 >;
 
-/// Errors that can occur during streaming pipeline execution.
+/// Initialization failures are separate from retained prefix outcomes.
 #[derive(Debug)]
 pub enum StreamingAxonError<E> {
-    /// Configured IAM rejected initialization before any prefix or stream effect.
     IamRejected(&'static str),
-    /// The prefix Axon produced a Fault outcome.
     PipelineFault(E),
-    /// The prefix Axon produced a non-Next outcome (Branch/Jump/Emit).
     UnexpectedOutcome(String),
-    /// The streaming transition failed to initialize.
     StreamInitError(String),
-    /// Stream timed out (init, idle, or total).
     Timeout(StreamTimeoutKind),
 }
-
-/// Terminal error for opt-in cancellation-aware stream initialization.
 #[derive(Debug)]
 pub enum CancellableStreamingError<E> {
-    /// Existing streaming initialization or timeout error.
     Stream(StreamingAxonError<E>),
-    /// Cancellation won before the stream was initialized.
     Cancelled(CancellationContext),
 }
-
-/// Which timeout phase was exceeded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamTimeoutKind {
-    /// First item not produced within the init timeout.
     Init,
-    /// Gap between items exceeded the idle timeout.
     Idle,
-    /// Total stream duration exceeded.
     Total,
 }
-
 impl<E: Debug> std::fmt::Display for StreamingAxonError<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::IamRejected(event) => write!(f, "IAM rejected: {event}"),
-            Self::PipelineFault(e) => write!(f, "Pipeline fault: {:?}", e),
-            Self::UnexpectedOutcome(msg) => write!(f, "Unexpected outcome: {}", msg),
-            Self::StreamInitError(msg) => write!(f, "Stream init error: {}", msg),
-            Self::Timeout(kind) => write!(f, "Stream timeout: {:?}", kind),
+            Self::PipelineFault(error) => write!(f, "Pipeline fault: {error:?}"),
+            Self::UnexpectedOutcome(message) => write!(f, "Unexpected outcome: {message}"),
+            Self::StreamInitError(message) => write!(f, "Stream init error: {message}"),
+            Self::Timeout(kind) => write!(f, "Stream timeout: {kind:?}"),
         }
     }
 }
-
 impl<E: Debug> std::error::Error for StreamingAxonError<E> {}
-
 impl<E: Debug> std::fmt::Display for CancellableStreamingError<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Stream(error) => write!(f, "{error}"),
-            Self::Cancelled(context) => {
-                write!(f, "stream cancelled: {:?}", context.reason)
-            }
+            Self::Cancelled(context) => write!(f, "stream cancelled: {:?}", context.reason),
         }
     }
 }
-
 impl<E: Debug> std::error::Error for CancellableStreamingError<E> {}
-
 impl<E> From<StreamingAxonError<E>> for CancellableStreamingError<E> {
     fn from(error: StreamingAxonError<E>) -> Self {
         Self::Stream(error)
     }
 }
-
-impl<In, Item, E, Res> Clone for StreamingAxon<In, Item, E, Res> {
+impl<In, Out, Item, E, Res> Clone for StreamingAxon<In, Out, Item, E, Res> {
     fn clone(&self) -> Self {
         Self {
             schematic: self.schematic.clone(),
@@ -137,157 +86,97 @@ impl<In, Item, E, Res> Clone for StreamingAxon<In, Item, E, Res> {
         }
     }
 }
-
-impl<In, Item, E, Res> StreamingAxon<In, Item, E, Res>
+impl<In, Out, Item, E, Res> StreamingAxon<In, Out, Item, E, Res>
 where
     In: Send + Sync + 'static,
+    Out: Send + Sync + 'static,
     Item: Send + 'static,
     E: Send + Sync + Debug + 'static,
     Res: Send + Sync + 'static,
 {
-    /// Execute the streaming pipeline, returning a stream of items.
-    ///
-    /// The prefix Axon steps run first, then the streaming transition
-    /// produces a `Stream`. If timeout is configured, the stream is
-    /// wrapped with timeout enforcement. Caller access policy and cancellation
-    /// token are restored when initialization returns or its future is dropped.
-    /// This control scope does not establish prefix persistence/report support.
+    /// Execute and retain prefix durability, typed rejection and initialization evidence.
     pub async fn execute(
         &self,
         input: In,
         resources: &Res,
         bus: &mut Bus,
-    ) -> Result<Pin<Box<dyn Stream<Item = Item> + Send>>, StreamingAxonError<E>> {
-        let stream = {
-            let mut owner = crate::execution_observation::StreamInitializationOwner::begin(bus);
-            (self.stream_executor)(input, resources, owner.bus()).await?
-        };
-
-        // Apply timeout wrapping if configured
-        match &self.timeout_config {
-            Some(config)
-                if config.init.is_some() || config.idle.is_some() || config.total.is_some() =>
-            {
-                Ok(Box::pin(TimeoutStream::new(stream, config.clone())))
-            }
-            _ => Ok(stream),
-        }
+    ) -> StreamInitializationReport<Out, Pin<Box<dyn Stream<Item = Item> + Send>>, E> {
+        let report = (self.stream_executor)(input, resources, bus, None).await;
+        report.map_value(|stream| self.wrap_stream(stream, None))
     }
-
-    /// Execute the streaming pipeline with cooperative cancellation.
-    ///
-    /// Cancellation can win during initialization and is checked between
-    /// emitted items. Mid-stream cancellation ends the returned stream; the
-    /// supplied token retains the structured terminal context for the owner.
-    /// Initialization suspends and restores the caller access policy and Bus
-    /// token; the returned stream retains the supplied token independently.
+    /// Cancellation inside the prefix waits for its report-aware shielded cleanup.
+    /// Cancellation after initialization ends the owned stream independently of caller Bus.
     pub async fn execute_cancellable(
         &self,
         input: In,
         resources: &Res,
         bus: &mut Bus,
         token: CancellationToken,
-    ) -> Result<Pin<Box<dyn Stream<Item = Item> + Send>>, CancellableStreamingError<E>> {
-        let initialized = {
-            let mut owner = crate::execution_observation::StreamInitializationOwner::begin(bus);
-            let bus = owner.bus();
-            bus.set_cancellation_token(token.clone());
-            let initialization = (self.stream_executor)(input, resources, bus);
-            tokio::pin!(initialization);
-            tokio::select! {
-                biased;
-                context = token.cancelled() => Err(CancellableStreamingError::Cancelled(context)),
-                result = &mut initialization => result.map_err(CancellableStreamingError::Stream),
-            }
-        }?;
-
+    ) -> StreamInitializationReport<Out, Pin<Box<dyn Stream<Item = Item> + Send>>, E> {
+        let report = (self.stream_executor)(input, resources, bus, Some(token.clone())).await;
+        report.map_value(|stream| self.wrap_stream(stream, Some(token)))
+    }
+    fn wrap_stream(
+        &self,
+        stream: Pin<Box<dyn Stream<Item = Item> + Send>>,
+        token: Option<CancellationToken>,
+    ) -> Pin<Box<dyn Stream<Item = Item> + Send>> {
         let stream: Pin<Box<dyn Stream<Item = Item> + Send>> = match &self.timeout_config {
             Some(config)
                 if config.init.is_some() || config.idle.is_some() || config.total.is_some() =>
             {
-                Box::pin(TimeoutStream::new(initialized, config.clone()))
+                Box::pin(TimeoutStream::new(stream, config.clone()))
             }
-            _ => initialized,
+            _ => stream,
         };
-
-        Ok(Box::pin(CancellationStream::new(stream, token)))
+        match token {
+            Some(token) => Box::pin(CancellationStream::new(stream, token)),
+            None => stream,
+        }
     }
-
-    /// Set the backpressure buffer size (default: 64).
     pub fn with_buffer_size(mut self, size: usize) -> Self {
         self.buffer_size = size;
         self
     }
-
-    /// Set the timeout configuration.
     pub fn with_timeout(mut self, config: StreamTimeoutConfig) -> Self {
         self.timeout_config = Some(config);
         self
     }
-
-    /// Export the schematic of this streaming pipeline.
     pub fn export_schematic(&self) -> &Schematic {
         &self.schematic
     }
 
-    /// Apply a per-item transformation to the stream.
-    ///
-    /// The closure runs on each item yielded by the stream, producing a
-    /// transformed item of the **same type**. This is useful for PII filtering,
-    /// token counting, format normalization, etc.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let pipeline = Axon::typed::<ChatRequest, String>("chat")
-    ///     .then(ClassifyIntent)
-    ///     .then_stream(SynthesizeStream)
-    ///     .map_items(|chunk: ChatChunk| {
-    ///         ChatChunk { text: filter_pii(&chunk.text), ..chunk }
-    ///     });
-    /// ```
-    pub fn map_items<F>(self, f: F) -> StreamingAxon<In, Item, E, Res>
+    /// Transform items only in Ready; rejected prefix results retain their original type.
+    pub fn map_items<F>(self, f: F) -> Self
     where
         F: Fn(Item) -> Item + Send + Sync + 'static,
     {
-        let prev_executor = self.stream_executor;
+        let previous = self.stream_executor;
         let f = Arc::new(f);
-
-        let new_executor: StreamExecutor<In, Item, E, Res> = Arc::new(
-            move |input: In,
-                  res: &Res,
-                  bus: &mut Bus|
-                  -> BoxFuture<
-                '_,
-                Result<Pin<Box<dyn Stream<Item = Item> + Send>>, StreamingAxonError<E>>,
-            > {
-                let prev = prev_executor.clone();
+        let executor: StreamExecutorType<In, Out, Item, E, Res> =
+            Arc::new(move |input, resources, bus, token| {
+                let previous = previous.clone();
                 let f = f.clone();
                 Box::pin(async move {
-                    let stream = prev(input, res, bus).await?;
-                    Ok(Box::pin(stream.map(move |item| f(item)))
-                        as Pin<Box<dyn Stream<Item = Item> + Send>>)
+                    previous(input, resources, bus, token)
+                        .await
+                        .map_value(|stream| {
+                            Box::pin(stream.map(move |item| f(item)))
+                                as Pin<Box<dyn Stream<Item = Item> + Send>>
+                        })
                 })
-            },
-        );
-
-        // Add map_items node to schematic
+            });
         let mut schematic = self.schematic;
-        let map_node_id = uuid::Uuid::new_v4().to_string();
-        let last_node_id = schematic
-            .nodes
-            .last()
-            .map(|n| n.id.clone())
-            .unwrap_or_default();
-
+        let node_id = uuid::Uuid::new_v4().to_string();
+        let last = schematic.nodes.last().map(|node| node.id.clone());
         schematic.nodes.push(ranvier_core::schematic::Node {
-            id: map_node_id.clone(),
+            id: node_id.clone(),
             kind: ranvier_core::schematic::NodeKind::Atom,
-            label: "map_items".to_string(),
-            description: Some("Per-item stream transformation".to_string()),
-            input_type: std::any::type_name::<Item>().to_string(),
-            output_type: std::any::type_name::<Item>().to_string(),
-            resource_type: "()".to_string(),
+            label: "map_items".into(),
+            description: Some("Per-item stream transformation".into()),
+            input_type: std::any::type_name::<Item>().into(),
+            output_type: std::any::type_name::<Item>().into(),
+            resource_type: "()".into(),
             metadata: Default::default(),
             bus_capability: None,
             source_location: None,
@@ -295,24 +184,59 @@ where
             compensation_node_id: None,
             input_schema: None,
             output_schema: None,
-            item_type: Some(std::any::type_name::<Item>().to_string()),
+            item_type: Some(std::any::type_name::<Item>().into()),
             terminal: Some(true),
         });
-
-        if !last_node_id.is_empty() {
+        if let Some(last) = last {
             schematic.edges.push(ranvier_core::schematic::Edge {
-                from: last_node_id,
-                to: map_node_id,
+                from: last,
+                to: node_id,
                 kind: ranvier_core::schematic::EdgeType::Linear,
-                label: Some("map".to_string()),
+                label: Some("map".into()),
             });
         }
-
-        StreamingAxon {
+        Self {
             schematic,
-            stream_executor: new_executor,
+            stream_executor: executor,
             timeout_config: self.timeout_config,
             buffer_size: self.buffer_size,
+        }
+    }
+    /// Collect Ready items while retaining the prefix report. This is a terminal
+    /// collection owner, not an ordinary Axon whose raw executor discards evidence.
+    pub fn collect_into_vec(self) -> CollectedStreamingAxon<In, Out, Item, E, Res> {
+        CollectedStreamingAxon { streaming: self }
+    }
+}
+
+pub struct CollectedStreamingAxon<In, Out, Item, E, Res = ()> {
+    streaming: StreamingAxon<In, Out, Item, E, Res>,
+}
+impl<In, Out, Item, E, Res> CollectedStreamingAxon<In, Out, Item, E, Res>
+where
+    In: Send + Sync + 'static,
+    Out: Send + Sync + 'static,
+    Item: Send + 'static,
+    E: Send + Sync + Debug + 'static,
+    Res: Send + Sync + 'static,
+{
+    pub fn export_schematic(&self) -> &Schematic {
+        self.streaming.export_schematic()
+    }
+    pub async fn execute(
+        &self,
+        input: In,
+        resources: &Res,
+        bus: &mut Bus,
+    ) -> StreamInitializationReport<Out, Vec<Item>, E> {
+        match self.streaming.execute(input, resources, bus).await {
+            StreamInitializationReport::Ready { prefix, value } => {
+                StreamInitializationReport::Ready {
+                    prefix,
+                    value: value.collect().await,
+                }
+            }
+            report => report.map_value(|_| unreachable!("Ready is handled above")),
         }
     }
 }
@@ -352,75 +276,6 @@ impl<Item> Stream for CancellationStream<Item> {
         }
 
         this.inner.as_mut().poll_next(cx)
-    }
-}
-
-impl<In, Item, E, Res> StreamingAxon<In, Item, E, Res>
-where
-    In: Send + Sync + Serialize + DeserializeOwned + 'static,
-    Item: Send + Sync + Serialize + DeserializeOwned + 'static,
-    E: Send + Sync + Serialize + DeserializeOwned + Debug + 'static,
-    Res: Send + Sync + 'static,
-{
-    /// Collapse the stream into a `Vec<Item>`, returning a regular `Axon`.
-    ///
-    /// This consumes all items from the stream and collects them into a
-    /// vector. Useful for testing or when you need the complete result set.
-    pub fn collect_into_vec(self) -> Axon<In, Vec<Item>, String, Res> {
-        let stream_executor = self.stream_executor.clone();
-        let timeout_config = self.timeout_config.clone();
-
-        let executor: crate::axon::Executor<In, Vec<Item>, String, Res> = Arc::new(
-            move |input: In,
-                  res: &Res,
-                  bus: &mut Bus|
-                  -> BoxFuture<'_, Outcome<Vec<Item>, String>> {
-                let stream_executor = stream_executor.clone();
-                let timeout_config = timeout_config.clone();
-
-                Box::pin(async move {
-                    let stream = match stream_executor(input, res, bus).await {
-                        Ok(s) => s,
-                        Err(StreamingAxonError::IamRejected(event)) => {
-                            return Outcome::emit(event, None);
-                        }
-                        Err(e) => return Outcome::Fault(format!("{}", e)),
-                    };
-
-                    let stream = match &timeout_config {
-                        Some(config)
-                            if config.init.is_some()
-                                || config.idle.is_some()
-                                || config.total.is_some() =>
-                        {
-                            Box::pin(TimeoutStream::new(stream, config.clone()))
-                                as Pin<Box<dyn Stream<Item = Item> + Send>>
-                        }
-                        _ => stream,
-                    };
-
-                    let items: Vec<Item> = stream.collect().await;
-                    Outcome::Next(items)
-                })
-            },
-        );
-
-        Axon {
-            schematic: self.schematic,
-            executor,
-            execution_mode: crate::axon::ExecutionMode::Local,
-            persistence_store: None,
-            audit_sink: None,
-            dlq_sink: None,
-            dlq_policy: Default::default(),
-            dynamic_dlq_policy: None,
-            saga_policy: Default::default(),
-            dynamic_saga_policy: None,
-            saga_compensation_registry: Arc::new(std::sync::RwLock::new(
-                ranvier_core::saga::SagaCompensationRegistry::new(),
-            )),
-            iam_handle: None,
-        }
     }
 }
 
@@ -519,226 +374,182 @@ where
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_util::stream;
-    use ranvier_core::bus::Bus;
-
+    use crate::{Axon, ExecutionReport, ExecutionTerminal};
+    use ranvier_core::{Outcome, streaming::StreamingTransition};
+    #[derive(Clone)]
+    struct Chunks {
+        items: Vec<String>,
+        pending: bool,
+        include_input: bool,
+    }
+    #[async_trait::async_trait]
+    impl StreamingTransition<String> for Chunks {
+        type Item = String;
+        type Error = String;
+        type Resources = ();
+        async fn run_stream(
+            &self,
+            input: String,
+            _: &(),
+            _: &mut Bus,
+        ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, String> {
+            if self.pending {
+                Ok(Box::pin(futures_util::stream::pending()))
+            } else {
+                let items: Vec<_> = self
+                    .items
+                    .iter()
+                    .map(|item| {
+                        if self.include_input {
+                            format!("{item}{input}")
+                        } else {
+                            item.clone()
+                        }
+                    })
+                    .collect();
+                Ok(Box::pin(futures_util::stream::iter(items)))
+            }
+        }
+    }
+    fn circuit(items: &[&str]) -> StreamingAxon<String, String, String, String> {
+        Axon::<String, String, String>::start("test").then_stream(Chunks {
+            items: items.iter().map(|item| item.to_string()).collect(),
+            pending: false,
+            include_input: false,
+        })
+    }
+    fn ready(
+        report: StreamInitializationReport<
+            String,
+            Pin<Box<dyn Stream<Item = String> + Send>>,
+            String,
+        >,
+    ) -> Pin<Box<dyn Stream<Item = String> + Send>> {
+        match report {
+            StreamInitializationReport::Ready {
+                prefix:
+                    ExecutionReport::Unpersisted {
+                        result: (),
+                        cleanup: None,
+                    },
+                value,
+            } => value,
+            _ => panic!("expected unpersisted initialized stream"),
+        }
+    }
     #[tokio::test]
     async fn test_streaming_axon_basic_execute() {
-        // Create a simple StreamingAxon that yields 3 items
-        let stream_executor: StreamExecutor<String, String, String, ()> =
-            Arc::new(|input: String, _res: &(), _bus: &mut Bus| {
-                Box::pin(async move {
-                    let items = vec![
-                        format!("chunk1: {}", input),
-                        format!("chunk2: {}", input),
-                        format!("chunk3: {}", input),
-                    ];
-                    Ok(Box::pin(stream::iter(items)) as Pin<Box<dyn Stream<Item = String> + Send>>)
-                })
-            });
-
-        let sa = StreamingAxon {
-            schematic: Schematic::new("test"),
-            stream_executor,
-            timeout_config: None,
-            buffer_size: 64,
-        };
-
-        let mut bus = Bus::new();
-        let stream = sa
-            .execute("hello".to_string(), &(), &mut bus)
-            .await
-            .unwrap();
-        let items: Vec<String> = stream.collect().await;
+        let circuit = Axon::<String, String, String>::start("test").then_stream(Chunks {
+            items: vec!["chunk1: ".into(), "chunk2: ".into(), "chunk3: ".into()],
+            pending: false,
+            include_input: true,
+        });
+        let items = ready(circuit.execute("hello".into(), &(), &mut Bus::new()).await)
+            .collect::<Vec<_>>()
+            .await;
         assert_eq!(items.len(), 3);
         assert_eq!(items[0], "chunk1: hello");
     }
-
     #[tokio::test]
     async fn test_streaming_axon_collect_into_vec() {
-        let stream_executor: StreamExecutor<(), String, String, ()> =
-            Arc::new(|_input: (), _res: &(), _bus: &mut Bus| {
-                Box::pin(async move {
-                    let items = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-                    Ok(Box::pin(stream::iter(items)) as Pin<Box<dyn Stream<Item = String> + Send>>)
-                })
-            });
-
-        let sa: StreamingAxon<(), String, String, ()> = StreamingAxon {
-            schematic: Schematic::new("test-collect"),
-            stream_executor,
-            timeout_config: None,
-            buffer_size: 64,
-        };
-
-        let axon = sa.collect_into_vec();
-        let mut bus = Bus::new();
-        let result = axon.execute((), &(), &mut bus).await;
-        let crate::ExecutionReport::Unpersisted { result, .. } = result else {
-            panic!("expected collected stream execution without persistence");
-        };
-        match result {
-            Outcome::Next(items) => {
-                assert_eq!(items, vec!["a", "b", "c"]);
-            }
-            other => panic!("Expected Next, got {:?}", other),
+        let report = circuit(&["a", "b", "c"])
+            .collect_into_vec()
+            .execute("".into(), &(), &mut Bus::new())
+            .await;
+        match report {
+            StreamInitializationReport::Ready {
+                prefix:
+                    ExecutionReport::Unpersisted {
+                        result: (),
+                        cleanup: None,
+                    },
+                value,
+            } => assert_eq!(value, vec!["a", "b", "c"]),
+            _ => panic!("collection lost initialization report"),
         }
     }
-
+    #[derive(Clone)]
+    struct Fault;
+    #[async_trait::async_trait]
+    impl ranvier_core::Transition<String, String> for Fault {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, _: String, _: &(), _: &mut Bus) -> Outcome<String, String> {
+            Outcome::Fault("step failed".into())
+        }
+    }
     #[tokio::test]
     async fn test_streaming_axon_pipeline_fault() {
-        let stream_executor: StreamExecutor<(), String, String, ()> =
-            Arc::new(|_input: (), _res: &(), _bus: &mut Bus| {
-                Box::pin(async move {
-                    Err(StreamingAxonError::PipelineFault("step failed".to_string()))
-                })
+        let circuit = Axon::<String, String, String>::start("fault")
+            .then(Fault)
+            .then_stream(Chunks {
+                items: vec![],
+                pending: false,
+                include_input: false,
             });
-
-        let sa = StreamingAxon {
-            schematic: Schematic::new("test-fault"),
-            stream_executor,
-            timeout_config: None,
-            buffer_size: 64,
-        };
-
-        let mut bus = Bus::new();
-        let result = sa.execute((), &(), &mut bus).await;
-        assert!(result.is_err());
+        assert!(
+            matches!(circuit.execute("".into(), &(), &mut Bus::new()).await,
+            StreamInitializationReport::Rejected { prefix: ExecutionReport::Unpersisted {
+                result: ExecutionTerminal::Outcome(Outcome::Fault(ref error)), .. } } if error == "step failed")
+        );
     }
-
     #[tokio::test]
     async fn test_streaming_axon_map_items() {
-        let stream_executor: StreamExecutor<String, String, String, ()> =
-            Arc::new(|input: String, _res: &(), _bus: &mut Bus| {
-                Box::pin(async move {
-                    let items = vec![format!("hello {}", input), format!("world {}", input)];
-                    Ok(Box::pin(stream::iter(items)) as Pin<Box<dyn Stream<Item = String> + Send>>)
-                })
-            });
-
-        let sa = StreamingAxon {
-            schematic: Schematic::new("test-map"),
-            stream_executor,
-            timeout_config: None,
-            buffer_size: 64,
-        };
-
-        // Apply map_items to uppercase each chunk
-        let sa = sa.map_items(|s| s.to_uppercase());
-
-        let mut bus = Bus::new();
-        let stream = sa.execute("test".to_string(), &(), &mut bus).await.unwrap();
-        let items: Vec<String> = stream.collect().await;
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0], "HELLO TEST");
-        assert_eq!(items[1], "WORLD TEST");
+        let circuit =
+            circuit(&["hello test", "world test"]).map_items(|value| value.to_uppercase());
+        let items = ready(circuit.execute("".into(), &(), &mut Bus::new()).await)
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(items, vec!["HELLO TEST", "WORLD TEST"]);
     }
-
     #[tokio::test]
     async fn test_streaming_axon_map_items_schematic() {
-        let stream_executor: StreamExecutor<(), String, String, ()> =
-            Arc::new(|_input: (), _res: &(), _bus: &mut Bus| {
-                Box::pin(async move {
-                    Ok(Box::pin(stream::iter(vec!["a".to_string()]))
-                        as Pin<Box<dyn Stream<Item = String> + Send>>)
-                })
-            });
-
-        let sa = StreamingAxon {
-            schematic: Schematic::new("test-map-schematic"),
-            stream_executor,
-            timeout_config: None,
-            buffer_size: 64,
-        };
-
-        let sa = sa.map_items(|s| s);
-        let schematic = sa.export_schematic();
-        assert_eq!(schematic.nodes.len(), 1);
-        assert_eq!(schematic.nodes[0].label, "map_items");
-        assert!(schematic.nodes[0].item_type.is_some());
+        let circuit = circuit(&["a"]).map_items(|value| value);
+        let node = circuit.export_schematic().nodes.last().unwrap();
+        assert_eq!(node.label, "map_items");
+        assert!(node.item_type.is_some());
     }
-
     #[tokio::test]
     async fn test_streaming_axon_clone() {
-        let stream_executor: StreamExecutor<(), String, String, ()> =
-            Arc::new(|_input: (), _res: &(), _bus: &mut Bus| {
-                Box::pin(async move {
-                    Ok(Box::pin(stream::iter(vec!["x".to_string()]))
-                        as Pin<Box<dyn Stream<Item = String> + Send>>)
-                })
-            });
-
-        let sa = StreamingAxon {
-            schematic: Schematic::new("test-clone"),
-            stream_executor,
-            timeout_config: None,
-            buffer_size: 64,
-        };
-
-        let sa2 = sa.clone();
-        let mut bus = Bus::new();
-        let items: Vec<String> = sa2
-            .execute((), &(), &mut bus)
-            .await
-            .unwrap()
-            .collect()
+        let cloned = circuit(&["x"]).clone();
+        let items = ready(cloned.execute("".into(), &(), &mut Bus::new()).await)
+            .collect::<Vec<_>>()
             .await;
         assert_eq!(items, vec!["x"]);
     }
-
     #[tokio::test]
     async fn cancellation_can_win_stream_initialization() {
-        let stream_executor: StreamExecutor<(), String, String, ()> =
-            Arc::new(|_input: (), _res: &(), bus: &mut Bus| {
-                assert!(bus.cancellation_token().is_some());
-                Box::pin(async move {
-                    std::future::pending::<()>().await;
-                    Ok(Box::pin(stream::empty()) as Pin<Box<dyn Stream<Item = String> + Send>>)
-                })
-            });
-        let axon = StreamingAxon {
-            schematic: Schematic::new("cancel-init"),
-            stream_executor,
-            timeout_config: None,
-            buffer_size: 1,
-        };
         let token = CancellationToken::new();
-        token.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
-        let mut bus = Bus::new();
-
-        let error = match axon.execute_cancellable((), &(), &mut bus, token).await {
-            Ok(_) => panic!("initialization should be cancelled"),
-            Err(error) => error,
-        };
-        assert!(matches!(error, CancellableStreamingError::Cancelled(_)));
+        token.cancel(ranvier_core::CancellationReason::Explicit);
+        assert!(matches!(
+            circuit(&[])
+                .execute_cancellable("".into(), &(), &mut Bus::new(), token)
+                .await,
+            StreamInitializationReport::Rejected {
+                prefix: ExecutionReport::Unpersisted {
+                    result: ExecutionTerminal::Cancelled(_),
+                    ..
+                }
+            }
+        ));
     }
-
     #[tokio::test]
     async fn cancellation_ends_initialized_stream_between_items() {
-        let stream_executor: StreamExecutor<(), String, String, ()> =
-            Arc::new(|_input: (), _res: &(), _bus: &mut Bus| {
-                Box::pin(async move {
-                    Ok(Box::pin(stream::pending()) as Pin<Box<dyn Stream<Item = String> + Send>>)
-                })
-            });
-        let axon = StreamingAxon {
-            schematic: Schematic::new("cancel-items"),
-            stream_executor,
-            timeout_config: None,
-            buffer_size: 1,
-        };
+        let circuit = Axon::<String, String, String>::start("pending").then_stream(Chunks {
+            items: vec![],
+            pending: true,
+            include_input: false,
+        });
         let token = CancellationToken::new();
-        let mut bus = Bus::new();
-        let mut stream = axon
-            .execute_cancellable((), &(), &mut bus, token.clone())
-            .await
-            .expect("stream initialization");
-
-        token.cancel(ranvier_core::cancellation::CancellationReason::Explicit);
-        assert_eq!(stream.next().await, None);
+        let mut value = ready(
+            circuit
+                .execute_cancellable("".into(), &(), &mut Bus::new(), token.clone())
+                .await,
+        );
+        token.cancel(ranvier_core::CancellationReason::Explicit);
+        assert_eq!(value.next().await, None);
     }
 }

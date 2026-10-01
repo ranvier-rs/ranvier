@@ -1,4 +1,7 @@
 #![cfg(feature = "streaming")]
+#[cfg(feature = "streaming")]
+#[path = "support/stream_reports.rs"]
+mod stream_reports;
 use ranvier_core::{
     Bus, Outcome, Transition, event::DlqPolicy, saga::SagaPolicy, schematic::Schematic,
     streaming::StreamingTransition,
@@ -38,6 +41,15 @@ impl StreamingTransition<()> for Parent {
         _: &(),
         bus: &mut Bus,
     ) -> Result<Pin<Box<dyn futures_util::Stream<Item = String> + Send>>, String> {
+        // A report-aware prefix now installs its actual configuration for the
+        // initializer. Establish the intentional absent-parent fixture explicitly
+        // before creating the nested child; keep absence restoration coverage.
+        assert_eq!(bus.read::<DlqPolicy>(), Some(&DlqPolicy::Drop));
+        assert_eq!(bus.read::<SagaPolicy>(), Some(&SagaPolicy::Disabled));
+        assert_eq!(bus.read::<Schematic>().unwrap().name, "parent-stream");
+        bus.remove::<DlqPolicy>();
+        bus.remove::<SagaPolicy>();
+        bus.remove::<Schematic>();
         if self.configured {
             if self.shared {
                 bus.insert_shared(DlqPolicy::Drop);
@@ -135,7 +147,8 @@ async fn streaming_parent_config_survives_ordinary_child_terminal() {
                     shared,
                     mode,
                 });
-                let mut stream = circuit.execute((), &(), &mut Bus::new()).await.unwrap();
+                let mut stream =
+                    stream_reports::ready(circuit.execute((), &(), &mut Bus::new()).await);
                 assert_eq!(stream.next().await, Some("restored".into()));
             }
         }

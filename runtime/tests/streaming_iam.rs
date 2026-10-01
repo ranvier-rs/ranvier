@@ -1,4 +1,6 @@
 #![cfg(feature = "streaming")]
+#[path = "support/stream_reports.rs"]
+mod stream_reports;
 use ranvier_core::{
     Bus, Outcome, Transition,
     iam::{IamError, IamIdentity, IamPolicy, IamToken, IamVerifier},
@@ -87,16 +89,12 @@ async fn configured_iam_survives_then_stream_conversion() {
                 circuit
                     .execute_cancellable((), &(), &mut bus, ranvier_core::CancellationToken::new())
                     .await
-                    .map_err(|e| match e {
-                        ranvier_runtime::streaming_axon::CancellableStreamingError::Stream(e) => e,
-                        _ => panic!("unexpected cancellation"),
-                    })
             } else {
                 circuit.execute((), &(), &mut bus).await
             };
             if token == Some("valid") {
                 use futures_util::StreamExt;
-                let mut stream = result.unwrap();
+                let mut stream = stream_reports::ready(result);
                 assert_eq!(stream.next().await, Some("verified".into()));
                 assert_eq!(prefixes.load(Ordering::SeqCst), 1);
                 assert_eq!(initialized.load(Ordering::SeqCst), 1);
@@ -109,7 +107,11 @@ async fn configured_iam_survives_then_stream_conversion() {
                     _ => unreachable!(),
                 };
                 assert!(
-                    matches!(result, Err(ranvier_runtime::streaming_axon::StreamingAxonError::IamRejected(event)) if event == expected)
+                    matches!(result, ranvier_runtime::StreamInitializationReport::Rejected {
+                        prefix: ranvier_runtime::ExecutionReport::Unpersisted {
+                            result: ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Emit(ref event, None)), ..
+                        }
+                    } if event == expected)
                 );
                 assert_eq!(prefixes.load(Ordering::SeqCst), 0);
                 assert_eq!(initialized.load(Ordering::SeqCst), 0);
@@ -141,11 +143,11 @@ async fn inherited_identity_fails_closed_and_collection_preserves_classifier() {
     let result = make().execute((), &(), &mut child).await;
     assert!(matches!(
         result,
-        Err(
-            ranvier_runtime::streaming_axon::StreamingAxonError::IamRejected(
-                "iam.context_clear_failed"
-            )
-        )
+        ranvier_runtime::StreamInitializationReport::Rejected {
+            prefix: ranvier_runtime::ExecutionReport::Unpersisted {
+                result: ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Emit(ref event, None)), ..
+            }
+        } if event == "iam.context_clear_failed"
     ));
     assert_eq!(parent.read::<IamIdentity>().unwrap().subject, "parent");
     assert_eq!(verified.load(Ordering::SeqCst), 0);
@@ -156,7 +158,11 @@ async fn inherited_identity_fails_closed_and_collection_preserves_classifier() {
         .execute((), &(), &mut bus)
         .await;
     assert!(
-        matches!(report, ranvier_runtime::ExecutionReport::Unpersisted { result: Outcome::Emit(ref event, None), .. } if event == "iam.missing_token")
+        matches!(report, ranvier_runtime::StreamInitializationReport::Rejected {
+            prefix: ranvier_runtime::ExecutionReport::Unpersisted {
+                result: ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Emit(ref event, None)), ..
+            }
+        } if event == "iam.missing_token")
     );
     assert_eq!(effects.load(Ordering::SeqCst), 0);
     assert_eq!(initialized.load(Ordering::SeqCst), 0);
@@ -178,7 +184,7 @@ async fn optional_iam_delegates_and_precancelled_required_stream_has_no_effects(
         let mut bus = Bus::new();
         bus.insert(IamIdentity::new("verified"));
         bus.insert(IamToken("panic".into()));
-        let mut stream = circuit.execute((), &(), &mut bus).await.unwrap();
+        let mut stream = stream_reports::ready(circuit.execute((), &(), &mut bus).await);
         use futures_util::StreamExt;
         assert_eq!(stream.next().await, Some("verified".into()));
         assert_eq!(verified.load(Ordering::SeqCst), 0);
@@ -199,7 +205,12 @@ async fn optional_iam_delegates_and_precancelled_required_stream_has_no_effects(
         .await;
     assert!(matches!(
         result,
-        Err(ranvier_runtime::streaming_axon::CancellableStreamingError::Cancelled(_))
+        ranvier_runtime::StreamInitializationReport::Rejected {
+            prefix: ranvier_runtime::ExecutionReport::Unpersisted {
+                result: ranvier_runtime::ExecutionTerminal::Cancelled(_),
+                ..
+            }
+        }
     ));
     assert_eq!(verified.load(Ordering::SeqCst), 0);
     assert_eq!(effects.load(Ordering::SeqCst), 0);

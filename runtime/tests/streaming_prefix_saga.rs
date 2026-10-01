@@ -74,7 +74,13 @@ async fn configured_saga_survives_then_stream_conversion() {
         .then_stream(Init(initialized.clone()))
         .execute((), &(), &mut Bus::new())
         .await;
-    assert!(result.is_err());
+    assert!(
+        matches!(result, ranvier_runtime::StreamInitializationReport::Rejected {
+        prefix: ExecutionReport::Unpersisted {
+            result: ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Fault(ref error)), ..
+        }
+    } if error == "prefix-fault")
+    );
     assert_eq!(effects.load(Ordering::SeqCst), 1);
     assert_eq!(initialized.load(Ordering::SeqCst), 0);
     assert_eq!(

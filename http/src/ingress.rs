@@ -24,8 +24,6 @@ use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use ranvier_core::event::{EventSink, EventSource};
 use ranvier_core::prelude::*;
-#[cfg(feature = "streaming")]
-use ranvier_runtime::CancellableStreamingError;
 use ranvier_runtime::{Axon, ExecutionTerminal};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -142,6 +140,13 @@ fn request_task_owner(parts: &http::request::Parts) -> Option<ManagedTaskRegistr
         .extensions
         .get::<RequestTaskOwner>()
         .map(|owner| owner.0.clone())
+}
+
+#[cfg(feature = "streaming")]
+fn stream_reconciliation_response(status: StatusCode, payload: serde_json::Value) -> HttpResponse {
+    build_response(Response::builder().status(status)
+        .header("content-type", "application/json").header("cache-control", "no-store"),
+        boxed_body(payload.to_string()))
 }
 
 async fn execute_http_axon<In, Out, E, R>(
@@ -3094,16 +3099,17 @@ where
     ///     .run().await;
     /// ```
     #[cfg(feature = "streaming")]
-    pub fn post_sse<Item, E>(
+    pub fn post_sse<Out, Item, E>(
         self,
         path: impl Into<String>,
-        circuit: ranvier_runtime::StreamingAxon<(), Item, E, R>,
+        circuit: ranvier_runtime::StreamingAxon<(), Out, Item, E, R>,
     ) -> Self
     where
+        Out: Send + Sync + 'static,
         Item: serde::Serialize + Send + Sync + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
-        self.route_sse_internal::<(), Item, E>(Method::POST, path, circuit, false)
+        self.route_sse_internal::<(), Out, Item, E>(Method::POST, path, circuit, false)
     }
 
     /// Like `post_sse`, but with type-safe JSON body deserialization.
@@ -3119,14 +3125,14 @@ where
     ///     .then_stream(SynthesizeStream);
     ///
     /// Ranvier::http()
-    ///     .post_sse_typed::<ChatRequest, _, _>("/api/chat/stream", streaming)
+    ///     .post_sse_typed::<ChatRequest, _, _, _>("/api/chat/stream", streaming)
     ///     .run().await;
     /// ```
     #[cfg(feature = "streaming")]
-    pub fn post_sse_typed<T, Item, E>(
+    pub fn post_sse_typed<T, Out, Item, E>(
         self,
         path: impl Into<String>,
-        circuit: ranvier_runtime::StreamingAxon<T, Item, E, R>,
+        circuit: ranvier_runtime::StreamingAxon<T, Out, Item, E, R>,
     ) -> Self
     where
         T: serde::de::DeserializeOwned
@@ -3135,23 +3141,25 @@ where
             + serde::Serialize
             + schemars::JsonSchema
             + 'static,
+        Out: Send + Sync + 'static,
         Item: serde::Serialize + Send + Sync + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
-        self.route_sse_internal::<T, Item, E>(Method::POST, path, circuit, true)
+        self.route_sse_internal::<T, Out, Item, E>(Method::POST, path, circuit, true)
     }
 
     /// Internal: Register an SSE streaming route.
     #[cfg(feature = "streaming")]
-    fn route_sse_internal<T, Item, E>(
+    fn route_sse_internal<T, Out, Item, E>(
         mut self,
         method: Method,
         path: impl Into<String>,
-        circuit: ranvier_runtime::StreamingAxon<T, Item, E, R>,
+        circuit: ranvier_runtime::StreamingAxon<T, Out, Item, E, R>,
         needs_body: bool,
     ) -> Self
     where
         T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
+        Out: Send + Sync + 'static,
         Item: serde::Serialize + Send + Sync + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
@@ -3239,29 +3247,58 @@ where
                         .cancellation_token()
                         .cloned()
                         .unwrap_or_default();
-                    let stream = match circuit
-                        .execute_cancellable(input, &res, &mut bus, stream_token)
-                        .await
-                    {
-                        Ok(s) => s,
-                        Err(CancellableStreamingError::Cancelled(context)) => {
+                    use ranvier_runtime::StreamInitializationReport;
+                    let initialized = circuit.execute_cancellable(input, &res, &mut bus, stream_token).await;
+                    let stream = match initialized {
+                        StreamInitializationReport::Ready { prefix, value } => {
+                            if let Some((status, payload)) = crate::response::durability_rejection(&prefix) {
+                                return stream_reconciliation_response(status, payload);
+                            }
+                            value
+                        }
+                        StreamInitializationReport::Rejected { prefix } => {
+                            if matches!(&prefix, ranvier_runtime::ExecutionReport::Unconfirmed { .. }
+                                | ranvier_runtime::ExecutionReport::BlockedBeforeEffect { .. })
+                                || prefix.cleanup().is_some_and(|cleanup| !cleanup.is_complete()) {
+                                // The runtime retains the typed result. Public operational
+                                // rejection must not serialize private prefix output/errors.
+                                let safe = prefix.map_result(|_| ());
+                                if let Some((status, payload)) = crate::response::durability_rejection(&safe) {
+                                    return stream_reconciliation_response(status, payload);
+                                }
+                                return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Execution durability requires reconciliation");
+                            }
+                            let terminal = match prefix {
+                                ranvier_runtime::ExecutionReport::Unpersisted { result, .. }
+                                | ranvier_runtime::ExecutionReport::NotRequested { result, .. }
+                                | ranvier_runtime::ExecutionReport::Recorded { result, .. } => result,
+                                _ => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Execution durability requires reconciliation"),
+                            };
+                            match terminal {
+                                ExecutionTerminal::Cancelled(context) => return cancellation_http_response(&context),
+                                ExecutionTerminal::Outcome(Outcome::Emit(event, _)) => {
+                                    if let Some(response) = crate::service::iam_failure_response(&event)
+                                        .or_else(|| crate::service::saga_failure_response(&event)) {
+                                        return response.map(BodyExt::boxed);
+                                    }
+                                }
+                                _ => {},
+                            }
+                            return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Streaming prefix rejected initialization");
+                        }
+                        StreamInitializationReport::Cancelled { prefix, context, .. } => {
+                            if let Some((status, payload)) = crate::response::durability_rejection(&prefix) {
+                                return stream_reconciliation_response(status, payload);
+                            }
                             return cancellation_http_response(&context);
                         }
-                        Err(CancellableStreamingError::Stream(
-                            ranvier_runtime::streaming_axon::StreamingAxonError::IamRejected(event),
-                        )) => {
-                            if let Some(response) = crate::service::iam_failure_response(event) {
-                                return response.map(BodyExt::boxed);
+                        StreamInitializationReport::Failed { prefix, .. } => {
+                            if let Some((status, payload)) = crate::response::durability_rejection(&prefix) {
+                                return stream_reconciliation_response(status, payload);
                             }
-                            return json_error_response(StatusCode::INTERNAL_SERVER_ERROR,
-                                "IAM initialization failed");
-                        }
-                        Err(CancellableStreamingError::Stream(_)) => {
                             tracing::error!(failure_source = "stream_init", "Streaming initialization failed");
-                            return json_error_response(StatusCode::INTERNAL_SERVER_ERROR,
-                                "Streaming initialization failed");
+                            return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Streaming initialization failed");
                         }
-
                     };
 
                     // Bridge stream → mpsc channel → SSE frames.

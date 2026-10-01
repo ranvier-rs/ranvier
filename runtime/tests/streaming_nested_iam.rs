@@ -1,4 +1,7 @@
 #![cfg(feature = "streaming")]
+#[cfg(feature = "streaming")]
+#[path = "support/stream_reports.rs"]
+mod stream_reports;
 use ranvier_core::{
     Bus, Outcome, Transition,
     iam::{IamIdentity, IamToken},
@@ -100,11 +103,10 @@ impl Transition<(), ()> for Parent {
                         _ => panic!("unexpected child report"),
                     }
                 } else {
-                    base.then_stream(mutate)
-                        .execute((), &(), bus)
-                        .await
-                        .map(|_| ())
-                        .map_err(|_| ())
+                    stream_reports::initialized(
+                        base.then_stream(mutate).execute((), &(), bus).await,
+                    )
+                    .map(|_| ())
                 }
             };
             let future = std::panic::AssertUnwindSafe(execution).catch_unwind();
@@ -218,11 +220,11 @@ async fn check_parent(stream_parent: bool, parent: Parent) {
     let base = Axon::<(), (), String>::start("parent").then(parent);
     if stream_parent {
         use futures_util::StreamExt;
-        let mut stream = base
-            .then_stream(Finish)
-            .execute((), &(), &mut Bus::new())
-            .await
-            .unwrap();
+        let mut stream = stream_reports::ready(
+            base.then_stream(Finish)
+                .execute((), &(), &mut Bus::new())
+                .await,
+        );
         assert_eq!(stream.next().await, Some("finished".into()));
     } else {
         let report = base.execute((), &(), &mut Bus::new()).await;
@@ -322,11 +324,11 @@ async fn root_boundary_marker_does_not_leak_after_error_unwind_or_future_drop() 
         let result = required.execute((), &(), &mut bus).await;
         assert!(matches!(
             result,
-            Err(
-                ranvier_runtime::streaming_axon::StreamingAxonError::IamRejected(
-                    "iam.verification_failed"
-                )
-            )
+            ranvier_runtime::StreamInitializationReport::Rejected {
+                prefix: ExecutionReport::Unpersisted {
+                    result: ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Emit(ref event, None)), ..
+                }
+            } if event == "iam.verification_failed"
         ));
         assert!(
             bus.read::<IamIdentity>().is_none(),
