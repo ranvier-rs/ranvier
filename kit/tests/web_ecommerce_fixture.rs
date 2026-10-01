@@ -69,7 +69,7 @@ async fn apply_discount(mut input: OrderContext) -> Outcome<OrderContext, OrderE
 async fn calculate_tax(mut input: OrderContext, resources: &OrderResources) -> Outcome<OrderContext, OrderError> {
     if resources.tax_basis_points > 10000 { return Outcome::Fault(OrderError::Arithmetic); }
     let Some(net) = input.subtotal.checked_sub(input.discount) else { return Outcome::Fault(OrderError::Arithmetic); };
-    let Some(tax) = net.checked_mul(u64::from(resources.tax_basis_points)).map(|n| n / 10000) else { return Outcome::Fault(OrderError::Arithmetic); };
+    let Ok(tax) = u64::try_from(u128::from(net) * u128::from(resources.tax_basis_points) / 10000) else { return Outcome::Fault(OrderError::Arithmetic); };
     let Some(total) = net.checked_add(tax) else { return Outcome::Fault(OrderError::Arithmetic); };
     input.tax = tax;
     input.total = total;
@@ -146,6 +146,29 @@ async fn actual_order_chain_preserves_money_identity_and_effect_boundaries() {
         }
         assert_eq!(effects.charged.load(Ordering::SeqCst), charges);
         assert_eq!(effects.shipped.load(Ordering::SeqCst), shipments);
+    }
+}
+
+#[tokio::test]
+async fn reviewed_tax_handles_wide_intermediates_and_total_overflow_before_effects() {
+    for (price, basis_points, expected) in [
+        (u64::MAX, 0, Some(u64::MAX)),
+        (u64::MAX / 2, 1000, Some(u64::MAX / 2 + (u64::MAX / 2) / 10)),
+        (u64::MAX, 1, None),
+        (1000, 10001, None),
+    ] {
+        let effects = Arc::new(FixtureEffects { charged: AtomicUsize::new(0), shipped: AtomicUsize::new(0), fail_payment: false, fail_shipment: false });
+        let resources = OrderResources { catalog: [("sku".into(), Product { unit_cents: price, available: 1 })].into(), tax_basis_points: basis_points, effects: effects.clone() };
+        let mut bus = Bus::new();
+        bus.insert(Shopper { subject: "alice".into(), vip: false });
+        let report = order_pipeline().execute(OrderRequest { order_id: "wide-order".into(), sku: "sku".into(), quantity: 1 }, &resources, &mut bus).await;
+        match report {
+            ranvier_runtime::ExecutionReport::Unpersisted { result: Outcome::Next(order), .. } => assert_eq!(Some(order.total), expected),
+            ranvier_runtime::ExecutionReport::Unpersisted { result: Outcome::Fault(OrderError::Arithmetic), .. } => assert!(expected.is_none()),
+            _ => panic!("unexpected arithmetic report"),
+        }
+        assert_eq!(effects.charged.load(Ordering::SeqCst), usize::from(expected.is_some()));
+        assert_eq!(effects.shipped.load(Ordering::SeqCst), usize::from(expected.is_some()));
     }
 }
 }
