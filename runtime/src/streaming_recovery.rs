@@ -94,11 +94,19 @@ pub(crate) enum SupervisorDisposition {
     Consumption(crate::StreamConsumptionTerminal),
     DriverPanicked,
 }
+/// Custody of this owner only; release does not prove effects reversed or secure erasure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RecoveryCustody {
+    Held,
+    ReleasedWithPendingTasks,
+    ReleasedWithoutRetainedTasks,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SupervisorObservation {
     pub(crate) phase: SupervisorPhase,
     pub(crate) disposition: Option<SupervisorDisposition>,
     pub(crate) cleanup_complete: Option<bool>,
+    pub(crate) custody: RecoveryCustody,
 }
 struct SupervisorObservationGuard {
     sender: tokio::sync::watch::Sender<SupervisorObservation>,
@@ -135,6 +143,29 @@ struct RecoveryInner<In, Out, E, Res> {
     context: Mutex<(Arc<Res>, Bus)>,
     started: AtomicBool,
     observation: tokio::sync::watch::Sender<SupervisorObservation>,
+}
+impl<In, Out, E, Res> Drop for RecoveryInner<In, Out, E, Res> {
+    fn drop(&mut self) {
+        // The last Arc is gone: there can be no live task/context-lock borrower.
+        let (_, bus) = self.context.get_mut();
+        let access = bus.take_access_scope();
+        let pending = bus
+            .read::<ranvier_core::saga::SagaStack>()
+            .is_some_and(|stack| !stack.is_empty())
+            || bus
+                .read::<crate::SagaRollbackJournal>()
+                .is_some_and(crate::SagaRollbackJournal::has_unresolved_tasks);
+        bus.restore_access_scope(access);
+        self.observation.send_modify(|state| {
+            state.custody = if pending {
+                RecoveryCustody::ReleasedWithPendingTasks
+            } else {
+                RecoveryCustody::ReleasedWithoutRetainedTasks
+            }
+        });
+        // Preserve local phase/disposition/cleanup evidence. This is custody release,
+        // not a new success and not automatic compensation/replay.
+    }
 }
 impl<In, Out, E, Res> Clone for OwnedStreamRecovery<In, Out, E, Res> {
     fn clone(&self) -> Self {
@@ -194,6 +225,7 @@ where
                     phase: SupervisorPhase::NotStarted,
                     disposition: None,
                     cleanup_complete: None,
+                    custody: RecoveryCustody::Held,
                 })
                 .0,
             }),
@@ -822,7 +854,14 @@ mod tests {
                 resources.effects.load(Ordering::SeqCst),
                 if pending_top { 2 } else { 3 }
             );
+            assert_eq!(observer.borrow().custody, RecoveryCustody::Held);
             drop(owner);
+            assert_eq!(
+                observer.borrow().custody,
+                RecoveryCustody::ReleasedWithPendingTasks
+            );
+            assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
+            assert_eq!(observer.borrow().cleanup_complete, None);
             assert!(registry.upgrade().is_none());
             assert_eq!(Arc::strong_count(&resources), 1);
         }
@@ -896,7 +935,12 @@ mod tests {
         assert_eq!(*observer.borrow(), before);
         assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
         assert!(!format!("{before:?}").contains("input_snapshot"));
+        assert_eq!(observer.borrow().custody, RecoveryCustody::Held);
         drop(owner);
+        assert_eq!(
+            observer.borrow().custody,
+            RecoveryCustody::ReleasedWithPendingTasks
+        );
         assert_eq!(observer.borrow().phase, SupervisorPhase::Returned);
         assert_eq!(Arc::strong_count(&resources), 1);
     }

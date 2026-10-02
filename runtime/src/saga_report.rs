@@ -80,6 +80,14 @@ impl SagaRollbackJournal {
             .map(|(_, task)| task.clone())
             .collect()
     }
+    /// Framework custody checks must not clone sensitive input bytes.
+    pub(crate) fn has_unresolved_tasks(&self) -> bool {
+        !self
+            .1
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty()
+    }
     pub(crate) fn push_task(&self, task: ranvier_core::saga::SagaTask) {
         let mut report = self
             .0
