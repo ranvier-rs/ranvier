@@ -15,6 +15,16 @@ use tokio::sync::Mutex;
 
 type RawStream<Item> = Pin<Box<dyn futures_core::Stream<Item = Item> + Send>>;
 
+/// Local consumption observation, separate from stored prefix completion.
+pub(crate) struct StreamDriveResult<T> {
+    pub(crate) value: T,
+    pub(crate) terminal: crate::StreamConsumptionTerminal,
+}
+pub(crate) struct StreamReadyResult<T> {
+    pub(crate) consumption: StreamDriveResult<T>,
+    pub(crate) cleanup: Option<crate::SagaRollbackReport>,
+}
+
 /// A single invocation's exact graph, typed resources and request Bus. An external
 /// clone must outlive the supervisor, including forced task abort. No replay API.
 pub(crate) struct OwnedStreamRecovery<In, Out, E, Res> {
@@ -83,20 +93,24 @@ where
         })
     }
     /// Keeps InvocationOwner live until the Ready driver returns or is dropped.
-    /// This primitive does not classify late terminal/cleanup or authorize retry.
+    /// The internal driver must derive its terminal from actual source/control observations.
+    /// Non-completed consumption runs shielded local cleanup; no replay is authorized.
     pub(crate) async fn initialize_and_drive<Item, SErr, S, T, F, Fut>(
         &self,
         input: In,
         streaming: &S,
         token: Option<CancellationToken>,
         drive: F,
-    ) -> Result<StreamInitializationReport<Out, T, E>, StreamInvocationAlreadyStarted>
+    ) -> Result<
+        StreamInitializationReport<Out, StreamReadyResult<T>, E>,
+        StreamInvocationAlreadyStarted,
+    >
     where
         Item: Send + 'static,
         SErr: Send + Sync + std::fmt::Debug + 'static,
         S: StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res>,
         F: FnOnce(RawStream<Item>) -> Fut,
-        Fut: Future<Output = T>,
+        Fut: Future<Output = StreamDriveResult<T>>,
     {
         if self
             .inner
@@ -116,9 +130,31 @@ where
             .await;
         let mapped = match report {
             StreamInitializationReport::Ready { prefix, value } => {
+                let saga_enabled = owner
+                    .bus()
+                    .read::<ranvier_core::saga::SagaPolicy>()
+                    .is_some_and(|policy| *policy == ranvier_core::saga::SagaPolicy::Enabled);
+                let consumption = drive(value).await;
+                let cleanup = if consumption.terminal != crate::StreamConsumptionTerminal::Completed
+                {
+                    self.inner
+                        .graph
+                        .cleanup_stream_initialization(
+                            resources.as_ref(),
+                            owner.bus(),
+                            saga_enabled,
+                        )
+                        .await
+                } else {
+                    // Source exhaustion is not an effect acknowledgment. Keep pending tasks.
+                    None
+                };
                 StreamInitializationReport::Ready {
                     prefix,
-                    value: drive(value).await,
+                    value: StreamReadyResult {
+                        consumption,
+                        cleanup,
+                    },
                 }
             }
             StreamInitializationReport::Rejected { prefix } => {
@@ -161,6 +197,74 @@ mod tests {
     };
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::Notify;
+    fn completed() -> StreamDriveResult<()> {
+        StreamDriveResult {
+            value: (),
+            terminal: crate::StreamConsumptionTerminal::Completed,
+        }
+    }
+    #[tokio::test]
+    async fn late_cancellation_invokes_frozen_handler_with_live_resources() {
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let graph = Axon::<u32, u32, String, Resources>::start("late-cancel")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Undo);
+        let external = graph.saga_compensation_registry.clone();
+        let owner = OwnedStreamRecovery::try_new(
+            graph,
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+        )
+        .unwrap();
+        let token = CancellationToken::new();
+        let driver_token = token.clone();
+        let report = owner
+            .initialize_and_drive(31, &Init, Some(token), move |source| async move {
+                external.write().unwrap().handlers.clear();
+                driver_token.cancel(ranvier_core::CancellationReason::Explicit);
+                let observed = crate::ObservedStream::new(
+                    source,
+                    ranvier_core::streaming::StreamTimeoutConfig {
+                        init: None,
+                        idle: None,
+                        total: None,
+                    },
+                    Some(driver_token),
+                )
+                .collect_report()
+                .await;
+                StreamDriveResult {
+                    value: observed.items,
+                    terminal: observed.terminal,
+                }
+            })
+            .await;
+        let Ok(StreamInitializationReport::Ready { prefix, value }) = report else {
+            panic!("expected initialized consumption");
+        };
+        assert!(matches!(prefix, crate::ExecutionReport::Unpersisted { .. }));
+        assert!(matches!(
+            value.consumption.terminal,
+            crate::StreamConsumptionTerminal::Cancelled(_)
+        ));
+        assert!(value.consumption.value.is_empty());
+        let cleanup = value.cleanup.unwrap();
+        assert!(cleanup.is_complete());
+        assert_eq!(cleanup.steps.len(), 1);
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+        assert!(
+            owner
+                .inner
+                .context
+                .lock()
+                .await
+                .1
+                .read::<SagaStack>()
+                .unwrap()
+                .is_empty()
+        );
+    }
     struct Resources {
         effects: AtomicUsize,
     }
@@ -317,6 +421,7 @@ mod tests {
             task_owner
                 .initialize_and_drive(23, &PendingInit(task_entered), None, move |_| async move {
                     task_drivers.fetch_add(1, Ordering::SeqCst);
+                    completed()
                 })
                 .await
         });
@@ -369,7 +474,7 @@ mod tests {
                 .initialize_and_drive(17, &Init, None, move |source| async move {
                     let _source = source;
                     task_entered.notify_one();
-                    std::future::pending::<()>().await
+                    std::future::pending::<StreamDriveResult<()>>().await
                 })
                 .await
         });
@@ -387,7 +492,7 @@ mod tests {
         );
         let concurrent = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            owner.initialize_and_drive(99, &Init, None, |_| async {}),
+            owner.initialize_and_drive(99, &Init, None, |_| async { completed() }),
         )
         .await
         .unwrap();
@@ -416,7 +521,7 @@ mod tests {
         );
         drop(context);
         let repeated = owner
-            .initialize_and_drive(18, &Init, None, |_| async {})
+            .initialize_and_drive(18, &Init, None, |_| async { completed() })
             .await;
         assert!(matches!(repeated, Err(StreamInvocationAlreadyStarted)));
         assert_eq!(resources.effects.load(Ordering::SeqCst), 1);

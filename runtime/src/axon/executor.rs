@@ -305,7 +305,7 @@ where
     /// Undo accepted-prefix tasks while initializer resources are still borrowed.
     /// This is separate from prefix durability and writes no engine completion.
     #[cfg(feature = "streaming")]
-    async fn cleanup_stream_initialization(
+    pub(crate) async fn cleanup_stream_initialization(
         &self,
         resources: &Res,
         bus: &mut Bus,
