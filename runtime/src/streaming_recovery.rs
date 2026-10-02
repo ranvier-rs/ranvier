@@ -2605,14 +2605,11 @@ mod tests {
                     .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
                 &StreamRecoveryAdmission::new(1), None).unwrap();
-            let task_child = child.clone();
-            let mut prepared = crate::managed_stream_task::PreparedStreamTask::new(async move {
-                task_child.initialize_and_drive(107, &PendingInit(Arc::new(Notify::new())), None,
-                    std::time::Duration::from_secs(5), |_| async {
-                        panic!("rejected registration must not initialize driver");
-                        #[allow(unreachable_code)] completed()
-                    }).await
-            });
+            let mut prepared = child.prepare_managed(107, PendingInit(Arc::new(Notify::new())),
+                std::time::Duration::from_secs(5), |_| async {
+                    panic!("rejected registration must not initialize driver");
+                    #[allow(unreachable_code)] completed()
+                });
             let task = prepared.holder();
             let journal = crate::SagaRollbackJournal::new("rejected-managed-parent");
             let result = child.admit_managed_to_parent(client, &journal, CancellationToken::new(), task.clone()).await;
