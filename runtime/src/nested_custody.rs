@@ -121,6 +121,9 @@ impl CustodyStore {
     }
     /// Homogeneous typed family settlement. Validate every holder type before
     /// polling any handle; original outputs stay stored in each task holder.
+    /// Returned statuses do not transfer report custody. Before concurrently
+    /// retiring records, the supervisor must retain the actual typed holders
+    /// through result transfer; otherwise snapshot completion can drop reports.
     #[cfg(feature = "streaming")]
     pub(crate) async fn settle_closed_tasks<T: Send + 'static>(
         &self, deadline: tokio::time::Instant,
