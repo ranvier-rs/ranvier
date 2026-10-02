@@ -1,12 +1,13 @@
 //! Report-aware execution of a configured Axon prefix and terminal stream initializer.
 //! Prefix acknowledgments do not certify stream items or late completion.
+use crate::ObservedStream;
 use crate::axon::BoxFuture;
 use crate::streaming_initialization::StreamInitializationReport;
 use futures_core::Stream;
 use futures_util::StreamExt;
 use ranvier_core::schematic::Schematic;
 use ranvier_core::streaming::StreamTimeoutConfig;
-use ranvier_core::{Bus, CancellationContext, CancellationToken};
+use ranvier_core::{Bus, CancellationToken};
 use std::{fmt::Debug, pin::Pin, sync::Arc};
 
 /// Terminal stream with its typed prefix output retained for rejected execution.
@@ -61,7 +62,7 @@ where
         input: In,
         resources: &Res,
         bus: &mut Bus,
-    ) -> StreamInitializationReport<Out, Pin<Box<dyn Stream<Item = Item> + Send>>, E> {
+    ) -> StreamInitializationReport<Out, ObservedStream<Item>, E> {
         let report = (self.stream_executor)(input, resources, bus, None).await;
         report.map_value(|stream| self.wrap_stream(stream, None))
     }
@@ -73,7 +74,7 @@ where
         resources: &Res,
         bus: &mut Bus,
         token: CancellationToken,
-    ) -> StreamInitializationReport<Out, Pin<Box<dyn Stream<Item = Item> + Send>>, E> {
+    ) -> StreamInitializationReport<Out, ObservedStream<Item>, E> {
         let report = (self.stream_executor)(input, resources, bus, Some(token.clone())).await;
         report.map_value(|stream| self.wrap_stream(stream, Some(token)))
     }
@@ -81,19 +82,16 @@ where
         &self,
         stream: Pin<Box<dyn Stream<Item = Item> + Send>>,
         token: Option<CancellationToken>,
-    ) -> Pin<Box<dyn Stream<Item = Item> + Send>> {
-        let stream: Pin<Box<dyn Stream<Item = Item> + Send>> = match &self.timeout_config {
-            Some(config)
-                if config.init.is_some() || config.idle.is_some() || config.total.is_some() =>
-            {
-                Box::pin(TimeoutStream::new(stream, config.clone()))
-            }
-            _ => stream,
-        };
-        match token {
-            Some(token) => Box::pin(CancellationStream::new(stream, token)),
-            None => stream,
-        }
+    ) -> ObservedStream<Item> {
+        ObservedStream::new(
+            stream,
+            self.timeout_config.clone().unwrap_or(StreamTimeoutConfig {
+                init: None,
+                idle: None,
+                total: None,
+            }),
+            token,
+        )
     }
     pub fn with_buffer_size(mut self, size: usize) -> Self {
         self.buffer_size = size;
@@ -204,139 +202,6 @@ where
     }
 }
 
-struct CancellationStream<Item> {
-    inner: Pin<Box<dyn Stream<Item = Item> + Send>>,
-    cancellation: Pin<Box<dyn std::future::Future<Output = CancellationContext> + Send>>,
-    finished: bool,
-}
-
-impl<Item> CancellationStream<Item> {
-    fn new(inner: Pin<Box<dyn Stream<Item = Item> + Send>>, token: CancellationToken) -> Self {
-        let cancellation = Box::pin(async move { token.cancelled().await });
-        Self {
-            inner,
-            cancellation,
-            finished: false,
-        }
-    }
-}
-
-impl<Item> Stream for CancellationStream<Item> {
-    type Item = Item;
-
-    fn poll_next(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        if this.finished {
-            return std::task::Poll::Ready(None);
-        }
-
-        if this.cancellation.as_mut().poll(cx).is_ready() {
-            this.finished = true;
-            return std::task::Poll::Ready(None);
-        }
-
-        this.inner.as_mut().poll_next(cx)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// TimeoutStream — wraps a stream with init/idle/total timeout enforcement
-// ---------------------------------------------------------------------------
-
-struct TimeoutStream<S> {
-    inner: Pin<Box<S>>,
-    config: StreamTimeoutConfig,
-    started_at: tokio::time::Instant,
-    first_item_received: bool,
-    last_item_at: tokio::time::Instant,
-    finished: bool,
-    deadline_timer: Option<Pin<Box<tokio::time::Sleep>>>,
-}
-
-impl<S, Item> TimeoutStream<S>
-where
-    S: Stream<Item = Item> + Send,
-{
-    fn new(inner: S, config: StreamTimeoutConfig) -> Self {
-        let now = tokio::time::Instant::now();
-        Self {
-            inner: Box::pin(inner),
-            config,
-            started_at: now,
-            first_item_received: false,
-            last_item_at: now,
-            finished: false,
-            deadline_timer: None,
-        }
-    }
-}
-
-impl<S, Item> Stream for TimeoutStream<S>
-where
-    S: Stream<Item = Item> + Send,
-{
-    type Item = Item;
-
-    fn poll_next(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-
-        if this.finished {
-            return std::task::Poll::Ready(None);
-        }
-
-        // Arm the earliest applicable deadline even when the source never wakes.
-        // A deadline already reached takes precedence over a newly available item.
-        let total = this
-            .config
-            .total
-            .and_then(|d| this.started_at.checked_add(d));
-        let phase = if this.first_item_received {
-            this.config
-                .idle
-                .and_then(|d| this.last_item_at.checked_add(d))
-        } else {
-            this.config
-                .init
-                .and_then(|d| this.started_at.checked_add(d))
-        };
-        let deadline = match (total, phase) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
-        if let Some(deadline) = deadline {
-            let timer = this
-                .deadline_timer
-                .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
-            timer.as_mut().reset(deadline);
-            if std::future::Future::poll(timer.as_mut(), cx).is_ready() {
-                this.finished = true;
-                this.deadline_timer = None;
-                tracing::warn!("Stream deadline exceeded");
-                return std::task::Poll::Ready(None);
-            }
-        }
-
-        match this.inner.as_mut().poll_next(cx) {
-            std::task::Poll::Ready(Some(item)) => {
-                this.first_item_received = true;
-                this.last_item_at = tokio::time::Instant::now();
-                std::task::Poll::Ready(Some(item))
-            }
-            std::task::Poll::Ready(None) => {
-                this.finished = true;
-                this.deadline_timer = None;
-                std::task::Poll::Ready(None)
-            }
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,12 +250,8 @@ mod tests {
         })
     }
     fn ready(
-        report: StreamInitializationReport<
-            String,
-            Pin<Box<dyn Stream<Item = String> + Send>>,
-            String,
-        >,
-    ) -> Pin<Box<dyn Stream<Item = String> + Send>> {
+        report: StreamInitializationReport<String, ObservedStream<String>, String>,
+    ) -> ObservedStream<String> {
         match report {
             StreamInitializationReport::Ready {
                 prefix:
@@ -539,13 +400,14 @@ mod timeout_wakeup_tests {
     async fn earliest_deadline_and_idle_reset_preserve_total_origin() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let input = stream::poll_fn(move |cx| rx.poll_recv(cx));
-        let mut wrapped = Box::pin(TimeoutStream::new(
-            input,
+        let mut wrapped = Box::pin(ObservedStream::new(
+            Box::pin(input),
             StreamTimeoutConfig {
                 init: Some(Duration::from_secs(5)),
                 idle: Some(Duration::from_secs(4)),
                 total: Some(Duration::from_secs(10)),
             },
+            None,
         ));
         let counter = Arc::new(WakeCount(AtomicUsize::new(0)));
         let task_waker = waker(counter.clone());
@@ -577,18 +439,23 @@ mod timeout_wakeup_tests {
             idle: None,
             total: None,
         };
-        let mut expired = Box::pin(TimeoutStream::new(stream::repeat(1), config));
+        let mut expired = Box::pin(ObservedStream::new(
+            Box::pin(stream::repeat(1)),
+            config,
+            None,
+        ));
         let counter = Arc::new(WakeCount(AtomicUsize::new(0)));
         let task_waker = waker(counter.clone());
         let mut cx = Context::from_waker(&task_waker);
         assert_eq!(expired.as_mut().poll_next(&mut cx), Poll::Ready(None));
-        let mut ended = Box::pin(TimeoutStream::new(
-            stream::empty::<usize>(),
+        let mut ended = Box::pin(ObservedStream::new(
+            Box::pin(stream::empty::<usize>()),
             StreamTimeoutConfig {
                 init: None,
                 idle: None,
                 total: Some(Duration::from_secs(1)),
             },
+            None,
         ));
         assert_eq!(ended.as_mut().poll_next(&mut cx), Poll::Ready(None));
         counter.0.store(0, Ordering::SeqCst);
@@ -612,13 +479,21 @@ mod timeout_wakeup_tests {
         let counter = Arc::new(WakeCount(AtomicUsize::new(0)));
         let task_waker = waker(counter.clone());
         let mut cx = Context::from_waker(&task_waker);
-        let mut ready = Box::pin(TimeoutStream::new(stream::repeat(7), config.clone()));
+        let mut ready = Box::pin(ObservedStream::new(
+            Box::pin(stream::repeat(7)),
+            config.clone(),
+            None,
+        ));
         assert_eq!(ready.as_mut().poll_next(&mut cx), Poll::Ready(Some(7)));
         tokio::time::sleep(Duration::from_millis(80)).await;
         assert_eq!(ready.as_mut().poll_next(&mut cx), Poll::Ready(None));
         drop(ready);
         counter.0.store(0, Ordering::SeqCst);
-        let mut pending = Box::pin(TimeoutStream::new(stream::pending::<usize>(), config));
+        let mut pending = Box::pin(ObservedStream::new(
+            Box::pin(stream::pending::<usize>()),
+            config,
+            None,
+        ));
         assert_eq!(pending.as_mut().poll_next(&mut cx), Poll::Pending);
         drop(pending);
         tokio::time::sleep(Duration::from_millis(80)).await;
@@ -635,7 +510,7 @@ mod timeout_wakeup_tests {
                 total: (mode == 2).then_some(delay),
             };
             let input = stream::iter((mode == 1).then_some(7)).chain(stream::pending());
-            let mut wrapped = Box::pin(TimeoutStream::new(input, config));
+            let mut wrapped = Box::pin(ObservedStream::new(Box::pin(input), config, None));
             let counter = Arc::new(WakeCount(AtomicUsize::new(0)));
             let task_waker = waker(counter.clone());
             let mut cx = Context::from_waker(&task_waker);

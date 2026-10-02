@@ -3331,8 +3331,15 @@ where
                                 return;
                             }
                         }
-                        // Announce only normal source exhaustion; failure/disconnect returned above.
-                        let _ = tx.send(Bytes::from("data: [DONE]\n\n")).await;
+                        // Only an observed normal source end announces DONE. Prefix
+                        // acknowledgment never certifies this consumption terminal.
+                        let frame = match pinned.terminal() {
+                            Some(ranvier_runtime::StreamConsumptionTerminal::Completed) => "data: [DONE]\n\n",
+                            Some(ranvier_runtime::StreamConsumptionTerminal::Cancelled(_)) => "event: error\ndata: {\"code\":\"stream_cancelled\"}\n\n",
+                            Some(ranvier_runtime::StreamConsumptionTerminal::TimedOut(_)) => "event: error\ndata: {\"code\":\"stream_timeout\"}\n\n",
+                            _ => "event: error\ndata: {\"code\":\"stream_terminal_invalid\"}\n\n",
+                        };
+                        let _ = tx.send(Bytes::from_static(frame.as_bytes())).await;
                     };
                     if let Some(owner) = task_owner {
                         owner.spawn(producer_task).await;

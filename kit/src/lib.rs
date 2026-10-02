@@ -67,3 +67,6 @@ pub mod prelude {
     #[cfg(feature = "std")]
     pub use ranvier_std::prelude::*;
 }
+
+#[cfg(feature = "streaming")]
+pub use ranvier_runtime::{ObservedStream, StreamConsumptionReport, StreamConsumptionTerminal};
