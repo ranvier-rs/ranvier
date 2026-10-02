@@ -2316,6 +2316,66 @@ mod tests {
         assert!(registry.upgrade().is_none());
         assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
     }
+    #[tokio::test]
+    async fn parent_stream_journal_rejects_admission_without_adding_phantom_rows() {
+        for closed in [false, true] {
+            let parent = crate::nested_custody::CustodyStore::new(0);
+            let client = parent.client();
+            let retained = if closed { drop(parent); None } else { Some(parent) };
+            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let child = OwnedStreamRecovery::try_new(
+                Axon::<u32, u32, String, Resources>::start("rejected-parent-report").then(Effect),
+                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                &StreamRecoveryAdmission::new(1), None).unwrap();
+            let journal = crate::SagaRollbackJournal::new("parent-admission-failure");
+            journal.finish();
+            let before = journal.snapshot();
+            assert!(matches!(child.admit_to_parent_journal(client, &journal).await,
+                Err(signal) if signal == if closed { "execution.parent_custody_released" } else { "execution.nested_custody_capacity" }));
+            assert_eq!(journal.snapshot(), before);
+            assert!(journal.retained_stream_observations().is_empty());
+            assert!(!journal.has_unresolved_tasks());
+            assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+            let context = child.inner.context.lock().await;
+            assert!(!context.1.has::<ParentStreamCustody>());
+            assert!(!context.1.has::<crate::nested_custody::WeakCustodyClient>());
+            drop(context);
+            drop(retained);
+        }
+    }
+    #[tokio::test]
+    async fn parent_stream_journal_keeps_returned_successful_child_effects_unresolved() {
+        let parent = crate::nested_custody::CustodyStore::new(1);
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let weak = Arc::downgrade(&resources);
+        let child = OwnedStreamRecovery::try_new(
+            Axon::<u32, u32, String, Resources>::start("returned-child-report")
+                .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1), None).unwrap();
+        let journal = crate::SagaRollbackJournal::new("parent-returned-child");
+        let admission = child.admit_to_parent_journal(parent.client(), &journal).await.unwrap();
+        let report = child.initialize_and_drive(293, &Init, None, std::time::Duration::from_secs(5), |source| async move {
+            drop(source);
+            completed()
+        }).await.unwrap();
+        assert!(matches!(report, StreamInitializationReport::Ready { .. }));
+        let observations = journal.retained_stream_observations();
+        assert_eq!(observations[0].1.phase, SupervisorPhase::Returned);
+        assert_eq!(observations[0].1.disposition, Some(SupervisorDisposition::Consumption(crate::StreamConsumptionTerminal::Completed)));
+        journal.finish();
+        assert!(!journal.snapshot().is_complete());
+        assert!(journal.has_unresolved_tasks());
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
+        assert_eq!(child.inner.context.lock().await.1.read::<SagaStack>().unwrap().tasks[0].input_snapshot, b"293");
+        drop(child);
+        drop(resources);
+        assert!(weak.upgrade().is_some());
+        admission.release();
+        assert!(weak.upgrade().is_none());
+        assert!(journal.has_unresolved_tasks());
+        assert!(!journal.snapshot().is_complete());
+    }
     struct ExternalHook {
         mode: u8,
         calls: Arc<AtomicUsize>,
