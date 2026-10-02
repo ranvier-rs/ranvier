@@ -319,6 +319,20 @@ fn duration_ms(duration: Duration) -> u64 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn later_absolute_child_deadline_does_not_extend_expired_ancestor() {
+        let root = CancellationToken::new();
+        let now = Instant::now();
+        let ancestor_deadline = now - Duration::from_secs(5);
+        let parent = root.child_with_deadline_at(ancestor_deadline);
+        let child = parent.child_with_deadline_at(now + Duration::from_secs(60));
+        assert_eq!(child.closest_deadline(), Some(ancestor_deadline));
+        let original = parent.context().unwrap();
+        assert_eq!(child.context(), Some(original));
+        assert!(!child.cancel(CancellationReason::Explicit));
+        assert!(!root.is_cancelled());
+    }
+
     #[tokio::test]
     async fn past_absolute_deadline_keeps_original_clock_and_does_not_cancel_parent() {
         let root = CancellationToken::new();

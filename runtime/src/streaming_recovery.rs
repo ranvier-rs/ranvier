@@ -3262,7 +3262,16 @@ mod tests {
                 Ok(Box::pin(futures_util::stream::empty()))
             }
         }
-        for reason in [None, Some(ranvier_core::CancellationReason::Explicit)] {
+        use ranvier_core::CancellationReason::{Explicit, OperatorShutdown, ClientDisconnected};
+        for (reason, total) in [
+            (None, std::time::Duration::ZERO),
+            (Some(Explicit), std::time::Duration::ZERO),
+            (Some(OperatorShutdown), std::time::Duration::ZERO),
+            (Some(ClientDisconnected), std::time::Duration::ZERO),
+            (Some(Explicit), std::time::Duration::from_secs(60)),
+            (Some(OperatorShutdown), std::time::Duration::from_secs(60)),
+            (Some(ClientDisconnected), std::time::Duration::from_secs(60)),
+        ] {
             let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
             let graph = Axon::<u32, u32, String, Resources>::start("zero-total-admission")
                 .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo);
@@ -3273,7 +3282,7 @@ mod tests {
             if let Some(reason) = reason { control.cancel(reason); }
             let original = control.context();
             let mut prepared = owner.prepare_managed_controlled(149, CountingInit,
-                std::time::Duration::from_secs(2), Some(std::time::Duration::ZERO),
+                std::time::Duration::from_secs(2), Some(total),
                 |_, _, _| async { panic!("expired prefix must not consume"); #[allow(unreachable_code)] completed() });
             let root = crate::nested_custody::CustodyStore::new(1);
             let journal = crate::SagaRollbackJournal::new("zero-total-parent");
