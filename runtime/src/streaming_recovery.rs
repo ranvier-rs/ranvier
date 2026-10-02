@@ -2527,6 +2527,26 @@ mod tests {
         assert_eq!(journal.retained_stream_observations()[0].1.disposition, Some(SupervisorDisposition::InitializationCancelled));
         admission.release();
     }
+    #[tokio::test(start_paused = true)]
+    async fn stream_observation_drain_times_out_without_cancelling_or_releasing_child() {
+        let parent = crate::nested_custody::CustodyStore::new(1);
+        let control = CancellationToken::new();
+        let child = OwnedStreamRecovery::try_new(
+            Axon::<u32, u32, String, Resources>::start("drain-unstarted"),
+            OwnedStreamContext::try_new(Arc::new(Resources { effects: AtomicUsize::new(0) }), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1), None).unwrap();
+        let journal = crate::SagaRollbackJournal::new("drain-timeout");
+        let admission = child.admit_to_parent_journal_with_control(parent.client(), &journal, Some(control.clone())).await.unwrap();
+        assert_eq!(journal.drain_stream_children(tokio::time::Instant::now() + std::time::Duration::from_secs(3)).await, Err(1));
+        assert!(!control.is_cancelled());
+        assert!(!child.inner.started.load(Ordering::Acquire));
+        assert!(admission.upgrade().is_some());
+        drop(child);
+        admission.release();
+        assert_eq!(journal.drain_stream_children(tokio::time::Instant::now()).await, Ok(()));
+        assert!(journal.has_unresolved_tasks());
+        assert!(!journal.snapshot().is_complete());
+    }
     struct ExternalHook {
         mode: u8,
         calls: Arc<AtomicUsize>,
