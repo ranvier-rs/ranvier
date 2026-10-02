@@ -194,7 +194,9 @@ mod tests {
     use super::*;
     #[test]
     fn concurrent_admission_close_retains_every_success_and_rejects_later_reservations() {
-        let root = CustodyStore::new(16);
+        let root = CustodyStore::new(17);
+        let anchor: Capability = Arc::new(99u32);
+        let anchor_admission = root.reserve(anchor.clone()).unwrap();
         let barrier = Arc::new(std::sync::Barrier::new(17));
         let mut workers = Vec::new();
         for value in 0u32..16 {
@@ -215,12 +217,14 @@ mod tests {
                 Err(signal) => assert_eq!(signal, "execution.nested_custody_admission_closed"),
             }
         }
-        assert_eq!(root.0 .0.records.lock().unwrap().len(), accepted.len());
+        assert_eq!(root.0 .0.records.lock().unwrap().len(), accepted.len() + 1);
+        assert!(root.client().validate_member(&anchor_admission, &anchor).is_ok());
         for (admission, record) in &accepted {
             assert!(root.client().validate_member(admission, record).is_ok());
         }
         assert!(matches!(root.reserve(Arc::new(())), Err("execution.nested_custody_admission_closed")));
         for (admission, _) in accepted { admission.release(); }
+        anchor_admission.release();
         assert!(root.0 .0.records.lock().unwrap().is_empty());
     }
     #[test]
