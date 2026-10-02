@@ -408,6 +408,32 @@ mod tests {
         assert_eq!(items, vec![expected]);
         assert!(original.owned_definition.item_maps.is_empty());
     }
+    #[tokio::test]
+    async fn owned_plan_drives_original_items_with_maps_once() {
+        let circuit = circuit(&["a"]).map_items(|item| format!("{item}1")).map_items(|item| format!("{item}2"));
+        let plan = match circuit.owned_definition.try_plan::<Chunks, String>(
+            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
+            Ok(plan) => plan, Err(_) => panic!("owned plan rejected"),
+        };
+        let mut prepared = plan.prepare("".into(), std::time::Duration::from_secs(5), |stream| async move {
+            crate::streaming_recovery::StreamDriveResult { value: stream.collect::<Vec<_>>().await, terminal: crate::StreamConsumptionTerminal::Completed }
+        });
+        let root = crate::nested_custody::CustodyStore::new(1);
+        let journal = crate::SagaRollbackJournal::new("owned-plan-parent");
+        plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+            .unwrap_or_else(|error| panic!("{}", error.signal));
+        let holder = prepared.holder();
+        let joined = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
+        match joined {
+            Ok(StreamInitializationReport::Ready { value, .. }) => {
+                let consumed = value.consumption.unwrap();
+                assert_eq!(consumed.value, vec!["a12"]);
+                assert_eq!(consumed.terminal, crate::StreamConsumptionTerminal::Completed);
+            }
+            _ => panic!("original report not ready"),
+        }
+    }
     #[derive(Clone)]
     struct Fault;
     #[async_trait::async_trait]
