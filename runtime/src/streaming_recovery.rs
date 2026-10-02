@@ -2559,6 +2559,49 @@ mod tests {
         assert!(journal.has_unresolved_tasks());
         assert!(!journal.snapshot().is_complete());
     }
+    #[tokio::test]
+    async fn managed_task_preserves_actual_child_initialization_report_and_rejected_start_has_no_effects() {
+        for grant_start in [false, true] {
+            let parent = crate::nested_custody::CustodyStore::new(1);
+            let control = CancellationToken::new();
+            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let child = OwnedStreamRecovery::try_new(
+                Axon::<u32, u32, String, Resources>::start("managed-actual-child")
+                    .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                &StreamRecoveryAdmission::new(1), None).unwrap();
+            let entered = Arc::new(Notify::new());
+            let signal = entered.clone();
+            let task_child = child.clone();
+            let (mut task, permit) = crate::managed_stream_task::ManagedStreamTask::prepare(async move {
+                task_child.initialize_and_drive(331, &PendingInit(signal), None,
+                    std::time::Duration::from_secs(5), |_| async {
+                        panic!("cancelled initializer must not run driver");
+                        #[allow(unreachable_code)] completed()
+                    }).await
+            });
+            let journal = crate::SagaRollbackJournal::new("managed-actual-parent");
+            let admission = child.admit_to_parent_journal_with_control(parent.client(), &journal, Some(control.clone())).await.unwrap();
+            parent.close_admission().unwrap();
+            if grant_start {
+                permit.send(()).unwrap();
+                tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+                control.cancel(ranvier_core::CancellationReason::OperatorShutdown);
+            } else { drop(permit); }
+            let joined = task.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap();
+            if grant_start {
+                assert!(matches!(joined, Some(Ok(StreamInitializationReport::Cancelled { context, .. }))
+                    if context.reason == ranvier_core::CancellationReason::OperatorShutdown));
+                assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+                assert_eq!(journal.retained_stream_observations()[0].1.disposition, Some(SupervisorDisposition::InitializationCancelled));
+            } else {
+                assert!(joined.is_none());
+                assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+                assert!(!child.inner.started.load(Ordering::Acquire));
+            }
+            admission.release();
+        }
+    }
     struct ExternalHook {
         mode: u8,
         calls: Arc<AtomicUsize>,
