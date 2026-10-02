@@ -90,8 +90,24 @@ async fn malformed_compensation_input_redacts_logs_and_payload_and_keeps_rollbac
         !payload.to_string().contains(SECRET),
         "private decode detail reached emitted payload"
     );
+    assert_eq!(
+        payload,
+        serde_json::json!({"error":"invalid_compensation_input"})
+    );
     assert_eq!(undo.load(Ordering::SeqCst), 0);
-    let report = prefix.then(Corrupt).execute(7, &(), &mut Bus::new()).await;
+    let valid = handler(serde_json::to_vec(&7u32).unwrap(), &(), &mut Bus::new()).await;
+    assert!(matches!(valid, Outcome::Next(())));
+    assert_eq!(
+        undo.load(Ordering::SeqCst),
+        1,
+        "valid snapshot still invokes compensation"
+    );
+    undo.store(0, Ordering::SeqCst);
+    let report = prefix
+        .then_compensated(Effect(effects.clone()), Undo(undo.clone()))
+        .then(Corrupt)
+        .execute(7, &(), &mut Bus::new())
+        .await;
     assert!(matches!(
         &report,
         ExecutionReport::Unpersisted {
@@ -102,10 +118,15 @@ async fn malformed_compensation_input_redacts_logs_and_payload_and_keeps_rollbac
     let cleanup = report.cleanup().unwrap();
     assert!(cleanup.finished);
     assert!(!cleanup.is_complete());
-    assert_eq!(cleanup.steps.len(), 1);
+    assert_eq!(cleanup.steps.len(), 2);
     assert_eq!(cleanup.steps[0].outcome, SagaRollbackOutcome::Emitted);
-    assert_eq!(effects.load(Ordering::SeqCst), 1);
-    assert_eq!(undo.load(Ordering::SeqCst), 0);
+    assert_eq!(cleanup.steps[1].outcome, SagaRollbackOutcome::Completed);
+    assert_eq!(effects.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        undo.load(Ordering::SeqCst),
+        1,
+        "malformed top task must not suppress the remaining valid hook"
+    );
     let captured = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
     assert!(
         captured.contains("Saga compensation input deserialization failed"),
