@@ -252,6 +252,25 @@ impl WeakCustody {
 mod tests {
     use super::*;
     #[cfg(feature = "streaming")]
+    #[tokio::test(start_paused = true)]
+    async fn family_lock_deadline_preserves_same_holder_for_retry() {
+        use crate::managed_stream_task::{ManagedStreamTask, ManagedTaskWaitError};
+        use tokio::{sync::Mutex as AsyncMutex, time::Instant};
+        let root = CustodyStore::new(1);
+        let (task, permit) = ManagedStreamTask::prepare(async { 83u32 });
+        let task = Arc::new(AsyncMutex::new(task));
+        let admission = reserve_in_with(&root.0 .0, Arc::new(()), Some(task.clone()), || {}).unwrap();
+        root.close_admission().unwrap();
+        permit.send(()).unwrap();
+        let held = task.lock().await;
+        let result = root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(3)).await.unwrap();
+        assert_eq!(result, vec![(admission.id, Err(ManagedTaskWaitError::TimedOut))]);
+        drop(held);
+        let result = root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(3)).await.unwrap();
+        assert_eq!(result, vec![(admission.id, Ok(()))]);
+        assert_eq!(task.lock().await.take_joined().unwrap().unwrap(), Some(83));
+    }
+    #[cfg(feature = "streaming")]
     #[tokio::test]
     async fn family_settlement_drop_preserves_completed_report_and_pending_handle() {
         use crate::managed_stream_task::ManagedStreamTask;
