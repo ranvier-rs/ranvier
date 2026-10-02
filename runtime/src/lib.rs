@@ -15,6 +15,8 @@ pub mod saga_report;
 pub mod streaming_axon;
 #[cfg(feature = "streaming")]
 pub mod streaming_initialization;
+#[cfg(feature = "streaming")]
+mod streaming_recovery;
 pub mod testkit;
 
 pub mod prelude {
