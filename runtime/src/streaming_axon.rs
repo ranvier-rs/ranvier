@@ -647,6 +647,27 @@ mod owned_context_tests {
         assert_eq!(bus.read::<String>().unwrap(), "private-request-capability");
     }
     #[test]
+    fn admission_rejects_existing_nested_custody_even_empty_and_hidden_by_policy() {
+        for store_present in [false, true] {
+            let resources = Arc::new(MoveOnlyResource(19));
+            let mut bus = Bus::new();
+            if store_present { bus.insert(crate::nested_custody::CustodyStore::new(1)); }
+            else { bus.insert(crate::nested_custody::RequiredOwnedCustody); }
+            bus.set_access_policy("deny-admission", Some(ranvier_core::BusAccessPolicy::allow_only(Vec::new())));
+            let rejected = match OwnedStreamContext::try_new(resources.clone(), bus) {
+                Err(rejected) => rejected,
+                Ok(_) => panic!("nested authority was detached"),
+            };
+            let (returned, mut bus) = rejected.into_parts();
+            assert!(Arc::ptr_eq(&returned, &resources));
+            assert!(bus.get::<crate::nested_custody::RequiredOwnedCustody>().is_err());
+            let access = bus.take_access_scope();
+            assert_eq!(bus.has::<crate::nested_custody::CustodyStore>(), store_present);
+            assert_eq!(bus.has::<crate::nested_custody::RequiredOwnedCustody>(), !store_present);
+            bus.restore_access_scope(access);
+        }
+    }
+    #[test]
     fn rejected_recovery_keeps_exact_inputs_and_redacts_debug() {
         let resources = Arc::new(MoveOnlyResource(17));
         let mut bus = Bus::new();
