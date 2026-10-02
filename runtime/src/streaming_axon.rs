@@ -510,6 +510,49 @@ mod tests {
         drop(plan);
         assert_eq!(admission.in_use().unwrap(), 0);
     }
+    #[tokio::test(start_paused = true)]
+    async fn owned_bounded_pending_source_retains_idle_and_total_timeout_reports() {
+        #[derive(Clone)]
+        struct TimeoutChunks(bool);
+        #[async_trait::async_trait]
+        impl StreamingTransition<String> for TimeoutChunks {
+            type Item = String;
+            type Error = String;
+            type Resources = ();
+            async fn run_stream(&self, _: String, _: &(), _: &mut Bus) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, String> {
+                let items = if self.0 { vec!["first".to_string()] } else { Vec::new() };
+                Ok(Box::pin(futures_util::stream::iter(items).chain(futures_util::stream::pending())))
+            }
+        }
+        for kind in [StreamTimeoutKind::Idle, StreamTimeoutKind::Total] {
+            let pending = Axon::<String, String, String>::start("owned-timeout-plan").then_stream(TimeoutChunks(kind == StreamTimeoutKind::Idle)).with_timeout(StreamTimeoutConfig {
+                init: None,
+                idle: if kind == StreamTimeoutKind::Idle { Some(std::time::Duration::from_secs(1)) } else { None },
+                total: if kind == StreamTimeoutKind::Total { Some(std::time::Duration::from_secs(1)) } else { None },
+            });
+            let plan = match pending.owned_definition.try_plan::<TimeoutChunks, String>(
+                OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
+                &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
+                Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+            };
+            let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+                Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
+            };
+            let root = crate::nested_custody::CustodyStore::new(1);
+            let journal = crate::SagaRollbackJournal::new("timeout-plan-parent");
+            plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+                .unwrap_or_else(|error| panic!("{}", error.signal));
+            if kind == StreamTimeoutKind::Idle { assert_eq!(receiver.recv().await, Some("first".to_string())); }
+            let holder = prepared.holder();
+            let joined = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
+            match joined {
+                Ok(StreamInitializationReport::Ready { value, .. }) => {
+                    assert_eq!(value.consumption.unwrap().terminal, crate::StreamConsumptionTerminal::TimedOut(kind));
+                }
+                _ => panic!("timeout report lost"),
+            }
+        }
+    }
     #[tokio::test]
     async fn owned_bounded_producer_preserves_eof_and_disconnect_reports() {
         for mode in 0..3 {
