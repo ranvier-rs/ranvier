@@ -105,6 +105,26 @@ mod tests {
     use super::*;
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
     #[tokio::test]
+    async fn prepared_task_rejects_before_unpolled_wait_and_cannot_grant_later() {
+        let effects = Arc::new(AtomicUsize::new(0));
+        let observed = effects.clone();
+        let mut prepared = PreparedStreamTask::new(async move { observed.fetch_add(1, Ordering::SeqCst); });
+        drop(prepared.reject_until(Instant::now()));
+        assert_eq!(prepared.grant_start(), Err("execution.nested_task_start_decided"));
+        assert!(matches!(prepared.reject_until(Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+        assert_eq!(effects.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn prepared_task_grants_exact_holder_only_once() {
+        let mut prepared = PreparedStreamTask::new(async { Box::new(109u32) });
+        let holder = prepared.holder();
+        assert!(Arc::ptr_eq(&holder, &prepared.holder()));
+        prepared.grant_start().unwrap();
+        assert_eq!(prepared.grant_start(), Err("execution.nested_task_start_decided"));
+        drop(prepared);
+        assert_eq!(*holder.lock().await.join_until(Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap(), 109);
+    }
+    #[tokio::test]
     async fn unpolled_rejection_wait_rejects_start_and_preserves_join_custody() {
         let effects = Arc::new(AtomicUsize::new(0));
         let observed = effects.clone();
