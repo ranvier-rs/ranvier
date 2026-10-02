@@ -86,6 +86,17 @@ struct ManagedTaskRegistry {
     closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
+type ManagedTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+/// An admitted slot, counted by drain before request callbacks execute.
+struct ManagedTaskReservation(tokio::sync::oneshot::Sender<ManagedTask>);
+impl ManagedTaskReservation {
+    fn start<F>(self, future: F) -> Result<(), ManagedTask>
+    where F: Future<Output = ()> + Send + 'static {
+        self.0.send(Box::pin(future))
+    }
+}
+
 /// Result of draining HTTP adapter-owned SSE/WebSocket tasks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HttpTaskDrainReport {
@@ -109,6 +120,17 @@ impl ManagedTaskRegistry {
         }
         tasks.spawn(future);
         Ok(())
+    }
+
+    async fn reserve(&self) -> Option<ManagedTaskReservation> {
+        if self.is_closed() { return None; }
+        let mut tasks = self.tasks.lock().await;
+        if self.is_closed() { return None; }
+        let (sender, receiver) = tokio::sync::oneshot::channel::<ManagedTask>();
+        tasks.spawn(async move {
+            if let Ok(task) = receiver.await { task.await; }
+        });
+        Some(ManagedTaskReservation(sender))
     }
 
     fn is_closed(&self) -> bool {
@@ -3230,10 +3252,13 @@ where
                 );
 
                 async move {
-                    let task_owner = request_task_owner(&parts);
-                    if task_owner.as_ref().is_some_and(ManagedTaskRegistry::is_closed) {
-                        return task_admission_closed_response(false);
-                    }
+                    let task_reservation = match request_task_owner(&parts) {
+                        Some(owner) => match owner.reserve().await {
+                            Some(reservation) => Some(reservation),
+                            None => return task_admission_closed_response(false),
+                        },
+                        None => None,
+                    };
 
                     // Parse typed body if needed
                     let input: T = if needs_body {
@@ -3392,8 +3417,8 @@ where
                         };
                         let _ = tx.send(Bytes::from_static(frame.as_bytes())).await;
                     };
-                    if let Some(owner) = task_owner {
-                        if owner.spawn(producer_task).await.is_err() {
+                    if let Some(reservation) = task_reservation {
+                        if reservation.start(producer_task).is_err() {
                             // Prefix effects may have run. Source release is not compensation.
                             return task_admission_closed_response(true);
                         }
@@ -6817,6 +6842,24 @@ mod tests {
         assert_eq!(body["reconciliation_required"], false);
         assert_eq!(callbacks.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(registry.tasks.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn managed_task_reservation_is_counted_before_start_and_retains_rejected_work() {
+        let registry = ManagedTaskRegistry::default();
+        let reservation = registry.reserve().await.unwrap();
+        assert_eq!(registry.tasks.lock().await.len(), 1);
+        let report = registry.drain_until(tokio::time::Instant::now()).await;
+        assert_eq!(report.forced_aborts, 1);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let executed = calls.clone();
+        let Err(retained) = reservation.start(async move {
+            executed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }) else { panic!("aborted reservation accepted work") };
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        retained.await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(registry.reserve().await.is_none());
     }
 
     #[test]
