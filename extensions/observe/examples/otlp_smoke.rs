@@ -6,7 +6,7 @@ use ranvier_observe::{
     otlp::{Protocol, Providers, SampleRatio},
     redaction::{Mode, Policy},
 };
-use ranvier_runtime::Axon;
+use ranvier_runtime::{Axon, ExecutionReport};
 use std::time::Duration;
 use tracing::{Instrument, instrument::WithSubscriber};
 use tracing_subscriber::prelude::*;
@@ -68,7 +68,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     .with_subscriber(dispatch.clone())
     .await;
-    let passed = matches!(outcome, Outcome::Next(12));
+    let passed = matches!(
+        outcome,
+        ExecutionReport::Unpersisted {
+            result: Outcome::Next(12),
+            ..
+        }
+    );
     let counter = providers
         .metrics
         .meter("ranvier-otlp-smoke")
