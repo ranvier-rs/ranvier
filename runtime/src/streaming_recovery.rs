@@ -2493,11 +2493,11 @@ mod tests {
             admission.release();
         }
     }
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn bound_parent_deadline_interrupts_actual_initializer_without_extending_original_deadline() {
         let parent = crate::nested_custody::CustodyStore::new(1);
         let root = CancellationToken::new();
-        let control = root.child_with_deadline(std::time::Duration::from_millis(200));
+        let control = root.child_with_deadline(std::time::Duration::from_secs(60));
         let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
         let child = OwnedStreamRecovery::try_new(
             Axon::<u32, u32, String, Resources>::start("inherited-parent-deadline")
@@ -2515,6 +2515,7 @@ mod tests {
             }).await
         });
         tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+        tokio::time::advance(std::time::Duration::from_secs(60)).await;
         let report = tokio::time::timeout(std::time::Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
         let StreamInitializationReport::Cancelled { context, .. } = report else { panic!("expected inherited deadline cancellation"); };
         assert_eq!(context.reason, ranvier_core::CancellationReason::DeadlineExceeded);
