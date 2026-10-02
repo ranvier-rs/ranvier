@@ -20,8 +20,13 @@ pub(crate) struct StreamDriveResult<T> {
     pub(crate) value: T,
     pub(crate) terminal: crate::StreamConsumptionTerminal,
 }
+/// Fixed late failure classification; panic payload is never returned.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StreamDriverError {
+    Panicked,
+}
 pub(crate) struct StreamReadyResult<T> {
-    pub(crate) consumption: StreamDriveResult<T>,
+    pub(crate) consumption: Result<StreamDriveResult<T>, StreamDriverError>,
     pub(crate) cleanup: Option<crate::SagaRollbackReport>,
 }
 
@@ -180,8 +185,13 @@ where
                     .bus()
                     .read::<ranvier_core::saga::SagaPolicy>()
                     .is_some_and(|policy| *policy == ranvier_core::saga::SagaPolicy::Enabled);
-                let consumption = drive(value).await;
-                let cleanup = if consumption.terminal != crate::StreamConsumptionTerminal::Completed
+                use futures_util::FutureExt as _;
+                // User factory invocation is inside the boundary, as well as polling.
+                let consumption = std::panic::AssertUnwindSafe(async { drive(value).await })
+                    .catch_unwind()
+                    .await
+                    .map_err(|_| StreamDriverError::Panicked);
+                let cleanup = if !matches!(&consumption, Ok(observed) if observed.terminal == crate::StreamConsumptionTerminal::Completed)
                 {
                     self.inner
                         .graph
@@ -418,8 +428,9 @@ mod tests {
         let Ok(StreamInitializationReport::Ready { value, .. }) = report else {
             panic!("expected initialized consumption");
         };
+        let consumption = value.consumption.unwrap();
         assert!(
-            matches!(value.consumption.terminal, crate::StreamConsumptionTerminal::Cancelled(context) if context.reason == ranvier_core::CancellationReason::ClientDisconnected)
+            matches!(consumption.terminal, crate::StreamConsumptionTerminal::Cancelled(context) if context.reason == ranvier_core::CancellationReason::ClientDisconnected)
         );
         assert!(value.cleanup.unwrap().is_complete());
         assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
@@ -436,6 +447,97 @@ mod tests {
         );
         // Completion is observable without draining the already queued item.
         assert_eq!(receiver.len(), 1);
+    }
+    struct PanicInit(usize);
+    struct PanicSource(usize);
+    impl futures_core::Stream for PanicSource {
+        type Item = u32;
+        fn poll_next(
+            self: Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<u32>> {
+            if self.0 == 1 {
+                panic!("private-source-poll-payload");
+            }
+            std::task::Poll::Ready(None)
+        }
+    }
+    impl Drop for PanicSource {
+        fn drop(&mut self) {
+            if self.0 == 2 {
+                panic!("private-source-drop-payload");
+            }
+        }
+    }
+    #[async_trait::async_trait]
+    impl StreamingTransition<u32> for PanicInit {
+        type Item = u32;
+        type Error = String;
+        type Resources = Resources;
+        async fn run_stream(
+            &self,
+            _: u32,
+            _: &Resources,
+            _: &mut Bus,
+        ) -> Result<RawStream<u32>, String> {
+            Ok(Box::pin(PanicSource(self.0)))
+        }
+    }
+    #[tokio::test]
+    async fn late_factory_poll_and_drop_panics_return_fixed_failure_and_actual_cleanup() {
+        for mode in 0..3 {
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
+            let graph = Axon::<u32, u32, String, Resources>::start("late-panic")
+                .with_saga_policy(SagaPolicy::Enabled)
+                .then_compensated(Effect, Undo);
+            let owner = OwnedStreamRecovery::try_new(
+                graph,
+                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            )
+            .unwrap();
+            let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+            let report = owner
+                .initialize_and_drive(47, &PanicInit(mode), None, move |source| {
+                    if mode == 0 {
+                        panic!("private-driver-factory-payload");
+                    }
+                    produce_bounded(
+                        source,
+                        ranvier_core::streaming::StreamTimeoutConfig {
+                            init: None,
+                            idle: None,
+                            total: None,
+                        },
+                        CancellationToken::new(),
+                        sender,
+                    )
+                })
+                .await;
+            let Ok(StreamInitializationReport::Ready { prefix, value }) = report else {
+                panic!("expected late failure after initialization");
+            };
+            assert!(matches!(prefix, crate::ExecutionReport::Unpersisted { .. }));
+            assert!(matches!(
+                value.consumption,
+                Err(StreamDriverError::Panicked)
+            ));
+            assert_eq!(format!("{:?}", StreamDriverError::Panicked), "Panicked");
+            assert!(value.cleanup.unwrap().is_complete());
+            assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+            assert!(
+                owner
+                    .inner
+                    .context
+                    .lock()
+                    .await
+                    .1
+                    .read::<SagaStack>()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
     fn completed() -> StreamDriveResult<()> {
         StreamDriveResult {
@@ -483,12 +585,13 @@ mod tests {
         let Ok(StreamInitializationReport::Ready { prefix, value }) = report else {
             panic!("expected initialized consumption");
         };
+        let consumption = value.consumption.unwrap();
         assert!(matches!(prefix, crate::ExecutionReport::Unpersisted { .. }));
         assert!(matches!(
-            value.consumption.terminal,
+            consumption.terminal,
             crate::StreamConsumptionTerminal::Cancelled(_)
         ));
-        assert!(value.consumption.value.is_empty());
+        assert!(consumption.value.is_empty());
         let cleanup = value.cleanup.unwrap();
         assert!(cleanup.is_complete());
         assert_eq!(cleanup.steps.len(), 1);
@@ -576,11 +679,12 @@ mod tests {
             let Ok(StreamInitializationReport::Ready { value, .. }) = report else {
                 panic!("expected initialized consumption");
             };
+            let consumption = value.consumption.unwrap();
             let context = owner.inner.context.lock().await;
-            assert!(value.consumption.value.is_empty());
+            assert!(consumption.value.is_empty());
             if mode == 0 {
                 assert_eq!(
-                    value.consumption.terminal,
+                    consumption.terminal,
                     crate::StreamConsumptionTerminal::Completed
                 );
                 assert!(value.cleanup.is_none());
@@ -588,7 +692,7 @@ mod tests {
                 assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
             } else {
                 assert_eq!(
-                    value.consumption.terminal,
+                    consumption.terminal,
                     crate::StreamConsumptionTerminal::TimedOut(crate::StreamTimeoutKind::Total)
                 );
                 let cleanup = value.cleanup.unwrap();
