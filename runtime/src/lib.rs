@@ -17,6 +17,8 @@ pub mod streaming_axon;
 pub mod streaming_initialization;
 #[cfg(feature = "streaming")]
 mod streaming_recovery;
+#[cfg(feature = "streaming")]
+mod streaming_recovery_admission;
 pub mod testkit;
 
 pub mod prelude {

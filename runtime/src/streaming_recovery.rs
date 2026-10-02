@@ -1,5 +1,8 @@
 //! Internal ownership primitive. Production admission must reserve bounded recovery
 //! capacity before constructing this owner; this module does not spawn tasks.
+use crate::streaming_recovery_admission::{
+    RecoveryAdmissionFailure, RecoveryPermit, StreamRecoveryAdmission,
+};
 use crate::{Axon, StreamInitializationReport, streaming_axon::OwnedStreamContext};
 use ranvier_core::{Bus, CancellationToken, streaming::StreamingTransition};
 use serde::{Serialize, de::DeserializeOwned};
@@ -143,6 +146,8 @@ struct RecoveryInner<In, Out, E, Res> {
     context: Mutex<(Arc<Res>, Bus)>,
     started: AtomicBool,
     observation: tokio::sync::watch::Sender<SupervisorObservation>,
+    // Last field: release reservation after graph/context fields are dropped.
+    _permit: RecoveryPermit,
 }
 impl<In, Out, E, Res> Drop for RecoveryInner<In, Out, E, Res> {
     fn drop(&mut self) {
@@ -178,10 +183,13 @@ impl<In, Out, E, Res> Clone for OwnedStreamRecovery<In, Out, E, Res> {
 pub(crate) struct StreamRecoveryAdmissionRejected<In, Out, E, Res> {
     graph: Axon<In, Out, E, Res>,
     context: OwnedStreamContext<Res>,
+    reason: RecoveryAdmissionFailure,
 }
 impl<In, Out, E, Res> std::fmt::Debug for StreamRecoveryAdmissionRejected<In, Out, E, Res> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("StreamRecoveryAdmissionRejected { reason: registry_poisoned }")
+        f.debug_struct("StreamRecoveryAdmissionRejected")
+            .field("reason", &self.reason)
+            .finish()
     }
 }
 impl<In, Out, E, Res> StreamRecoveryAdmissionRejected<In, Out, E, Res> {
@@ -201,7 +209,18 @@ where
     pub(crate) fn try_new(
         mut graph: Axon<In, Out, E, Res>,
         context: OwnedStreamContext<Res>,
+        admission: &StreamRecoveryAdmission,
     ) -> Result<Self, StreamRecoveryAdmissionRejected<In, Out, E, Res>> {
+        let permit = match admission.reserve() {
+            Ok(permit) => permit,
+            Err(reason) => {
+                return Err(StreamRecoveryAdmissionRejected {
+                    graph,
+                    context,
+                    reason,
+                });
+            }
+        };
         // Copy handler Arcs under the original read lock before any effects.
         // A poisoned registry has unknown authority: retain caller ownership.
         let handlers = graph
@@ -211,7 +230,13 @@ where
             .map_err(|_| ());
         let handlers = match handlers {
             Ok(handlers) => handlers,
-            Err(()) => return Err(StreamRecoveryAdmissionRejected { graph, context }),
+            Err(()) => {
+                return Err(StreamRecoveryAdmissionRejected {
+                    graph,
+                    context,
+                    reason: RecoveryAdmissionFailure::RegistryPoisoned,
+                });
+            }
         };
         graph.saga_compensation_registry = Arc::new(std::sync::RwLock::new(
             ranvier_core::saga::SagaCompensationRegistry { handlers },
@@ -221,6 +246,7 @@ where
                 graph,
                 context: Mutex::new(context.into_parts()),
                 started: AtomicBool::new(false),
+                _permit: permit,
                 observation: tokio::sync::watch::channel(SupervisorObservation {
                     phase: SupervisorPhase::NotStarted,
                     disposition: None,
@@ -528,6 +554,7 @@ mod tests {
         let owner = OwnedStreamRecovery::try_new(
             graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1),
         )
         .unwrap();
         let entered = Arc::new(Notify::new());
@@ -653,6 +680,7 @@ mod tests {
             let owner = OwnedStreamRecovery::try_new(
                 graph,
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                &StreamRecoveryAdmission::new(1),
             )
             .unwrap();
             let (sender, _receiver) = tokio::sync::mpsc::channel(1);
@@ -760,6 +788,7 @@ mod tests {
             let owner = OwnedStreamRecovery::try_new(
                 graph,
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                &StreamRecoveryAdmission::new(1),
             )
             .unwrap();
             let registry = Arc::downgrade(&owner.inner.graph.saga_compensation_registry);
@@ -884,6 +913,7 @@ mod tests {
         let owner = OwnedStreamRecovery::try_new(
             graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1),
         )
         .unwrap();
         let report = owner
@@ -964,6 +994,58 @@ mod tests {
         assert_eq!(observer.borrow().phase, SupervisorPhase::Returned);
         assert_eq!(Arc::strong_count(&resources), 1);
     }
+    #[test]
+    fn finite_recovery_admission_precedes_effects_and_last_owner_releases_slot() {
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let graph = Axon::<u32, u32, String, Resources>::start("finite-owner")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Undo);
+        let admission = StreamRecoveryAdmission::new(1);
+        let owner = OwnedStreamRecovery::try_new(
+            graph.clone(),
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &admission,
+        )
+        .unwrap();
+        let rejected = match OwnedStreamRecovery::try_new(
+            graph.clone(),
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &admission,
+        ) {
+            Err(rejected) => rejected,
+            Ok(_) => panic!("capacity must reject before execution"),
+        };
+        assert_eq!(rejected.reason, RecoveryAdmissionFailure::Capacity);
+        let (_, context) = rejected.into_parts();
+        assert!(Arc::ptr_eq(&resources, &context.into_parts().0));
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+        let clone = owner.clone();
+        drop(owner);
+        assert_eq!(admission.in_use(), Ok(1));
+        drop(clone);
+        assert_eq!(admission.in_use(), Ok(0));
+        let owner = OwnedStreamRecovery::try_new(
+            graph.clone(),
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &admission,
+        )
+        .unwrap();
+        admission.close().unwrap();
+        drop(owner);
+        let rejected = match OwnedStreamRecovery::try_new(
+            graph,
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &admission,
+        ) {
+            Err(rejected) => rejected,
+            Ok(_) => panic!("closed admission must reject"),
+        };
+        assert_eq!(rejected.reason, RecoveryAdmissionFailure::Closed);
+        assert_eq!(admission.in_use(), Ok(0));
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+    }
     fn completed() -> StreamDriveResult<()> {
         StreamDriveResult {
             value: (),
@@ -982,6 +1064,7 @@ mod tests {
         let owner = OwnedStreamRecovery::try_new(
             graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1),
         )
         .unwrap();
         let token = CancellationToken::new();
@@ -1080,6 +1163,7 @@ mod tests {
             let owner = OwnedStreamRecovery::try_new(
                 graph,
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                &StreamRecoveryAdmission::new(1),
             )
             .unwrap();
             let report = owner
@@ -1205,6 +1289,7 @@ mod tests {
         let owner = OwnedStreamRecovery::try_new(
             graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1),
         )
         .unwrap();
         external.write().unwrap().handlers.clear();
@@ -1240,6 +1325,7 @@ mod tests {
         let rejected = match OwnedStreamRecovery::try_new(
             graph,
             OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
+            &StreamRecoveryAdmission::new(1),
         ) {
             Err(rejected) => rejected,
             Ok(_) => panic!("poisoned authority must not enter"),
@@ -1283,6 +1369,7 @@ mod tests {
         let owner = OwnedStreamRecovery::try_new(
             graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1),
         )
         .unwrap();
         let registry = Arc::downgrade(&owner.inner.graph.saga_compensation_registry);
@@ -1337,6 +1424,7 @@ mod tests {
         let owner = OwnedStreamRecovery::try_new(
             graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1),
         )
         .unwrap();
         let registry = Arc::downgrade(&owner.inner.graph.saga_compensation_registry);
