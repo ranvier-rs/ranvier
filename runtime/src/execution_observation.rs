@@ -1041,9 +1041,20 @@ impl Session {
             scope.restore(bus);
         }
         if self.nested {
-            let _ = bus.remove::<crate::saga_report::SagaRollbackJournal>();
+            let child = bus.remove::<crate::saga_report::SagaRollbackJournal>();
             let _ = bus.remove::<crate::saga_report::SagaRollbackReport>();
-            if let Some(journal) = self.previous_cleanup {
+            let pending_child = child.filter(|journal| journal.has_unresolved_tasks());
+            let mut parent = self.previous_cleanup;
+            if let Some(child) = pending_child {
+                let journal = parent.get_or_insert_with(|| {
+                    let trace = bus.read::<PersistenceTraceId>().map(|trace| trace.0.clone())
+                        .or_else(|| bus.read::<InvocationTrace>().map(|trace| trace.0.clone()))
+                        .unwrap_or_else(|| bus.id.to_string());
+                    crate::saga_report::SagaRollbackJournal::new(&trace)
+                });
+                journal.retain_child(child);
+            }
+            if let Some(journal) = parent {
                 bus.insert(journal);
             }
             if let Some(report) = self.previous_cleanup_report {

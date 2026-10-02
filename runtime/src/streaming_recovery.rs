@@ -1177,6 +1177,61 @@ mod tests {
             assert_eq!(store.admission.in_use(), Ok(0));
         }
     }
+    #[derive(Clone)]
+    struct NestedExternalFault {
+        hook: Arc<dyn crate::persistence::CompensationHook>,
+        parent: Arc<std::sync::Mutex<Option<crate::SagaRollbackJournal>>>,
+        child_trace: Arc<std::sync::Mutex<Option<String>>>,
+    }
+    #[async_trait::async_trait]
+    impl Transition<u32, u32> for NestedExternalFault {
+        type Error = String;
+        type Resources = Resources;
+        async fn run(&self, input: u32, resources: &Resources, bus: &mut Bus) -> Outcome<u32, String> {
+            let trace = bus.read::<crate::execution_observation::InvocationTrace>().unwrap().0.clone();
+            let parent = crate::SagaRollbackJournal::new(&trace);
+            parent.push("parent-completed".into(), crate::SagaRollbackOutcome::Completed);
+            parent.finish();
+            bus.insert(parent.clone());
+            *self.parent.lock().unwrap() = Some(parent);
+            let original = bus.remove::<crate::persistence::CompensationHandle>();
+            bus.insert(crate::persistence::CompensationHandle::from_arc(self.hook.clone()));
+            let child = Axon::<u32, u32, String, Resources>::start("private-child-external");
+            let token = CancellationToken::new();
+            token.cancel(ranvier_core::CancellationReason::Explicit);
+            let report = child.execute_cancellable(input, resources, bus, token).await;
+            assert!(!report.cleanup().unwrap().is_complete());
+            *self.child_trace.lock().unwrap() = Some(report.cleanup().unwrap().trace_id.clone());
+            bus.remove::<crate::persistence::CompensationHandle>();
+            if let Some(original) = original { bus.insert(original); }
+            Outcome::Next(input)
+        }
+    }
+    #[tokio::test]
+    async fn nested_unresolved_external_child_prevents_parent_stream_admission() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hook: Arc<dyn crate::persistence::CompensationHook> = Arc::new(ExternalHook { mode: 4, calls: calls.clone() });
+        let parent = Arc::new(std::sync::Mutex::new(None));
+        let child_trace = Arc::new(std::sync::Mutex::new(None));
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let owner = OwnedStreamRecovery::try_new(
+            Axon::<u32, u32, String, Resources>::start("parent-external").then(NestedExternalFault {
+                hook, parent: parent.clone(), child_trace: child_trace.clone() }),
+            OwnedStreamContext::try_new(resources, Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1), None).unwrap();
+        let drivers = Arc::new(AtomicUsize::new(0));
+        let count = drivers.clone();
+        let report = owner.initialize_and_drive(137, &Init, None,
+            std::time::Duration::from_secs(5), move |_| async move {
+                count.fetch_add(1, Ordering::SeqCst); completed()
+            }).await.unwrap();
+        assert!(matches!(report, StreamInitializationReport::Rejected { .. }),
+            "unknown child cleanup must reject parent stream admission");
+        assert_eq!(drivers.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(parent.lock().unwrap().as_ref().unwrap().has_unresolved_tasks());
+        assert!(child_trace.lock().unwrap().is_some());
+    }
     struct ExternalHook {
         mode: u8,
         calls: Arc<AtomicUsize>,

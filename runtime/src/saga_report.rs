@@ -60,6 +60,7 @@ pub struct SagaRollbackJournal(
     std::sync::Arc<std::sync::Mutex<SagaRollbackReport>>,
     std::sync::Arc<std::sync::Mutex<Vec<(usize, ranvier_core::saga::SagaTask)>>>,
     std::sync::Arc<std::sync::Mutex<Vec<(usize, ExternalCompensationRecovery)>>>,
+    std::sync::Arc<std::sync::Mutex<Vec<SagaRollbackJournal>>>,
 );
 impl std::fmt::Debug for SagaRollbackJournal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -79,6 +80,7 @@ impl SagaRollbackJournal {
             })),
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         )
     }
     /// Owned local reconciliation inputs. These may contain secrets: never expose
@@ -94,12 +96,25 @@ impl SagaRollbackJournal {
     }
     /// Framework custody checks must not clone sensitive input bytes.
     pub(crate) fn has_unresolved_tasks(&self) -> bool {
-        !self
-            .1
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .is_empty()
-            || !self.2.lock().unwrap_or_else(|p| p.into_inner()).is_empty()
+        let mut pending = vec![self.clone()];
+        while let Some(journal) = pending.pop() {
+            if !journal.1.lock().unwrap_or_else(|p| p.into_inner()).is_empty()
+                || !journal.2.lock().unwrap_or_else(|p| p.into_inner()).is_empty() {
+                return true;
+            }
+            pending.extend(journal.retained_children());
+        }
+        false
+    }
+    /// Session attaches only a newly isolated invocation journal to its suspended
+    /// parent. Keeping child storage distinct preserves local indices and trace.
+    /// This is custody, not replay authority or typed child-resource recovery.
+    pub(crate) fn retain_child(&self, child: Self) {
+        self.push("nested-invocation".into(), SagaRollbackOutcome::InProgress);
+        self.3.lock().unwrap_or_else(|p| p.into_inner()).push(child);
+    }
+    pub(crate) fn retained_children(&self) -> Vec<Self> {
+        self.3.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
     pub(crate) fn push_task(&self, task: ranvier_core::saga::SagaTask) {
         let mut report = self
