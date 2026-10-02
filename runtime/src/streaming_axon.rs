@@ -336,6 +336,23 @@ mod tests {
             _ => panic!("collection lost initialization report"),
         }
     }
+    #[tokio::test]
+    async fn owned_definition_survives_clone_and_maps_in_actual_execution_order() {
+        let original = circuit(&["a"]);
+        let cloned = original.clone();
+        assert!(Arc::ptr_eq(&original.owned_definition, &cloned.owned_definition));
+        let initializer = original.owned_definition.initializer.clone();
+        let prefix_nodes = original.owned_definition.prefix.schematic.nodes.len();
+        let mapped = cloned.map_items(|item| format!("{item}1")).map_items(|item| format!("{item}2"));
+        assert!(Arc::ptr_eq(&initializer, &mapped.owned_definition.initializer));
+        assert!(mapped.owned_definition.initializer.downcast_ref::<Chunks>().is_some());
+        assert_eq!(mapped.owned_definition.prefix.schematic.nodes.len(), prefix_nodes);
+        assert_eq!(mapped.owned_definition.item_maps.len(), 2);
+        let expected = mapped.owned_definition.item_maps.iter().fold("a".to_string(), |item, map| map(item));
+        let items = ready(mapped.execute("".into(), &(), &mut Bus::new()).await).collect::<Vec<_>>().await;
+        assert_eq!(items, vec![expected]);
+        assert!(original.owned_definition.item_maps.is_empty());
+    }
     #[derive(Clone)]
     struct Fault;
     #[async_trait::async_trait]
