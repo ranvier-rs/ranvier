@@ -9,8 +9,10 @@ struct Fail {
     init: bool,
 }
 struct PrivateItem;
+static ENCODE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 impl serde::Serialize for PrivateItem {
     fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+        ENCODE_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Err(serde::ser::Error::custom("private-item-encode-marker"))
     }
 }
@@ -28,7 +30,10 @@ impl StreamingTransition<()> for Fail {
         if self.init {
             Err("private-stream-init-marker".into())
         } else {
-            Ok(Box::pin(futures_util::stream::iter(vec![PrivateItem])))
+            Ok(Box::pin(futures_util::stream::iter(vec![
+                PrivateItem,
+                PrivateItem,
+            ])))
         }
     }
 }
@@ -123,9 +128,17 @@ async fn streaming_init_failure_redacts_response_and_actual_runtime_logs() {
     .unwrap()
     .unwrap();
     assert_eq!(response.status(), 200);
+    assert_eq!(
+        ENCODE_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "producer must stop encoding after its first failure"
+    );
     assert!(response.text().unwrap().contains("serialize_error"));
     assert_eq!(response.text().unwrap().matches("event: error").count(), 1);
-    assert!(!response.text().unwrap().contains("[DONE]"), "encoding failure must not announce normal completion");
+    assert!(
+        !response.text().unwrap().contains("[DONE]"),
+        "encoding failure must not announce normal completion"
+    );
     assert!(
         !response
             .text()

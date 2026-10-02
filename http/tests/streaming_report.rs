@@ -150,6 +150,26 @@ async fn prefix_durability_and_cleanup_precede_sse_success_without_private_resul
         assert!(!body.contains("private-init-error"));
         if mode == 0 {
             assert!(body.contains("public-item"));
+            assert_eq!(body.matches("data: [DONE]").count(), 1);
+            assert!(!body.contains("event: error"));
+            // TestApp retains HTTP/1.1 chunk framing, so decode before
+            // asserting application-level termination.
+            let mut wire = response.body();
+            let mut decoded = Vec::new();
+            while !wire.is_empty() {
+                let end = wire.windows(2).position(|v| v == b"\r\n").unwrap();
+                let size =
+                    usize::from_str_radix(std::str::from_utf8(&wire[..end]).unwrap(), 16).unwrap();
+                wire = &wire[end + 2..];
+                if size == 0 {
+                    assert_eq!(wire, b"\r\n");
+                    break;
+                }
+                decoded.extend_from_slice(&wire[..size]);
+                assert_eq!(&wire[size..size + 2], b"\r\n");
+                wire = &wire[size + 2..];
+            }
+            assert!(decoded.ends_with(b"data: [DONE]\n\n"));
             assert_eq!(initialized.load(Ordering::SeqCst), 1);
         } else {
             assert_eq!(response.header("cache-control").unwrap(), "no-store");
