@@ -196,11 +196,22 @@ where
             Ok(accepted) => accepted,
             Err(prefix) => return StreamInitializationReport::Rejected { prefix },
         };
+        let initialization_saga_enabled = owner
+            .bus()
+            .read::<SagaPolicy>()
+            .is_some_and(|policy| *policy == SagaPolicy::Enabled);
         if let Some(context) = cancellation.as_ref().and_then(CancellationToken::context) {
             return StreamInitializationReport::Cancelled {
                 prefix,
                 context,
                 initialization: EffectBoundary::NotInvoked,
+                initialization_cleanup: self
+                    .cleanup_stream_initialization(
+                        resources,
+                        owner.bus(),
+                        initialization_saga_enabled,
+                    )
+                    .await,
             };
         }
         let result = {
@@ -223,13 +234,46 @@ where
                     format!("{error:?}"),
                 ),
                 initialization: EffectBoundary::MayHaveRun,
+                initialization_cleanup: self
+                    .cleanup_stream_initialization(
+                        resources,
+                        owner.bus(),
+                        initialization_saga_enabled,
+                    )
+                    .await,
             },
             Err(context) => StreamInitializationReport::Cancelled {
                 prefix,
                 context,
                 initialization: EffectBoundary::MayHaveRun,
+                initialization_cleanup: self
+                    .cleanup_stream_initialization(
+                        resources,
+                        owner.bus(),
+                        initialization_saga_enabled,
+                    )
+                    .await,
             },
         }
+    }
+
+    /// Undo accepted-prefix tasks while initializer resources are still borrowed.
+    /// This is separate from prefix durability and writes no engine completion.
+    #[cfg(feature = "streaming")]
+    async fn cleanup_stream_initialization(
+        &self,
+        resources: &Res,
+        bus: &mut Bus,
+        enabled: bool,
+    ) -> Option<crate::SagaRollbackReport> {
+        if !enabled {
+            return None;
+        }
+        bus.clear_access_policy();
+        bus.set_cancellation_token(CancellationToken::new());
+        let trace = persistence_trace_id(bus);
+        self.rollback_saga(resources, bus, &trace).await;
+        bus.read::<crate::SagaRollbackReport>().cloned()
     }
 
     /// Execute the Axon with the given input and resources.

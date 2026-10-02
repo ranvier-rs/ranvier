@@ -32,11 +32,13 @@ pub enum StreamInitializationReport<Out, Value, E> {
         prefix: ExecutionReport<()>,
         error: StreamInitializationError,
         initialization: EffectBoundary,
+        initialization_cleanup: Option<crate::SagaRollbackReport>,
     },
     Cancelled {
         prefix: ExecutionReport<()>,
         context: CancellationContext,
         initialization: EffectBoundary,
+        initialization_cleanup: Option<crate::SagaRollbackReport>,
     },
 }
 
@@ -57,19 +59,23 @@ impl<Out, Value, E> StreamInitializationReport<Out, Value, E> {
                 prefix,
                 error,
                 initialization,
+                initialization_cleanup,
             } => StreamInitializationReport::Failed {
                 prefix,
                 error,
                 initialization,
+                initialization_cleanup,
             },
             Self::Cancelled {
                 prefix,
                 context,
                 initialization,
+                initialization_cleanup,
             } => StreamInitializationReport::Cancelled {
                 prefix,
                 context,
                 initialization,
+                initialization_cleanup,
             },
         }
     }
@@ -653,6 +659,7 @@ mod tests {
                 },
                 error: StreamInitializationError::Transition("synthetic".into()),
                 initialization: EffectBoundary::MayHaveRun,
+                initialization_cleanup: None,
             },
             StreamInitializationReport::Cancelled {
                 prefix: ExecutionReport::NotRequested {
@@ -661,6 +668,7 @@ mod tests {
                 },
                 context: context.clone(),
                 initialization: EffectBoundary::NotInvoked,
+                initialization_cleanup: None,
             },
         ];
         for (index, report) in cases.into_iter().enumerate() {
@@ -697,6 +705,7 @@ mod tests {
                             cleanup: None,
                         },
                     initialization: EffectBoundary::MayHaveRun,
+                    initialization_cleanup: None,
                 } => {
                     assert_eq!(index, 2);
                     assert_eq!(error, "synthetic");
@@ -709,6 +718,7 @@ mod tests {
                         },
                     context: actual,
                     initialization: EffectBoundary::NotInvoked,
+                    initialization_cleanup: None,
                 } => {
                     assert_eq!(index, 3);
                     assert_eq!(actual, context);

@@ -115,11 +115,9 @@ impl StreamingTransition<()> for InitFail {
         Err("initializer-fault".into())
     }
 }
-/// Characterization of OPEN root cleanup ownership retained only in caller Bus,
-/// not acceptance that unperformed cleanup is safe. Replace with desired assertions
-/// when the owned initializer/consumption handoff is implemented.
+/// Initializer cleanup is reported separately from the accepted prefix.
 #[tokio::test]
-async fn initializer_failure_retains_root_stack_without_reporting_cleanup() {
+async fn initializer_failure_returns_completed_cleanup_and_drains_root_stack() {
     use ranvier_runtime::{EffectBoundary, StreamInitializationReport};
     let effects = Arc::new(AtomicUsize::new(0));
     let undo = Arc::new(AtomicUsize::new(0));
@@ -131,7 +129,7 @@ async fn initializer_failure_retains_root_stack_without_reporting_cleanup() {
     let mut bus = Bus::new();
     let report = stream.execute((), &(), &mut bus).await;
     assert!(matches!(
-        report,
+        &report,
         StreamInitializationReport::Failed {
             prefix: ExecutionReport::Unpersisted {
                 result: (),
@@ -141,18 +139,22 @@ async fn initializer_failure_retains_root_stack_without_reporting_cleanup() {
             ..
         }
     ));
+    let StreamInitializationReport::Failed {
+        initialization_cleanup: Some(cleanup),
+        ..
+    } = &report
+    else {
+        panic!("initializer cleanup missing");
+    };
+    assert!(cleanup.is_complete());
+    assert_eq!(cleanup.steps.len(), 1);
     assert_eq!(effects.load(Ordering::SeqCst), 1);
     assert_eq!(init.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        undo.load(Ordering::SeqCst),
-        0,
-        "this exposes unperformed undo, not safety"
-    );
+    assert_eq!(undo.load(Ordering::SeqCst), 1);
     let stack = bus
         .read::<ranvier_core::saga::SagaStack>()
         .expect("root pending work remains in Bus");
-    assert_eq!(stack.tasks.len(), 1);
-    assert_eq!(stack.tasks[0].input_snapshot, b"null");
+    assert!(stack.tasks.is_empty());
 }
 
 #[derive(Clone)]
@@ -181,6 +183,15 @@ impl Transition<(), ()> for NestedInitFailure {
                 ..
             }
         ));
+        let ranvier_runtime::StreamInitializationReport::Failed {
+            initialization_cleanup: Some(cleanup),
+            ..
+        } = &report
+        else {
+            panic!("child initializer cleanup missing");
+        };
+        assert!(cleanup.is_complete());
+        assert_eq!(cleanup.steps.len(), 1);
         let restored = bus.read::<ranvier_core::saga::SagaStack>().unwrap();
         assert_eq!(restored.tasks.len(), 1);
         assert_eq!(restored.tasks[0].node_id, parent);
@@ -188,7 +199,7 @@ impl Transition<(), ()> for NestedInitFailure {
     }
 }
 #[tokio::test]
-async fn nested_initializer_failure_restores_parent_but_exposes_unowned_child_cleanup() {
+async fn nested_initializer_failure_cleans_child_before_parent_restore() {
     let parent = Arc::new(AtomicUsize::new(0));
     let parent_undo = Arc::new(AtomicUsize::new(0));
     let child = Arc::new(AtomicUsize::new(0));
@@ -218,7 +229,7 @@ async fn nested_initializer_failure_restores_parent_but_exposes_unowned_child_cl
     assert_eq!(init.load(Ordering::SeqCst), 1);
     assert_eq!(
         child_undo.load(Ordering::SeqCst),
-        0,
-        "OPEN: parent cleanup cannot substitute for missing child cleanup"
+        1,
+        "child compensation is independent of parent cleanup"
     );
 }

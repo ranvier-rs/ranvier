@@ -3289,22 +3289,22 @@ where
                             }
                             return stream_reconciliation_response(StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({"error": "Streaming prefix rejected initialization"}));
                         }
-                        StreamInitializationReport::Cancelled { prefix, context, initialization } => {
+                        StreamInitializationReport::Cancelled { prefix, context, initialization, initialization_cleanup } => {
                             if let Some((status, payload)) = crate::response::durability_rejection(&prefix) {
                                 return stream_reconciliation_response(status, payload);
                             }
                             let (status, message) = cancellation_status_message(&context);
                             return stream_reconciliation_response(status, serde_json::json!({
                                 "error": message, "reason": context.reason, "prefix": prefix,
-                                "initialization": initialization, "reconciliation_required": true
+                                "initialization": initialization, "initialization_cleanup": initialization_cleanup, "reconciliation_required": true
                             }));
                         }
-                        StreamInitializationReport::Failed { prefix, initialization, .. } => {
+                        StreamInitializationReport::Failed { prefix, initialization, initialization_cleanup, .. } => {
                             if let Some((status, payload)) = crate::response::durability_rejection(&prefix) {
                                 return stream_reconciliation_response(status, payload);
                             }
                             tracing::error!(failure_source = "stream_init", "Streaming initialization failed");
-                            return stream_reconciliation_response(StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({"error": "Streaming initialization failed", "prefix": prefix, "initialization": initialization, "reconciliation_required": true}));
+                            return stream_reconciliation_response(StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({"error": "Streaming initialization failed", "prefix": prefix, "initialization": initialization, "initialization_cleanup": initialization_cleanup, "reconciliation_required": true}));
                         }
                     };
 

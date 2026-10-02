@@ -184,6 +184,7 @@ async fn acknowledged_prefix_completion_does_not_certify_failed_initializer() {
         prefix: ExecutionReport::Recorded { result: (), completion: ranvier_runtime::CompletionConfirmation::Confirmed, .. },
         error: ranvier_runtime::StreamInitializationError::Transition(ref detail),
         initialization: EffectBoundary::MayHaveRun,
+        initialization_cleanup: None,
     } if detail == "\"owned-private-init-detail\""));
     assert_eq!(initialized.load(Ordering::SeqCst), 1);
     // This is deliberately recorded as prefix evidence, not accepted as a completed
