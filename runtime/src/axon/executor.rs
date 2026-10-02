@@ -914,6 +914,7 @@ where
                         .filter(|journal| journal.matches_trace(trace_id))
                         .cloned()
                         .unwrap_or_else(|| crate::SagaRollbackJournal::new(trace_id));
+                    journal.mark_unfinished();
                     bus.insert(journal);
                     bus.set_cancellation_token(CancellationToken::new());
                     if deadline <= tokio::time::Instant::now() {
@@ -1249,6 +1250,42 @@ mod scoped_stream_tests {
         {
             Ok(Box::pin(futures_util::stream::empty()))
         }
+    }
+    #[tokio::test]
+    async fn exhausted_cleanup_does_not_reuse_old_finished_journal_for_new_stack() {
+        let resources = Resources(AtomicUsize::new(0));
+        let graph = Axon::<(), (), String, Resources>::start("expired-again");
+        let mut bus = Bus::new();
+        let mut owner = crate::execution_observation::InvocationOwner::begin(&mut bus);
+        let trace = persistence_trace_id(owner.bus());
+        let journal = crate::SagaRollbackJournal::new(&trace);
+        journal.finish();
+        assert!(journal.snapshot().is_complete());
+        owner.bus().insert(journal);
+        let mut stack = SagaStack::new();
+        stack.push(
+            "new-task".into(),
+            "private-label".into(),
+            b"private-input".to_vec(),
+        );
+        owner.bus().insert(stack);
+        let cleanup = graph
+            .cleanup_stream_initialization_with_grace(
+                &resources,
+                owner.bus(),
+                true,
+                Some(std::time::Duration::ZERO),
+            )
+            .await
+            .unwrap();
+        assert!(!cleanup.finished);
+        assert!(!cleanup.is_complete());
+        assert!(cleanup.steps.is_empty());
+        assert_eq!(
+            owner.bus().read::<SagaStack>().unwrap().tasks[0].input_snapshot,
+            b"private-input"
+        );
+        assert_eq!(resources.0.load(Ordering::SeqCst), 0);
     }
     #[tokio::test]
     async fn scoped_child_cleanup_uses_live_registry_without_touching_parent_inputs() {

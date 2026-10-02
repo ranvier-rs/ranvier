@@ -34,6 +34,27 @@ mod tests {
     use super::*;
     use futures_util::FutureExt;
 
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn cleanup_budget_is_sticky_and_child_invocation_does_not_replace_parent_budget() {
+        let mut bus = Bus::new();
+        let mut parent = InvocationOwner::begin(&mut bus);
+        let active = parent.bus().read::<ActiveObservation>().unwrap().0.clone();
+        active.configure_cleanup(std::time::Duration::ZERO);
+        let original = active.begin_cleanup().unwrap();
+        active.configure_cleanup(std::time::Duration::from_secs(60));
+        assert_eq!(active.begin_cleanup(), Some(original));
+        {
+            let mut child = InvocationOwner::begin(parent.bus());
+            let child_active = child.bus().read::<ActiveObservation>().unwrap().0.clone();
+            assert!(child_active.begin_cleanup().is_none());
+            child_active.configure_cleanup(std::time::Duration::from_secs(30));
+            assert!(child_active.begin_cleanup().unwrap() > original);
+        }
+        let restored = parent.bus().read::<ActiveObservation>().unwrap().0.clone();
+        assert!(Arc::ptr_eq(&active, &restored));
+        assert_eq!(restored.begin_cleanup(), Some(original));
+    }
     struct TestDlqSink;
     #[async_trait::async_trait]
     impl ranvier_core::event::DlqSink for TestDlqSink {
