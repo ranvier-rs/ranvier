@@ -829,6 +829,7 @@ where
         } {
             tracing::info!(trace_id = %trace_id, node_id = %task.node_id, "Compensating step: {}", task.node_label);
 
+            journal.push_task(task.clone());
             let handler = match self.saga_compensation_registry.read() {
                 Ok(registry) => registry.get(&task.node_id),
                 Err(poisoned) => {
@@ -841,7 +842,6 @@ where
                 }
             };
             if let Some(handler) = handler {
-                journal.push_task(task.clone());
                 bus.insert(journal.clone());
                 use futures_util::FutureExt as _;
                 // Factory invocation can unwind before returning its future.
@@ -880,7 +880,7 @@ where
                     _ => {}
                 }
             } else {
-                journal.push(task.node_id.clone(), SagaRollbackOutcome::MissingHandler);
+                journal.settle(SagaRollbackOutcome::MissingHandler);
                 tracing::warn!(trace_id = %trace_id, node_id = %task.node_id, "No compensation handler found in registry for saga rollback");
             }
         }

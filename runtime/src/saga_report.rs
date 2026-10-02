@@ -145,6 +145,32 @@ impl SagaRollbackJournal {
 mod tests {
     use super::*;
     #[test]
+    fn unresolved_inputs_are_private_and_completion_removes_only_its_own_observation() {
+        let journal = SagaRollbackJournal::new("recovery-fixture");
+        let task = ranvier_core::saga::SagaTask {
+            node_id: "same-node".into(),
+            node_label: "private-label".into(),
+            input_snapshot: b"private-snapshot".to_vec(),
+        };
+        journal.push_task(task.clone());
+        journal.settle(SagaRollbackOutcome::MissingHandler);
+        journal.push_task(task);
+        journal.settle(SagaRollbackOutcome::Completed);
+        journal.finish();
+        assert_eq!(journal.unresolved_tasks().len(), 1);
+        assert_eq!(
+            journal.unresolved_tasks()[0].input_snapshot,
+            b"private-snapshot"
+        );
+        let published = journal.clone();
+        assert_eq!(published.unresolved_tasks().len(), 1);
+        assert!(!journal.snapshot().is_complete());
+        let wire = serde_json::to_string(&journal.snapshot()).unwrap();
+        assert!(!wire.contains("private"));
+        assert!(!format!("{journal:?}").contains("private"));
+    }
+
+    #[test]
     fn long_journal_clones_share_storage_and_snapshots_are_owned() {
         let journal = SagaRollbackJournal::new("long-journal");
         let published = journal.clone();
