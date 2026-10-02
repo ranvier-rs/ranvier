@@ -102,6 +102,31 @@ impl CustodyStore {
     }
 }
 impl WeakCustodyClient {
+    pub(crate) fn validate_member(
+        &self,
+        admission: &WeakCustody,
+        owner: &Capability,
+    ) -> Result<(), &'static str> {
+        if !Weak::ptr_eq(&self.0, &admission.store) {
+            return Err("execution.nested_stream_custody_mismatch");
+        }
+        let store = self
+            .0
+            .upgrade()
+            .ok_or("execution.parent_custody_released")?;
+        let records = store
+            .records
+            .lock()
+            .map_err(|_| "execution.nested_custody_unavailable")?;
+        if store.closed.load(Ordering::Acquire)
+            || !records
+                .get(&admission.id)
+                .is_some_and(|record| Arc::ptr_eq(record, owner))
+        {
+            return Err("execution.parent_custody_released");
+        }
+        Ok(())
+    }
     pub(crate) fn reserve(&self, record: Capability) -> Result<WeakCustody, &'static str> {
         let store = self
             .0

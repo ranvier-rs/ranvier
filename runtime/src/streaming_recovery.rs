@@ -342,6 +342,9 @@ where
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct ParentStreamCustody(crate::nested_custody::WeakCustody);
+
 /// A single invocation's exact graph, typed resources and request Bus. An external
 /// clone must outlive the supervisor, including forced task abort. No replay API.
 pub(crate) struct OwnedStreamRecovery<In, Out, E, Res> {
@@ -479,6 +482,27 @@ where
     /// Non-completed consumption runs shielded local cleanup; no replay is authorized.
     /// One explicit invocation grace bounds cooperative Saga rollback including prefix cleanup.
     /// Direct hooks, non-yielding handlers and external resource custody need separate limits.
+    /// Parent owns this exact complete graph/resource/Bus context before effects.
+    /// The child contains only weak links back to the authoritative parent store.
+    pub(crate) async fn admit_to_parent(
+        &self, client: crate::nested_custody::WeakCustodyClient,
+    ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
+        let mut context = self.inner.context.lock().await;
+        if self.inner.started.load(Ordering::Acquire) {
+            return Err("execution.nested_stream_already_started");
+        }
+        let bus = &mut context.1;
+        let access = bus.take_access_scope();
+        let occupied = bus.has::<ParentStreamCustody>() || bus.has::<crate::nested_custody::WeakCustodyClient>()
+            || bus.has::<crate::nested_custody::CustodyStore>();
+        bus.restore_access_scope(access);
+        if occupied { return Err("execution.nested_stream_already_bound"); }
+        let admission = client.reserve(self.inner.clone())?;
+        bus.insert(client);
+        bus.insert(ParentStreamCustody(admission.clone()));
+        Ok(admission)
+    }
+
     pub(crate) async fn initialize_and_drive<Item, SErr, S, T, F, Fut>(
         &self,
         input: In,
@@ -518,10 +542,24 @@ where
         observation.phase(SupervisorPhase::Initializing);
         let mut context = self.inner.context.lock().await;
         let (resources, bus) = &mut *context;
-        bus.insert(crate::nested_custody::RequiredOwnedCustody);
-        bus.insert(crate::nested_custody::CustodyStore::new(128));
-        bus.insert(crate::nested_custody::OwnedResources(resources.clone()));
         let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
+        let parent_admission = owner.bus().read::<ParentStreamCustody>().cloned();
+        let parent_client = owner.bus().read::<crate::nested_custody::WeakCustodyClient>().cloned();
+        let validation = match (parent_admission, parent_client) {
+            (Some(admission), Some(client)) => client.validate_member(&admission.0, &(self.inner.clone() as Arc<dyn std::any::Any + Send + Sync>)),
+            (None, None) => Ok(()),
+            _ => Err("execution.nested_stream_custody_mismatch"),
+        };
+        if let Err(signal) = validation {
+            let prefix = owner.finish(crate::ExecutionTerminal::Outcome(ranvier_core::Outcome::emit(signal, None)));
+            observation.returned(SupervisorDisposition::PrefixRejected, None);
+            return Ok(StreamInitializationReport::Rejected { prefix });
+        }
+        owner.bus().insert(crate::nested_custody::RequiredOwnedCustody);
+        if !owner.bus().has::<crate::nested_custody::WeakCustodyClient>() {
+            owner.bus().insert(crate::nested_custody::CustodyStore::new(128));
+        }
+        owner.bus().insert(crate::nested_custody::OwnedResources(resources.clone()));
         if let Some(active) = owner
             .bus()
             .read::<crate::execution_observation::ActiveObservation>()
@@ -1884,6 +1922,73 @@ mod tests {
         assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
         let report = parent.finish(());
         assert!(report.cleanup().is_none());
+    }
+    #[tokio::test]
+    async fn parent_store_retains_full_stream_child_graph_resources_bus_after_actual_driver_abort() {
+        let parent = crate::nested_custody::CustodyStore::new(1);
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let weak = Arc::downgrade(&resources);
+        let mut bus = Bus::new();
+        bus.insert(9876u64);
+        let child = OwnedStreamRecovery::try_new(
+            Axon::<u32, u32, String, Resources>::start("full-owned-child").with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+            OwnedStreamContext::try_new(resources.clone(), bus).unwrap(), &StreamRecoveryAdmission::new(1), None).unwrap();
+        let admission = child.admit_to_parent(parent.client()).await.unwrap();
+        assert!(matches!(parent.reserve(Arc::new(())), Err("execution.nested_custody_capacity")));
+        let observer = child.observe();
+        let entered = Arc::new(Notify::new());
+        let signal = entered.clone();
+        let task = tokio::spawn(async move {
+            child.initialize_and_drive(233, &Init, None, std::time::Duration::from_secs(30), move |source| async move {
+                let _source = source;
+                signal.notify_one();
+                std::future::pending::<StreamDriveResult<()>>().await
+            }).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+        task.abort();
+        assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+        assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
+        assert_eq!(observer.borrow().custody, RecoveryCustody::Held);
+        let inner = admission.upgrade().unwrap().downcast::<RecoveryInner<u32, u32, String, Resources>>()
+            .unwrap_or_else(|_| panic!("wrong full child owner"));
+        let retained = OwnedStreamRecovery { inner };
+        {
+            let context = retained.inner.context.lock().await;
+            assert!(Arc::ptr_eq(&context.0, &resources));
+            assert_eq!(context.1.read::<u64>(), Some(&9876));
+            assert!(context.1.has::<crate::nested_custody::WeakCustodyClient>());
+            assert!(!context.1.has::<crate::nested_custody::CustodyStore>());
+            let task = &context.1.read::<SagaStack>().unwrap().tasks[0];
+            assert_eq!(task.input_snapshot, b"233");
+            assert!(retained.inner.graph.saga_compensation_registry.read().unwrap().get(&task.node_id).is_some());
+        }
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
+        drop(resources);
+        drop(retained);
+        assert!(weak.upgrade().is_some());
+        drop(parent);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
+    }
+    #[tokio::test]
+    async fn released_parent_admission_cannot_restart_stream_child_as_new_root() {
+        let parent = crate::nested_custody::CustodyStore::new(1);
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let child = OwnedStreamRecovery::try_new(
+            Axon::<u32, u32, String, Resources>::start("released-full-child").then(Effect),
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(), &StreamRecoveryAdmission::new(1), None).unwrap();
+        let admission = child.admit_to_parent(parent.client()).await.unwrap();
+        admission.release();
+        let report = child.initialize_and_drive(239, &Init, None, std::time::Duration::from_secs(5), |_| async {
+            panic!("unregistered child must not start driver");
+            #[allow(unreachable_code)] completed()
+        }).await.unwrap();
+        assert!(matches!(report, StreamInitializationReport::Rejected { prefix:
+            crate::ExecutionReport::Unpersisted { result: crate::ExecutionTerminal::Outcome(Outcome::Emit(signal, _)), .. } }
+                if signal == "execution.parent_custody_released"));
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+        assert!(!child.inner.context.lock().await.1.has::<crate::nested_custody::CustodyStore>());
     }
     struct ExternalHook {
         mode: u8,
