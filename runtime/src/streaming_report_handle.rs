@@ -136,6 +136,17 @@ pub struct StreamLiveRecoveryState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamRecoveryProbeError { TimedOut, Unavailable, TraversalLimit, NotConfigured }
 pub(crate) type RecoveryProbe = Arc<dyn Fn(Instant) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<StreamLiveRecoveryState, StreamRecoveryProbeError>> + Send>> + Send + Sync>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamLocalRetirementError {
+    Wait(StreamReportWaitError),
+    AssessmentUnavailable,
+    RecoveryReviewRequired,
+    NotConfigured,
+    CustodyUnavailable,
+    CustodyReleased,
+    CustodyMismatch,
+}
+pub(crate) type LocalRetirement = Arc<dyn Fn(Instant) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StreamLocalRetirementError>> + Send>> + Send + Sync>;
 
 /// Clones share one original report. Waiting never retires recovery custody;
 /// only explicit report transfer consumes the result, once across all clones.
@@ -146,14 +157,43 @@ pub struct StreamReportHandle<Out, E> {
     retirement: Arc<AtomicU8>,
     assessment: Arc<Mutex<Option<StreamReportAssessment>>>,
     probe: Option<RecoveryProbe>,
+    local_retirement: Option<LocalRetirement>,
 }
 impl<Out, E> Clone for StreamReportHandle<Out, E> {
-    fn clone(&self) -> Self { Self { task: self.task.clone(), _owner: self._owner.clone(), retirement: self.retirement.clone(), assessment: self.assessment.clone(), probe: self.probe.clone() } }
+    fn clone(&self) -> Self { Self { task: self.task.clone(), _owner: self._owner.clone(), retirement: self.retirement.clone(), assessment: self.assessment.clone(), probe: self.probe.clone(), local_retirement: self.local_retirement.clone() } }
 }
 impl<Out: Send + 'static, E: Send + 'static> StreamReportHandle<Out, E> {
     pub(crate) fn new(task: Arc<tokio::sync::Mutex<crate::managed_stream_task::ManagedStreamTask<Original<Out, E>>>>,
-        owner: crate::nested_custody::Capability) -> Self { Self { task, _owner: owner, retirement: Arc::new(AtomicU8::new(0)), assessment: Arc::new(Mutex::new(None)), probe: None } }
+        owner: crate::nested_custody::Capability) -> Self { Self { task, _owner: owner, retirement: Arc::new(AtomicU8::new(0)), assessment: Arc::new(Mutex::new(None)), probe: None, local_retirement: None } }
     pub(crate) fn with_recovery_probe(mut self, probe: RecoveryProbe) -> Self { self.probe = Some(probe); self }
+    pub(crate) fn with_local_retirement(mut self, retirement: LocalRetirement) -> Self { self.local_retirement = Some(retirement); self }
+    pub(crate) fn holder_capability(&self) -> crate::nested_custody::Capability { self.task.clone() }
+    /// Explicitly retire local root custody after original Completed/Unpersisted
+    /// execution with no retained Saga state or recovery journal. This does not
+    /// confirm durable stream completion, external reversal or restart recovery.
+    /// Clones share the exact decision, including after original report transfer.
+    /// Other report/recovery/drain leases still retain recovery admission.
+    pub async fn retire_completed_local_until(&self, deadline: Instant) -> Result<(), StreamLocalRetirementError> {
+        (self.local_retirement.as_ref().ok_or(StreamLocalRetirementError::NotConfigured)?)(deadline).await
+    }
+    pub(crate) async fn prove_completed_local(&self, deadline: Instant) -> Result<(), StreamLocalRetirementError> {
+        use StreamLocalRetirementError as Error;
+        if Instant::now() >= deadline { return Err(Error::Wait(StreamReportWaitError::TimedOut)); }
+        if self.assessment().map_err(|_| Error::AssessmentUnavailable)?.is_none() {
+            if let Err(error) = self.settle_until(deadline).await {
+                if error != StreamReportWaitError::AlreadyTaken { return Err(Error::Wait(error)); }
+            }
+        }
+        let assessment = self.assessment().map_err(|_| Error::AssessmentUnavailable)?;
+        match assessment {
+            Some(StreamReportAssessment { frame: StreamFrameAssessment::Reported,
+                prefix_durability: StreamPrefixDurability::Unpersisted,
+                initialization: StreamInitializationAssessment::Ready,
+                consumption: Some(StreamConsumptionAssessment::Completed), cleanup, .. })
+                if cleanup != StreamCleanupAssessment::Incomplete => Ok(()),
+            _ => Err(Error::RecoveryReviewRequired),
+        }
+    }
     /// Inspect the original owner with bounded context wait. This snapshot is
     /// neither retirement authorization nor proof of external reconciliation.
     pub async fn live_recovery_until(&self, deadline: Instant) -> Result<StreamLiveRecoveryState, StreamRecoveryProbeError> {

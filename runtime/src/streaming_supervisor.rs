@@ -247,6 +247,8 @@ impl StreamReservation {
             Ok(custody) => custody,
             Err(error) => return Err(StreamPrepareError::Staging(StreamStartRejected { signal: error.signal, report, _custody: error.custody })),
         };
+        let retirement = plan.owner.local_retirement(custody.clone(), report.clone());
+        let report = report.with_local_retirement(retirement);
         Ok(PreparedSupervisedStream { plan, prepared, custody, journal, report, client, items, readiness })
     }
 }
@@ -327,8 +329,77 @@ mod tests {
         assert_eq!(lease.retirement_evidence(), crate::streaming_report_handle::StreamRetirementEvidence::RequiresRecoveryReview);
         assert_eq!(invocation.report().assessment().unwrap(), Some(assessment));
         assert!(supervisor.reserve().is_err());
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let other = lease.clone();
+        let (first, second) = tokio::join!(lease.retire_completed_local_until(deadline), other.retire_completed_local_until(deadline));
+        assert_eq!(first, Ok(())); assert_eq!(second, Ok(()));
+        let root_slot = supervisor.root.reserve_stream_slot().unwrap(); drop(root_slot);
+        assert_eq!(supervisor.admission.in_use(), Ok(1));
         drop(invocation);
         assert!(!parent.is_cancelled());
+        assert_eq!(lease.retire_completed_local_until(deadline).await, Ok(()));
+        drop(other); drop(lease);
+        assert_eq!(supervisor.admission.in_use(), Ok(0));
+        assert!(supervisor.reserve().is_ok());
+    }
+    #[derive(Clone)]
+    struct LocalState(Option<bool>);
+    #[async_trait::async_trait]
+    impl ranvier_core::streaming::StreamingTransition<u32> for LocalState {
+        type Item = u32; type Error = String; type Resources = ();
+        async fn run_stream(&self, input: u32, _: &(), bus: &mut ranvier_core::Bus)
+            -> Result<std::pin::Pin<Box<dyn futures_core::Stream<Item = u32> + Send>>, String> {
+            match self.0 {
+                Some(true) => {
+                    let journal = crate::SagaRollbackJournal::new("private retained journal"); journal.finish(); bus.insert(journal);
+                }
+                Some(false) => {
+                    let mut stack = ranvier_core::saga::SagaStack::new();
+                    stack.push("private id".into(), "private label".into(), vec![1, 2, 3]); bus.insert(stack);
+                }
+                None => {},
+            }
+            Ok(Box::pin(futures_util::stream::iter([input])))
+        }
+    }
+    async fn completed_local_fixture(supervisor: &StreamSupervisor, state: Option<bool>)
+        -> SupervisedStreamInvocation<u32, u32, String> {
+        let circuit = crate::Axon::<u32, u32, String>::start("local-retirement").then(Prefix).then_stream(LocalState(state));
+        let (ticket, context) = supervisor.reserve().unwrap().with_context(|| OwnedStreamContext::try_new(Arc::new(()), ranvier_core::Bus::new())).unwrap();
+        let prepared = match ticket.prepare(&circuit, context, 359, std::time::Duration::from_secs(1), None) {
+            Ok(prepared) => prepared, Err(_) => panic!("fixture setup rejected"),
+        };
+        let mut invocation = prepared.start(ranvier_core::CancellationToken::new()).await.unwrap_or_else(|e| panic!("{}", e.signal));
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        tokio::time::timeout_at(deadline, invocation.readiness.initialized()).await.unwrap().unwrap();
+        assert_eq!(tokio::time::timeout_at(deadline, invocation.items.recv()).await.unwrap(), Some(359));
+        assert_eq!(tokio::time::timeout_at(deadline, invocation.items.recv()).await.unwrap(), None);
+        invocation.report().settle_until(deadline).await.unwrap();
+        invocation
+    }
+    #[tokio::test]
+    async fn completed_local_retirement_holds_any_journal_and_nonempty_stack() {
+        use crate::streaming_report_handle::StreamLocalRetirementError as Error;
+        for with_journal in [false, true] {
+            let supervisor = StreamSupervisor::new(1);
+            let invocation = completed_local_fixture(&supervisor, Some(with_journal)).await;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            assert_eq!(invocation.report().retire_completed_local_until(deadline).await, Err(Error::RecoveryReviewRequired));
+            assert!(supervisor.root.reserve_stream_slot().is_err());
+            assert_eq!(supervisor.admission.in_use(), Ok(1));
+        }
+    }
+    #[tokio::test]
+    async fn completed_local_retirement_expiry_and_missing_root_never_claim_success() {
+        use crate::streaming_report_handle::{StreamLocalRetirementError as Error, StreamReportWaitError};
+        let supervisor = StreamSupervisor::new(1);
+        let invocation = completed_local_fixture(&supervisor, None).await;
+        assert_eq!(invocation.report().retire_completed_local_until(tokio::time::Instant::now()).await, Err(Error::Wait(StreamReportWaitError::TimedOut)));
+        assert!(supervisor.root.reserve_stream_slot().is_err());
+        drop(supervisor);
+        for _ in 0..2 {
+            assert_eq!(invocation.report().retire_completed_local_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Err(Error::CustodyReleased));
+        }
     }
     #[tokio::test]
     async fn public_start_rejection_and_setup_rejection_keep_original_custody() {

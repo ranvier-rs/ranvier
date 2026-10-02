@@ -727,6 +727,48 @@ where
             })
         })
     }
+    /// Constructed only beside the exact staged report and receipt. The captured
+    /// report has no retirement callback, so this lease cannot form a cycle.
+    pub(crate) fn local_retirement(&self,
+        receipt: crate::nested_custody::WeakCustody,
+        report: crate::streaming_report_handle::StreamReportHandle<Out, E>,
+    ) -> crate::streaming_report_handle::LocalRetirement {
+        let owner = self.clone();
+        let decision = Arc::new(Mutex::new(false));
+        Arc::new(move |deadline| {
+            let owner = owner.clone(); let receipt = receipt.clone();
+            let report = report.clone(); let decision = decision.clone();
+            Box::pin(async move {
+                use crate::streaming_report_handle::{StreamLocalRetirementError as Error, StreamReportWaitError};
+                let timeout = || Error::Wait(StreamReportWaitError::TimedOut);
+                if tokio::time::Instant::now() >= deadline { return Err(timeout()); }
+                let mut retired = tokio::time::timeout_at(deadline, decision.lock()).await.map_err(|_| timeout())?;
+                if tokio::time::Instant::now() >= deadline { return Err(timeout()); }
+                if *retired { return Ok(()); }
+                report.prove_completed_local(deadline).await?;
+                let mut context = tokio::time::timeout_at(deadline, owner.inner.context.lock()).await.map_err(|_| timeout())?;
+                if tokio::time::Instant::now() >= deadline { return Err(timeout()); }
+                let bus = &mut context.1;
+                let access = bus.take_access_scope();
+                // A clear snapshot of a clonable journal is not sealed authority.
+                // Refuse every journal until child mutation/recovery is sealed.
+                let pending = bus.has::<crate::SagaRollbackJournal>()
+                    || bus.read::<ranvier_core::saga::SagaStack>().is_some_and(|stack| !stack.is_empty());
+                bus.restore_access_scope(access);
+                if pending { return Err(Error::RecoveryReviewRequired); }
+                // No await between the guarded live check, exact removal and
+                // cached success. Dropping a waiter cannot lose the decision.
+                receipt.release_exact_task(&owner.retention_capability(), &report.holder_capability())
+                    .map_err(|signal| match signal {
+                        "execution.parent_custody_released" => Error::CustodyReleased,
+                        "execution.nested_task_registration_mismatch" => Error::CustodyMismatch,
+                        _ => Error::CustodyUnavailable,
+                    })?;
+                *retired = true;
+                Ok(())
+            })
+        })
+    }
     /// Retain the exact graph/context owner through public report-handle waits.
     pub(crate) fn retention_capability(&self) -> crate::nested_custody::Capability {
         self.inner.clone()
