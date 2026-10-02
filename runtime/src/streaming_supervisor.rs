@@ -250,7 +250,10 @@ impl StreamReservation {
         };
         let retirement = plan.owner.local_retirement(custody.clone(), report.clone());
         let recovery = plan.owner.local_recovery(report.clone());
-        let report = report.with_local_retirement(retirement).with_local_recovery(recovery);
+        let external_recovery = plan.owner.external_recovery(report.clone());
+        let report = report.with_local_retirement(retirement)
+            .with_local_recovery(recovery)
+            .with_external_recovery(external_recovery);
         Ok(PreparedSupervisedStream { plan, prepared, custody, journal, report, client, items, readiness })
     }
 }
@@ -281,7 +284,7 @@ where In: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
     #[derive(Clone)]
     struct Finite;
     #[async_trait::async_trait]
@@ -312,6 +315,123 @@ mod tests {
             self.0.fetch_add(1, Ordering::SeqCst);
             ranvier_core::Outcome::Next(())
         }
+    }
+    #[derive(Clone)]
+    struct CaptureExternalJournal {
+        trace_id: String,
+        captured: Arc<std::sync::Mutex<Option<crate::SagaRollbackJournal>>>,
+    }
+    #[async_trait::async_trait]
+    impl ranvier_core::Transition<u32, u32> for CaptureExternalJournal {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, input: u32, _: &(), bus: &mut ranvier_core::Bus) -> ranvier_core::Outcome<u32, String> {
+            bus.insert(crate::PersistenceTraceId::new(self.trace_id.clone()));
+            let journal = crate::SagaRollbackJournal::new(&self.trace_id);
+            bus.insert(journal.clone());
+            *self.captured.lock().unwrap() = Some(journal);
+            ranvier_core::Outcome::Next(input)
+        }
+    }
+    #[derive(Clone)]
+    struct ExternalFailure;
+    #[async_trait::async_trait]
+    impl ranvier_core::Transition<u32, u32> for ExternalFailure {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, _: u32, _: &(), _: &mut ranvier_core::Bus) -> ranvier_core::Outcome<u32, String> {
+            ranvier_core::Outcome::Fault("original external compensation fixture fault".into())
+        }
+    }
+    #[derive(Clone, Copy)]
+    enum ExternalReadBehavior { Normal, FailSecond, PendingSecond }
+    struct ExternalRecoveryHook {
+        calls: Arc<AtomicUsize>,
+        succeed: bool,
+    }
+    #[async_trait::async_trait]
+    impl crate::CompensationHook for ExternalRecoveryHook {
+        async fn compensate(&self, _: crate::CompensationContext) -> anyhow::Result<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.succeed { Ok(()) } else { Err(anyhow::anyhow!("private hook failure")) }
+        }
+    }
+    struct ExternalRecoveryMarker {
+        applied: Arc<AtomicBool>,
+        reads: Arc<AtomicUsize>,
+        writes: Arc<AtomicUsize>,
+        lose_write_ack: bool,
+        read_behavior: ExternalReadBehavior,
+    }
+    #[async_trait::async_trait]
+    impl crate::CompensationIdempotencyStore for ExternalRecoveryMarker {
+        async fn was_compensated(&self, _: &str) -> anyhow::Result<bool> {
+            let read = self.reads.fetch_add(1, Ordering::SeqCst) + 1;
+            match (self.read_behavior, read) {
+                (ExternalReadBehavior::FailSecond, 2) => Err(anyhow::anyhow!("private readback failure")),
+                (ExternalReadBehavior::PendingSecond, 2) => std::future::pending().await,
+                _ => Ok(self.applied.load(Ordering::SeqCst)),
+            }
+        }
+        async fn mark_compensated(&self, _: &str) -> anyhow::Result<()> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            self.applied.store(true, Ordering::SeqCst);
+            if self.lose_write_ack { Err(anyhow::anyhow!("private lost marker acknowledgement")) } else { Ok(()) }
+        }
+    }
+    struct ExternalRecoveryFixture {
+        _supervisor: StreamSupervisor,
+        invocation: SupervisedStreamInvocation<u32, u32, String>,
+        journal: crate::SagaRollbackJournal,
+        hook_calls: Arc<AtomicUsize>,
+        marker_reads: Arc<AtomicUsize>,
+        marker_writes: Arc<AtomicUsize>,
+    }
+    async fn external_recovery_fixture(
+        hook_succeeds: bool,
+        lose_write_ack: bool,
+        read_behavior: ExternalReadBehavior,
+    ) -> ExternalRecoveryFixture {
+        let supervisor = StreamSupervisor::new(1);
+        let trace_id = "external-readback-fixture".to_string();
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let hook_calls = Arc::new(AtomicUsize::new(0));
+        let marker_reads = Arc::new(AtomicUsize::new(0));
+        let marker_writes = Arc::new(AtomicUsize::new(0));
+        let applied = Arc::new(AtomicBool::new(false));
+        let hook: Arc<dyn crate::CompensationHook> = Arc::new(ExternalRecoveryHook {
+            calls: hook_calls.clone(),
+            succeed: hook_succeeds,
+        });
+        let marker: Arc<dyn crate::CompensationIdempotencyStore> = Arc::new(ExternalRecoveryMarker {
+            applied,
+            reads: marker_reads.clone(),
+            writes: marker_writes.clone(),
+            lose_write_ack,
+            read_behavior,
+        });
+        let mut bus = ranvier_core::Bus::new();
+        bus.insert(crate::PersistenceTraceId::new("external-readback-fixture"));
+        bus.insert(crate::CompensationHandle::from_arc(hook));
+        bus.insert(crate::CompensationIdempotencyHandle::from_arc(marker));
+        bus.insert(crate::PersistenceHandle::from_store(crate::InMemoryPersistenceStore::new()));
+        let circuit = crate::Axon::<u32, u32, String>::start("external-readback-fixture")
+            .then(CaptureExternalJournal { trace_id, captured: captured.clone() })
+            .then(ExternalFailure)
+            .then_stream(Finite);
+        let (ticket, context) = supervisor.reserve().unwrap().with_context(||
+            OwnedStreamContext::try_new(Arc::new(()), bus)).unwrap();
+        let prepared = ticket.prepare(&circuit, context, 271, std::time::Duration::from_secs(2), None)
+            .unwrap_or_else(|_| panic!("external recovery setup rejected"));
+        let mut invocation = prepared.start(ranvier_core::CancellationToken::new()).await
+            .unwrap_or_else(|error| panic!("{}", error.signal));
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let _ = tokio::time::timeout_at(deadline, invocation.readiness.initialized()).await
+            .expect("external recovery fixture initialization timed out");
+        while tokio::time::timeout_at(deadline, invocation.items.recv()).await
+            .expect("external recovery fixture delivery timed out").is_some() {}
+        let journal = captured.lock().unwrap().clone().expect("external journal was not captured");
+        ExternalRecoveryFixture { _supervisor: supervisor, invocation, journal, hook_calls, marker_reads, marker_writes }
     }
     #[derive(Clone)]
     struct InjectedSagaState { node_id: String }
@@ -494,6 +614,72 @@ mod tests {
         assert_eq!(invocation.report().reconcile_next_local_compensation_until(deadline).await,
             Err(crate::streaming_report_handle::StreamLocalRecoveryError::RecoveryBlocked));
         assert_eq!(compensations.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn external_readback_confirms_marker_without_replay_or_journal_sealing() {
+        use crate::streaming_report_handle::{StreamExternalReadback, StreamExternalRecoveryError};
+        let fixture = external_recovery_fixture(true, true, ExternalReadBehavior::Normal).await;
+        let report = fixture.invocation.report();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let original = report.take_report_until(deadline).await.unwrap();
+        let original_outcome = match original {
+            crate::streaming_report_handle::SupervisedStreamCompletion::Report(crate::StreamInitializationReport::Rejected { prefix }) => {
+                prefix.cleanup().unwrap().steps[0].outcome
+            }
+            _ => panic!("expected original rejected prefix report"),
+        };
+        assert_eq!(original_outcome, crate::SagaRollbackOutcome::Fault);
+        assert_eq!(report.reconcile_next_external_compensation_until(deadline).await,
+            Ok(StreamExternalReadback::Confirmed));
+        assert_eq!(fixture.marker_reads.load(Ordering::SeqCst), 2);
+        assert_eq!(fixture.marker_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.hook_calls.load(Ordering::SeqCst), 1);
+        let snapshot = fixture.journal.snapshot();
+        assert_eq!(snapshot.steps[0].outcome, crate::SagaRollbackOutcome::Completed);
+        assert!(!snapshot.finished, "readback must not seal the journal");
+        assert!(report.live_recovery_until(deadline).await.unwrap().recovery_pending);
+        assert_eq!(report.reconcile_next_external_compensation_until(deadline).await,
+            Err(StreamExternalRecoveryError::RecoveryBlocked));
+        assert_eq!(fixture.hook_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.invocation.report().retire_completed_local_until(deadline).await,
+            Err(crate::streaming_report_handle::StreamLocalRetirementError::RecoveryReviewRequired));
+    }
+    #[tokio::test]
+    async fn negative_external_readback_retains_uncertainty_and_never_reinvokes_hook() {
+        use crate::streaming_report_handle::StreamExternalReadback;
+        let fixture = external_recovery_fixture(false, false, ExternalReadBehavior::Normal).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        assert_eq!(fixture.invocation.report().reconcile_next_external_compensation_until(deadline).await,
+            Ok(StreamExternalReadback::NotConfirmed));
+        assert_eq!(fixture.marker_reads.load(Ordering::SeqCst), 2);
+        assert_eq!(fixture.marker_writes.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.hook_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.journal.snapshot().steps[0].outcome, crate::SagaRollbackOutcome::Fault);
+        assert!(fixture.journal.has_unresolved_tasks());
+    }
+    #[tokio::test]
+    async fn failed_or_timed_out_external_readback_preserves_capability_for_later_read() {
+        use crate::streaming_report_handle::{StreamExternalReadback, StreamExternalRecoveryError, StreamReportWaitError};
+        for behavior in [ExternalReadBehavior::FailSecond, ExternalReadBehavior::PendingSecond] {
+            let fixture = external_recovery_fixture(true, true, behavior).await;
+            let report = fixture.invocation.report();
+            let short_deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(50);
+            let first = report.reconcile_next_external_compensation_until(short_deadline).await;
+            if matches!(behavior, ExternalReadBehavior::FailSecond) {
+                assert_eq!(first, Ok(StreamExternalReadback::ReadUnavailable));
+            } else {
+                assert_eq!(first, Err(StreamExternalRecoveryError::Wait(StreamReportWaitError::TimedOut)));
+            }
+            assert_eq!(fixture.journal.snapshot().steps[0].outcome, crate::SagaRollbackOutcome::Fault);
+            assert!(fixture.journal.has_unresolved_tasks());
+            assert_eq!(fixture.hook_calls.load(Ordering::SeqCst), 1);
+            let retry_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            assert_eq!(report.reconcile_next_external_compensation_until(retry_deadline).await,
+                Ok(StreamExternalReadback::Confirmed));
+            assert_eq!(fixture.hook_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(fixture.journal.snapshot().steps[0].outcome, crate::SagaRollbackOutcome::Completed);
+            assert!(!fixture.journal.snapshot().finished);
+        }
     }
     #[derive(Clone)]
     struct LocalState(Option<bool>);

@@ -116,6 +116,13 @@ pub struct CompensationContext {
     pub timestamp_ms: u64,
 }
 
+/// Stable key shared by automatic compensation and report-bound readback.
+/// Keep the current encoding until the separate durable key-version migration
+/// is approved; a missing marker never authorizes a retry by itself.
+pub(crate) fn compensation_idempotency_key(context: &CompensationContext) -> String {
+    format!("{}:{}:{}", context.trace_id, context.circuit, context.fault_kind)
+}
+
 /// Controls whether compensation hooks should run automatically on `Fault`.
 ///
 /// Default runtime behavior when this resource is absent: `true`.

@@ -368,7 +368,7 @@ struct RecoveryInner<In, Out, E, Res> {
     graph: Axon<In, Out, E, Res>,
     context: Mutex<(Arc<Res>, Bus)>,
     started: AtomicBool,
-    local_recovery: Mutex<()>,
+    reconciliation: Mutex<()>,
     expires: Option<std::time::Instant>,
     observation: tokio::sync::watch::Sender<SupervisorObservation>,
     // Last field: release reservation after graph/context fields are dropped.
@@ -522,7 +522,7 @@ where
                 graph,
                 context: Mutex::new(context.into_parts()),
                 started: AtomicBool::new(false),
-                local_recovery: Mutex::new(()),
+                reconciliation: Mutex::new(()),
                 expires,
                 _permit: permit,
                 observation: tokio::sync::watch::channel(SupervisorObservation {
@@ -779,6 +779,28 @@ where
             })
         })
     }
+    /// Bind marker-only external compensation reconciliation to this report's
+    /// exact original owner. The retained hook is never invoked by this path.
+    pub(crate) fn external_recovery(
+        &self,
+        report: crate::streaming_report_handle::StreamReportHandle<Out, E>,
+    ) -> crate::streaming_report_handle::ExternalRecovery {
+        let owner = self.clone();
+        Arc::new(move |deadline| {
+            let owner = owner.clone();
+            let report = report.clone();
+            Box::pin(async move {
+                report.require_reported_frame(deadline).await.map_err(|error| match error {
+                    crate::streaming_report_handle::StreamLocalRecoveryError::Wait(error) =>
+                        crate::streaming_report_handle::StreamExternalRecoveryError::Wait(error),
+                    crate::streaming_report_handle::StreamLocalRecoveryError::FrameNotReported =>
+                        crate::streaming_report_handle::StreamExternalRecoveryError::FrameNotReported,
+                    _ => crate::streaming_report_handle::StreamExternalRecoveryError::Unavailable,
+                })?;
+                owner.reconcile_next_external_compensation_until(deadline).await
+            })
+        })
+    }
     async fn reconcile_next_local_compensation_until(
         &self,
         deadline: tokio::time::Instant,
@@ -788,7 +810,7 @@ where
         if tokio::time::Instant::now() >= deadline {
             return Err(Error::Wait(StreamReportWaitError::TimedOut));
         }
-        let _operation = tokio::time::timeout_at(deadline, self.inner.local_recovery.lock()).await
+        let _operation = tokio::time::timeout_at(deadline, self.inner.reconciliation.lock()).await
             .map_err(|_| Error::Wait(StreamReportWaitError::TimedOut))?;
         if !self.inner.started.load(Ordering::Acquire) {
             return Err(Error::FrameNotReported);
@@ -847,6 +869,40 @@ where
             LocalTaskClaimError::TimedOut => Error::Wait(StreamReportWaitError::TimedOut),
             LocalTaskClaimError::Missing | LocalTaskClaimError::NotEligible
             | LocalTaskClaimError::Claimed | LocalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
+        })
+    }
+    async fn reconcile_next_external_compensation_until(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Result<crate::streaming_report_handle::StreamExternalReadback, crate::streaming_report_handle::StreamExternalRecoveryError> {
+        use crate::saga_report::ExternalTaskClaimError;
+        use crate::streaming_report_handle::{StreamExternalRecoveryError as Error, StreamReportWaitError};
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Error::Wait(StreamReportWaitError::TimedOut));
+        }
+        let _operation = tokio::time::timeout_at(deadline, self.inner.reconciliation.lock()).await
+            .map_err(|_| Error::Wait(StreamReportWaitError::TimedOut))?;
+        if !self.inner.started.load(Ordering::Acquire) {
+            return Err(Error::FrameNotReported);
+        }
+        let context = tokio::time::timeout_at(deadline, self.inner.context.lock()).await
+            .map_err(|_| Error::Wait(StreamReportWaitError::TimedOut))?;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Error::Wait(StreamReportWaitError::TimedOut));
+        }
+        let journal = context.1.read::<crate::SagaRollbackJournal>().cloned()
+            .ok_or(Error::JournalUnavailable)?;
+        let claim = journal.claim_next_external().map_err(|error| match error {
+            ExternalTaskClaimError::Unavailable => Error::Unavailable,
+            ExternalTaskClaimError::TimedOut => Error::Wait(StreamReportWaitError::TimedOut),
+            ExternalTaskClaimError::Missing | ExternalTaskClaimError::NotEligible
+            | ExternalTaskClaimError::Claimed | ExternalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
+        })?;
+        claim.readback_until(deadline).await.map_err(|error| match error {
+            ExternalTaskClaimError::Unavailable => Error::Unavailable,
+            ExternalTaskClaimError::TimedOut => Error::Wait(StreamReportWaitError::TimedOut),
+            ExternalTaskClaimError::Missing | ExternalTaskClaimError::NotEligible
+            | ExternalTaskClaimError::Claimed | ExternalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
         })
     }
     /// Constructed only beside the exact staged report and receipt. The captured

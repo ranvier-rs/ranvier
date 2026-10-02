@@ -1297,13 +1297,6 @@ async fn persist_completion(
     }
 }
 
-fn compensation_idempotency_key(context: &CompensationContext) -> String {
-    format!(
-        "{}:{}:{}",
-        context.trace_id, context.circuit, context.fault_kind
-    )
-}
-
 fn external_compensation_journal(bus: &mut Bus, trace_id: &str) -> crate::SagaRollbackJournal {
     let journal = bus
         .read::<crate::SagaRollbackJournal>()
@@ -1402,7 +1395,7 @@ async fn run_compensation_unbounded(
     recovery: &crate::saga_report::ExternalCompensationRecovery,
 ) -> bool {
     let hook = handle.hook();
-    let key = compensation_idempotency_key(&context);
+    let key = crate::persistence::compensation_idempotency_key(&context);
 
     if let Some(store_handle) = idempotency.as_ref() {
         let store = store_handle.store();

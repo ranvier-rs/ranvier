@@ -73,6 +73,9 @@ pub(crate) enum JournalRetentionError { Unavailable, TraversalLimit }
 #[cfg(feature = "streaming")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LocalTaskClaimError { Unavailable, Missing, NotEligible, Claimed, IdentityMismatch, TimedOut }
+#[cfg(feature = "streaming")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExternalTaskClaimError { Unavailable, Missing, NotEligible, Claimed, IdentityMismatch, TimedOut }
 /// Framework-only exclusive lease; the journal retains the original bytes.
 /// This is not original owner, durable reconciliation or retirement authority.
 #[cfg(feature = "streaming")]
@@ -171,6 +174,101 @@ impl Drop for LocalTaskClaim {
         }
     }
 }
+#[cfg(feature = "streaming")]
+pub(crate) struct ExternalTaskClaim {
+    journal: SagaRollbackJournal,
+    index: usize,
+    recovery: ExternalCompensationRecovery,
+    token: std::sync::Arc<()>,
+    settled: bool,
+}
+#[cfg(feature = "streaming")]
+impl ExternalTaskClaim {
+    /// Read only the existing completion marker. A negative or failed read is
+    /// not evidence that the external hook did not run and never retries it.
+    pub(crate) async fn readback_until(
+        mut self,
+        deadline: tokio::time::Instant,
+    ) -> Result<crate::streaming_report_handle::StreamExternalReadback, ExternalTaskClaimError> {
+        use futures_util::FutureExt as _;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(ExternalTaskClaimError::TimedOut);
+        }
+        self.validate_original()?;
+        let Some(idempotency) = self.recovery.idempotency.clone() else {
+            return Ok(crate::streaming_report_handle::StreamExternalReadback::ReadUnavailable);
+        };
+        let store = idempotency.store();
+        let key = crate::persistence::compensation_idempotency_key(&self.recovery.context);
+        let read = std::panic::AssertUnwindSafe(async move { store.was_compensated(&key).await })
+            .catch_unwind();
+        match tokio::time::timeout_at(deadline, read).await {
+            Err(_) => Err(ExternalTaskClaimError::TimedOut),
+            Ok(Err(_)) | Ok(Ok(Err(_))) => {
+                Ok(crate::streaming_report_handle::StreamExternalReadback::ReadUnavailable)
+            }
+            Ok(Ok(Ok(false))) => Ok(crate::streaming_report_handle::StreamExternalReadback::NotConfirmed),
+            Ok(Ok(Ok(true))) => {
+                self.settle_confirmed()?;
+                Ok(crate::streaming_report_handle::StreamExternalReadback::Confirmed)
+            }
+        }
+    }
+
+    fn validate_original(&self) -> Result<(), ExternalTaskClaimError> {
+        let report = self.journal.0.try_lock().map_err(|_| ExternalTaskClaimError::Unavailable)?;
+        let claims = self.journal.6.try_lock().map_err(|_| ExternalTaskClaimError::Unavailable)?;
+        let external = self.journal.2.try_lock().map_err(|_| ExternalTaskClaimError::Unavailable)?;
+        if !claims.get(&self.index).is_some_and(|token| std::sync::Arc::ptr_eq(token, &self.token))
+            || !external.iter().any(|(index, recovery)| {
+                *index == self.index && std::sync::Arc::ptr_eq(&recovery.invoked, &self.recovery.invoked)
+            }) {
+            return Err(ExternalTaskClaimError::IdentityMismatch);
+        }
+        match report.steps.get(self.index) {
+            Some(step) if step.node_id == "external-compensation" && step.outcome != SagaRollbackOutcome::Completed => Ok(()),
+            _ => Err(ExternalTaskClaimError::IdentityMismatch),
+        }
+    }
+
+    fn settle_confirmed(&mut self) -> Result<(), ExternalTaskClaimError> {
+        let released = {
+            let mut report = self.journal.0.try_lock().map_err(|_| ExternalTaskClaimError::Unavailable)?;
+            let mut claims = self.journal.6.try_lock().map_err(|_| ExternalTaskClaimError::Unavailable)?;
+            let mut external = self.journal.2.try_lock().map_err(|_| ExternalTaskClaimError::Unavailable)?;
+            let position = external.iter().position(|(index, recovery)| {
+                *index == self.index && std::sync::Arc::ptr_eq(&recovery.invoked, &self.recovery.invoked)
+            }).ok_or(ExternalTaskClaimError::IdentityMismatch)?;
+            if !claims.get(&self.index).is_some_and(|token| std::sync::Arc::ptr_eq(token, &self.token)) {
+                return Err(ExternalTaskClaimError::IdentityMismatch);
+            }
+            let step = report.steps.get_mut(self.index).ok_or(ExternalTaskClaimError::IdentityMismatch)?;
+            if step.node_id != "external-compensation" || step.outcome == SagaRollbackOutcome::Completed {
+                return Err(ExternalTaskClaimError::IdentityMismatch);
+            }
+            step.outcome = SagaRollbackOutcome::Completed;
+            // A single positive readback must not seal the whole journal or
+            // authorize root retirement; later child/local work may remain.
+            report.finished = false;
+            claims.remove(&self.index);
+            self.settled = true;
+            external.swap_remove(position)
+        };
+        // Dropping user-provided hook/store objects may run destructors.
+        drop(released);
+        Ok(())
+    }
+}
+#[cfg(feature = "streaming")]
+impl Drop for ExternalTaskClaim {
+    fn drop(&mut self) {
+        if self.settled { return; }
+        let Ok(mut claims) = self.journal.6.try_lock() else { return; };
+        if claims.get(&self.index).is_some_and(|token| std::sync::Arc::ptr_eq(token, &self.token)) {
+            claims.remove(&self.index);
+        }
+    }
+}
 impl std::fmt::Debug for SagaRollbackJournal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SagaRollbackJournal")
@@ -233,6 +331,28 @@ impl SagaRollbackJournal {
         step.outcome = SagaRollbackOutcome::InProgress;
         report.finished = false;
         Ok(LocalTaskClaim { journal: self.clone(), index, task, token, invoked: false, settled: false })
+    }
+    /// Claim only the earliest unresolved journal row, and only when that row
+    /// owns the exact retained external capability. Later rows cannot pass an
+    /// earlier local/child/unknown outcome during readback.
+    #[cfg(feature = "streaming")]
+    pub(crate) fn claim_next_external(&self) -> Result<ExternalTaskClaim, ExternalTaskClaimError> {
+        let report = self.0.try_lock().map_err(|_| ExternalTaskClaimError::Unavailable)?;
+        let mut claims = self.6.try_lock().map_err(|_| ExternalTaskClaimError::Unavailable)?;
+        let external = self.2.try_lock().map_err(|_| ExternalTaskClaimError::Unavailable)?;
+        let index = report.steps.iter().position(|step| step.outcome != SagaRollbackOutcome::Completed)
+            .ok_or(ExternalTaskClaimError::Missing)?;
+        if claims.contains_key(&index) { return Err(ExternalTaskClaimError::Claimed); }
+        let recovery = external.iter().find(|(observed, _)| *observed == index)
+            .map(|(_, recovery)| recovery.clone())
+            .ok_or(ExternalTaskClaimError::NotEligible)?;
+        let step = report.steps.get(index).ok_or(ExternalTaskClaimError::IdentityMismatch)?;
+        if step.node_id != "external-compensation" || step.outcome == SagaRollbackOutcome::Completed {
+            return Err(ExternalTaskClaimError::NotEligible);
+        }
+        let token = std::sync::Arc::new(());
+        claims.insert(index, token.clone());
+        Ok(ExternalTaskClaim { journal: self.clone(), index, recovery, token, settled: false })
     }
     /// Move a stack task into its original indexed journal without copying the
     /// task or its serialized input. On lock failure the exact task is returned.

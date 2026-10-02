@@ -157,6 +157,19 @@ pub enum StreamLocalRecoveryError {
     HandlerRegistryUnavailable,
 }
 pub(crate) type LocalRecovery = Arc<dyn Fn(Instant) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<crate::SagaRollbackOutcome, StreamLocalRecoveryError>> + Send>> + Send + Sync>;
+/// Safe result of reading the external compensation completion marker. A
+/// negative or unavailable read is inconclusive and never authorizes replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamExternalReadback { Confirmed, NotConfirmed, ReadUnavailable }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamExternalRecoveryError {
+    Wait(StreamReportWaitError),
+    FrameNotReported,
+    Unavailable,
+    JournalUnavailable,
+    RecoveryBlocked,
+}
+pub(crate) type ExternalRecovery = Arc<dyn Fn(Instant) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<StreamExternalReadback, StreamExternalRecoveryError>> + Send>> + Send + Sync>;
 
 /// Clones share one original report. Waiting never retires recovery custody;
 /// only explicit report transfer consumes the result, once across all clones.
@@ -169,16 +182,18 @@ pub struct StreamReportHandle<Out, E> {
     probe: Option<RecoveryProbe>,
     local_retirement: Option<LocalRetirement>,
     local_recovery: Option<LocalRecovery>,
+    external_recovery: Option<ExternalRecovery>,
 }
 impl<Out, E> Clone for StreamReportHandle<Out, E> {
-    fn clone(&self) -> Self { Self { task: self.task.clone(), _owner: self._owner.clone(), retirement: self.retirement.clone(), assessment: self.assessment.clone(), probe: self.probe.clone(), local_retirement: self.local_retirement.clone(), local_recovery: self.local_recovery.clone() } }
+    fn clone(&self) -> Self { Self { task: self.task.clone(), _owner: self._owner.clone(), retirement: self.retirement.clone(), assessment: self.assessment.clone(), probe: self.probe.clone(), local_retirement: self.local_retirement.clone(), local_recovery: self.local_recovery.clone(), external_recovery: self.external_recovery.clone() } }
 }
 impl<Out: Send + 'static, E: Send + 'static> StreamReportHandle<Out, E> {
     pub(crate) fn new(task: Arc<tokio::sync::Mutex<crate::managed_stream_task::ManagedStreamTask<Original<Out, E>>>>,
-        owner: crate::nested_custody::Capability) -> Self { Self { task, _owner: owner, retirement: Arc::new(AtomicU8::new(0)), assessment: Arc::new(Mutex::new(None)), probe: None, local_retirement: None, local_recovery: None } }
+        owner: crate::nested_custody::Capability) -> Self { Self { task, _owner: owner, retirement: Arc::new(AtomicU8::new(0)), assessment: Arc::new(Mutex::new(None)), probe: None, local_retirement: None, local_recovery: None, external_recovery: None } }
     pub(crate) fn with_recovery_probe(mut self, probe: RecoveryProbe) -> Self { self.probe = Some(probe); self }
     pub(crate) fn with_local_retirement(mut self, retirement: LocalRetirement) -> Self { self.local_retirement = Some(retirement); self }
     pub(crate) fn with_local_recovery(mut self, recovery: LocalRecovery) -> Self { self.local_recovery = Some(recovery); self }
+    pub(crate) fn with_external_recovery(mut self, recovery: ExternalRecovery) -> Self { self.external_recovery = Some(recovery); self }
     pub(crate) fn holder_capability(&self) -> crate::nested_custody::Capability { self.task.clone() }
     /// Explicitly retire local root custody after original Completed/Unpersisted
     /// execution with no retained Saga state or recovery journal. This does not
@@ -195,6 +210,20 @@ impl<Out: Send + 'static, E: Send + 'static> StreamReportHandle<Out, E> {
         -> Result<crate::SagaRollbackOutcome, StreamLocalRecoveryError> {
         let recovery = self.local_recovery.as_ref().ok_or(StreamLocalRecoveryError::Unavailable)?;
         self.require_reported_frame(deadline).await?;
+        recovery(deadline).await
+    }
+    /// Read back only the first retained external compensation marker from this
+    /// joined report's original typed owner. This never calls the external hook.
+    /// A missing marker, read failure or timeout keeps the original capability;
+    /// a positive marker completes one row but never seals the journal.
+    pub async fn reconcile_next_external_compensation_until(&self, deadline: Instant)
+        -> Result<StreamExternalReadback, StreamExternalRecoveryError> {
+        let recovery = self.external_recovery.as_ref().ok_or(StreamExternalRecoveryError::Unavailable)?;
+        self.require_reported_frame(deadline).await.map_err(|error| match error {
+            StreamLocalRecoveryError::Wait(error) => StreamExternalRecoveryError::Wait(error),
+            StreamLocalRecoveryError::FrameNotReported => StreamExternalRecoveryError::FrameNotReported,
+            _ => StreamExternalRecoveryError::Unavailable,
+        })?;
         recovery(deadline).await
     }
     pub(crate) async fn require_reported_frame(&self, deadline: Instant) -> Result<(), StreamLocalRecoveryError> {
