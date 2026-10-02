@@ -1,6 +1,6 @@
 //! Typed report custody for supervised streams. A report lease is not a
 //! reconciliation decision; keep it until pending effects are resolved explicitly.
-use std::sync::{Arc, atomic::{AtomicU8, Ordering}};
+use std::sync::{Arc, Mutex, atomic::{AtomicU8, Ordering}};
 use tokio::time::Instant;
 use crate::{StreamInitializationReport, StreamConsumptionTerminal};
 
@@ -34,6 +34,85 @@ pub enum StreamReportWaitError { TimedOut, AlreadyTaken }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamRetirementEvidence { NotObserved, RejectedBeforeStart, RequiresRecoveryReview }
 
+/// Fixed observations from the original joined report; no payload/error strings.
+/// Prefix durability never certifies terminal stream or external effect completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamFrameAssessment { RejectedBeforeStart, Reported, AlreadyStarted, FrameFailed }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamPrefixDurability { NotObserved, Unpersisted, NotRequested, RecordedCompletionConfirmed, RecordedWithoutCompletion, Unconfirmed, BlockedBeforeEffect }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamCleanupAssessment { NotReported, AllReportedComplete, Incomplete }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamConsumptionAssessment { Completed, Cancelled, TimedOut, InvalidDeadline, DriverPanicked, SupervisorCancelled }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamReportAssessment {
+    pub frame: StreamFrameAssessment,
+    pub prefix_durability: StreamPrefixDurability,
+    pub cleanup: StreamCleanupAssessment,
+    pub initialization_effect: Option<crate::execution_report::EffectBoundary>,
+    pub consumption: Option<StreamConsumptionAssessment>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamAssessmentError { Unavailable }
+
+fn assess_prefix<T>(prefix: &crate::ExecutionReport<T>, extra: Option<&crate::SagaRollbackReport>)
+    -> (StreamPrefixDurability, StreamCleanupAssessment) {
+    use crate::ExecutionReport as Report;
+    let durability = match prefix {
+        Report::Unpersisted { .. } => StreamPrefixDurability::Unpersisted,
+        Report::NotRequested { .. } => StreamPrefixDurability::NotRequested,
+        Report::Recorded { completion: crate::execution_report::CompletionConfirmation::Confirmed, .. } => StreamPrefixDurability::RecordedCompletionConfirmed,
+        Report::Recorded { .. } => StreamPrefixDurability::RecordedWithoutCompletion,
+        Report::Unconfirmed { .. } => StreamPrefixDurability::Unconfirmed,
+        Report::BlockedBeforeEffect { .. } => StreamPrefixDurability::BlockedBeforeEffect,
+    };
+    let mut cleanup = StreamCleanupAssessment::NotReported;
+    for report in prefix.cleanup().into_iter().chain(extra) {
+        if !report.is_complete() { return (durability, StreamCleanupAssessment::Incomplete); }
+        cleanup = StreamCleanupAssessment::AllReportedComplete;
+    }
+    (durability, cleanup)
+}
+fn assess_joined<Out, E>(joined: &Result<Option<Original<Out, E>>, tokio::task::JoinError>) -> StreamReportAssessment {
+    let mut assessment = StreamReportAssessment { frame: StreamFrameAssessment::FrameFailed,
+        prefix_durability: StreamPrefixDurability::NotObserved, cleanup: StreamCleanupAssessment::NotReported,
+        initialization_effect: None, consumption: None };
+    let report = match joined {
+        Ok(None) => { assessment.frame = StreamFrameAssessment::RejectedBeforeStart; return assessment; }
+        Ok(Some(Err(_))) => { assessment.frame = StreamFrameAssessment::AlreadyStarted; return assessment; }
+        Err(_) => return assessment,
+        Ok(Some(Ok(report))) => report,
+    };
+    assessment.frame = StreamFrameAssessment::Reported;
+    let (durability, cleanup) = match report {
+        StreamInitializationReport::Ready { prefix, value } => {
+            assessment.initialization_effect = Some(crate::execution_report::EffectBoundary::MayHaveRun);
+            assessment.consumption = Some(match &value.consumption {
+                Ok(result) => match result.terminal {
+                    StreamConsumptionTerminal::Completed => StreamConsumptionAssessment::Completed,
+                    StreamConsumptionTerminal::Cancelled(_) => StreamConsumptionAssessment::Cancelled,
+                    StreamConsumptionTerminal::TimedOut(_) => StreamConsumptionAssessment::TimedOut,
+                    StreamConsumptionTerminal::InvalidDeadline(_) => StreamConsumptionAssessment::InvalidDeadline,
+                },
+                Err(crate::streaming_recovery::StreamDriverError::Panicked) => StreamConsumptionAssessment::DriverPanicked,
+                Err(crate::streaming_recovery::StreamDriverError::Cancelled(_)) => StreamConsumptionAssessment::SupervisorCancelled,
+            });
+            assess_prefix(prefix, value.cleanup.as_ref())
+        }
+        StreamInitializationReport::Rejected { prefix } => {
+            assessment.initialization_effect = Some(crate::execution_report::EffectBoundary::NotInvoked);
+            assess_prefix(prefix, None)
+        }
+        StreamInitializationReport::Failed { prefix, initialization, initialization_cleanup, .. } |
+        StreamInitializationReport::Cancelled { prefix, initialization, initialization_cleanup, .. } => {
+            assessment.initialization_effect = Some(*initialization);
+            assess_prefix(prefix, initialization_cleanup.as_ref())
+        }
+    };
+    assessment.prefix_durability = durability; assessment.cleanup = cleanup;
+    assessment
+}
+
 /// Clones share one original report. Waiting never retires recovery custody;
 /// only explicit report transfer consumes the result, once across all clones.
 /// Dropping the final lease is not successful cleanup or durable reconciliation.
@@ -41,13 +120,14 @@ pub struct StreamReportHandle<Out, E> {
     task: Arc<tokio::sync::Mutex<crate::managed_stream_task::ManagedStreamTask<Original<Out, E>>>>,
     _owner: crate::nested_custody::Capability,
     retirement: Arc<AtomicU8>,
+    assessment: Arc<Mutex<Option<StreamReportAssessment>>>,
 }
 impl<Out, E> Clone for StreamReportHandle<Out, E> {
-    fn clone(&self) -> Self { Self { task: self.task.clone(), _owner: self._owner.clone(), retirement: self.retirement.clone() } }
+    fn clone(&self) -> Self { Self { task: self.task.clone(), _owner: self._owner.clone(), retirement: self.retirement.clone(), assessment: self.assessment.clone() } }
 }
 impl<Out: Send + 'static, E: Send + 'static> StreamReportHandle<Out, E> {
     pub(crate) fn new(task: Arc<tokio::sync::Mutex<crate::managed_stream_task::ManagedStreamTask<Original<Out, E>>>>,
-        owner: crate::nested_custody::Capability) -> Self { Self { task, _owner: owner, retirement: Arc::new(AtomicU8::new(0)) } }
+        owner: crate::nested_custody::Capability) -> Self { Self { task, _owner: owner, retirement: Arc::new(AtomicU8::new(0)), assessment: Arc::new(Mutex::new(None)) } }
     /// Join without taking the report. Timeout or dropped wait keeps the same
     /// frame/result available, including during mutex contention.
     pub async fn settle_until(&self, deadline: Instant) -> Result<(), StreamReportWaitError> {
@@ -64,8 +144,15 @@ impl<Out: Send + 'static, E: Send + 'static> StreamReportHandle<Out, E> {
             _ => StreamRetirementEvidence::NotObserved,
         }
     }
+    /// Remains available across clone/report transfer; None means not yet joined.
+    /// This observation is not a caller-forgeable retirement authorization.
+    pub fn assessment(&self) -> Result<Option<StreamReportAssessment>, StreamAssessmentError> {
+        self.assessment.lock().map(|state| *state).map_err(|_| StreamAssessmentError::Unavailable)
+    }
     fn observe_retirement(&self, task: &crate::managed_stream_task::ManagedStreamTask<Original<Out, E>>) {
-        if let Some(rejected) = task.rejected_before_start() {
+        if let Some(joined) = task.joined_ref() {
+            let rejected = matches!(joined, Ok(None));
+            if let Ok(mut assessment) = self.assessment.lock() { *assessment = Some(assess_joined(joined)); }
             self.retirement.store(if rejected { 1 } else { 2 }, Ordering::Release);
         }
     }
