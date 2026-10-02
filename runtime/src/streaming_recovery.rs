@@ -2201,8 +2201,8 @@ mod tests {
         assert!(matches!(task.await, Err(error) if error.is_cancelled()));
         assert_eq!(polls.load(Ordering::SeqCst), 1);
         assert_eq!(drops.load(Ordering::SeqCst), 1);
-        assert_eq!(receiver.recv().await, Some(277));
-        assert_eq!(receiver.recv().await, None);
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.unwrap(), Some(277));
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.unwrap(), None);
         assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
         let inner = admission.upgrade().unwrap().downcast::<RecoveryInner<u32, u32, String, Resources>>()
             .unwrap_or_else(|_| panic!("wrong full-queue child owner"));
@@ -2212,12 +2212,18 @@ mod tests {
             let stack = context.1.read::<SagaStack>().unwrap();
             assert_eq!(stack.tasks.len(), 1);
             assert_eq!(stack.tasks[0].input_snapshot, b"277");
+            assert!(inner.graph.saga_compensation_registry.read().unwrap().get(&stack.tasks[0].node_id).is_some());
+            assert!(context.1.has::<crate::nested_custody::WeakCustodyClient>());
+            assert!(!context.1.has::<crate::nested_custody::CustodyStore>());
         }
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
+        let registry = Arc::downgrade(&inner.graph.saga_compensation_registry);
         drop(inner);
         drop(resources);
         assert!(weak.upgrade().is_some());
         drop(parent);
         assert!(weak.upgrade().is_none());
+        assert!(registry.upgrade().is_none());
         assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
     }
     struct ExternalHook {
