@@ -72,6 +72,7 @@ type BoundedFrame<Out, Item, E> = (
 type OwnedPlanFactory<In, Out, Item, E, Res> = Arc<dyn Fn(
     &OwnedStreamDefinition<In, Out, Item, E, Res>, OwnedStreamContext<Res>,
     &crate::streaming_recovery_admission::StreamRecoveryAdmission, Option<std::time::Instant>,
+    Option<crate::streaming_recovery_admission::RecoveryPermit>,
 ) -> Result<OwnedCallablePlan<In, Out, Item, E, Res>, OwnedStreamPlanRejected<In, Out, E, Res>> + Send + Sync>;
 /// Concrete initializer identity is hidden; original report and context types remain.
 pub(crate) struct OwnedCallablePlan<In, Out, Item, E, Res> {
@@ -133,8 +134,8 @@ where
     where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
         SErr: Send + Sync + Debug + 'static,
     {
-        Arc::new(|definition, context, admission, expires| {
-            let plan = definition.try_plan::<S, SErr>(context, admission, expires)?;
+        Arc::new(|definition, context, admission, expires, permit| {
+            let plan = definition.try_plan_with_reservation::<S, SErr>(context, admission, expires, permit)?;
             Ok(OwnedCallablePlan {
                 owner: plan.owner.clone(),
                 prepare: Some(Box::new(move |input, grace, ready| plan.prepare_bounded_notifying::<SErr>(input, grace, ready))),
@@ -145,7 +146,7 @@ where
         admission: &crate::streaming_recovery_admission::StreamRecoveryAdmission,
         expires: Option<std::time::Instant>)
         -> Result<OwnedCallablePlan<In, Out, Item, E, Res>, OwnedStreamPlanRejected<In, Out, E, Res>> {
-        (self.callable_factory)(self, context, admission, expires)
+        (self.callable_factory)(self, context, admission, expires, None)
     }
     pub(crate) fn try_plan<S, SErr>(&self, context: OwnedStreamContext<Res>,
         admission: &crate::streaming_recovery_admission::StreamRecoveryAdmission,
@@ -154,12 +155,29 @@ where
     where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
         SErr: Send + Sync + Debug + 'static,
     {
+        self.try_plan_with_reservation::<S, SErr>(context, admission, expires, None)
+    }
+    pub(crate) fn try_callable_plan_reserved(&self, context: OwnedStreamContext<Res>,
+        admission: &crate::streaming_recovery_admission::StreamRecoveryAdmission,
+        expires: Option<std::time::Instant>, permit: crate::streaming_recovery_admission::RecoveryPermit)
+        -> Result<OwnedCallablePlan<In, Out, Item, E, Res>, OwnedStreamPlanRejected<In, Out, E, Res>> {
+        (self.callable_factory)(self, context, admission, expires, Some(permit))
+    }
+    fn try_plan_with_reservation<S, SErr>(&self, context: OwnedStreamContext<Res>,
+        admission: &crate::streaming_recovery_admission::StreamRecoveryAdmission,
+        expires: Option<std::time::Instant>, permit: Option<crate::streaming_recovery_admission::RecoveryPermit>)
+        -> Result<OwnedStreamPlan<In, Out, Item, E, Res, S>, OwnedStreamPlanRejected<In, Out, E, Res>>
+    where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
+        SErr: Send + Sync + Debug + 'static,
+    {
         let initializer = match self.initializer.downcast_ref::<S>() {
             Some(initializer) => initializer.clone(),
             None => return Err(OwnedStreamPlanRejected::InitializerType { context }),
         };
-        let owner = crate::streaming_recovery::OwnedStreamRecovery::try_new(self.prefix.clone(), context, admission, expires)
-            .map_err(OwnedStreamPlanRejected::Admission)?;
+        let owner = match permit {
+            Some(permit) => crate::streaming_recovery::OwnedStreamRecovery::try_new_reserved(self.prefix.clone(), context, admission, expires, permit),
+            None => crate::streaming_recovery::OwnedStreamRecovery::try_new(self.prefix.clone(), context, admission, expires),
+        }.map_err(OwnedStreamPlanRejected::Admission)?;
         Ok(OwnedStreamPlan { owner, initializer, item_maps: self.item_maps.clone(), timeout_config: self.timeout_config.clone(), buffer_size: self.buffer_size })
     }
 }
@@ -586,6 +604,34 @@ mod tests {
             _ => panic!("original report not ready"),
         }
     }
+    #[tokio::test]
+    async fn reserved_callable_plan_consumes_one_slot_and_runs_registered_frame() {
+        let circuit = circuit(&["reserved"]);
+        let admission = crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1);
+        let permit = admission.reserve().unwrap();
+        assert_eq!(admission.in_use().unwrap(), 1);
+        assert!(admission.reserve().is_err());
+        let mut plan = match circuit.owned_definition.try_callable_plan_reserved(
+            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(), &admission, None, permit) {
+            Ok(plan) => plan, Err(_) => panic!("reserved capacity must transfer without second reservation"),
+        };
+        assert_eq!(admission.in_use().unwrap(), 1);
+        let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
+        };
+        let report = plan.report_handle(&prepared).unwrap();
+        let root = crate::nested_custody::CustodyStore::new(1);
+        let journal = crate::SagaRollbackJournal::new("reserved-parent");
+        plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+            .unwrap_or_else(|error| panic!("{}", error.signal));
+        assert_eq!(receiver.recv().await, Some("reserved".to_string()));
+        assert_eq!(receiver.recv().await, None);
+        assert!(matches!(report.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await,
+            Ok(crate::streaming_report_handle::SupervisedStreamCompletion::Report(StreamInitializationReport::Ready { .. }))));
+        drop(plan); drop(prepared); drop(root); drop(report);
+        assert_eq!(admission.in_use().unwrap(), 0);
+    }
+
     #[tokio::test]
     async fn public_report_handle_retains_owner_and_transfers_original_result_once() {
         use crate::streaming_report_handle::{StreamReportWaitError, SupervisedStreamCompletion};

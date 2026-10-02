@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecoveryAdmissionFailure {
     Closed,
+    PermitMismatch,
     Capacity,
     Poisoned,
     RegistryPoisoned,
@@ -39,6 +40,13 @@ impl StreamRecoveryAdmission {
         }
         state.used += 1;
         Ok(RecoveryPermit(self.0.clone()))
+    }
+    pub(crate) fn validate_permit(&self, permit: &RecoveryPermit) -> Result<(), RecoveryAdmissionFailure> {
+        if !Arc::ptr_eq(&self.0, &permit.0) { return Err(RecoveryAdmissionFailure::PermitMismatch); }
+        // Existing reservations survive close, but unknown poisoned authority
+        // cannot be converted into a new recovery owner.
+        let _state = self.0.lock().map_err(|_| RecoveryAdmissionFailure::Poisoned)?;
+        Ok(())
     }
     pub(crate) fn close(&self) -> Result<(), RecoveryAdmissionFailure> {
         self.0

@@ -433,7 +433,7 @@ where
     Res: Send + Sync + 'static,
 {
     pub(crate) fn try_new(
-        mut graph: Axon<In, Out, E, Res>,
+        graph: Axon<In, Out, E, Res>,
         context: OwnedStreamContext<Res>,
         admission: &StreamRecoveryAdmission,
         expires: Option<std::time::Instant>,
@@ -448,6 +448,16 @@ where
                 });
             }
         };
+        Self::try_new_reserved(graph, context, admission, expires, permit)
+    }
+    /// Consume one exact pre-admitted permit, without allocating another slot.
+    pub(crate) fn try_new_reserved(
+        mut graph: Axon<In, Out, E, Res>, context: OwnedStreamContext<Res>,
+        admission: &StreamRecoveryAdmission, expires: Option<std::time::Instant>, permit: RecoveryPermit,
+    ) -> Result<Self, StreamRecoveryAdmissionRejected<In, Out, E, Res>> {
+        if let Err(reason) = admission.validate_permit(&permit) {
+            return Err(StreamRecoveryAdmissionRejected { graph, context, reason });
+        }
         // Copy handler Arcs under the original read lock before any effects.
         // A poisoned registry has unknown authority: retain caller ownership.
         let handlers = graph
