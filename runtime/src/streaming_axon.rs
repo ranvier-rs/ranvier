@@ -434,6 +434,44 @@ mod tests {
             _ => panic!("original report not ready"),
         }
     }
+    #[test]
+    fn owned_plan_type_rejection_returns_original_context() {
+        let original = circuit(&["a"]);
+        let definition = OwnedStreamDefinition {
+            prefix: original.owned_definition.prefix.clone(),
+            initializer: Arc::new(()), item_maps: Vec::new(),
+        };
+        let resources = Arc::new(());
+        let mut bus = Bus::new();
+        bus.insert(139u32);
+        let context = OwnedStreamContext::try_new(resources.clone(), bus).unwrap();
+        let rejection = match definition.try_plan::<Chunks, String>(context,
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
+            Err(OwnedStreamPlanRejected::InitializerType { context }) => context,
+            _ => panic!("wrong initializer type must reject before admission"),
+        };
+        let (returned, bus) = rejection.into_parts();
+        assert!(Arc::ptr_eq(&resources, &returned));
+        assert_eq!(bus.read::<u32>(), Some(&139));
+    }
+    #[test]
+    fn owned_plan_capacity_rejection_returns_graph_and_original_context() {
+        let original = circuit(&["a"]);
+        let resources = Arc::new(());
+        let mut bus = Bus::new();
+        bus.insert(149u32);
+        let context = OwnedStreamContext::try_new(resources.clone(), bus).unwrap();
+        let rejection = match original.owned_definition.try_plan::<Chunks, String>(context,
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(0), None) {
+            Err(OwnedStreamPlanRejected::Admission(rejection)) => rejection,
+            _ => panic!("zero capacity must return recovery authority"),
+        };
+        let (graph, context) = rejection.into_parts();
+        assert_eq!(graph.schematic.nodes.len(), original.owned_definition.prefix.schematic.nodes.len());
+        let (returned, bus) = context.into_parts();
+        assert!(Arc::ptr_eq(&resources, &returned));
+        assert_eq!(bus.read::<u32>(), Some(&149));
+    }
     #[derive(Clone)]
     struct Fault;
     #[async_trait::async_trait]
