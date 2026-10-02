@@ -2345,6 +2345,16 @@ mod tests {
     }
     #[tokio::test]
     async fn parent_stream_journal_keeps_returned_successful_child_effects_unresolved() {
+        struct EofInit;
+        #[async_trait::async_trait]
+        impl StreamingTransition<u32> for EofInit {
+            type Item = u32;
+            type Error = String;
+            type Resources = Resources;
+            async fn run_stream(&self, _: u32, _: &Resources, _: &mut Bus) -> Result<RawStream<u32>, String> {
+                Ok(Box::pin(futures_util::stream::empty()))
+            }
+        }
         let parent = crate::nested_custody::CustodyStore::new(1);
         let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
         let weak = Arc::downgrade(&resources);
@@ -2355,10 +2365,13 @@ mod tests {
             &StreamRecoveryAdmission::new(1), None).unwrap();
         let journal = crate::SagaRollbackJournal::new("parent-returned-child");
         let admission = child.admit_to_parent_journal(parent.client(), &journal).await.unwrap();
-        let report = child.initialize_and_drive(293, &Init, None, std::time::Duration::from_secs(5), |source| async move {
-            drop(source);
-            completed()
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let report = child.initialize_and_drive(293, &EofInit, None, std::time::Duration::from_secs(5), move |source| {
+            produce_bounded(source, ranvier_core::streaming::StreamTimeoutConfig {
+                init: None, idle: None, total: None,
+            }, CancellationToken::new(), sender)
         }).await.unwrap();
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.unwrap(), None);
         assert!(matches!(report, StreamInitializationReport::Ready { .. }));
         let observations = journal.retained_stream_observations();
         assert_eq!(observations[0].1.phase, SupervisorPhase::Returned);
@@ -2375,6 +2388,7 @@ mod tests {
         assert!(weak.upgrade().is_none());
         assert!(journal.has_unresolved_tasks());
         assert!(!journal.snapshot().is_complete());
+        assert_eq!(journal.retained_stream_observations()[0].1.custody, RecoveryCustody::ReleasedWithPendingTasks);
     }
     struct ExternalHook {
         mode: u8,
