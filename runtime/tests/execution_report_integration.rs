@@ -856,6 +856,7 @@ impl Transition<u32, u32> for Count {
 struct FailSecondAppend {
     backing: InMemoryPersistenceStore,
     calls: Arc<AtomicUsize>,
+    apply_second_before_error: bool,
 }
 
 #[cfg(feature = "streaming")]
@@ -889,6 +890,7 @@ async fn collected_stream_prefix_terminal_failure_blocks_initialization_and_reta
     bus.insert(PersistenceHandle::from_store(FailSecondAppend {
         backing: backing.clone(),
         calls: writes.clone(),
+        apply_second_before_error: false,
     }));
     let axon = Axon::<u32, u32, String, ()>::new("stream-report")
         .then_stream(CountStream(effects.clone()))
@@ -1020,6 +1022,9 @@ async fn rejected_and_applied_unknown_entries_block_both_execution_paths() {
 impl PersistenceStore for FailSecondAppend {
     async fn append(&self, event: PersistenceEnvelope) -> anyhow::Result<()> {
         if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+            if self.apply_second_before_error {
+                self.backing.append(event).await?;
+            }
             return Err(anyhow::anyhow!("secret-backend-sentinel"));
         }
         self.backing.append(event).await
@@ -1044,40 +1049,59 @@ impl PersistenceStore for FailSecondAppend {
 
 #[tokio::test]
 async fn actual_execute_retains_first_failure_after_terminal_and_completion_succeed() {
-    let backing = InMemoryPersistenceStore::new();
-    let writes = Arc::new(AtomicUsize::new(0));
-    let effects = Arc::new(AtomicUsize::new(0));
-    let mut bus = Bus::new();
-    bus.insert(PersistenceTraceId::new("observed"));
-    bus.insert(PersistenceHandle::from_store(FailSecondAppend {
-        backing: backing.clone(),
-        calls: writes.clone(),
-    }));
-    let axon = Axon::<u32, u32, String, ()>::new("report-fixture").then(Count(effects.clone()));
-    let report = axon.execute(0, &(), &mut bus).await;
-    assert!(matches!(
-        report,
-        ExecutionReport::Unconfirmed {
-            result: Outcome::Next(1),
-            operation: PersistenceOperation::Result,
-            effect: EffectBoundary::MayHaveRun,
-            ..
-        }
-    ));
-    assert_eq!(effects.load(Ordering::SeqCst), 1);
-    assert_eq!(writes.load(Ordering::SeqCst), 3);
-    let trace = backing.load("observed").await.unwrap().unwrap();
-    assert_eq!(trace.completion, Some(CompletionState::Success));
-    assert_eq!(trace.events.len(), 2);
-    assert_eq!(
-        bus.read::<PersistenceHandle>()
-            .unwrap()
-            .store()
-            .load("observed")
-            .await
-            .unwrap(),
-        Some(trace)
-    );
+    for (trace_id, apply_second_before_error) in
+        [("not-applied", false), ("applied-lost-ack", true)]
+    {
+        let backing = InMemoryPersistenceStore::new();
+        let writes = Arc::new(AtomicUsize::new(0));
+        let effects = Arc::new(AtomicUsize::new(0));
+        let mut bus = Bus::new();
+        bus.insert(PersistenceTraceId::new(trace_id));
+        bus.insert(PersistenceHandle::from_store(FailSecondAppend {
+            backing: backing.clone(),
+            calls: writes.clone(),
+            apply_second_before_error,
+        }));
+        let axon = Axon::<u32, u32, String, ()>::new("report-fixture").then(Count(effects.clone()));
+        let report = axon.execute(0, &(), &mut bus).await;
+        assert!(matches!(
+            &report,
+            ExecutionReport::Unconfirmed {
+                result: Outcome::Next(1),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                ..
+            }
+        ));
+        assert!(!format!("{report:?}").contains("secret-backend-sentinel"));
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert_eq!(writes.load(Ordering::SeqCst), 3);
+
+        let trace = backing.load(trace_id).await.unwrap().unwrap();
+        assert_eq!(trace.completion, Some(CompletionState::Success));
+        assert_eq!(
+            trace.events.len(),
+            if apply_second_before_error { 3 } else { 2 }
+        );
+        assert_eq!(
+            trace
+                .events
+                .iter()
+                .filter(|event| event.outcome_kind == "Next")
+                .count(),
+            if apply_second_before_error { 2 } else { 1 }
+        );
+        assert_eq!(trace.events[0].outcome_kind, "Enter");
+        assert_eq!(
+            bus.read::<PersistenceHandle>()
+                .unwrap()
+                .store()
+                .load(trace_id)
+                .await
+                .unwrap(),
+            Some(trace)
+        );
+    }
 }
 
 struct CompleteErrorStore {
