@@ -1418,7 +1418,7 @@ where
         let owned_definition = Arc::new(crate::streaming_axon::OwnedStreamDefinition {
             prefix: prefix.clone(),
             initializer: Arc::new(streaming.clone()),
-            item_maps: Vec::new(),
+            item_maps: Vec::new(), timeout_config: timeout_config.clone(), buffer_size: 64,
         });
         let stream_executor: crate::streaming_axon::StreamExecutorType<In, Out, Item, E, Res> =
             Arc::new(move |input, resources, bus, token| {

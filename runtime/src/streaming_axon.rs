@@ -24,6 +24,8 @@ pub(crate) struct OwnedStreamDefinition<In, Out, Item, E, Res> {
     pub(crate) prefix: crate::Axon<In, Out, E, Res>,
     pub(crate) initializer: Arc<dyn std::any::Any + Send + Sync>,
     pub(crate) item_maps: Vec<Arc<dyn Fn(Item) -> Item + Send + Sync>>,
+    pub(crate) timeout_config: Option<StreamTimeoutConfig>,
+    pub(crate) buffer_size: usize,
 }
 pub(crate) enum OwnedStreamPlanRejected<In, Out, E, Res> {
     InitializerType { context: OwnedStreamContext<Res> },
@@ -33,6 +35,8 @@ pub(crate) struct OwnedStreamPlan<In, Out, Item, E, Res, S> {
     pub(crate) owner: crate::streaming_recovery::OwnedStreamRecovery<In, Out, E, Res>,
     initializer: S,
     item_maps: Vec<Arc<dyn Fn(Item) -> Item + Send + Sync>>,
+    pub(crate) timeout_config: Option<StreamTimeoutConfig>,
+    pub(crate) buffer_size: usize,
 }
 impl<In, Out, Item, E, Res> OwnedStreamDefinition<In, Out, Item, E, Res>
 where
@@ -55,7 +59,7 @@ where
         };
         let owner = crate::streaming_recovery::OwnedStreamRecovery::try_new(self.prefix.clone(), context, admission, expires)
             .map_err(OwnedStreamPlanRejected::Admission)?;
-        Ok(OwnedStreamPlan { owner, initializer, item_maps: self.item_maps.clone() })
+        Ok(OwnedStreamPlan { owner, initializer, item_maps: self.item_maps.clone(), timeout_config: self.timeout_config.clone(), buffer_size: self.buffer_size })
     }
 }
 impl<In, Out, Item, E, Res, S> OwnedStreamPlan<In, Out, Item, E, Res, S>
@@ -159,11 +163,19 @@ where
     }
     pub fn with_buffer_size(mut self, size: usize) -> Self {
         self.buffer_size = size;
+        self.refresh_owned_config();
         self
     }
     pub fn with_timeout(mut self, config: StreamTimeoutConfig) -> Self {
         self.timeout_config = Some(config);
+        self.refresh_owned_config();
         self
+    }
+    fn refresh_owned_config(&mut self) {
+        self.owned_definition = Arc::new(OwnedStreamDefinition {
+            prefix: self.owned_definition.prefix.clone(), initializer: self.owned_definition.initializer.clone(),
+            item_maps: self.owned_definition.item_maps.clone(), timeout_config: self.timeout_config.clone(), buffer_size: self.buffer_size,
+        });
     }
     pub fn export_schematic(&self) -> &Schematic {
         &self.schematic
@@ -181,7 +193,7 @@ where
         let owned_definition = Arc::new(OwnedStreamDefinition {
             prefix: self.owned_definition.prefix.clone(),
             initializer: self.owned_definition.initializer.clone(),
-            item_maps,
+            item_maps, timeout_config: self.timeout_config.clone(), buffer_size: self.buffer_size,
         });
         let executor: StreamExecutorType<In, Out, Item, E, Res> =
             Arc::new(move |input, resources, bus, token| {
@@ -439,7 +451,7 @@ mod tests {
         let original = circuit(&["a"]);
         let definition = OwnedStreamDefinition {
             prefix: original.owned_definition.prefix.clone(),
-            initializer: Arc::new(()), item_maps: Vec::new(),
+            initializer: Arc::new(()), item_maps: Vec::new(), timeout_config: None, buffer_size: 64,
         };
         let resources = Arc::new(());
         let mut bus = Bus::new();
