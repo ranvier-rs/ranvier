@@ -66,3 +66,74 @@ impl Drop for RecoveryPermit {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn simultaneous_reservations_stay_bounded_and_close_cannot_reopen() {
+        let admission = StreamRecoveryAdmission::new(4);
+        let ready = Arc::new(std::sync::Barrier::new(17));
+        let release = Arc::new(std::sync::Barrier::new(17));
+        let workers: Vec<_> = (0..16)
+            .map(|_| {
+                let admission = admission.clone();
+                let ready = ready.clone();
+                let release = release.clone();
+                std::thread::spawn(move || {
+                    let permit = admission.reserve().ok();
+                    let accepted = permit.is_some();
+                    ready.wait();
+                    release.wait();
+                    drop(permit);
+                    accepted
+                })
+            })
+            .collect();
+        ready.wait();
+        assert_eq!(admission.in_use(), Ok(4));
+        admission.close().unwrap();
+        assert!(matches!(
+            admission.reserve(),
+            Err(RecoveryAdmissionFailure::Closed)
+        ));
+        release.wait();
+        assert_eq!(
+            workers
+                .into_iter()
+                .map(|worker| usize::from(worker.join().unwrap()))
+                .sum::<usize>(),
+            4
+        );
+        assert_eq!(admission.in_use(), Ok(0));
+        assert!(matches!(
+            admission.reserve(),
+            Err(RecoveryAdmissionFailure::Closed)
+        ));
+    }
+    #[test]
+    fn zero_and_poisoned_admission_fail_closed() {
+        assert!(matches!(
+            StreamRecoveryAdmission::new(0).reserve(),
+            Err(RecoveryAdmissionFailure::Capacity)
+        ));
+        let admission = StreamRecoveryAdmission::new(1);
+        let permit = admission.reserve().unwrap();
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _state = admission.0.lock().unwrap();
+            panic!("fixture admission poison");
+        }));
+        assert!(poisoned.is_err());
+        assert!(matches!(
+            admission.reserve(),
+            Err(RecoveryAdmissionFailure::Poisoned)
+        ));
+        assert_eq!(admission.close(), Err(RecoveryAdmissionFailure::Poisoned));
+        drop(permit);
+        assert_eq!(admission.in_use(), Err(RecoveryAdmissionFailure::Poisoned));
+        assert!(matches!(
+            admission.reserve(),
+            Err(RecoveryAdmissionFailure::Poisoned)
+        ));
+    }
+}

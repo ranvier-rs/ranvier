@@ -1046,6 +1046,35 @@ mod tests {
         assert_eq!(admission.in_use(), Ok(0));
         assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
     }
+    #[test]
+    fn recovery_capacity_releases_after_actual_resource_drop() {
+        struct Probe {
+            admission: StreamRecoveryAdmission,
+            observed: Arc<AtomicUsize>,
+        }
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                self.observed
+                    .store(self.admission.in_use().unwrap(), Ordering::SeqCst);
+            }
+        }
+        let admission = StreamRecoveryAdmission::new(1);
+        let observed = Arc::new(AtomicUsize::new(usize::MAX));
+        let resources = Arc::new(Probe {
+            admission: admission.clone(),
+            observed: observed.clone(),
+        });
+        let graph = Axon::<u32, u32, String, Probe>::start("resource-release-order");
+        let owner = OwnedStreamRecovery::try_new(
+            graph,
+            OwnedStreamContext::try_new(resources, Bus::new()).unwrap(),
+            &admission,
+        )
+        .unwrap();
+        drop(owner);
+        assert_eq!(observed.load(Ordering::SeqCst), 1);
+        assert_eq!(admission.in_use(), Ok(0));
+    }
     fn completed() -> StreamDriveResult<()> {
         StreamDriveResult {
             value: (),
@@ -1322,14 +1351,16 @@ mod tests {
         assert!(poisoned.is_err());
         let mut bus = Bus::new();
         bus.insert(String::from("private-request"));
+        let admission = StreamRecoveryAdmission::new(1);
         let rejected = match OwnedStreamRecovery::try_new(
             graph,
             OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
-            &StreamRecoveryAdmission::new(1),
+            &admission,
         ) {
             Err(rejected) => rejected,
             Ok(_) => panic!("poisoned authority must not enter"),
         };
+        assert_eq!(admission.in_use(), Ok(0));
         assert!(!format!("{rejected:?}").contains("private"));
         let (returned_graph, context) = rejected.into_parts();
         assert!(Arc::ptr_eq(
