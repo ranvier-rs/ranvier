@@ -325,6 +325,9 @@ impl WeakCustody {
         let records = store.records.lock().map_err(|_| "execution.nested_custody_unavailable")?;
         let record = records.get(&self.id).ok_or("execution.parent_custody_released")?;
         if store.closed.load(Ordering::Acquire) { return Err("execution.parent_custody_released"); }
+        if !Weak::ptr_eq(&self.record, &Arc::downgrade(&record.owner)) {
+            return Err("execution.nested_task_owner_mismatch");
+        }
         if !record.task.as_ref().is_some_and(|registered| Arc::ptr_eq(registered, task)) {
             return Err("execution.nested_task_registration_mismatch");
         }
@@ -340,11 +343,13 @@ impl WeakCustody {
     }
     pub(crate) fn release(&self) {
         if let Some(store) = self.store.upgrade() {
-            let released = store
-                .records
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .remove(&self.id);
+            let released = {
+                let mut records = store.records.lock().unwrap_or_else(|p| p.into_inner());
+                if records.get(&self.id).is_some_and(|record|
+                    Weak::ptr_eq(&self.record, &Arc::downgrade(&record.owner))) {
+                    records.remove(&self.id)
+                } else { None }
+            };
             // User resources/handlers may have destructors; never release under lock.
             drop(released);
         }
@@ -369,6 +374,7 @@ mod tests {
         let root = CustodyStore::new(1);
         let mut reservation = root.reserve_stream_slot().unwrap();
         let id = reservation.receipt.as_ref().unwrap().id();
+        let stale = reservation.receipt.as_ref().unwrap().clone();
         assert!(root.reserve_stream_slot().is_err());
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let owner: Capability = calls.clone();
@@ -385,9 +391,49 @@ mod tests {
             Err("execution.nested_reservation_decided")));
         drop(reservation);
         assert!(registered.upgrade().is_some());
+        assert_eq!(prepared.grant_registered_start(&stale), Err("execution.nested_task_owner_mismatch"));
+        stale.release();
+        assert!(registered.upgrade().is_some());
+        assert_eq!(root.0 .0.records.lock().unwrap().len(), 1);
         prepared.grant_registered_start(&registered).unwrap();
         assert!(matches!(prepared.holder().lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(Some(191)))));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn reserved_root_slot_rejection_has_no_phantom_observer_or_effect() {
+        use crate::managed_stream_task::PreparedStreamTask;
+        for mode in 0..3 {
+            let root = CustodyStore::new(1);
+            let foreign = CustodyStore::new(1);
+            let client = if mode == 0 { foreign.client() } else { root.client() };
+            let mut reservation = root.reserve_stream_slot().unwrap();
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let owner: Capability = calls.clone();
+            let observed = calls.clone();
+            let mut prepared = PreparedStreamTask::new_owned(owner.clone(), async move {
+                observed.fetch_add(1, Ordering::SeqCst); 193u32
+            });
+            let journal = crate::SagaRollbackJournal::new("rejected-root-slot");
+            if mode == 1 { root.close_admission().unwrap(); }
+            let root = if mode == 2 { drop(root); None } else { Some(root) };
+            let expected = match mode {
+                0 => "execution.nested_custody_mismatch",
+                1 => "execution.nested_custody_admission_closed",
+                _ => "execution.parent_custody_released",
+            };
+            assert!(matches!(reservation.finalize_stream(&client, owner, prepared.holder(), &journal, slot_observer()), Err(error) if error == expected));
+            assert!(journal.retained_stream_observations().is_empty());
+            drop(reservation);
+            if let Some(root) = root {
+                assert!(root.0 .0.records.lock().unwrap().is_empty());
+                if mode == 0 { assert!(root.reserve_stream_slot().is_ok()); }
+                else { assert!(root.reserve_stream_slot().is_err()); }
+            }
+            assert!(matches!(prepared.reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+        }
     }
 
     #[cfg(feature = "streaming")]
