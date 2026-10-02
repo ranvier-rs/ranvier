@@ -487,20 +487,30 @@ where
     pub(crate) async fn admit_to_parent(
         &self, client: crate::nested_custody::WeakCustodyClient,
     ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
-        let mut context = self.inner.context.lock().await;
+        if self.inner.started.load(Ordering::Acquire) {
+            return Err("execution.nested_stream_already_started");
+        }
+        let mut context = self.inner.context.try_lock()
+            .map_err(|_| "execution.nested_stream_context_busy")?;
         if self.inner.started.load(Ordering::Acquire) {
             return Err("execution.nested_stream_already_started");
         }
         let bus = &mut context.1;
         let access = bus.take_access_scope();
-        let occupied = bus.has::<ParentStreamCustody>() || bus.has::<crate::nested_custody::WeakCustodyClient>()
-            || bus.has::<crate::nested_custody::CustodyStore>();
+        let result = (|| {
+            if bus.has::<ParentStreamCustody>()
+                || bus.has::<crate::nested_custody::WeakCustodyClient>()
+                || bus.has::<crate::nested_custody::CustodyStore>()
+            {
+                return Err("execution.nested_stream_already_bound");
+            }
+            let admission = client.reserve(self.inner.clone())?;
+            bus.insert(client);
+            bus.insert(ParentStreamCustody(admission.clone()));
+            Ok(admission)
+        })();
         bus.restore_access_scope(access);
-        if occupied { return Err("execution.nested_stream_already_bound"); }
-        let admission = client.reserve(self.inner.clone())?;
-        bus.insert(client);
-        bus.insert(ParentStreamCustody(admission.clone()));
-        Ok(admission)
+        result
     }
 
     pub(crate) async fn initialize_and_drive<Item, SErr, S, T, F, Fut>(
@@ -1989,6 +1999,33 @@ mod tests {
                 if signal == "execution.parent_custody_released"));
         assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
         assert!(!child.inner.context.lock().await.1.has::<crate::nested_custody::CustodyStore>());
+    }
+    #[tokio::test]
+    async fn parent_stream_binding_preserves_policy_and_rejects_busy_started_and_duplicate() {
+        let parent = crate::nested_custody::CustodyStore::new(1);
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let mut bus = Bus::new();
+        bus.set_access_policy("deny-framework-fixture", Some(ranvier_core::BusAccessPolicy::allow_only(Vec::new())));
+        let child = OwnedStreamRecovery::try_new(
+            Axon::<u32, u32, String, Resources>::start("binding-policy").then(Effect),
+            OwnedStreamContext::try_new(resources.clone(), bus).unwrap(), &StreamRecoveryAdmission::new(1), None).unwrap();
+        let held = child.inner.context.lock().await;
+        assert!(matches!(child.admit_to_parent(parent.client()).await, Err("execution.nested_stream_context_busy")));
+        drop(held);
+        let admission = child.admit_to_parent(parent.client()).await.unwrap();
+        assert!(matches!(child.admit_to_parent(parent.client()).await, Err("execution.nested_stream_already_bound")));
+        {
+            let mut context = child.inner.context.lock().await;
+            assert!(!context.1.has::<ParentStreamCustody>());
+            let access = context.1.take_access_scope();
+            assert!(context.1.has::<ParentStreamCustody>());
+            assert!(context.1.has::<crate::nested_custody::WeakCustodyClient>());
+            context.1.restore_access_scope(access);
+            child.inner.started.store(true, Ordering::Release);
+            assert!(matches!(child.admit_to_parent(parent.client()).await, Err("execution.nested_stream_already_started")));
+        }
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+        admission.release();
     }
     struct ExternalHook {
         mode: u8,
