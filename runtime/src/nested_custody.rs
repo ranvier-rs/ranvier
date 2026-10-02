@@ -252,6 +252,56 @@ impl WeakCustody {
 mod tests {
     use super::*;
     #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn concurrent_family_settlement_transfers_original_report_once() {
+        use crate::managed_stream_task::ManagedStreamTask;
+        use tokio::{sync::Mutex as AsyncMutex, time::Instant};
+        let root = CustodyStore::new(1);
+        let (task, permit) = ManagedStreamTask::prepare(async { Box::new(89u32) });
+        let task = Arc::new(AsyncMutex::new(task));
+        let admission = reserve_in_with(&root.0 .0, Arc::new(()), Some(task.clone()), || {}).unwrap();
+        root.close_admission().unwrap();
+        permit.send(()).unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let (first, second) = tokio::join!(root.settle_closed_tasks::<Box<u32>>(deadline), root.settle_closed_tasks::<Box<u32>>(deadline));
+        assert_eq!(first.unwrap(), vec![(admission.id, Ok(()))]);
+        assert_eq!(second.unwrap(), vec![(admission.id, Ok(()))]);
+        let (first, second) = tokio::join!(
+            async { task.lock().await.take_joined() },
+            async { task.lock().await.take_joined() },
+        );
+        assert_eq!(usize::from(first.is_some()) + usize::from(second.is_some()), 1);
+        assert_eq!(*first.or(second).unwrap().unwrap().unwrap(), 89);
+    }
+
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn active_family_snapshot_survives_record_retirement() {
+        use crate::managed_stream_task::ManagedStreamTask;
+        use tokio::{sync::{Mutex as AsyncMutex, oneshot}, time::Instant};
+        let root = CustodyStore::new(1);
+        let (finish, gate) = oneshot::channel();
+        let (task, permit) = ManagedStreamTask::prepare(async move { gate.await.unwrap() });
+        let task = Arc::new(AsyncMutex::new(task));
+        let weak_task = Arc::downgrade(&task);
+        let admission = reserve_in_with(&root.0 .0, Arc::new(()), Some(task.clone()), || {}).unwrap();
+        root.close_admission().unwrap();
+        permit.send(()).unwrap();
+        drop(task);
+        let wait = root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(5));
+        tokio::pin!(wait);
+        assert!(futures_util::poll!(&mut wait).is_pending());
+        admission.release();
+        assert!(root.closed_tasks().unwrap().is_empty());
+        // Acquire explicit result custody before the snapshot can retire.
+        let retained = weak_task.upgrade().unwrap();
+        finish.send(97u32).unwrap();
+        assert_eq!(wait.await.unwrap(), vec![(admission.id, Ok(()))]);
+        assert_eq!(retained.lock().await.take_joined().unwrap().unwrap(), Some(97));
+        drop(retained);
+        assert!(weak_task.upgrade().is_none());
+    }
+    #[cfg(feature = "streaming")]
     #[tokio::test(start_paused = true)]
     async fn family_lock_deadline_preserves_same_holder_for_retry() {
         use crate::managed_stream_task::{ManagedStreamTask, ManagedTaskWaitError};
