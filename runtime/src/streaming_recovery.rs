@@ -1031,6 +1031,148 @@ mod tests {
             std::future::pending().await
         }
     }
+    struct InterruptedExternal {
+        marker_phase: bool,
+        entered: Arc<Notify>,
+        calls: AtomicUsize,
+        applied: AtomicBool,
+    }
+    #[async_trait::async_trait]
+    impl crate::persistence::CompensationHook for InterruptedExternal {
+        async fn compensate(
+            &self,
+            _: crate::persistence::CompensationContext,
+        ) -> anyhow::Result<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.marker_phase {
+                return Ok(());
+            }
+            self.entered.notify_one();
+            std::future::pending().await
+        }
+    }
+    #[async_trait::async_trait]
+    impl crate::persistence::CompensationIdempotencyStore for InterruptedExternal {
+        async fn was_compensated(&self, _: &str) -> anyhow::Result<bool> {
+            Ok(self.applied.load(Ordering::SeqCst))
+        }
+        async fn mark_compensated(&self, _: &str) -> anyhow::Result<()> {
+            self.applied.store(true, Ordering::SeqCst);
+            self.entered.notify_one();
+            std::future::pending().await
+        }
+    }
+    #[tokio::test]
+    async fn actual_external_hook_and_applied_marker_abort_preserve_store_custody() {
+        use crate::persistence::{
+            CompensationHandle, CompensationIdempotencyHandle, InMemoryPersistenceStore,
+            PersistenceHandle, PersistenceStore, PersistenceTraceId,
+        };
+        for marker_phase in [false, true] {
+            let entered = Arc::new(Notify::new());
+            let capability = Arc::new(InterruptedExternal {
+                marker_phase,
+                entered: entered.clone(),
+                calls: AtomicUsize::new(0),
+                applied: AtomicBool::new(false),
+            });
+            let hook: Arc<dyn crate::persistence::CompensationHook> = capability.clone();
+            let marker: Arc<dyn crate::persistence::CompensationIdempotencyStore> =
+                capability.clone();
+            let persistence = Arc::new(InMemoryPersistenceStore::new());
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
+            let mut bus = Bus::new();
+            bus.insert(PersistenceHandle::from_arc(persistence.clone()));
+            bus.insert(PersistenceTraceId::new("external-abort-trace"));
+            bus.insert(CompensationHandle::from_arc(hook.clone()));
+            bus.insert(CompensationIdempotencyHandle::from_arc(marker.clone()));
+            let store = StreamRecoveryStore::new(1, std::time::Duration::from_secs(60));
+            let (id, owner) = store
+                .admit(
+                    Axon::<u32, u32, String, Resources>::start("external-abort-circuit")
+                        .then(FailingEffect),
+                    OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
+                )
+                .unwrap();
+            let observer = owner.observe();
+            let task = tokio::spawn(async move {
+                owner
+                    .initialize_and_drive(
+                        129,
+                        &Init,
+                        None,
+                        std::time::Duration::from_secs(30),
+                        |_| async {
+                            panic!("failed prefix must not start driver");
+                            #[allow(unreachable_code)]
+                            completed()
+                        },
+                    )
+                    .await
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+                .await
+                .unwrap();
+            task.abort();
+            assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+            assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
+            assert!(!observer.borrow().cleanup_timed_out);
+            assert_eq!(observer.borrow().cleanup_complete, None);
+            assert_eq!(observer.borrow().custody, RecoveryCustody::Held);
+            assert_eq!(store.admission.in_use(), Ok(1));
+            let retained = store.take_for_reconciliation(id).unwrap().unwrap();
+            {
+                let context = retained.inner.context.lock().await;
+                assert!(Arc::ptr_eq(&resources, &context.0));
+                let journal = context.1.read::<crate::SagaRollbackJournal>().unwrap();
+                let pending = journal.unresolved_external();
+                assert_eq!(pending.len(), 1);
+                assert_eq!(pending[0].context.trace_id, "external-abort-trace");
+                assert_eq!(pending[0].context.circuit, "external-abort-circuit");
+                assert!(Arc::ptr_eq(&pending[0].handle.hook(), &hook));
+                assert!(pending[0].invoked.load(Ordering::SeqCst));
+                assert!(!journal.snapshot().finished);
+                assert_eq!(
+                    journal.snapshot().steps[0].outcome,
+                    crate::SagaRollbackOutcome::InProgress
+                );
+            }
+            assert!(matches!(
+                retained
+                    .initialize_and_drive(
+                        130,
+                        &Init,
+                        None,
+                        std::time::Duration::from_secs(30),
+                        |_| async { completed() }
+                    )
+                    .await,
+                Err(StreamInvocationAlreadyStarted)
+            ));
+            assert_eq!(capability.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
+            assert_eq!(capability.applied.load(Ordering::SeqCst), marker_phase);
+            let trace = persistence
+                .load("external-abort-trace")
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!trace
+                .events
+                .iter()
+                .any(|event| event.outcome_kind == "Compensated"));
+            assert_eq!(trace.completion, None);
+            assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
+            drop(retained);
+            assert_eq!(
+                observer.borrow().custody,
+                RecoveryCustody::ReleasedWithPendingTasks
+            );
+            assert_eq!(store.admission.in_use(), Ok(0));
+        }
+    }
     struct ExternalHook {
         mode: u8,
         calls: Arc<AtomicUsize>,
