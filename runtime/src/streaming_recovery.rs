@@ -711,7 +711,9 @@ where
             let owner = owner.clone();
             Box::pin(async move {
                 use crate::streaming_report_handle::{StreamLiveRecoveryState, StreamRecoveryProbeError as Error};
+                if tokio::time::Instant::now() >= deadline { return Err(Error::TimedOut); }
                 let mut context = tokio::time::timeout_at(deadline, owner.inner.context.lock()).await.map_err(|_| Error::TimedOut)?;
+                if tokio::time::Instant::now() >= deadline { return Err(Error::TimedOut); }
                 let bus = &mut context.1;
                 let access = bus.take_access_scope();
                 let result = (|| {
@@ -3368,6 +3370,28 @@ mod tests {
                 Outcome::Fault("original prefix fault".into())
             }
         }
+    }
+    #[tokio::test]
+    async fn live_owner_probe_times_out_restores_guard_and_retains_exact_owner() {
+        let admission = StreamRecoveryAdmission::new(1);
+        let mut bus = Bus::new(); bus.insert(337u32);
+        bus.set_access_policy("live probe guard", Some(ranvier_core::BusAccessPolicy::allow_only(vec![ranvier_core::BusTypeRef::of::<String>()])));
+        let owner = OwnedStreamRecovery::try_new(Axon::<u32, u32, String, Resources>::start("live-owner-probe"),
+            OwnedStreamContext::try_new(Arc::new(Resources { effects: AtomicUsize::new(0) }), bus).unwrap(), &admission, None).unwrap();
+        let probe = owner.recovery_probe();
+        let locked = owner.inner.context.lock().await;
+        assert_eq!(probe(tokio::time::Instant::now()).await, Err(crate::streaming_report_handle::StreamRecoveryProbeError::TimedOut));
+        drop(locked);
+        let state = probe(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+        assert!(!state.saga_stack_nonempty); assert!(!state.journal_present); assert!(!state.recovery_pending);
+        let mut context = owner.inner.context.lock().await;
+        assert!(context.1.get::<u32>().is_err());
+        context.1.clear_access_policy();
+        assert_eq!(*context.1.read::<u32>().unwrap(), 337);
+        drop(context); drop(owner);
+        assert_eq!(admission.in_use(), Ok(1));
+        drop(probe);
+        assert_eq!(admission.in_use(), Ok(0));
     }
     #[tokio::test]
     async fn reserved_root_slot_starts_actual_recovery_at_capacity_one() {

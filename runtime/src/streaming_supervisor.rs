@@ -316,6 +316,8 @@ mod tests {
         assert!(matches!(report, crate::streaming_report_handle::SupervisedStreamCompletion::Report(
             crate::StreamInitializationReport::Ready { value, .. })
             if matches!(value.consumption, Ok(crate::StreamConsumptionTerminal::Completed))));
+        let live = lease.live_recovery_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+        assert!(!live.saga_stack_nonempty);
         let assessment = lease.assessment().unwrap().unwrap();
         assert_eq!(assessment.frame, crate::streaming_report_handle::StreamFrameAssessment::Reported);
         assert_eq!(assessment.initialization, crate::streaming_report_handle::StreamInitializationAssessment::Ready);

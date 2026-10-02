@@ -181,11 +181,15 @@ impl SagaRollbackJournal {
         use crate::streaming_report_handle::StreamRecoveryProbeError as Error;
         let mut pending = vec![self.clone()];
         let mut seen = std::collections::HashSet::new();
+        let mut work = 0usize;
         while let Some(journal) = pending.pop() {
-            if !seen.insert(std::sync::Arc::as_ptr(&journal.0) as usize) { continue; }
-            if seen.len() > limit { return Err(Error::TraversalLimit); }
-            if !journal.0.try_lock().map_err(|_| Error::Unavailable)?.is_complete()
-                || !journal.1.try_lock().map_err(|_| Error::Unavailable)?.is_empty()
+            if !seen.insert(std::sync::Arc::as_ptr(&journal.0) as usize) { return Err(Error::TraversalLimit); }
+            let report = journal.0.try_lock().map_err(|_| Error::Unavailable)?;
+            work = work.saturating_add(1).saturating_add(report.steps.len());
+            if work > limit { return Err(Error::TraversalLimit); }
+            let incomplete = !report.is_complete();
+            drop(report);
+            if incomplete || !journal.1.try_lock().map_err(|_| Error::Unavailable)?.is_empty()
                 || !journal.2.try_lock().map_err(|_| Error::Unavailable)?.is_empty()
                 || !journal.5.try_lock().map_err(|_| Error::Unavailable)?.is_empty() {
                 return Ok(true);
@@ -473,6 +477,25 @@ mod tests {
         assert!(!format!("{journal:?}").contains("private"));
     }
 
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn live_probe_checks_children_limits_busy_and_poison_without_input_clones() {
+        use crate::streaming_report_handle::StreamRecoveryProbeError as Error;
+        let root = SagaRollbackJournal::new("private root trace"); root.finish();
+        assert_eq!(root.try_recovery_pending(4), Ok(false));
+        let child = SagaRollbackJournal::new("private child trace");
+        root.retain_child(child.clone());
+        root.0.lock().unwrap().steps[0].outcome = SagaRollbackOutcome::Completed; root.finish();
+        assert_eq!(root.try_recovery_pending(4), Ok(true));
+        child.finish();
+        assert_eq!(root.try_recovery_pending(1), Err(Error::TraversalLimit));
+        assert_eq!(root.try_recovery_pending(4), Ok(false));
+        let busy = child.1.lock().unwrap();
+        assert_eq!(root.try_recovery_pending(4), Err(Error::Unavailable)); drop(busy);
+        let poisoned = child.clone();
+        assert!(std::thread::spawn(move || { let _guard = poisoned.1.lock().unwrap(); panic!("journal probe poison fixture"); }).join().is_err());
+        assert_eq!(root.try_recovery_pending(4), Err(Error::Unavailable));
+    }
     #[test]
     fn long_journal_clones_share_storage_and_snapshots_are_owned() {
         let journal = SagaRollbackJournal::new("long-journal");
@@ -491,5 +514,27 @@ mod tests {
         assert_eq!(snapshot.steps.len(), 10_000);
         assert_eq!(published.snapshot().steps.len(), 10_001);
         assert!(!published.snapshot().is_complete());
+    }    #[cfg(feature = "streaming")]
+    #[test]
+    fn live_probe_does_not_certify_complete_cyclic_recovery_graph() {
+        use crate::streaming_report_handle::StreamRecoveryProbeError as Error;
+        let root = SagaRollbackJournal::new("cycle root");
+        let child = SagaRollbackJournal::new("cycle child");
+        root.retain_child(child.clone()); child.retain_child(root.clone());
+        root.0.lock().unwrap().steps[0].outcome = SagaRollbackOutcome::Completed; root.finish();
+        child.0.lock().unwrap().steps[0].outcome = SagaRollbackOutcome::Completed; child.finish();
+        let result = root.try_recovery_pending(4);
+        root.3.lock().unwrap().clear(); child.3.lock().unwrap().clear();
+        assert_eq!(result, Err(Error::TraversalLimit));
     }
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn live_probe_budget_covers_report_steps_before_scanning_them() {
+        let journal = SagaRollbackJournal::new("large live probe report");
+        for _ in 0..5 { journal.push("private step".into(), SagaRollbackOutcome::Completed); }
+        journal.finish();
+        assert_eq!(journal.try_recovery_pending(4), Err(crate::streaming_report_handle::StreamRecoveryProbeError::TraversalLimit));
+        assert_eq!(journal.try_recovery_pending(6), Ok(false));
+    }
+
 }
