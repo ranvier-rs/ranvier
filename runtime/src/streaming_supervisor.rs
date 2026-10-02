@@ -99,10 +99,153 @@ impl StreamReservation {
     }
 }
 
+/// Setup rejection preserves the original request context and input. Later
+/// preparation rejection retains an opaque recovery lease instead of discarding it.
+pub enum StreamPrepareError<In, Res> {
+    Setup { signal: &'static str, input: In, context: OwnedStreamContext<Res> },
+    Preparation { signal: &'static str, input: In, recovery: StreamRecoveryLease },
+}
+/// In-process owner lease only; Drop does not reconcile external effects.
+pub struct StreamRecoveryLease { _owner: crate::nested_custody::Capability }
+type PreparedFrame<Out, E> = crate::managed_stream_task::PreparedStreamTask<Result<
+    crate::StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult<()>, E>,
+    crate::streaming_recovery::StreamInvocationAlreadyStarted>>;
+/// Prepared exact frame, with no public raw start permit.
+pub struct PreparedSupervisedStream<In, Out, Item, E, Res> {
+    plan: crate::streaming_axon::OwnedCallablePlan<In, Out, Item, E, Res>,
+    prepared: PreparedFrame<Out, E>,
+    slot: CustodyReservation,
+    client: WeakCustodyClient,
+    items: tokio::sync::mpsc::Receiver<Item>,
+    readiness: crate::streaming_axon::StreamReadiness,
+}
+/// Actual invocation, item transport and original typed report have distinct roles.
+/// Keep the supervisor alive; dropping this value requests cancellation, while
+/// the root and report leases retain recovery ownership for later settlement.
+pub struct SupervisedStreamInvocation<Out, Item, E> {
+    pub items: tokio::sync::mpsc::Receiver<Item>,
+    pub readiness: crate::streaming_axon::StreamReadiness,
+    pub report: crate::streaming_report_handle::StreamReportHandle<Out, E>,
+    control: ranvier_core::CancellationToken,
+    _custody: crate::nested_custody::WeakCustody,
+}
+impl<Out, Item, E> SupervisedStreamInvocation<Out, Item, E> {
+    pub fn cancel(&self, reason: ranvier_core::CancellationReason) { self.control.cancel(reason); }
+}
+impl<Out, Item, E> Drop for SupervisedStreamInvocation<Out, Item, E> {
+    fn drop(&mut self) { self.control.cancel(ranvier_core::CancellationReason::ClientDisconnected); }
+}
+/// Rejected start still exposes bounded access to the exact rejected/failed frame.
+pub struct StreamStartRejected<Out, E> {
+    pub signal: &'static str,
+    pub report: crate::streaming_report_handle::StreamReportHandle<Out, E>,
+    _custody: Option<crate::nested_custody::WeakCustody>,
+}
+impl StreamReservation {
+    pub fn prepare<In, Out, Item, E, Res>(self,
+        circuit: &crate::streaming_axon::StreamingAxon<In, Out, Item, E, Res>,
+        context: OwnedStreamContext<Res>, input: In, cleanup_grace: std::time::Duration,
+        expires: Option<std::time::Instant>,
+    ) -> Result<PreparedSupervisedStream<In, Out, Item, E, Res>, StreamPrepareError<In, Res>>
+    where In: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        Out: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+        E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+        Item: Send + 'static, Res: Send + Sync + 'static,
+    {
+        if let Err(signal) = self.slot.validate_open(&self.client) {
+            return Err(StreamPrepareError::Setup { signal, context, input });
+        }
+        let Self { admission, permit, client, slot, .. } = self;
+        let mut plan = match circuit.owned_definition.try_callable_plan_reserved(context, &admission, expires, permit) {
+            Ok(plan) => plan,
+            Err(error) => {
+                let (signal, context) = match error {
+                    crate::streaming_axon::OwnedStreamPlanRejected::InitializerType { context } =>
+                        ("execution.stream_initializer_mismatch", context),
+                    crate::streaming_axon::OwnedStreamPlanRejected::Admission(error) => {
+                        let (_, context) = error.into_parts();
+                        ("execution.stream_recovery_admission_rejected", context)
+                    }
+                };
+                return Err(StreamPrepareError::Setup { signal, input, context });
+            }
+        };
+        let ((prepared, items), readiness) = match plan.prepare_bounded_ready(input, cleanup_grace) {
+            Ok(frame) => frame,
+            Err(error) => return Err(StreamPrepareError::Preparation {
+                signal: error.signal, input: error.input,
+                recovery: StreamRecoveryLease { _owner: plan.owner.retention_capability() },
+            }),
+        };
+        Ok(PreparedSupervisedStream { plan, prepared, slot, client, items, readiness })
+    }
+}
+impl<In, Out, Item, E, Res> PreparedSupervisedStream<In, Out, Item, E, Res>
+where In: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+    Out: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+    E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
+    Res: Send + Sync + 'static,
+{
+    pub async fn start(mut self, parent: ranvier_core::CancellationToken)
+        -> Result<SupervisedStreamInvocation<Out, Item, E>, StreamStartRejected<Out, E>> {
+        let report = crate::streaming_report_handle::StreamReportHandle::new(
+            self.prepared.holder(), self.plan.owner.retention_capability());
+        let control = parent.child_token();
+        let journal = crate::SagaRollbackJournal::new("supervised-stream-root");
+        let custody = match self.plan.owner.register_reserved_and_start(self.client, &mut self.slot,
+            &journal, control.clone(), &mut self.prepared).await {
+            Ok(custody) => custody,
+            Err(error) => return Err(StreamStartRejected { signal: error.signal, report, _custody: error.custody }),
+        };
+        Ok(SupervisedStreamInvocation { items: self.items, readiness: self.readiness, report, control, _custody: custody })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    #[derive(Clone)]
+    struct Finite;
+    #[async_trait::async_trait]
+    impl ranvier_core::streaming::StreamingTransition<u32> for Finite {
+        type Item = u32; type Error = String; type Resources = ();
+        async fn run_stream(&self, input: u32, _: &(), _: &mut ranvier_core::Bus)
+            -> Result<std::pin::Pin<Box<dyn futures_core::Stream<Item = u32> + Send>>, String> {
+            Ok(Box::pin(futures_util::stream::iter([input])))
+        }
+    }
+    #[derive(Clone)]
+    struct Prefix;
+    #[async_trait::async_trait]
+    impl ranvier_core::Transition<u32, u32> for Prefix {
+        type Error = String; type Resources = ();
+        async fn run(&self, input: u32, _: &(), _: &mut ranvier_core::Bus) -> ranvier_core::Outcome<u32, String> {
+            ranvier_core::Outcome::Next(input)
+        }
+    }
+    #[tokio::test]
+    async fn public_invocation_transfers_original_item_and_report_at_capacity_one() {
+        let supervisor = StreamSupervisor::new(1);
+        let circuit = crate::Axon::<u32, u32, String>::start("public-owned").then(Prefix).then_stream(Finite);
+        let (ticket, context) = supervisor.reserve().unwrap().with_context(||
+            OwnedStreamContext::try_new(Arc::new(()), ranvier_core::Bus::new())).unwrap();
+        let prepared = match ticket.prepare(&circuit, context, 233, std::time::Duration::from_secs(1), None) {
+            Ok(prepared) => prepared, Err(_) => panic!("setup rejected"),
+        };
+        let parent = ranvier_core::CancellationToken::new();
+        let mut invocation = prepared.start(parent.clone()).await.unwrap_or_else(|e| panic!("{}", e.signal));
+        tokio::time::timeout(std::time::Duration::from_secs(5), invocation.readiness.initialized()).await.unwrap().unwrap();
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), invocation.items.recv()).await.unwrap(), Some(233));
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), invocation.items.recv()).await.unwrap(), None);
+        let report = invocation.report.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+        assert!(matches!(report, crate::streaming_report_handle::SupervisedStreamCompletion::Report(
+            crate::StreamInitializationReport::Ready { value, .. })
+            if matches!(value.consumption, Ok(crate::StreamConsumptionTerminal::Completed))));
+        assert!(supervisor.reserve().is_err());
+        drop(invocation);
+        assert!(!parent.is_cancelled());
+    }
     #[test]
     fn paired_reservation_precedes_factory_and_refunds_failure() {
         let supervisor = StreamSupervisor::new(1);
