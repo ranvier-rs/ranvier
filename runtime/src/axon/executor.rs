@@ -273,6 +273,8 @@ where
         bus.set_cancellation_token(CancellationToken::new());
         let trace = persistence_trace_id(bus);
         self.rollback_saga(resources, bus, &trace).await;
+        // A panicked compensator may leave its access policy installed.
+        bus.clear_access_policy();
         bus.read::<crate::SagaRollbackReport>().cloned()
     }
 

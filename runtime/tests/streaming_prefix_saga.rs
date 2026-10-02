@@ -233,3 +233,155 @@ async fn nested_initializer_failure_cleans_child_before_parent_restore() {
         "child compensation is independent of parent cleanup"
     );
 }
+
+struct Resources(std::sync::Mutex<Vec<(usize, usize)>>);
+#[derive(Clone)]
+struct ResourceEffect(usize, bool);
+#[async_trait::async_trait]
+impl Transition<(), ()> for ResourceEffect {
+    type Error = String;
+    type Resources = Resources;
+    async fn run(&self, _: (), res: &Resources, bus: &mut Bus) -> Outcome<(), String> {
+        if self.1 {
+            assert!(
+                bus.cancellation_token().unwrap().context().is_none(),
+                "compensation must be shielded"
+            );
+        }
+        res.0
+            .lock()
+            .unwrap()
+            .push((self.0, res as *const Resources as usize));
+        Outcome::Next(())
+    }
+}
+#[derive(Clone)]
+struct ResourceInit(bool);
+#[async_trait::async_trait]
+impl StreamingTransition<()> for ResourceInit {
+    type Item = ();
+    type Error = String;
+    type Resources = Resources;
+    async fn run_stream(
+        &self,
+        _: (),
+        _: &Resources,
+        bus: &mut Bus,
+    ) -> Result<Pin<Box<dyn futures_util::Stream<Item = ()> + Send>>, String> {
+        if self.0 {
+            bus.cancellation_token()
+                .unwrap()
+                .cancel(ranvier_core::CancellationReason::Explicit);
+            std::future::pending().await
+        } else {
+            Err("initializer-error".into())
+        }
+    }
+}
+#[tokio::test]
+async fn initializer_failure_and_cancel_cleanup_use_nonclone_resources_lifo_and_shield() {
+    use ranvier_runtime::{EffectBoundary, StreamInitializationReport};
+    for cancel in [false, true] {
+        let res = Resources(std::sync::Mutex::new(Vec::new()));
+        let address = &res as *const Resources as usize;
+        let caller = ranvier_core::CancellationToken::new();
+        let workflow = ranvier_core::CancellationToken::new();
+        let mut bus = Bus::new();
+        bus.set_cancellation_token(caller.clone());
+        let stream = Axon::<(), (), String, Resources>::start("resource-cleanup")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(ResourceEffect(1, false), ResourceEffect(11, true))
+            .then_compensated(ResourceEffect(2, false), ResourceEffect(12, true))
+            .then_stream(ResourceInit(cancel));
+        let report = stream
+            .execute_cancellable((), &res, &mut bus, workflow.clone())
+            .await;
+        let cleanup = match report {
+            StreamInitializationReport::Failed {
+                prefix:
+                    ExecutionReport::Unpersisted {
+                        result: (),
+                        cleanup: None,
+                    },
+                initialization: EffectBoundary::MayHaveRun,
+                initialization_cleanup: Some(cleanup),
+                ..
+            } if !cancel => cleanup,
+            StreamInitializationReport::Cancelled {
+                prefix:
+                    ExecutionReport::Unpersisted {
+                        result: (),
+                        cleanup: None,
+                    },
+                initialization: EffectBoundary::MayHaveRun,
+                initialization_cleanup: Some(cleanup),
+                context,
+            } if cancel => {
+                assert_eq!(context.reason, ranvier_core::CancellationReason::Explicit);
+                cleanup
+            }
+            _ => panic!("initializer cleanup classification lost"),
+        };
+        assert!(cleanup.is_complete());
+        assert_eq!(cleanup.steps.len(), 2);
+        assert_eq!(
+            *res.0.lock().unwrap(),
+            vec![(1, address), (2, address), (12, address), (11, address)]
+        );
+        assert_eq!(workflow.context().is_some(), cancel);
+        assert!(caller.context().is_none());
+        bus.cancellation_token()
+            .unwrap()
+            .cancel(ranvier_core::CancellationReason::Explicit);
+        assert!(
+            caller.context().is_some(),
+            "caller token allocation must restore"
+        );
+    }
+}
+
+#[tokio::test]
+async fn initializer_cleanup_keeps_stored_prefix_confirmation_independent() {
+    use ranvier_runtime::{CompletionConfirmation, StreamInitializationReport, persistence::*};
+    let effects = Arc::new(AtomicUsize::new(0));
+    let undo = Arc::new(AtomicUsize::new(0));
+    let init = Arc::new(AtomicUsize::new(0));
+    let backing = InMemoryPersistenceStore::new();
+    let mut bus = Bus::new();
+    bus.insert(PersistenceHandle::from_store(backing.clone()));
+    bus.insert(PersistenceTraceId::new("stored-initializer-cleanup"));
+    let report = Axon::<(), (), String>::start("stored-initializer-cleanup")
+        .with_saga_policy(SagaPolicy::Enabled)
+        .then_compensated(Effect(effects.clone()), Effect(undo.clone()))
+        .then_stream(InitFail(init.clone()))
+        .execute((), &(), &mut bus)
+        .await;
+    match report {
+        StreamInitializationReport::Failed {
+            prefix:
+                ExecutionReport::Recorded {
+                    result: (),
+                    completion: CompletionConfirmation::Confirmed,
+                    cleanup: None,
+                },
+            initialization_cleanup: Some(cleanup),
+            ..
+        } => {
+            assert!(cleanup.is_complete());
+            assert_eq!(cleanup.steps.len(), 1);
+        }
+        _ => panic!("prefix acknowledgment and initializer cleanup must stay separate"),
+    }
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(undo.load(Ordering::SeqCst), 1);
+    assert_eq!(init.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        backing
+            .load("stored-initializer-cleanup")
+            .await
+            .unwrap()
+            .unwrap()
+            .completion,
+        Some(CompletionState::Success)
+    );
+}
