@@ -124,6 +124,8 @@ async fn streaming_init_failure_redacts_response_and_actual_runtime_logs() {
     .unwrap();
     assert_eq!(response.status(), 200);
     assert!(response.text().unwrap().contains("serialize_error"));
+    assert_eq!(response.text().unwrap().matches("event: error").count(), 1);
+    assert!(!response.text().unwrap().contains("[DONE]"), "encoding failure must not announce normal completion");
     assert!(
         !response
             .text()

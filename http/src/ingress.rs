@@ -3323,15 +3323,15 @@ where
                                     tracing::error!(failure_source = "stream_item_encode", "SSE item encoding failed");
                                     let err_text = "event: error\ndata: {\"message\":\"serialization error\",\"code\":\"serialize_error\"}\n\n".to_string();
                                     let _ = tx.send(Bytes::from(err_text)).await;
-                                    break;
+                                    return;
                                 }
                             };
                             if tx.send(Bytes::from(text)).await.is_err() {
                                 tracing::info!("SSE client disconnected");
-                                break;
+                                return;
                             }
                         }
-                        // Send [DONE] sentinel
+                        // Announce only normal source exhaustion; failure/disconnect returned above.
                         let _ = tx.send(Bytes::from("data: [DONE]\n\n")).await;
                     };
                     if let Some(owner) = task_owner {
