@@ -618,6 +618,25 @@ where
         })
     }
 
+    /// Build the gated future from this exact recovery owner and owned inputs.
+    /// The supervisor must register this owner's holder before granting start.
+    pub(crate) fn prepare_managed_controlled<Item, SErr, S, T, F, Fut>(
+        &self, input: In, streaming: S, cleanup_grace: std::time::Duration, drive: F,
+    ) -> crate::managed_stream_task::PreparedStreamTask<Result<StreamInitializationReport<Out, StreamReadyResult<T>, E>, StreamInvocationAlreadyStarted>>
+    where
+        Item: Send + 'static,
+        SErr: Send + Sync + std::fmt::Debug + 'static,
+        S: StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res>,
+        T: Send + 'static,
+        F: FnOnce(RawStream<Item>, CancellationToken) -> Fut + Send + 'static,
+        Fut: Future<Output = StreamDriveResult<T>> + Send + 'static,
+    {
+        let child = self.clone();
+        crate::managed_stream_task::PreparedStreamTask::new_owned(self.inner.clone(), async move {
+            child.initialize_and_drive_controlled(input, &streaming, None, cleanup_grace, drive).await
+        })
+    }
+
     pub(crate) async fn initialize_and_drive<Item, SErr, S, T, F, Fut>(
         &self,
         input: In,
@@ -634,6 +653,27 @@ where
         SErr: Send + Sync + std::fmt::Debug + 'static,
         S: StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res>,
         F: FnOnce(RawStream<Item>) -> Fut,
+        Fut: Future<Output = StreamDriveResult<T>>,
+    {
+        self.initialize_and_drive_controlled(input, streaming, token, cleanup_grace, |source, _control| drive(source)).await
+    }
+
+    pub(crate) async fn initialize_and_drive_controlled<Item, SErr, S, T, F, Fut>(
+        &self,
+        input: In,
+        streaming: &S,
+        token: Option<CancellationToken>,
+        cleanup_grace: std::time::Duration,
+        drive: F,
+    ) -> Result<
+        StreamInitializationReport<Out, StreamReadyResult<T>, E>,
+        StreamInvocationAlreadyStarted,
+    >
+    where
+        Item: Send + 'static,
+        SErr: Send + Sync + std::fmt::Debug + 'static,
+        S: StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res>,
+        F: FnOnce(RawStream<Item>, CancellationToken) -> Fut,
         Fut: Future<Output = StreamDriveResult<T>>,
     {
         if self
@@ -710,7 +750,7 @@ where
                     tokio::select! {
                         biased;
                         context = token.cancelled() => Err(StreamDriverError::Cancelled(context)),
-                        observed = async { drive(value).await } => Ok(observed),
+                        observed = async { drive(value, token.clone()).await } => Ok(observed),
                     }
                 })
                 .catch_unwind()

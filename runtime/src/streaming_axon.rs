@@ -74,7 +74,7 @@ where
     Res: Send + Sync + 'static,
     Item: Send + 'static,
 {
-    pub(crate) fn prepare_bounded<SErr>(&self, input: In, grace: std::time::Duration, token: CancellationToken)
+    pub(crate) fn prepare_bounded<SErr>(&self, input: In, grace: std::time::Duration)
         -> Result<(crate::managed_stream_task::PreparedStreamTask<Result<StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult<()>, E>, crate::streaming_recovery::StreamInvocationAlreadyStarted>>, tokio::sync::mpsc::Receiver<Item>), BoundedPreparationRejected<In>>
     where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
         SErr: Send + Sync + Debug + 'static,
@@ -86,8 +86,10 @@ where
         let config = self.timeout_config.clone().unwrap_or(StreamTimeoutConfig {
             init: None, idle: Some(std::time::Duration::from_secs(30)), total: None,
         });
-        let prepared = self.prepare(input, grace, move |stream| async move {
-            crate::streaming_recovery::produce_bounded(stream, config, token, sender).await
+        let maps = self.item_maps.clone();
+        let prepared = self.owner.prepare_managed_controlled(input, self.initializer.clone(), grace, move |stream, token| async move {
+            let mapped = stream.map(move |item| maps.iter().fold(item, |item, map| map(item)));
+            crate::streaming_recovery::produce_bounded(Box::pin(mapped), config, token, sender).await
         });
         Ok((prepared, receiver))
     }
@@ -497,7 +499,7 @@ mod tests {
                 Ok(plan) => plan, Err(_) => panic!("plan rejected"),
             };
             let control = CancellationToken::new();
-            let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5), control.clone()) {
+            let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
                 Ok(prepared) => prepared, Err(error) => panic!("{}", error.signal),
             };
             assert_eq!(receiver.max_capacity(), 1);
