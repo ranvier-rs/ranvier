@@ -282,6 +282,24 @@ impl WeakCustody {
 mod tests {
     use super::*;
     #[cfg(feature = "streaming")]
+    #[tokio::test(start_paused = true)]
+    async fn family_transfer_deadline_and_unknown_id_preserve_original_result() {
+        use crate::managed_stream_task::ManagedStreamTask;
+        use tokio::{sync::Mutex as AsyncMutex, time::Instant};
+        let root = CustodyStore::new(1);
+        let (task, permit) = ManagedStreamTask::prepare(async { 103u32 });
+        let task = Arc::new(AsyncMutex::new(task));
+        let admission = reserve_in_with(&root.0 .0, Arc::new(()), Some(task.clone()), || {}).unwrap();
+        root.close_admission().unwrap();
+        permit.send(()).unwrap();
+        let family = root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+        assert!(matches!(family.take_joined(uuid::Uuid::new_v4(), Instant::now()).await, Err("execution.nested_task_not_found")));
+        let held = task.lock().await;
+        assert!(matches!(family.take_joined(admission.id, Instant::now() + std::time::Duration::from_secs(3)).await, Err("execution.nested_task_transfer_timeout")));
+        drop(held);
+        assert_eq!(family.take_joined(admission.id, Instant::now()).await.unwrap().unwrap().unwrap(), Some(103));
+    }
+    #[cfg(feature = "streaming")]
     #[tokio::test]
     async fn family_lease_preserves_report_after_root_loss_and_dropped_wait() {
         use crate::managed_stream_task::ManagedStreamTask;
