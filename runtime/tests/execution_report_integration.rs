@@ -1080,6 +1080,103 @@ async fn actual_execute_retains_first_failure_after_terminal_and_completion_succ
     );
 }
 
+struct CompleteErrorStore {
+    backing: InMemoryPersistenceStore,
+    apply_before_error: bool,
+    operations: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl PersistenceStore for CompleteErrorStore {
+    async fn append(&self, event: PersistenceEnvelope) -> anyhow::Result<()> {
+        self.operations
+            .lock()
+            .unwrap()
+            .push(format!("append:{}", event.outcome_kind));
+        self.backing.append(event).await
+    }
+
+    async fn load(&self, trace: &str) -> anyhow::Result<Option<PersistedTrace>> {
+        self.backing.load(trace).await
+    }
+
+    async fn resume(&self, trace: &str, step: u64) -> anyhow::Result<ResumeCursor> {
+        self.backing.resume(trace, step).await
+    }
+
+    async fn complete(&self, trace: &str, completion: CompletionState) -> anyhow::Result<()> {
+        self.operations.lock().unwrap().push("complete".into());
+        if self.apply_before_error {
+            self.backing.complete(trace, completion).await?;
+        }
+        Err(anyhow::anyhow!("private-complete-error-sentinel"))
+    }
+
+    async fn save_intervention(
+        &self,
+        trace: &str,
+        intervention: Intervention,
+    ) -> anyhow::Result<()> {
+        self.backing.save_intervention(trace, intervention).await
+    }
+}
+
+#[tokio::test]
+async fn actual_execute_reports_completion_error_without_replaying_domain_effect() {
+    for apply_before_error in [false, true] {
+        let backing = InMemoryPersistenceStore::new();
+        let store = Arc::new(CompleteErrorStore {
+            backing: backing.clone(),
+            apply_before_error,
+            operations: std::sync::Mutex::new(Vec::new()),
+        });
+        let effects = Arc::new(AtomicUsize::new(0));
+        let mut bus = Bus::new();
+        bus.insert(PersistenceTraceId::new("complete-error"));
+        bus.insert(PersistenceHandle::from_arc(store.clone()));
+        let axon = Axon::<u32, u32, String, ()>::new("complete-error").then(Count(effects.clone()));
+
+        let report = axon.execute(0, &(), &mut bus).await;
+
+        assert!(matches!(
+            report,
+            ExecutionReport::Unconfirmed {
+                result: Outcome::Next(1),
+                operation: PersistenceOperation::Complete,
+                effect: EffectBoundary::MayHaveRun,
+                ..
+            }
+        ));
+        assert!(
+            !serde_json::to_string(&report)
+                .unwrap()
+                .contains("private-complete-error-sentinel")
+        );
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *store.operations.lock().unwrap(),
+            vec!["append:Enter", "append:Next", "append:Next", "complete"]
+        );
+
+        let trace = backing.load("complete-error").await.unwrap().unwrap();
+        assert_eq!(trace.events.len(), 3);
+        assert_eq!(
+            trace
+                .events
+                .iter()
+                .map(|event| event.outcome_kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Enter", "Next", "Next"]
+        );
+        assert!(trace.events[1].node_id.is_some());
+        assert!(trace.events[2].node_id.is_none());
+        assert_eq!(
+            trace.completion,
+            apply_before_error.then_some(CompletionState::Success)
+        );
+    }
+}
+
 #[tokio::test]
 async fn actual_execute_distinguishes_no_store_and_app_owned_completion() {
     let effects = Arc::new(AtomicUsize::new(0));
