@@ -140,9 +140,12 @@ where
             resources: owned.0.clone(),
             handlers: ranvier_core::saga::SagaCompensationRegistry { handlers },
         });
-        let store = bus.read::<crate::nested_custody::CustodyStore>()
-            .ok_or("execution.nested_custody_unavailable")?;
-        Ok(Some((graph, store.reserve(custody)?)))
+        let retained = if let Some(store) = bus.read::<crate::nested_custody::CustodyStore>() {
+            store.reserve(custody)?
+        } else if let Some(client) = bus.read::<crate::nested_custody::WeakCustodyClient>() {
+            client.reserve(custody)?
+        } else { return Err("execution.nested_custody_unavailable"); };
+        Ok(Some((graph, retained)))
     }
     fn record_owned_child(bus: &mut Bus, custody: crate::nested_custody::WeakCustody) {
         let journal = crate::SagaRollbackJournal::new(&persistence_trace_id(bus));

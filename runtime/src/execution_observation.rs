@@ -1212,7 +1212,8 @@ pub(crate) fn has_stream_recovery_authority(bus: &mut Bus) -> bool {
         || bus.has::<crate::SagaRollbackJournal>()
         || bus.has::<crate::SagaRollbackReport>()
         || bus.has::<crate::nested_custody::RequiredOwnedCustody>()
-        || bus.has::<crate::nested_custody::CustodyStore>();
+        || bus.has::<crate::nested_custody::CustodyStore>()
+        || bus.has::<crate::nested_custody::WeakCustodyClient>();
     bus.restore_access_scope(access);
     occupied
 }

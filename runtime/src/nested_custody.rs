@@ -2,7 +2,10 @@
 use std::{
     any::Any,
     collections::HashMap,
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, Weak,
+    },
 };
 
 pub(crate) struct RequiredOwnedCustody;
@@ -26,7 +29,7 @@ impl<'a> OwnedResourceScope<'a> {
     ) -> Self {
         let access = bus.take_access_scope();
         let eligible = bus.has::<RequiredOwnedCustody>()
-            && bus.has::<CustodyStore>()
+            && (bus.has::<CustodyStore>() || bus.has::<WeakCustodyClient>())
             && bus.has::<crate::execution_observation::ActiveObservation>();
         let scope = bus.begin_resource_scope::<OwnedResources<Res>>();
         bus.insert(OwnedResources(resources));
@@ -56,11 +59,27 @@ pub(crate) struct NestedSagaCustody<E, Res> {
 }
 type Capability = Arc<dyn Any + Send + Sync>;
 struct StoreInner {
+    closed: AtomicBool,
     capacity: usize,
     records: Mutex<HashMap<uuid::Uuid, Capability>>,
 }
+struct StoreOwner(Arc<StoreInner>);
+impl Drop for StoreOwner {
+    fn drop(&mut self) {
+        let released = {
+            let mut records = self.0.records.lock().unwrap_or_else(|p| p.into_inner());
+            self.0.closed.store(true, Ordering::Release);
+            std::mem::take(&mut *records)
+        };
+        // Closing root ownership retires records even if a client operation has
+        // temporarily upgraded the core. Never release user objects under lock.
+        drop(released);
+    }
+}
 #[derive(Clone)]
-pub(crate) struct CustodyStore(Arc<StoreInner>);
+pub(crate) struct CustodyStore(Arc<StoreOwner>);
+#[derive(Clone)]
+pub(crate) struct WeakCustodyClient(Weak<StoreInner>);
 #[derive(Clone)]
 pub(crate) struct WeakCustody {
     id: uuid::Uuid,
@@ -69,30 +88,49 @@ pub(crate) struct WeakCustody {
 }
 impl CustodyStore {
     pub(crate) fn new(capacity: usize) -> Self {
-        Self(Arc::new(StoreInner {
+        Self(Arc::new(StoreOwner(Arc::new(StoreInner {
+            closed: AtomicBool::new(false),
             capacity,
             records: Mutex::new(HashMap::new()),
-        }))
+        }))))
+    }
+    pub(crate) fn client(&self) -> WeakCustodyClient {
+        WeakCustodyClient(Arc::downgrade(&self.0 .0))
     }
     pub(crate) fn reserve(&self, record: Capability) -> Result<WeakCustody, &'static str> {
-        let mut records = self
-            .0
-            .records
-            .lock()
-            .map_err(|_| "execution.nested_custody_unavailable")?;
-        if records.len() >= self.0.capacity {
-            drop(records);
-            return Err("execution.nested_custody_capacity");
-        }
-        let id = uuid::Uuid::new_v4();
-        let weak = WeakCustody {
-            id,
-            record: Arc::downgrade(&record),
-            store: Arc::downgrade(&self.0),
-        };
-        records.insert(id, record);
-        Ok(weak)
+        reserve_in(&self.0 .0, record)
     }
+}
+impl WeakCustodyClient {
+    pub(crate) fn reserve(&self, record: Capability) -> Result<WeakCustody, &'static str> {
+        let store = self
+            .0
+            .upgrade()
+            .ok_or("execution.parent_custody_released")?;
+        reserve_in(&store, record)
+    }
+}
+fn reserve_in(store: &Arc<StoreInner>, record: Capability) -> Result<WeakCustody, &'static str> {
+    let mut records = store
+        .records
+        .lock()
+        .map_err(|_| "execution.nested_custody_unavailable")?;
+    if store.closed.load(Ordering::Acquire) {
+        drop(records);
+        return Err("execution.parent_custody_released");
+    }
+    if records.len() >= store.capacity {
+        drop(records);
+        return Err("execution.nested_custody_capacity");
+    }
+    let id = uuid::Uuid::new_v4();
+    let weak = WeakCustody {
+        id,
+        record: Arc::downgrade(&record),
+        store: Arc::downgrade(store),
+    };
+    records.insert(id, record);
+    Ok(weak)
 }
 impl WeakCustody {
     #[cfg(test)]
@@ -172,6 +210,38 @@ mod tests {
             drop(sibling);
         }
     }
+    #[test]
+    fn weak_clients_share_capacity_and_cannot_keep_root_records_alive() {
+        struct Child {
+            _client: WeakCustodyClient,
+        }
+        let root = CustodyStore::new(1);
+        let client = root.client();
+        let child = Arc::new(Child {
+            _client: client.clone(),
+        });
+        let weak_child = Arc::downgrade(&child);
+        let record = client
+            .reserve(child)
+            .unwrap_or_else(|_| panic!("client admission failed"));
+        assert!(matches!(
+            root.reserve(Arc::new(())),
+            Err("execution.nested_custody_capacity")
+        ));
+        assert!(matches!(
+            client.reserve(Arc::new(())),
+            Err("execution.nested_custody_capacity")
+        ));
+        let temporary_core = client.0.upgrade().unwrap();
+        drop(root);
+        assert!(weak_child.upgrade().is_none());
+        assert!(record.upgrade().is_none());
+        assert!(matches!(
+            client.reserve(Arc::new(())),
+            Err("execution.parent_custody_released")
+        ));
+        assert!(temporary_core.closed.load(Ordering::Acquire));
+    }
     struct Probe {
         store: Weak<StoreInner>,
         released: Arc<std::sync::atomic::AtomicBool>,
@@ -191,14 +261,14 @@ mod tests {
         let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let retained = store
             .reserve(Arc::new(Probe {
-                store: Arc::downgrade(&store.0),
+                store: Arc::downgrade(&store.0 .0),
                 released: released.clone(),
             }))
             .unwrap_or_else(|_| panic!("admission failed"));
         let refused = Arc::new(std::sync::atomic::AtomicBool::new(false));
         assert!(store
             .reserve(Arc::new(Probe {
-                store: Arc::downgrade(&store.0),
+                store: Arc::downgrade(&store.0 .0),
                 released: refused.clone()
             }))
             .is_err());
