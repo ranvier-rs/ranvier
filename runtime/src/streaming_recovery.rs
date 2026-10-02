@@ -2226,6 +2226,65 @@ mod tests {
         assert!(registry.upgrade().is_none());
         assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
     }
+    #[tokio::test]
+    async fn parent_store_retains_child_during_actual_prefix_effect_abort_before_initializer() {
+        #[derive(Clone)]
+        struct PendingPrefix(Arc<Notify>);
+        #[async_trait::async_trait]
+        impl Transition<u32, u32> for PendingPrefix {
+            type Error = String;
+            type Resources = Resources;
+            async fn run(&self, _: u32, resources: &Resources, bus: &mut Bus) -> Outcome<u32, String> {
+                resources.effects.fetch_add(1, Ordering::SeqCst);
+                bus.insert(9922u64);
+                self.0.notify_one();
+                std::future::pending().await
+            }
+        }
+        let parent = crate::nested_custody::CustodyStore::new(1);
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let weak = Arc::downgrade(&resources);
+        let entered = Arc::new(Notify::new());
+        let child = OwnedStreamRecovery::try_new(
+            Axon::<u32, u32, String, Resources>::start("parent-prefix-abort")
+                .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo)
+                .then(PendingPrefix(entered.clone())),
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1), None).unwrap();
+        let admission = child.admit_to_parent(parent.client()).await.unwrap();
+        let observer = child.observe();
+        let initialized = Arc::new(Notify::new());
+        let init_signal = initialized.clone();
+        let task = tokio::spawn(async move {
+            child.initialize_and_drive(281, &PendingInit(init_signal), None, std::time::Duration::from_secs(30), |_| async {
+                panic!("pending prefix must not start driver");
+                #[allow(unreachable_code)] completed()
+            }).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+        task.abort();
+        assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+        assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(20), initialized.notified()).await.is_err());
+        let inner = admission.upgrade().unwrap().downcast::<RecoveryInner<u32, u32, String, Resources>>()
+            .unwrap_or_else(|_| panic!("wrong prefix child owner"));
+        {
+            let context = inner.context.lock().await;
+            assert!(Arc::ptr_eq(&context.0, &resources));
+            assert_eq!(context.1.read::<u64>(), Some(&9922));
+            let stack = context.1.read::<SagaStack>().unwrap();
+            assert_eq!(stack.tasks.len(), 1);
+            assert_eq!(stack.tasks[0].input_snapshot, b"281");
+            assert!(inner.graph.saga_compensation_registry.read().unwrap().get(&stack.tasks[0].node_id).is_some());
+        }
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+        drop(inner);
+        drop(resources);
+        assert!(weak.upgrade().is_some());
+        drop(parent);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
+    }
     struct ExternalHook {
         mode: u8,
         calls: Arc<AtomicUsize>,
