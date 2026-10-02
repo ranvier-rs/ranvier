@@ -16,6 +16,14 @@ pub struct StreamingAxon<In, Out, Item, E, Res = ()> {
     pub(crate) stream_executor: StreamExecutorType<In, Out, Item, E, Res>,
     pub timeout_config: Option<StreamTimeoutConfig>,
     pub buffer_size: usize,
+    pub(crate) owned_definition: Arc<OwnedStreamDefinition<In, Out, Item, E, Res>>,
+}
+/// Preserve the exact configured graph and initializer for supervised factories.
+/// Never serialize this capability or reconstruct it from the schematic.
+pub(crate) struct OwnedStreamDefinition<In, Out, Item, E, Res> {
+    pub(crate) prefix: crate::Axon<In, Out, E, Res>,
+    pub(crate) initializer: Arc<dyn std::any::Any + Send + Sync>,
+    pub(crate) item_maps: Vec<Arc<dyn Fn(Item) -> Item + Send + Sync>>,
 }
 
 pub type StreamExecutorType<In, Out, Item, E, Res> = Arc<
@@ -45,6 +53,7 @@ impl<In, Out, Item, E, Res> Clone for StreamingAxon<In, Out, Item, E, Res> {
             stream_executor: self.stream_executor.clone(),
             timeout_config: self.timeout_config.clone(),
             buffer_size: self.buffer_size,
+            owned_definition: self.owned_definition.clone(),
         }
     }
 }
@@ -112,6 +121,13 @@ where
     {
         let previous = self.stream_executor;
         let f = Arc::new(f);
+        let mut item_maps = self.owned_definition.item_maps.clone();
+        item_maps.push(f.clone());
+        let owned_definition = Arc::new(OwnedStreamDefinition {
+            prefix: self.owned_definition.prefix.clone(),
+            initializer: self.owned_definition.initializer.clone(),
+            item_maps,
+        });
         let executor: StreamExecutorType<In, Out, Item, E, Res> =
             Arc::new(move |input, resources, bus, token| {
                 let previous = previous.clone();
@@ -157,6 +173,7 @@ where
         Self {
             schematic,
             stream_executor: executor,
+            owned_definition,
             timeout_config: self.timeout_config,
             buffer_size: self.buffer_size,
         }

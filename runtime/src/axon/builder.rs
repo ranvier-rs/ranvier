@@ -1415,6 +1415,11 @@ where
 
         // Capture the complete configured prefix. A single owner retains its
         // live context through initialization and preserves rejected typed reports.
+        let owned_definition = Arc::new(crate::streaming_axon::OwnedStreamDefinition {
+            prefix: prefix.clone(),
+            initializer: Arc::new(streaming.clone()),
+            item_maps: Vec::new(),
+        });
         let stream_executor: crate::streaming_axon::StreamExecutorType<In, Out, Item, E, Res> =
             Arc::new(move |input, resources, bus, token| {
                 let prefix = prefix.clone();
@@ -1431,6 +1436,7 @@ where
             stream_executor,
             timeout_config,
             buffer_size: 64,
+            owned_definition,
         }
     }
 
