@@ -33,6 +33,7 @@ impl<T: Send + 'static> PreparedStreamTask<T> {
         self.permit.take();
         Ok(())
     }
+    pub(crate) fn has_open_start(&self) -> bool { self.permit.is_some() && !self.grant_decided }
     #[cfg(test)]
     fn grant_start(&mut self) -> Result<(), &'static str> {
         let permit = self.permit.take().ok_or("execution.nested_task_start_decided")?;

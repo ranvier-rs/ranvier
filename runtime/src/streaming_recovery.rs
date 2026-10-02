@@ -582,6 +582,9 @@ where
         journal: &crate::SagaRollbackJournal, parent: CancellationToken,
         prepared: &mut crate::managed_stream_task::PreparedStreamTask<T>,
     ) -> Result<crate::nested_custody::WeakCustody, ManagedStreamStartError> {
+        if !prepared.has_open_start() {
+            return Err(ManagedStreamStartError { signal: "execution.nested_task_start_decided", custody: None });
+        }
         let custody = match self.admit_managed_to_parent(client, journal, parent, prepared).await {
             Ok(custody) => custody,
             Err(signal) => {
@@ -2657,6 +2660,12 @@ mod tests {
             assert!(matches!(prepared.reject_until( tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             assert!(!child.inner.started.load(Ordering::Acquire));
+            assert!(journal.retained_stream_observations().is_empty());
+            let retry_root = crate::nested_custody::CustodyStore::new(1);
+            assert!(matches!(child.register_and_start(retry_root.client(), &journal, CancellationToken::new(), &mut prepared).await,
+                Err(error) if error.signal == "execution.nested_task_start_decided" && error.custody.is_none()));
+            retry_root.close_admission().unwrap();
+            assert!(retry_root.closed_tasks().unwrap().is_empty());
             assert!(journal.retained_stream_observations().is_empty());
             assert!(!target.inner.started.load(Ordering::Acquire));
             drop(target);
