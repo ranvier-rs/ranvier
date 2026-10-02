@@ -2624,6 +2624,40 @@ mod tests {
         assert!(!journal.snapshot().is_complete());
     }
     #[tokio::test]
+    async fn coordinated_start_collects_actual_cancelled_child_report() {
+        let parent = crate::nested_custody::CustodyStore::new(1);
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let child = OwnedStreamRecovery::try_new(
+            Axon::<u32, u32, String, Resources>::start("coordinated-child")
+                .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1), None).unwrap();
+        let entered = Arc::new(Notify::new());
+        let mut prepared = child.prepare_managed(131, PendingInit(entered.clone()),
+            std::time::Duration::from_secs(5), |_| async {
+                panic!("cancelled initializer must not drive");
+                #[allow(unreachable_code)] completed()
+            });
+        let journal = crate::SagaRollbackJournal::new("coordinated-parent");
+        let control = CancellationToken::new();
+        let admission = child.register_and_start(parent.client(), &journal, control.clone(), &mut prepared).await
+            .unwrap_or_else(|error| panic!("{}", error.signal));
+        parent.close_admission().unwrap();
+        type Report = Result<StreamInitializationReport<u32, StreamReadyResult<()>, String>, StreamInvocationAlreadyStarted>;
+        let mut family = parent.closed_typed_family::<Report>().unwrap();
+        drop(prepared);
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+        control.cancel(ranvier_core::CancellationReason::OperatorShutdown);
+        family.settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await;
+        assert_eq!(family[0].1, Ok(()));
+        let report = family.take_joined(admission.id(), tokio::time::Instant::now()).await.unwrap().unwrap().unwrap();
+        assert!(matches!(report, Some(Ok(StreamInitializationReport::Cancelled { context, .. }))
+            if context.reason == ranvier_core::CancellationReason::OperatorShutdown));
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+        assert_eq!(journal.retained_stream_observations().len(), 1);
+    }
+
+    #[tokio::test]
     async fn rejected_managed_registration_joins_prepared_child_without_effects() {
         for failure in 0..4 {
             let parent = crate::nested_custody::CustodyStore::new(if failure == 0 { 0 } else { 1 });
