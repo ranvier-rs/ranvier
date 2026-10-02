@@ -2034,12 +2034,17 @@ mod tests {
         let weak = Arc::downgrade(&resources);
         let mut bus = Bus::new();
         bus.insert(9911u64);
+        let graph = Axon::<u32, u32, String, Resources>::start("parent-child-init-abort")
+            .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo);
+        let external_registry = graph.saga_compensation_registry.clone();
         let child = OwnedStreamRecovery::try_new(
-            Axon::<u32, u32, String, Resources>::start("parent-child-init-abort")
-                .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+            graph,
             OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
             &StreamRecoveryAdmission::new(1), None).unwrap();
         let admission = child.admit_to_parent(parent.client()).await.unwrap();
+        // External graph mutation must not remove the actual frozen recovery handler.
+        external_registry.write().unwrap().handlers.clear();
+        drop(external_registry);
         let observer = child.observe();
         let entered = Arc::new(Notify::new());
         let signal = entered.clone();
@@ -2067,15 +2072,20 @@ mod tests {
             let context = inner.context.lock().await;
             assert!(Arc::ptr_eq(&context.0, &resources));
             assert_eq!(context.1.read::<u64>(), Some(&9911));
-            let retained = &context.1.read::<SagaStack>().unwrap().tasks[0];
+            let stack = context.1.read::<SagaStack>().unwrap();
+            assert_eq!(stack.tasks.len(), 1);
+            let retained = &stack.tasks[0];
             assert_eq!(retained.input_snapshot, b"251");
             assert!(inner.graph.saga_compensation_registry.read().unwrap().get(&retained.node_id).is_some());
         }
+        let registry = Arc::downgrade(&inner.graph.saga_compensation_registry);
         drop(inner);
         drop(resources);
         assert!(weak.upgrade().is_some());
+        assert!(registry.upgrade().is_some());
         drop(parent);
         assert!(weak.upgrade().is_none());
+        assert!(registry.upgrade().is_none());
         assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
     }
     struct ExternalHook {
