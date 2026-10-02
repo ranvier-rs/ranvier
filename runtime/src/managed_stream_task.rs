@@ -69,6 +69,10 @@ pub(crate) struct ManagedStreamTask<T> {
 pub(crate) enum ManagedTaskWaitError { TimedOut, AlreadyJoined, StartGrantDecided }
 
 impl<T: Send + 'static> ManagedStreamTask<T> {
+    #[cfg(test)]
+    pub(crate) fn abort_frame(&self) {
+        if let Some(handle) = &self.handle { handle.abort(); }
+    }
     /// Reject the unopened start gate before returning the borrowed join wait.
     /// Even an unpolled/dropped wait cannot grant start; caller retains this
     /// task owner and must retry join after a timeout or dropped wait.

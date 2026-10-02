@@ -2624,6 +2624,38 @@ mod tests {
         assert!(!journal.snapshot().is_complete());
     }
     #[tokio::test]
+    async fn coordinated_unavailable_start_retains_registration_and_original_join_error() {
+        let parent = crate::nested_custody::CustodyStore::new(1);
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let child = OwnedStreamRecovery::try_new(
+            Axon::<u32, u32, String, Resources>::start("unavailable-coordinated-child"),
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1), None).unwrap();
+        let mut prepared = child.prepare_managed(137, PendingInit(Arc::new(Notify::new())),
+            std::time::Duration::from_secs(5), |_| async { completed() });
+        let holder = prepared.holder();
+        {
+            let mut task = holder.lock().await;
+            task.abort_frame();
+            task.settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+        }
+        let journal = crate::SagaRollbackJournal::new("unavailable-coordinated-parent");
+        let error = match child.register_and_start(parent.client(), &journal, CancellationToken::new(), &mut prepared).await {
+            Ok(_) => panic!("terminated frame cannot start"), Err(error) => error,
+        };
+        assert_eq!(error.signal, "execution.nested_task_start_unavailable");
+        let admission = error.custody.unwrap();
+        parent.close_admission().unwrap();
+        assert_eq!(parent.closed_tasks().unwrap()[0].0, admission.id());
+        assert!(matches!(holder.lock().await.take_joined().unwrap(), Err(error) if error.is_cancelled()));
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+        assert_eq!(journal.retained_stream_observations().len(), 1);
+        assert!(journal.has_unresolved_tasks());
+        admission.release();
+        assert!(parent.closed_tasks().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn coordinated_start_collects_actual_cancelled_child_report() {
         let parent = crate::nested_custody::CustodyStore::new(1);
         let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
