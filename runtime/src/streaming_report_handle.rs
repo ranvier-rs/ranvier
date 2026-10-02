@@ -147,6 +147,16 @@ pub enum StreamLocalRetirementError {
     CustodyMismatch,
 }
 pub(crate) type LocalRetirement = Arc<dyn Fn(Instant) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StreamLocalRetirementError>> + Send>> + Send + Sync>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamLocalRecoveryError {
+    Wait(StreamReportWaitError),
+    FrameNotReported,
+    Unavailable,
+    JournalUnavailable,
+    RecoveryBlocked,
+    HandlerRegistryUnavailable,
+}
+pub(crate) type LocalRecovery = Arc<dyn Fn(Instant) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<crate::SagaRollbackOutcome, StreamLocalRecoveryError>> + Send>> + Send + Sync>;
 
 /// Clones share one original report. Waiting never retires recovery custody;
 /// only explicit report transfer consumes the result, once across all clones.
@@ -158,15 +168,17 @@ pub struct StreamReportHandle<Out, E> {
     assessment: Arc<Mutex<Option<StreamReportAssessment>>>,
     probe: Option<RecoveryProbe>,
     local_retirement: Option<LocalRetirement>,
+    local_recovery: Option<LocalRecovery>,
 }
 impl<Out, E> Clone for StreamReportHandle<Out, E> {
-    fn clone(&self) -> Self { Self { task: self.task.clone(), _owner: self._owner.clone(), retirement: self.retirement.clone(), assessment: self.assessment.clone(), probe: self.probe.clone(), local_retirement: self.local_retirement.clone() } }
+    fn clone(&self) -> Self { Self { task: self.task.clone(), _owner: self._owner.clone(), retirement: self.retirement.clone(), assessment: self.assessment.clone(), probe: self.probe.clone(), local_retirement: self.local_retirement.clone(), local_recovery: self.local_recovery.clone() } }
 }
 impl<Out: Send + 'static, E: Send + 'static> StreamReportHandle<Out, E> {
     pub(crate) fn new(task: Arc<tokio::sync::Mutex<crate::managed_stream_task::ManagedStreamTask<Original<Out, E>>>>,
-        owner: crate::nested_custody::Capability) -> Self { Self { task, _owner: owner, retirement: Arc::new(AtomicU8::new(0)), assessment: Arc::new(Mutex::new(None)), probe: None, local_retirement: None } }
+        owner: crate::nested_custody::Capability) -> Self { Self { task, _owner: owner, retirement: Arc::new(AtomicU8::new(0)), assessment: Arc::new(Mutex::new(None)), probe: None, local_retirement: None, local_recovery: None } }
     pub(crate) fn with_recovery_probe(mut self, probe: RecoveryProbe) -> Self { self.probe = Some(probe); self }
     pub(crate) fn with_local_retirement(mut self, retirement: LocalRetirement) -> Self { self.local_retirement = Some(retirement); self }
+    pub(crate) fn with_local_recovery(mut self, recovery: LocalRecovery) -> Self { self.local_recovery = Some(recovery); self }
     pub(crate) fn holder_capability(&self) -> crate::nested_custody::Capability { self.task.clone() }
     /// Explicitly retire local root custody after original Completed/Unpersisted
     /// execution with no retained Saga state or recovery journal. This does not
@@ -175,6 +187,29 @@ impl<Out: Send + 'static, E: Send + 'static> StreamReportHandle<Out, E> {
     /// Other report/recovery/drain leases still retain recovery admission.
     pub async fn retire_completed_local_until(&self, deadline: Instant) -> Result<(), StreamLocalRetirementError> {
         (self.local_retirement.as_ref().ok_or(StreamLocalRetirementError::NotConfigured)?)(deadline).await
+    }
+    /// Explicitly run at most the first eligible local Saga compensation from
+    /// this joined report's original typed owner. Results contain fixed outcome
+    /// labels only; timeout or uncertain outcomes retain the original input.
+    pub async fn reconcile_next_local_compensation_until(&self, deadline: Instant)
+        -> Result<crate::SagaRollbackOutcome, StreamLocalRecoveryError> {
+        let recovery = self.local_recovery.as_ref().ok_or(StreamLocalRecoveryError::Unavailable)?;
+        self.require_reported_frame(deadline).await?;
+        recovery(deadline).await
+    }
+    pub(crate) async fn require_reported_frame(&self, deadline: Instant) -> Result<(), StreamLocalRecoveryError> {
+        if Instant::now() >= deadline { return Err(StreamLocalRecoveryError::Wait(StreamReportWaitError::TimedOut)); }
+        if self.assessment().map_err(|_| StreamLocalRecoveryError::Unavailable)?.is_none() {
+            match self.settle_until(deadline).await {
+                Ok(()) | Err(StreamReportWaitError::AlreadyTaken) => {},
+                Err(error) => return Err(StreamLocalRecoveryError::Wait(error)),
+            }
+        }
+        let assessment = self.assessment().map_err(|_| StreamLocalRecoveryError::Unavailable)?;
+        match assessment {
+            Some(assessment) if assessment.frame == StreamFrameAssessment::Reported => Ok(()),
+            _ => Err(StreamLocalRecoveryError::FrameNotReported),
+        }
     }
     pub(crate) async fn prove_completed_local(&self, deadline: Instant) -> Result<(), StreamLocalRetirementError> {
         use StreamLocalRetirementError as Error;

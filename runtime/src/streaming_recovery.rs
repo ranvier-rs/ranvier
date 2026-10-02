@@ -368,10 +368,35 @@ struct RecoveryInner<In, Out, E, Res> {
     graph: Axon<In, Out, E, Res>,
     context: Mutex<(Arc<Res>, Bus)>,
     started: AtomicBool,
+    local_recovery: Mutex<()>,
     expires: Option<std::time::Instant>,
     observation: tokio::sync::watch::Sender<SupervisorObservation>,
     // Last field: release reservation after graph/context fields are dropped.
     _permit: RecoveryPermit,
+}
+/// Temporarily installs fresh cooperative cleanup control while removing the
+/// transition access guard. The exact prior Bus scopes return on every exit.
+struct LocalCompensationBusScope<'a> {
+    bus: &'a mut Bus,
+    access: Option<ranvier_core::bus::BusAccessScope>,
+    previous_token: Option<CancellationToken>,
+    operation_token: CancellationToken,
+}
+impl<'a> LocalCompensationBusScope<'a> {
+    fn begin(bus: &'a mut Bus) -> Self {
+        let access = bus.take_access_scope();
+        let operation_token = CancellationToken::new();
+        let previous_token = bus.replace_cancellation_token(Some(operation_token.clone()));
+        Self { bus, access: Some(access), previous_token, operation_token }
+    }
+    fn bus(&mut self) -> &mut Bus { self.bus }
+}
+impl Drop for LocalCompensationBusScope<'_> {
+    fn drop(&mut self) {
+        self.operation_token.cancel(ranvier_core::CancellationReason::Explicit);
+        self.bus.replace_cancellation_token(self.previous_token.take());
+        if let Some(access) = self.access.take() { self.bus.restore_access_scope(access); }
+    }
 }
 impl<In, Out, E, Res> Drop for RecoveryInner<In, Out, E, Res> {
     fn drop(&mut self) {
@@ -491,6 +516,7 @@ where
                 graph,
                 context: Mutex::new(context.into_parts()),
                 started: AtomicBool::new(false),
+                local_recovery: Mutex::new(()),
                 expires,
                 _permit: permit,
                 observation: tokio::sync::watch::channel(SupervisorObservation {
@@ -729,6 +755,91 @@ where
                 bus.restore_access_scope(access);
                 result
             })
+        })
+    }
+    /// Bind explicit local compensation to the exact original joined report and
+    /// typed owner. This closure cannot be constructed from a copied assessment.
+    pub(crate) fn local_recovery(
+        &self,
+        report: crate::streaming_report_handle::StreamReportHandle<Out, E>,
+    ) -> crate::streaming_report_handle::LocalRecovery {
+        let owner = self.clone();
+        Arc::new(move |deadline| {
+            let owner = owner.clone();
+            let report = report.clone();
+            Box::pin(async move {
+                report.require_reported_frame(deadline).await?;
+                owner.reconcile_next_local_compensation_until(deadline).await
+            })
+        })
+    }
+    async fn reconcile_next_local_compensation_until(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Result<crate::SagaRollbackOutcome, crate::streaming_report_handle::StreamLocalRecoveryError> {
+        use crate::streaming_report_handle::{StreamLocalRecoveryError as Error, StreamReportWaitError};
+        use crate::saga_report::LocalTaskClaimError;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Error::Wait(StreamReportWaitError::TimedOut));
+        }
+        let _operation = tokio::time::timeout_at(deadline, self.inner.local_recovery.lock()).await
+            .map_err(|_| Error::Wait(StreamReportWaitError::TimedOut))?;
+        if !self.inner.started.load(Ordering::Acquire) {
+            return Err(Error::FrameNotReported);
+        }
+        let mut context = tokio::time::timeout_at(deadline, self.inner.context.lock()).await
+            .map_err(|_| Error::Wait(StreamReportWaitError::TimedOut))?;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Error::Wait(StreamReportWaitError::TimedOut));
+        }
+        let (resources, bus) = &mut *context;
+        let mut scope = LocalCompensationBusScope::begin(bus);
+        let bus = scope.bus();
+        if !bus.read::<ranvier_core::saga::SagaPolicy>()
+            .is_some_and(|policy| *policy == ranvier_core::saga::SagaPolicy::Enabled) {
+            return Err(Error::RecoveryBlocked);
+        }
+        let journal = if let Some(journal) = bus.read::<crate::SagaRollbackJournal>().cloned() {
+            journal
+        } else if bus.read::<ranvier_core::saga::SagaStack>().is_some_and(|stack| !stack.is_empty()) {
+            let trace = bus.id.to_string();
+            let journal = crate::SagaRollbackJournal::new(&trace);
+            bus.insert(journal.clone());
+            journal
+        } else {
+            return Err(Error::JournalUnavailable);
+        };
+        // Preserve LIFO by moving every unprocessed stack item into the same
+        // indexed journal. Each task moves once; no serialized input is cloned.
+        if let Some(stack) = bus.read_mut::<ranvier_core::saga::SagaStack>() {
+            while let Some(task) = stack.pop() {
+                match journal.try_push_uninvoked_task(task) {
+                    Ok(_) => {}
+                    Err((_, task)) => {
+                        stack.tasks.push(task);
+                        return Err(Error::Unavailable);
+                    }
+                }
+            }
+        }
+        let mut claim = journal.claim_next_not_invoked().map_err(|error| match error {
+            LocalTaskClaimError::Unavailable => Error::Unavailable,
+            LocalTaskClaimError::TimedOut => Error::Wait(StreamReportWaitError::TimedOut),
+            LocalTaskClaimError::Missing | LocalTaskClaimError::NotEligible
+            | LocalTaskClaimError::Claimed | LocalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
+        })?;
+        let handler = self.inner.graph.saga_compensation_registry.try_read()
+            .map_err(|_| Error::HandlerRegistryUnavailable)?
+            .get(claim.node_id());
+        let Some(handler) = handler else {
+            claim.mark_missing_handler().map_err(|_| Error::Unavailable)?;
+            return Ok(crate::SagaRollbackOutcome::MissingHandler);
+        };
+        claim.invoke(handler, resources.as_ref(), scope.bus(), deadline).await.map_err(|error| match error {
+            LocalTaskClaimError::Unavailable => Error::Unavailable,
+            LocalTaskClaimError::TimedOut => Error::Wait(StreamReportWaitError::TimedOut),
+            LocalTaskClaimError::Missing | LocalTaskClaimError::NotEligible
+            | LocalTaskClaimError::Claimed | LocalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
         })
     }
     /// Constructed only beside the exact staged report and receipt. The captured
@@ -1050,6 +1161,30 @@ mod tests {
     };
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::Notify;
+    #[test]
+    fn local_compensation_bus_scope_restores_the_original_access_and_control_state() {
+        let mut bus = Bus::new();
+        bus.insert(SagaStack::new());
+        bus.insert(41u32);
+        let original = CancellationToken::new();
+        bus.set_cancellation_token(original.clone());
+        bus.set_access_policy("original-scope", Some(ranvier_core::BusAccessPolicy::allow_only(
+            vec![ranvier_core::BusTypeRef::of::<u32>()],
+        )));
+        assert!(bus.get::<SagaStack>().is_err());
+        let operation = {
+            let mut scope = LocalCompensationBusScope::begin(&mut bus);
+            let operation = scope.bus().cancellation_token().cloned().unwrap();
+            assert!(scope.bus().get::<SagaStack>().is_ok());
+            drop(scope);
+            operation
+        };
+        assert!(operation.is_cancelled());
+        assert!(bus.get::<SagaStack>().is_err());
+        assert_eq!(*bus.get::<u32>().unwrap(), 41);
+        original.cancel(ranvier_core::CancellationReason::ClientDisconnected);
+        assert!(bus.cancellation_token().is_some_and(CancellationToken::is_cancelled));
+    }
     #[tokio::test]
     async fn full_queue_observes_cancel_disconnect_and_deadline_without_extra_source_poll() {
         use std::{

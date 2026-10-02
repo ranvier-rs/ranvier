@@ -86,6 +86,10 @@ pub(crate) struct LocalTaskClaim {
 }
 #[cfg(feature = "streaming")]
 impl LocalTaskClaim {
+    pub(crate) fn node_id(&self) -> &str { &self.task.node_id }
+    pub(crate) fn mark_missing_handler(&mut self) -> Result<(), LocalTaskClaimError> {
+        self.settle_original(SagaRollbackOutcome::MissingHandler)
+    }
     /// Caller must bind this operation to the joined original typed owner and
     /// restore its Bus/control scope. No sync journal lock spans user code.
     pub(crate) async fn invoke<E, Res>(mut self, handler: ranvier_core::saga::SagaCompensationFn<E, Res>,
@@ -208,6 +212,55 @@ impl SagaRollbackJournal {
         claims.insert(index, token.clone());
         step.outcome = SagaRollbackOutcome::InProgress; report.finished = false;
         Ok(LocalTaskClaim { journal: self.clone(), index, task, token, invoked: false, settled: false })
+    }
+    /// Claim the first unresolved journal row. Earlier child/external/uncertain
+    /// work blocks local compensation so recovery cannot silently reorder effects.
+    #[cfg(feature = "streaming")]
+    pub(crate) fn claim_next_not_invoked(&self) -> Result<LocalTaskClaim, LocalTaskClaimError> {
+        let mut report = self.0.try_lock().map_err(|_| LocalTaskClaimError::Unavailable)?;
+        let mut claims = self.6.try_lock().map_err(|_| LocalTaskClaimError::Unavailable)?;
+        let tasks = self.1.try_lock().map_err(|_| LocalTaskClaimError::Unavailable)?;
+        let index = report.steps.iter().position(|step| step.outcome != SagaRollbackOutcome::Completed)
+            .ok_or(LocalTaskClaimError::Missing)?;
+        if claims.contains_key(&index) { return Err(LocalTaskClaimError::Claimed); }
+        let task = tasks.iter().find(|(observed, _)| *observed == index).map(|(_, task)| task.clone())
+            .ok_or(LocalTaskClaimError::Missing)?;
+        let step = report.steps.get_mut(index).ok_or(LocalTaskClaimError::IdentityMismatch)?;
+        if step.node_id != task.node_id { return Err(LocalTaskClaimError::IdentityMismatch); }
+        if step.outcome != SagaRollbackOutcome::NotInvoked { return Err(LocalTaskClaimError::NotEligible); }
+        let token = std::sync::Arc::new(());
+        claims.insert(index, token.clone());
+        step.outcome = SagaRollbackOutcome::InProgress;
+        report.finished = false;
+        Ok(LocalTaskClaim { journal: self.clone(), index, task, token, invoked: false, settled: false })
+    }
+    /// Move a stack task into its original indexed journal without copying the
+    /// task or its serialized input. On lock failure the exact task is returned.
+    #[cfg(feature = "streaming")]
+    pub(crate) fn try_push_uninvoked_task(
+        &self,
+        task: ranvier_core::saga::SagaTask,
+    ) -> Result<usize, (LocalTaskClaimError, ranvier_core::saga::SagaTask)> {
+        let mut report = match self.0.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => return Err((LocalTaskClaimError::Unavailable, task)),
+        };
+        let _claims = match self.6.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => return Err((LocalTaskClaimError::Unavailable, task)),
+        };
+        let mut tasks = match self.1.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => return Err((LocalTaskClaimError::Unavailable, task)),
+        };
+        let index = report.steps.len();
+        report.finished = false;
+        report.steps.push(SagaRollbackStep {
+            node_id: task.node_id.clone(),
+            outcome: SagaRollbackOutcome::NotInvoked,
+        });
+        tasks.push((index, std::sync::Arc::new(task)));
+        Ok(index)
     }
     /// Attach safe child observation at an actual parent-local report index.
     /// A returned stream is not automatically reconciled or removed: even EOF may

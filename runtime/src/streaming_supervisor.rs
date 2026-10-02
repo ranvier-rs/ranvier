@@ -242,13 +242,15 @@ impl StreamReservation {
         };
         let journal = crate::SagaRollbackJournal::new("supervised-stream-root");
         let report = crate::streaming_report_handle::StreamReportHandle::new(prepared.holder(),
-            std::sync::Arc::new((plan.owner.retention_capability(), journal.clone()))).with_recovery_probe(plan.owner.recovery_probe());
+            std::sync::Arc::new((plan.owner.retention_capability(), journal.clone())))
+            .with_recovery_probe(plan.owner.recovery_probe());
         let custody = match plan.owner.stage_reserved(&client, &mut slot, &journal, &mut prepared) {
             Ok(custody) => custody,
             Err(error) => return Err(StreamPrepareError::Staging(StreamStartRejected { signal: error.signal, report, _custody: error.custody })),
         };
         let retirement = plan.owner.local_retirement(custody.clone(), report.clone());
-        let report = report.with_local_retirement(retirement);
+        let recovery = plan.owner.local_recovery(report.clone());
+        let report = report.with_local_retirement(retirement).with_local_recovery(recovery);
         Ok(PreparedSupervisedStream { plan, prepared, custody, journal, report, client, items, readiness })
     }
 }
@@ -299,6 +301,18 @@ mod tests {
             ranvier_core::Outcome::Next(input)
         }
     }
+    #[derive(Clone)]
+    struct CountUndo(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl ranvier_core::Transition<u32, ()> for CountUndo {
+        type Error = String; type Resources = ();
+        async fn run(&self, input: u32, _: &(), bus: &mut ranvier_core::Bus) -> ranvier_core::Outcome<(), String> {
+            assert!(bus.cancellation_token().is_some());
+            assert_eq!(input, 251);
+            self.0.fetch_add(1, Ordering::SeqCst);
+            ranvier_core::Outcome::Next(())
+        }
+    }
     #[tokio::test]
     async fn public_invocation_transfers_original_item_and_report_at_capacity_one() {
         let supervisor = StreamSupervisor::new(1);
@@ -341,6 +355,76 @@ mod tests {
         drop(other); drop(lease);
         assert_eq!(supervisor.admission.in_use(), Ok(0));
         assert!(supervisor.reserve().is_ok());
+    }
+    #[tokio::test]
+    async fn explicit_local_recovery_joins_original_report_moves_stack_and_uses_frozen_handler() {
+        let supervisor = StreamSupervisor::new(1);
+        let compensations = Arc::new(AtomicUsize::new(0));
+        let circuit = crate::Axon::<u32, u32, String>::start("owned-local-recovery")
+            .then_compensated(Prefix, CountUndo(compensations.clone()))
+            .with_saga_policy(ranvier_core::saga::SagaPolicy::Enabled)
+            .then_stream(Finite);
+        let (ticket, context) = supervisor.reserve().unwrap().with_context(||
+            OwnedStreamContext::try_new(Arc::new(()), ranvier_core::Bus::new())).unwrap();
+        let prepared = ticket.prepare(&circuit, context, 251, std::time::Duration::from_secs(1), None)
+            .unwrap_or_else(|_| panic!("setup rejected"));
+        let mut invocation = prepared.start(ranvier_core::CancellationToken::new()).await
+            .unwrap_or_else(|error| panic!("{}", error.signal));
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        tokio::time::timeout_at(deadline, invocation.readiness.initialized()).await.unwrap().unwrap();
+        assert_eq!(tokio::time::timeout_at(deadline, invocation.items.recv()).await.unwrap(), Some(251));
+        assert_eq!(tokio::time::timeout_at(deadline, invocation.items.recv()).await.unwrap(), None);
+        let report = invocation.report();
+        assert_eq!(report.reconcile_next_local_compensation_until(deadline).await,
+            Ok(crate::SagaRollbackOutcome::Completed));
+        assert_eq!(compensations.load(Ordering::SeqCst), 1);
+        let live = report.live_recovery_until(deadline).await.unwrap();
+        assert!(!live.saga_stack_nonempty);
+        assert!(live.journal_present && live.recovery_pending);
+        assert_eq!(report.reconcile_next_local_compensation_until(deadline).await,
+            Err(crate::streaming_report_handle::StreamLocalRecoveryError::RecoveryBlocked));
+        let original = report.take_report_until(deadline).await.unwrap();
+        assert!(matches!(original, crate::streaming_report_handle::SupervisedStreamCompletion::Report(
+            crate::StreamInitializationReport::Ready { value, .. })
+            if matches!(value.consumption, Ok(crate::StreamConsumptionTerminal::Completed))));
+        assert_eq!(report.retire_completed_local_until(deadline).await,
+            Err(crate::streaming_report_handle::StreamLocalRetirementError::RecoveryReviewRequired));
+    }
+    #[tokio::test]
+    async fn missing_local_handler_is_zero_call_and_keeps_the_first_recovery_row_blocking() {
+        #[derive(Clone)]
+        struct PendingLocalTask;
+        #[async_trait::async_trait]
+        impl ranvier_core::streaming::StreamingTransition<u32> for PendingLocalTask {
+            type Item = u32; type Error = String; type Resources = ();
+            async fn run_stream(&self, input: u32, _: &(), bus: &mut ranvier_core::Bus)
+                -> Result<std::pin::Pin<Box<dyn futures_core::Stream<Item = u32> + Send>>, String> {
+                bus.insert(ranvier_core::saga::SagaPolicy::Enabled);
+                let mut stack = ranvier_core::saga::SagaStack::new();
+                stack.push("unknown-node".into(), "private-label".into(), serde_json::to_vec(&input).unwrap());
+                bus.insert(stack);
+                Ok(Box::pin(futures_util::stream::iter([input])))
+            }
+        }
+        let supervisor = StreamSupervisor::new(1);
+        let circuit = crate::Axon::<u32, u32, String>::start("missing-local-handler")
+            .then(Prefix).then_stream(PendingLocalTask);
+        let (ticket, context) = supervisor.reserve().unwrap().with_context(||
+            OwnedStreamContext::try_new(Arc::new(()), ranvier_core::Bus::new())).unwrap();
+        let prepared = ticket.prepare(&circuit, context, 257, std::time::Duration::from_secs(1), None)
+            .unwrap_or_else(|_| panic!("setup rejected"));
+        let mut invocation = prepared.start(ranvier_core::CancellationToken::new()).await
+            .unwrap_or_else(|error| panic!("{}", error.signal));
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        tokio::time::timeout_at(deadline, invocation.readiness.initialized()).await.unwrap().unwrap();
+        let _ = invocation.items.recv().await;
+        let _ = invocation.items.recv().await;
+        assert_eq!(invocation.report().reconcile_next_local_compensation_until(deadline).await,
+            Ok(crate::SagaRollbackOutcome::MissingHandler));
+        assert_eq!(invocation.report().reconcile_next_local_compensation_until(deadline).await,
+            Err(crate::streaming_report_handle::StreamLocalRecoveryError::RecoveryBlocked));
+        let live = invocation.report().live_recovery_until(deadline).await.unwrap();
+        assert!(!live.saga_stack_nonempty && live.journal_present && live.recovery_pending);
     }
     #[derive(Clone)]
     struct LocalState(Option<bool>);
