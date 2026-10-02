@@ -2600,7 +2600,12 @@ mod tests {
             let task_weak = Arc::downgrade(&task);
             drop(task);
             let task = task_weak.upgrade().expect("parent must own actual task holder");
+            assert!(matches!(parent.closed_tasks(), Err("execution.nested_custody_admission_open")));
             parent.close_admission().unwrap();
+            let registered_tasks = parent.closed_tasks().unwrap();
+            assert_eq!(registered_tasks.len(), 1);
+            assert!(Arc::ptr_eq(&registered_tasks[0].1, &(task.clone() as crate::nested_custody::Capability)));
+            drop(registered_tasks);
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             assert!(!child.inner.started.load(Ordering::Acquire));
             if grant_start {

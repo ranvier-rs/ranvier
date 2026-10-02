@@ -60,7 +60,7 @@ pub(crate) struct NestedSagaCustody<E, Res> {
 pub(crate) type Capability = Arc<dyn Any + Send + Sync>;
 struct CustodyRecord {
     owner: Capability,
-    _task: Option<Capability>,
+    task: Option<Capability>,
 }
 struct StoreInner {
     closed: AtomicBool,
@@ -107,6 +107,17 @@ impl CustodyStore {
             .map_err(|_| "execution.nested_custody_unavailable")?;
         self.0 .0.admission_closed.store(true, Ordering::Release);
         Ok(())
+    }
+    /// Root-only snapshot after admission closure. Cloning holders preserves
+    /// unjoined task custody; this neither removes records nor proves join.
+    pub(crate) fn closed_tasks(&self) -> Result<Vec<(uuid::Uuid, Capability)>, &'static str> {
+        let records = self.0 .0.records.lock()
+            .map_err(|_| "execution.nested_custody_unavailable")?;
+        if !self.0 .0.admission_closed.load(Ordering::Acquire) {
+            return Err("execution.nested_custody_admission_open");
+        }
+        Ok(records.iter().filter_map(|(id, record)|
+            record.task.as_ref().map(|task| (*id, task.clone()))).collect())
     }
     pub(crate) fn client(&self) -> WeakCustodyClient {
         WeakCustodyClient(Arc::downgrade(&self.0 .0))
@@ -190,7 +201,7 @@ fn reserve_in_with(
         record: Arc::downgrade(&record),
         store: Arc::downgrade(store),
     };
-    records.insert(id, CustodyRecord { owner: record, _task: task });
+    records.insert(id, CustodyRecord { owner: record, task });
     register();
     Ok(weak)
 }
