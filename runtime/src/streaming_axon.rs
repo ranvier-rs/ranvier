@@ -51,12 +51,17 @@ type OwnedPlanFactory<In, Out, Item, E, Res> = Arc<dyn Fn(
 /// Concrete initializer identity is hidden; original report and context types remain.
 pub(crate) struct OwnedCallablePlan<In, Out, Item, E, Res> {
     pub(crate) owner: crate::streaming_recovery::OwnedStreamRecovery<In, Out, E, Res>,
-    prepare: Box<dyn Fn(In, std::time::Duration) -> Result<BoundedFrame<Out, Item, E>, BoundedPreparationRejected<In>> + Send + Sync>,
+    prepare: Option<Box<dyn FnOnce(In, std::time::Duration) -> Result<BoundedFrame<Out, Item, E>, BoundedPreparationRejected<In>> + Send + Sync>>,
 }
 impl<In, Out, Item, E, Res> OwnedCallablePlan<In, Out, Item, E, Res> {
-    pub(crate) fn prepare_bounded(&self, input: In, grace: std::time::Duration)
+    /// One preparation decision per admitted plan, before allocating a channel
+    /// or spawning another frame. The owner remains available for reconciliation.
+    pub(crate) fn prepare_bounded(&mut self, input: In, grace: std::time::Duration)
         -> Result<BoundedFrame<Out, Item, E>, BoundedPreparationRejected<In>> {
-        (self.prepare)(input, grace)
+        match self.prepare.take() {
+            Some(prepare) => prepare(input, grace),
+            None => Err(BoundedPreparationRejected { signal: "execution.stream_preparation_decided", input }),
+        }
     }
 }
 pub(crate) struct BoundedPreparationRejected<In> {
@@ -81,7 +86,7 @@ where
             let plan = definition.try_plan::<S, SErr>(context, admission, expires)?;
             Ok(OwnedCallablePlan {
                 owner: plan.owner.clone(),
-                prepare: Box::new(move |input, grace| plan.prepare_bounded::<SErr>(input, grace)),
+                prepare: Some(Box::new(move |input, grace| plan.prepare_bounded::<SErr>(input, grace))),
             })
         })
     }
@@ -519,7 +524,7 @@ mod tests {
     async fn callable_owned_factory_runs_current_maps_without_initializer_type_at_call_site() {
         let circuit = circuit(&["a"]).map_items(|item| format!("{item}1"))
             .with_buffer_size(1).map_items(|item| format!("{item}2")).clone();
-        let plan = match circuit.owned_definition.try_callable_plan(
+        let mut plan = match circuit.owned_definition.try_callable_plan(
             OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
             &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
             Ok(plan) => plan, Err(_) => panic!("callable plan rejected"),
@@ -528,6 +533,14 @@ mod tests {
             Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
         };
         assert_eq!(receiver.max_capacity(), 1);
+        let retry = "retry".repeat(20);
+        let original = retry.as_ptr();
+        let rejected = match plan.prepare_bounded(retry, std::time::Duration::from_secs(5)) {
+            Err(rejected) => rejected, Ok(_) => panic!("duplicate frame must reject"),
+        };
+        assert_eq!(rejected.signal, "execution.stream_preparation_decided");
+        assert_eq!(rejected.input.as_ptr(), original);
+        assert_eq!(plan.owner.observe().borrow().phase, crate::streaming_recovery::SupervisorPhase::NotStarted);
         let root = crate::nested_custody::CustodyStore::new(1);
         let journal = crate::SagaRollbackJournal::new("callable-parent");
         plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
@@ -541,6 +554,24 @@ mod tests {
                 value.consumption.unwrap().terminal, crate::StreamConsumptionTerminal::Completed),
             _ => panic!("original Ready report lost"),
         }
+    }
+
+    #[test]
+    fn callable_owned_factory_capacity_rejection_returns_original_context() {
+        let circuit = circuit(&["a"]);
+        let resources = Arc::new(());
+        let mut bus = Bus::new();
+        bus.insert(157u32);
+        let rejected = match circuit.owned_definition.try_callable_plan(
+            OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(0), None) {
+            Err(OwnedStreamPlanRejected::Admission(rejected)) => rejected,
+            _ => panic!("capacity must reject before preparation"),
+        };
+        let (_graph, context) = rejected.into_parts();
+        let (returned, bus) = context.into_parts();
+        assert!(Arc::ptr_eq(&returned, &resources));
+        assert_eq!(bus.read::<u32>(), Some(&157));
     }
 
     #[test]
