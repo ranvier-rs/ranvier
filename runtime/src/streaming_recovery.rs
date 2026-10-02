@@ -2088,6 +2088,57 @@ mod tests {
         assert!(registry.upgrade().is_none());
         assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
     }
+    #[tokio::test]
+    async fn parent_store_retains_actual_child_pending_undo_and_remaining_input_after_abort() {
+        let parent = crate::nested_custody::CustodyStore::new(1);
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let weak = Arc::downgrade(&resources);
+        let entered = Arc::new(Notify::new());
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let graph = Axon::<u32, u32, String, Resources>::start("parent-child-undo-abort")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(AdvancingEffect, Undo)
+            .then_compensated(AdvancingEffect, PendingUndo(entered.clone(), captured.clone()))
+            .then(StopPrefix(None));
+        let child = OwnedStreamRecovery::try_new(graph,
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1), None).unwrap();
+        let admission = child.admit_to_parent(parent.client()).await.unwrap();
+        let observer = child.observe();
+        let task = tokio::spawn(async move {
+            child.initialize_and_drive(263, &Init, None, std::time::Duration::from_secs(30), |_| async {
+                panic!("faulted prefix must not start driver");
+                #[allow(unreachable_code)] completed()
+            }).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+        task.abort();
+        assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+        assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
+        let journal = captured.lock().unwrap().clone().unwrap();
+        assert!(!journal.snapshot().is_complete());
+        assert_eq!(journal.snapshot().steps[0].outcome, crate::SagaRollbackOutcome::InProgress);
+        assert_eq!(journal.unresolved_tasks().len(), 1);
+        let inner = admission.upgrade().unwrap()
+            .downcast::<RecoveryInner<u32, u32, String, Resources>>()
+            .unwrap_or_else(|_| panic!("wrong child cleanup owner"));
+        {
+            let context = inner.context.lock().await;
+            assert!(Arc::ptr_eq(&context.0, &resources));
+            let stack = context.1.read::<SagaStack>().unwrap();
+            assert_eq!(stack.tasks.len(), 1);
+            assert_eq!(stack.tasks[0].input_snapshot, b"263");
+            assert!(inner.graph.saga_compensation_registry.read().unwrap().get(&stack.tasks[0].node_id).is_some());
+        }
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+        drop(inner);
+        drop(resources);
+        assert!(weak.upgrade().is_some());
+        drop(parent);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
+        assert_eq!(journal.snapshot().steps[0].outcome, crate::SagaRollbackOutcome::InProgress);
+    }
     struct ExternalHook {
         mode: u8,
         calls: Arc<AtomicUsize>,
