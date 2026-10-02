@@ -606,6 +606,30 @@ mod tests {
             Some(std::time::Duration::from_secs(10)));
     }
 
+    #[tokio::test]
+    async fn callable_prepared_frame_retains_owner_until_rejected_join() {
+        let circuit = circuit(&["a"]);
+        let admission = crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1);
+        let resources = Arc::new(());
+        let weak = Arc::downgrade(&resources);
+        let mut plan = match circuit.owned_definition.try_callable_plan(
+            OwnedStreamContext::try_new(resources, Bus::new()).unwrap(), &admission, None) {
+            Ok(plan) => plan, Err(_) => panic!("callable plan rejected"),
+        };
+        let observer = plan.owner.observe();
+        let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
+        };
+        drop(plan);
+        assert_eq!(admission.in_use().unwrap(), 1);
+        assert!(weak.upgrade().is_some());
+        assert_eq!(observer.borrow().phase, crate::streaming_recovery::SupervisorPhase::NotStarted);
+        assert!(matches!(prepared.reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+        assert_eq!(receiver.recv().await, None);
+        assert_eq!(admission.in_use().unwrap(), 0);
+        assert!(weak.upgrade().is_none());
+    }
+
     #[test]
     fn callable_owned_factory_capacity_rejection_returns_original_context() {
         let circuit = circuit(&["a"]);
@@ -640,6 +664,11 @@ mod tests {
             &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
             Err(OwnedStreamPlanRejected::InitializerType { context }) => context,
             _ => panic!("wrong initializer type must reject before admission"),
+        };
+        let rejection = match definition.try_callable_plan(rejection,
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
+            Err(OwnedStreamPlanRejected::InitializerType { context }) => context,
+            _ => panic!("callable mismatch must return original context"),
         };
         let (returned, bus) = rejection.into_parts();
         assert!(Arc::ptr_eq(&resources, &returned));
