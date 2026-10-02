@@ -27,6 +27,7 @@ pub(crate) struct StreamDriveResult<T> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum StreamDriverError {
     Panicked,
+    Cancelled(ranvier_core::CancellationContext),
 }
 pub(crate) struct StreamReadyResult<T> {
     pub(crate) consumption: Result<StreamDriveResult<T>, StreamDriverError>,
@@ -226,7 +227,7 @@ where
                 reason: RecoveryAdmissionFailure::InvalidRetention,
             });
         };
-        let owner = OwnedStreamRecovery::try_new(graph, context, &self.admission)?;
+        let owner = OwnedStreamRecovery::try_new(graph, context, &self.admission, Some(expires))?;
         let id = loop {
             let id = uuid::Uuid::new_v4();
             if let std::collections::hash_map::Entry::Vacant(entry) = owners.entry(id) {
@@ -349,6 +350,7 @@ struct RecoveryInner<In, Out, E, Res> {
     graph: Axon<In, Out, E, Res>,
     context: Mutex<(Arc<Res>, Bus)>,
     started: AtomicBool,
+    expires: Option<std::time::Instant>,
     observation: tokio::sync::watch::Sender<SupervisorObservation>,
     // Last field: release reservation after graph/context fields are dropped.
     _permit: RecoveryPermit,
@@ -414,6 +416,7 @@ where
         mut graph: Axon<In, Out, E, Res>,
         context: OwnedStreamContext<Res>,
         admission: &StreamRecoveryAdmission,
+        expires: Option<std::time::Instant>,
     ) -> Result<Self, StreamRecoveryAdmissionRejected<In, Out, E, Res>> {
         let permit = match admission.reserve() {
             Ok(permit) => permit,
@@ -453,6 +456,7 @@ where
                 graph,
                 context: Mutex::new(context.into_parts()),
                 started: AtomicBool::new(false),
+                expires,
                 _permit: permit,
                 observation: tokio::sync::watch::channel(SupervisorObservation {
                     phase: SupervisorPhase::NotStarted,
@@ -496,6 +500,12 @@ where
         {
             return Err(StreamInvocationAlreadyStarted);
         }
+        let parent = token.unwrap_or_default();
+        let token = match self.inner.expires {
+            Some(expires) => parent
+                .child_with_deadline(expires.saturating_duration_since(std::time::Instant::now())),
+            None => parent,
+        };
         let observation = SupervisorObservationGuard {
             sender: self.inner.observation.clone(),
             armed: true,
@@ -507,7 +517,13 @@ where
         let report = self
             .inner
             .graph
-            .initialize_stream_in_scope(input, resources.as_ref(), &mut owner, streaming, token)
+            .initialize_stream_in_scope(
+                input,
+                resources.as_ref(),
+                &mut owner,
+                streaming,
+                Some(token.clone()),
+            )
             .await;
         let mapped = match report {
             StreamInitializationReport::Ready { prefix, value } => {
@@ -518,10 +534,16 @@ where
                     .is_some_and(|policy| *policy == ranvier_core::saga::SagaPolicy::Enabled);
                 use futures_util::FutureExt as _;
                 // User factory invocation is inside the boundary, as well as polling.
-                let consumption = std::panic::AssertUnwindSafe(async { drive(value).await })
-                    .catch_unwind()
-                    .await
-                    .map_err(|_| StreamDriverError::Panicked);
+                let consumption = std::panic::AssertUnwindSafe(async {
+                    tokio::select! {
+                        biased;
+                        context = token.cancelled() => Err(StreamDriverError::Cancelled(context)),
+                        observed = async { drive(value).await } => Ok(observed),
+                    }
+                })
+                .catch_unwind()
+                .await
+                .unwrap_or(Err(StreamDriverError::Panicked));
                 let cleanup = if !matches!(&consumption, Ok(observed) if observed.terminal == crate::StreamConsumptionTerminal::Completed)
                 {
                     observation.phase(SupervisorPhase::CleaningUp);
@@ -576,6 +598,11 @@ where
                 match &value.consumption {
                     Ok(observed) => SupervisorDisposition::Consumption(observed.terminal.clone()),
                     Err(StreamDriverError::Panicked) => SupervisorDisposition::DriverPanicked,
+                    Err(StreamDriverError::Cancelled(context)) => {
+                        SupervisorDisposition::Consumption(
+                            crate::StreamConsumptionTerminal::Cancelled(context.clone()),
+                        )
+                    }
                 },
                 value
                     .cleanup
@@ -762,6 +789,7 @@ mod tests {
             graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
             &StreamRecoveryAdmission::new(1),
+            None,
         )
         .unwrap();
         let entered = Arc::new(Notify::new());
@@ -888,6 +916,7 @@ mod tests {
                 graph,
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
                 &StreamRecoveryAdmission::new(1),
+                None,
             )
             .unwrap();
             let (sender, _receiver) = tokio::sync::mpsc::channel(1);
@@ -996,6 +1025,7 @@ mod tests {
                 graph,
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
                 &StreamRecoveryAdmission::new(1),
+                None,
             )
             .unwrap();
             let registry = Arc::downgrade(&owner.inner.graph.saga_compensation_registry);
@@ -1121,6 +1151,7 @@ mod tests {
             graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
             &StreamRecoveryAdmission::new(1),
+            None,
         )
         .unwrap();
         let report = owner
@@ -1214,12 +1245,14 @@ mod tests {
             graph.clone(),
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
             &admission,
+            None,
         )
         .unwrap();
         let rejected = match OwnedStreamRecovery::try_new(
             graph.clone(),
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
             &admission,
+            None,
         ) {
             Err(rejected) => rejected,
             Ok(_) => panic!("capacity must reject before execution"),
@@ -1237,6 +1270,7 @@ mod tests {
             graph.clone(),
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
             &admission,
+            None,
         )
         .unwrap();
         admission.close().unwrap();
@@ -1245,6 +1279,7 @@ mod tests {
             graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
             &admission,
+            None,
         ) {
             Err(rejected) => rejected,
             Ok(_) => panic!("closed admission must reject"),
@@ -1276,6 +1311,7 @@ mod tests {
             graph,
             OwnedStreamContext::try_new(resources, Bus::new()).unwrap(),
             &admission,
+            None,
         )
         .unwrap();
         drop(owner);
@@ -1424,7 +1460,7 @@ mod tests {
     }
     #[tokio::test]
     async fn expired_abandonment_records_unknown_effect_loss_before_custody_release() {
-        let store = StreamRecoveryStore::new(1, std::time::Duration::ZERO);
+        let store = StreamRecoveryStore::new(1, std::time::Duration::from_millis(200));
         let resources = Arc::new(Resources {
             effects: AtomicUsize::new(0),
         });
@@ -1463,6 +1499,7 @@ mod tests {
         ));
         let operator = uuid::Uuid::new_v4();
         let decision = uuid::Uuid::new_v4();
+        tokio::time::sleep(std::time::Duration::from_millis(220)).await;
         assert_eq!(
             store.abandon_expired(id, operator, decision),
             Err(RecoveryDispositionFailure::InUse)
@@ -1543,6 +1580,50 @@ mod tests {
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
         }
     }
+    #[tokio::test]
+    async fn store_deadline_cancels_pending_driver_and_runs_actual_cleanup() {
+        let store = StreamRecoveryStore::new(1, std::time::Duration::from_millis(200));
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let graph = Axon::<u32, u32, String, Resources>::start("active-store-expiry")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Undo);
+        let (_, owner) = store
+            .admit(
+                graph,
+                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            )
+            .unwrap();
+        let report = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            owner.initialize_and_drive(73, &Init, None, |source| async move {
+                let _source = source;
+                std::future::pending::<StreamDriveResult<()>>().await
+            }),
+        )
+        .await
+        .unwrap();
+        let Ok(StreamInitializationReport::Ready { value, .. }) = report else {
+            panic!("expected expiration after Ready");
+        };
+        assert!(
+            matches!(value.consumption, Err(StreamDriverError::Cancelled(context)) if context.reason == ranvier_core::CancellationReason::DeadlineExceeded)
+        );
+        assert!(value.cleanup.unwrap().is_complete());
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+        assert!(
+            owner
+                .inner
+                .context
+                .lock()
+                .await
+                .1
+                .read::<SagaStack>()
+                .unwrap()
+                .is_empty()
+        );
+    }
     fn completed() -> StreamDriveResult<()> {
         StreamDriveResult {
             value: (),
@@ -1562,6 +1643,7 @@ mod tests {
             graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
             &StreamRecoveryAdmission::new(1),
+            None,
         )
         .unwrap();
         let token = CancellationToken::new();
@@ -1661,6 +1743,7 @@ mod tests {
                 graph,
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
                 &StreamRecoveryAdmission::new(1),
+                None,
             )
             .unwrap();
             let report = owner
@@ -1787,6 +1870,7 @@ mod tests {
             graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
             &StreamRecoveryAdmission::new(1),
+            None,
         )
         .unwrap();
         external.write().unwrap().handlers.clear();
@@ -1824,6 +1908,7 @@ mod tests {
             graph,
             OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
             &admission,
+            None,
         ) {
             Err(rejected) => rejected,
             Ok(_) => panic!("poisoned authority must not enter"),
@@ -1869,6 +1954,7 @@ mod tests {
             graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
             &StreamRecoveryAdmission::new(1),
+            None,
         )
         .unwrap();
         let registry = Arc::downgrade(&owner.inner.graph.saga_compensation_registry);
@@ -1924,6 +2010,7 @@ mod tests {
             graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
             &StreamRecoveryAdmission::new(1),
+            None,
         )
         .unwrap();
         let registry = Arc::downgrade(&owner.inner.graph.saga_compensation_registry);
