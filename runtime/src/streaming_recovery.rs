@@ -175,6 +175,73 @@ mod tests {
             Ok(Box::pin(futures_util::stream::pending()))
         }
     }
+    struct PendingInit(Arc<Notify>);
+    #[async_trait::async_trait]
+    impl StreamingTransition<u32> for PendingInit {
+        type Item = u32;
+        type Error = String;
+        type Resources = Resources;
+        async fn run_stream(
+            &self,
+            _: u32,
+            _: &Resources,
+            _: &mut Bus,
+        ) -> Result<RawStream<u32>, String> {
+            self.0.notify_one();
+            std::future::pending().await
+        }
+    }
+    #[tokio::test]
+    async fn initializer_abort_retains_effect_input_before_ready_without_invoking_driver() {
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let graph = Axon::<u32, u32, String, Resources>::start("initializer-abort")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Undo);
+        let registry = Arc::downgrade(&graph.saga_compensation_registry);
+        let owner = OwnedStreamRecovery::new(
+            graph,
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+        );
+        let entered = Arc::new(Notify::new());
+        let task_entered = entered.clone();
+        let drivers = Arc::new(AtomicUsize::new(0));
+        let task_drivers = drivers.clone();
+        let task_owner = owner.clone();
+        let task = tokio::spawn(async move {
+            task_owner
+                .initialize_and_drive(23, &PendingInit(task_entered), None, move |_| async move {
+                    task_drivers.fetch_add(1, Ordering::SeqCst);
+                })
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        task.abort();
+        assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+        let context = owner.inner.context.lock().await;
+        assert!(Arc::ptr_eq(&resources, &context.0));
+        let stack = context.1.read::<SagaStack>().unwrap();
+        assert_eq!(stack.tasks.len(), 1);
+        assert_eq!(stack.tasks[0].input_snapshot, b"23");
+        assert!(
+            registry
+                .upgrade()
+                .unwrap()
+                .read()
+                .unwrap()
+                .get(&stack.tasks[0].node_id)
+                .is_some()
+        );
+        assert_eq!(drivers.load(Ordering::SeqCst), 0);
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
+        drop(context);
+        drop(owner);
+        assert!(registry.upgrade().is_none());
+        assert_eq!(Arc::strong_count(&resources), 1);
+    }
     #[tokio::test]
     async fn actual_abort_retains_bus_resources_inputs_and_graph_without_replay() {
         let resources = Arc::new(Resources {
@@ -207,6 +274,14 @@ mod tests {
             owner.inner.context.try_lock().is_err(),
             "driver must retain live Bus borrow"
         );
+        let concurrent = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            owner.initialize_and_drive(99, &Init, None, |_| async {}),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(concurrent, Err(StreamInvocationAlreadyStarted)));
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
         task.abort();
         assert!(matches!(task.await, Err(error) if error.is_cancelled()));
         let context = owner.inner.context.lock().await;
