@@ -602,6 +602,38 @@ mod owned_context_tests {
     use super::*;
     use ranvier_core::saga::SagaStack;
 
+    #[test]
+    fn inherited_empty_recovery_is_rejected_even_when_guard_hides_it() {
+        use ranvier_core::{BusAccessPolicy, BusTypeRef};
+        let mut parent = Bus::new();
+        parent.insert_shared(SagaStack::new());
+        let mut child = parent.fork_for_parallel();
+        child.insert(String::from("private-domain-capability"));
+        child.set_access_policy(
+            "request-guard",
+            Some(BusAccessPolicy::allow_only(vec![BusTypeRef::of::<u32>()])),
+        );
+        let rejection = match OwnedStreamContext::try_new(Arc::new(MoveOnlyResource(3)), child) {
+            Err(rejected) => rejected,
+            Ok(_) => panic!("inherited recovery must be rejected"),
+        };
+        let (_, mut returned) = rejection.into_parts();
+        assert!(
+            returned.get::<String>().is_err(),
+            "caller guard must remain installed"
+        );
+        returned.clear_access_policy();
+        assert_eq!(
+            returned.read::<String>().unwrap(),
+            "private-domain-capability"
+        );
+        assert!(returned.read::<SagaStack>().unwrap().is_empty());
+        assert!(
+            returned.get_mut::<SagaStack>().is_err(),
+            "inherited storage stays readonly"
+        );
+        assert!(parent.read::<SagaStack>().unwrap().is_empty());
+    }
     struct MoveOnlyResource(u32);
     #[test]
     fn admission_preserves_move_only_resources_and_local_request_capabilities() {

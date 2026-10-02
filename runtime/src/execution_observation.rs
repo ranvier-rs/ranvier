@@ -1080,3 +1080,17 @@ pub(crate) fn has_stream_recovery_authority(bus: &mut Bus) -> bool {
     bus.restore_access_scope(access);
     occupied
 }
+
+#[cfg(all(test, feature = "streaming"))]
+#[test]
+fn stream_admission_detects_live_owner_and_preserves_it() {
+    let mut bus = Bus::new();
+    {
+        let mut owner = InvocationOwner::begin(&mut bus);
+        let trace = owner.bus().read::<InvocationTrace>().unwrap().0.clone();
+        assert!(has_stream_recovery_authority(owner.bus()));
+        assert_eq!(owner.bus().read::<InvocationTrace>().unwrap().0, trace);
+        assert!(owner.bus().has::<ActiveObservation>());
+    }
+    assert!(!has_stream_recovery_authority(&mut bus));
+}
