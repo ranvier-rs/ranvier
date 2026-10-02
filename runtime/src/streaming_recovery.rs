@@ -2455,6 +2455,37 @@ mod tests {
             admission.release();
         }
     }
+    #[tokio::test]
+    async fn bound_parent_control_precancel_and_local_cancel_reject_effects_without_upward_propagation() {
+        for cancel_parent in [false, true] {
+            let parent = crate::nested_custody::CustodyStore::new(1);
+            let control = CancellationToken::new();
+            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let child = OwnedStreamRecovery::try_new(
+                Axon::<u32, u32, String, Resources>::start("bound-control-before-effect").then(Effect),
+                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                &StreamRecoveryAdmission::new(1), None).unwrap();
+            let admission = child.admit_to_parent_with_control(parent.client(), Some(control.clone())).await.unwrap();
+            if cancel_parent {
+                control.cancel(ranvier_core::CancellationReason::OperatorShutdown);
+            } else {
+                let context = child.inner.context.lock().await;
+                context.1.read::<ParentStreamCustody>().unwrap().1.as_ref().unwrap()
+                    .cancel(ranvier_core::CancellationReason::Explicit);
+            }
+            let report = child.initialize_and_drive(311, &Init, None, std::time::Duration::from_secs(5), |_| async {
+                panic!("pre-cancelled bound child must not start driver");
+                #[allow(unreachable_code)] completed()
+            }).await.unwrap();
+            assert!(matches!(report, StreamInitializationReport::Rejected { prefix:
+                crate::ExecutionReport::Unpersisted { result: crate::ExecutionTerminal::Cancelled(context), .. } }
+                    if context.reason == if cancel_parent { ranvier_core::CancellationReason::OperatorShutdown }
+                        else { ranvier_core::CancellationReason::Explicit }));
+            assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+            assert_eq!(control.is_cancelled(), cancel_parent);
+            admission.release();
+        }
+    }
     struct ExternalHook {
         mode: u8,
         calls: Arc<AtomicUsize>,
