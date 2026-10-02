@@ -330,6 +330,7 @@ where
             }
             std::task::Poll::Ready(None) => {
                 this.finished = true;
+                this.deadline_timer = None;
                 std::task::Poll::Ready(None)
             }
             std::task::Poll::Pending => std::task::Poll::Pending,
@@ -578,7 +579,7 @@ mod timeout_wakeup_tests {
         };
         let mut expired = Box::pin(TimeoutStream::new(stream::repeat(1), config));
         let counter = Arc::new(WakeCount(AtomicUsize::new(0)));
-        let task_waker = waker(counter);
+        let task_waker = waker(counter.clone());
         let mut cx = Context::from_waker(&task_waker);
         assert_eq!(expired.as_mut().poll_next(&mut cx), Poll::Ready(None));
         let mut ended = Box::pin(TimeoutStream::new(
@@ -590,7 +591,13 @@ mod timeout_wakeup_tests {
             },
         ));
         assert_eq!(ended.as_mut().poll_next(&mut cx), Poll::Ready(None));
+        counter.0.store(0, Ordering::SeqCst);
         tokio::time::advance(Duration::from_secs(2)).await;
+        assert_eq!(
+            counter.0.load(Ordering::SeqCst),
+            0,
+            "EOF must discard its timer"
+        );
         assert_eq!(ended.as_mut().poll_next(&mut cx), Poll::Ready(None));
     }
 
