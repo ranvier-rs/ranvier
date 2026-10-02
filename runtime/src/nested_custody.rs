@@ -211,6 +211,34 @@ impl WeakCustody {
 mod tests {
     use super::*;
     #[test]
+    fn admission_closure_cannot_pass_framework_registration_gate() {
+        let root = CustodyStore::new(1);
+        let core = root.0 .0.clone();
+        let registered = Arc::new(AtomicBool::new(false));
+        let recorded = registered.clone();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let reserve = std::thread::spawn(move || reserve_in_with(&core, Arc::new(47u32), || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            recorded.store(true, Ordering::Release);
+        }));
+        entered_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(root.0 .0.records.try_lock().is_err());
+        let closer = root.clone();
+        let closed_registered = registered.clone();
+        let close = std::thread::spawn(move || {
+            closer.close_admission().unwrap();
+            assert!(closed_registered.load(Ordering::Acquire));
+        });
+        release_tx.send(()).unwrap();
+        let admission = reserve.join().unwrap().unwrap();
+        close.join().unwrap();
+        assert!(admission.upgrade().is_some());
+        assert!(matches!(root.reserve(Arc::new(())), Err("execution.nested_custody_admission_closed")));
+        admission.release();
+    }
+    #[test]
     fn concurrent_admission_close_retains_every_success_and_rejects_later_reservations() {
         let root = CustodyStore::new(17);
         let anchor: Capability = Arc::new(99u32);
