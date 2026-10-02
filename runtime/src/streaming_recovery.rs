@@ -2653,7 +2653,7 @@ mod tests {
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             assert!(!child.inner.started.load(Ordering::Acquire));
             if grant_start {
-                prepared.grant_start().unwrap();
+                prepared.grant_registered_start(&admission).unwrap();
                 tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
                 {
                     let wait = settled.settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5));

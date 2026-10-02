@@ -17,10 +17,18 @@ impl<T: Send + 'static> PreparedStreamTask<T> {
     pub(crate) fn holder(&self) -> std::sync::Arc<tokio::sync::Mutex<ManagedStreamTask<T>>> {
         self.task.clone()
     }
-    pub(crate) fn grant_start(&mut self) -> Result<(), &'static str> {
+    #[cfg(test)]
+    fn grant_start(&mut self) -> Result<(), &'static str> {
         let permit = self.permit.take().ok_or("execution.nested_task_start_decided")?;
         self.grant_decided = true;
         permit.send(()).map_err(|_| "execution.nested_task_start_unavailable")
+    }
+    pub(crate) fn grant_registered_start(&mut self, admission: &crate::nested_custody::WeakCustody) -> Result<(), &'static str> {
+        let was_pending = self.permit.is_some();
+        let task: crate::nested_custody::Capability = self.task.clone();
+        let result = admission.grant_task_start(&task, &mut self.permit);
+        if was_pending && self.permit.is_none() { self.grant_decided = true; }
+        result
     }
     /// Reject synchronously, then borrow custody through lock/join deadline.
     pub(crate) fn reject_until(&mut self, deadline: Instant)

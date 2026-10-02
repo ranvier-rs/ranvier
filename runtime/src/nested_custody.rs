@@ -261,6 +261,21 @@ fn reserve_in_with(
     Ok(weak)
 }
 impl WeakCustody {
+    /// Validate the exact registered task and send its framework start gate
+    /// under the retirement lock. No user future is polled under this lock.
+    #[cfg(feature = "streaming")]
+    pub(crate) fn grant_task_start(&self, task: &Capability, permit: &mut Option<tokio::sync::oneshot::Sender<()>>)
+        -> Result<(), &'static str> {
+        let store = self.store.upgrade().ok_or("execution.parent_custody_released")?;
+        let records = store.records.lock().map_err(|_| "execution.nested_custody_unavailable")?;
+        let record = records.get(&self.id).ok_or("execution.parent_custody_released")?;
+        if store.closed.load(Ordering::Acquire) { return Err("execution.parent_custody_released"); }
+        if !record.task.as_ref().is_some_and(|registered| Arc::ptr_eq(registered, task)) {
+            return Err("execution.nested_task_registration_mismatch");
+        }
+        permit.take().ok_or("execution.nested_task_start_decided")?
+            .send(()).map_err(|_| "execution.nested_task_start_unavailable")
+    }
     /// In-process custody correlation only; never a persisted event identity.
     #[cfg(feature = "streaming")]
     pub(crate) fn id(&self) -> uuid::Uuid { self.id }
