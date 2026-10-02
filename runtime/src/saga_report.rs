@@ -164,6 +164,17 @@ mod tests {
         );
         let published = journal.clone();
         assert_eq!(published.unresolved_tasks().len(), 1);
+        // Local reconciliation may mutate its copy without changing retained evidence.
+        let mut local = published.unresolved_tasks();
+        local[0].node_id.clear();
+        local[0].node_label.clear();
+        local[0].input_snapshot.fill(0);
+        local.clear();
+        let retained = journal.unresolved_tasks();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].node_id, "same-node");
+        assert_eq!(retained[0].node_label, "private-label");
+        assert_eq!(retained[0].input_snapshot, b"private-snapshot");
         assert!(!journal.snapshot().is_complete());
         let wire = serde_json::to_string(&journal.snapshot()).unwrap();
         assert!(!wire.contains("private"));
