@@ -274,6 +274,54 @@ fn wait_error(error: crate::managed_stream_task::ManagedTaskWaitError) -> Stream
 #[cfg(test)]
 mod assessment_tests {
     use super::*;
+    async fn joined_original_fixture(original: Original<u32, String>) -> (crate::nested_custody::CustodyStore, StreamReportHandle<u32, String>) {
+        use crate::streaming_recovery::{SupervisorObservation, SupervisorPhase, RecoveryCustody};
+        let root = crate::nested_custody::CustodyStore::new(1);
+        let owner: crate::nested_custody::Capability = Arc::new(());
+        let mut frame = crate::managed_stream_task::PreparedStreamTask::new_owned(owner.clone(), async move { original });
+        let mut slot = root.reserve_stream_slot().unwrap();
+        let journal = crate::SagaRollbackJournal::new("assessment fixture");
+        let (_, observer) = tokio::sync::watch::channel(SupervisorObservation { phase: SupervisorPhase::NotStarted,
+            disposition: None, cleanup_complete: None, cleanup_timed_out: false, custody: RecoveryCustody::Held });
+        let receipt = slot.finalize_managed(&root.client(), owner.clone(), &frame, &journal, observer).unwrap();
+        let handle = StreamReportHandle::new(frame.holder(), owner);
+        frame.grant_registered_start(&receipt).unwrap();
+        handle.take_report_until(Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+        (root, handle)
+    }
+    #[tokio::test]
+    async fn completed_local_proof_uses_original_durability_cleanup_and_terminal_after_transfer() {
+        use crate::ExecutionReport as Report;
+        use crate::execution_report::{CompletionConfirmation, PersistenceOperation, EffectBoundary};
+        for cleanup_state in [None, Some(true), Some(false)] {
+            let prefixes = [
+                Report::Unpersisted { result: (), cleanup: None },
+                Report::NotRequested { result: (), cleanup: None },
+                Report::Recorded { result: (), completion: CompletionConfirmation::Confirmed, cleanup: None },
+                Report::Recorded { result: (), completion: CompletionConfirmation::NotRequested, cleanup: None },
+                Report::Unconfirmed { result: (), operation: PersistenceOperation::Complete, effect: EffectBoundary::MayHaveRun, cleanup: None },
+                Report::BlockedBeforeEffect { operation: PersistenceOperation::Intent, effect: EffectBoundary::NotInvoked, cleanup: None },
+            ];
+            for (index, prefix) in prefixes.into_iter().enumerate() {
+                let original = Ok(StreamInitializationReport::Ready { prefix: prefix.with_cleanup(cleanup_state.map(cleanup)),
+                    value: crate::streaming_recovery::StreamReadyResult { consumption: Ok(crate::streaming_recovery::StreamDriveResult {
+                        value: (), terminal: StreamConsumptionTerminal::Completed }), cleanup: None } });
+                let (_root, handle) = joined_original_fixture(original).await;
+                assert_eq!(handle.prove_completed_local(Instant::now() + std::time::Duration::from_secs(5)).await,
+                    if index == 0 && cleanup_state != Some(false) { Ok(()) } else { Err(StreamLocalRetirementError::RecoveryReviewRequired) });
+            }
+        }
+        for consumption in [Err(crate::streaming_recovery::StreamDriverError::Panicked),
+            Ok(crate::streaming_recovery::StreamDriveResult { value: (), terminal: StreamConsumptionTerminal::Cancelled(
+                ranvier_core::CancellationContext::new(ranvier_core::CancellationReason::Explicit)) })] {
+            let (_root, handle) = joined_original_fixture(Ok(StreamInitializationReport::Ready {
+                prefix: Report::Unpersisted { result: (), cleanup: None },
+                value: crate::streaming_recovery::StreamReadyResult { consumption, cleanup: Some(cleanup(true)) },
+            })).await;
+            assert_eq!(handle.prove_completed_local(Instant::now() + std::time::Duration::from_secs(5)).await,
+                Err(StreamLocalRetirementError::RecoveryReviewRequired));
+        }
+    }
     fn cleanup(finished: bool) -> crate::SagaRollbackReport {
         crate::SagaRollbackReport { trace_id: "private cleanup trace".into(), finished, steps: Vec::new() }
     }
@@ -323,6 +371,8 @@ mod assessment_tests {
         let report = handle.take_report_until(Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
         assert!(matches!(report, SupervisedStreamCompletion::FrameFailed(error) if error.is_cancelled()));
         assert_eq!(handle.assessment(), Err(StreamAssessmentError::Unavailable));
+        assert_eq!(handle.prove_completed_local(Instant::now() + std::time::Duration::from_secs(5)).await,
+            Err(StreamLocalRetirementError::AssessmentUnavailable));
         assert_eq!(handle.retirement_evidence(), StreamRetirementEvidence::RequiresRecoveryReview);
     }
     #[tokio::test]

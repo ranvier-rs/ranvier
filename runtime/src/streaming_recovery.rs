@@ -3400,6 +3400,55 @@ mod tests {
     }
     #[derive(Clone)]
     struct StopPrefix(Option<CancellationToken>);
+    #[tokio::test(start_paused = true)]
+    async fn local_retirement_context_timeout_drop_and_changed_state_preserve_authority() {
+        use crate::streaming_report_handle::{StreamReportHandle, StreamLocalRetirementError as Error, StreamReportWaitError};
+        use futures_util::FutureExt as _;
+        for changed in [false, true] {
+            let root = crate::nested_custody::CustodyStore::new(1);
+            let admission = StreamRecoveryAdmission::new(1);
+            let mut bus = Bus::new(); bus.insert(367u32);
+            let owner = OwnedStreamRecovery::try_new(Axon::<u32, u32, String, Resources>::start("context-retirement").then(Effect),
+                OwnedStreamContext::try_new(Arc::new(Resources { effects: AtomicUsize::new(0) }), bus).unwrap(), &admission, None).unwrap();
+            let mut prepared = owner.prepare_managed(373, Init, std::time::Duration::from_secs(1), |_| async { completed() });
+            let report = StreamReportHandle::new(prepared.holder(), owner.retention_capability());
+            let journal = crate::SagaRollbackJournal::new("local parent");
+            let receipt = owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await.unwrap_or_else(|e| panic!("{}", e.signal));
+            let callback = owner.local_retirement(receipt, report.clone());
+            let report = report.with_local_retirement(callback);
+            report.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+            let foreign_root = crate::nested_custody::CustodyStore::new(1);
+            let foreign_receipt = foreign_root.reserve(owner.retention_capability()).unwrap();
+            let foreign = owner.local_retirement(foreign_receipt, report.clone());
+            assert_eq!(foreign(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Err(Error::CustodyMismatch));
+            drop(foreign); drop(foreign_root);
+            let mut context = owner.inner.context.lock().await;
+            context.1.set_access_policy("retirement guard", Some(ranvier_core::BusAccessPolicy::allow_only(vec![ranvier_core::BusTypeRef::of::<String>()])));
+            {
+                let wait = report.retire_completed_local_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
+                tokio::pin!(wait);
+                assert!(wait.as_mut().now_or_never().is_none());
+                // Drop pending wait: original decision/context/frame are retained.
+            }
+            assert_eq!(report.retire_completed_local_until(tokio::time::Instant::now() + std::time::Duration::from_secs(1)).await,
+                Err(Error::Wait(StreamReportWaitError::TimedOut)));
+            assert!(root.reserve_stream_slot().is_err());
+            if changed {
+                let access = context.1.take_access_scope();
+                let journal = crate::SagaRollbackJournal::new("changed after wait"); journal.finish(); context.1.insert(journal);
+                context.1.restore_access_scope(access);
+            }
+            drop(context);
+            let result = report.retire_completed_local_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await;
+            assert_eq!(result, if changed { Err(Error::RecoveryReviewRequired) } else { Ok(()) });
+            let mut context = owner.inner.context.lock().await;
+            assert!(context.1.get::<u32>().is_err());
+            context.1.clear_access_policy(); assert_eq!(*context.1.read::<u32>().unwrap(), 367);
+            drop(context); drop(prepared); drop(owner); drop(root);
+            assert_eq!(admission.in_use(), Ok(1));
+            drop(report); assert_eq!(admission.in_use(), Ok(0));
+        }
+    }
     #[async_trait::async_trait]
     impl Transition<u32, u32> for StopPrefix {
         type Error = String;

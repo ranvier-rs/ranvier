@@ -402,6 +402,23 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn completed_local_retirement_after_close_preserves_original_drain_lease() {
+        let supervisor = StreamSupervisor::new(1);
+        let invocation = completed_local_fixture(&supervisor, None).await;
+        let report = invocation.report().clone();
+        let mut family = supervisor.close_for_drain().unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        family.settle_until(deadline).await;
+        assert_eq!(report.retire_completed_local_until(deadline).await, Ok(()));
+        assert!(matches!(report.take_report_until(deadline).await.unwrap(),
+            crate::streaming_report_handle::SupervisedStreamCompletion::Report(crate::StreamInitializationReport::Ready { .. })));
+        family.settle_until(deadline).await;
+        assert_eq!(family.statuses()[0].1, StreamDrainStatus::ReportAlreadyTransferred);
+        drop(invocation); drop(report);
+        assert_eq!(supervisor.admission.in_use(), Ok(1));
+        drop(family); assert_eq!(supervisor.admission.in_use(), Ok(0));
+    }
+    #[tokio::test]
     async fn public_start_rejection_and_setup_rejection_keep_original_custody() {
         for closed_after_prepare in [false, true] {
             let supervisor = StreamSupervisor::new(1);
