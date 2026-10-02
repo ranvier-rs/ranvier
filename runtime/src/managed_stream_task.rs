@@ -3,6 +3,35 @@
 use std::future::Future;
 use tokio::{sync::oneshot, task::JoinHandle, time::Instant};
 
+/// Own the exact start permit with its task; callers never select a permit.
+pub(crate) struct PreparedStreamTask<T> {
+    task: std::sync::Arc<tokio::sync::Mutex<ManagedStreamTask<T>>>,
+    permit: Option<oneshot::Sender<()>>,
+}
+impl<T: Send + 'static> PreparedStreamTask<T> {
+    pub(crate) fn new<F: Future<Output = T> + Send + 'static>(future: F) -> Self {
+        let (task, permit) = ManagedStreamTask::prepare(future);
+        Self { task: std::sync::Arc::new(tokio::sync::Mutex::new(task)), permit: Some(permit) }
+    }
+    pub(crate) fn holder(&self) -> std::sync::Arc<tokio::sync::Mutex<ManagedStreamTask<T>>> {
+        self.task.clone()
+    }
+    pub(crate) fn grant_start(&mut self) -> Result<(), &'static str> {
+        self.permit.take().ok_or("execution.nested_task_start_decided")?
+            .send(()).map_err(|_| "execution.nested_task_start_unavailable")
+    }
+    /// Reject synchronously, then borrow custody through lock/join deadline.
+    pub(crate) fn reject_until(&mut self, deadline: Instant)
+        -> impl Future<Output = Result<Result<Option<T>, tokio::task::JoinError>, ManagedTaskWaitError>> + '_ {
+        self.permit.take();
+        async move {
+            let mut task = tokio::time::timeout_at(deadline, self.task.lock()).await
+                .map_err(|_| ManagedTaskWaitError::TimedOut)?;
+            task.join_until(deadline).await
+        }
+    }
+}
+
 pub(crate) struct ManagedStreamTask<T> {
     handle: Option<JoinHandle<Option<T>>>,
     joined: Option<Result<Option<T>, tokio::task::JoinError>>,

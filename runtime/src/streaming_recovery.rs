@@ -2587,14 +2587,14 @@ mod tests {
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
                 &StreamRecoveryAdmission::new(1), None).unwrap();
             let task_child = child.clone();
-            let (task, permit) = crate::managed_stream_task::ManagedStreamTask::prepare(async move {
+            let mut prepared = crate::managed_stream_task::PreparedStreamTask::new(async move {
                 task_child.initialize_and_drive(107, &PendingInit(Arc::new(Notify::new())), None,
                     std::time::Duration::from_secs(5), |_| async {
                         panic!("rejected registration must not initialize driver");
                         #[allow(unreachable_code)] completed()
                     }).await
             });
-            let task = Arc::new(Mutex::new(task));
+            let task = prepared.holder();
             let journal = crate::SagaRollbackJournal::new("rejected-managed-parent");
             let result = child.admit_managed_to_parent(client, &journal, CancellationToken::new(), task.clone()).await;
             let signal = match failure {
@@ -2603,7 +2603,7 @@ mod tests {
                 _ => "execution.parent_custody_released",
             };
             assert!(matches!(result, Err(actual) if actual == signal));
-            assert!(matches!(task.lock().await.reject_start_until(permit, tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+            assert!(matches!(prepared.reject_until( tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             assert!(!child.inner.started.load(Ordering::Acquire));
             assert!(journal.retained_stream_observations().is_empty());
@@ -2628,14 +2628,14 @@ mod tests {
             let entered = Arc::new(Notify::new());
             let signal = entered.clone();
             let task_child = child.clone();
-            let (task, permit) = crate::managed_stream_task::ManagedStreamTask::prepare(async move {
+            let mut prepared = crate::managed_stream_task::PreparedStreamTask::new(async move {
                 task_child.initialize_and_drive(331, &PendingInit(signal), None,
                     std::time::Duration::from_secs(5), |_| async {
                         panic!("cancelled initializer must not run driver");
                         #[allow(unreachable_code)] completed()
                     }).await
             });
-            let task = Arc::new(Mutex::new(task));
+            let task = prepared.holder();
             let journal = crate::SagaRollbackJournal::new("managed-actual-parent");
             let admission = child.admit_managed_to_parent(parent.client(), &journal, control.clone(), task.clone()).await.unwrap();
             let task_weak = Arc::downgrade(&task);
@@ -2653,7 +2653,7 @@ mod tests {
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             assert!(!child.inner.started.load(Ordering::Acquire));
             if grant_start {
-                permit.send(()).unwrap();
+                prepared.grant_start().unwrap();
                 tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
                 {
                     let wait = settled.settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
@@ -2665,7 +2665,8 @@ mod tests {
                     drop(parent);
                 }
                 control.cancel(ranvier_core::CancellationReason::OperatorShutdown);
-            } else { drop(permit); }
+                drop(prepared);
+            } else { drop(prepared); }
             settled.settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await;
             assert_eq!(settled.len(), 1);
             assert_eq!(settled[0].1, Ok(()));
