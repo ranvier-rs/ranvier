@@ -2465,7 +2465,8 @@ mod tests {
                 Axon::<u32, u32, String, Resources>::start("bound-control-before-effect").then(Effect),
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
                 &StreamRecoveryAdmission::new(1), None).unwrap();
-            let admission = child.admit_to_parent_with_control(parent.client(), Some(control.clone())).await.unwrap();
+            let journal = crate::SagaRollbackJournal::new("precancel-parent-observation");
+            let admission = child.admit_to_parent_journal_with_control(parent.client(), &journal, Some(control.clone())).await.unwrap();
             if cancel_parent {
                 control.cancel(ranvier_core::CancellationReason::OperatorShutdown);
             } else {
@@ -2483,6 +2484,12 @@ mod tests {
                         else { ranvier_core::CancellationReason::Explicit }));
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             assert_eq!(control.is_cancelled(), cancel_parent);
+            if !cancel_parent { assert!(control.context().is_none()); }
+            let observed = journal.retained_stream_observations();
+            assert_eq!(observed[0].1.phase, SupervisorPhase::Returned);
+            assert_eq!(observed[0].1.disposition, Some(SupervisorDisposition::PrefixRejected));
+            assert!(journal.has_unresolved_tasks());
+            assert!(!journal.snapshot().is_complete());
             admission.release();
         }
     }
