@@ -1068,7 +1068,10 @@ impl Session {
         if self.nested {
             let child = bus.remove::<crate::saga_report::SagaRollbackJournal>();
             let _ = bus.remove::<crate::saga_report::SagaRollbackReport>();
-            let pending_child = child.filter(|journal| journal.has_unresolved_tasks());
+            let pending_child = child.and_then(|journal| {
+                if journal.has_unresolved_tasks() { Some(journal) }
+                else { journal.release_custody(); None }
+            });
             let mut parent = self.previous_cleanup;
             if let Some(child) = pending_child {
                 let journal = parent.get_or_insert_with(|| {

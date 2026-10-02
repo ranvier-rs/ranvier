@@ -519,6 +519,7 @@ where
         let mut context = self.inner.context.lock().await;
         let (resources, bus) = &mut *context;
         bus.insert(crate::nested_custody::RequiredOwnedCustody);
+        bus.insert(crate::nested_custody::CustodyStore::new(128));
         bus.insert(crate::nested_custody::OwnedResources(resources.clone()));
         let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
         if let Some(active) = owner
@@ -1444,7 +1445,7 @@ mod tests {
                 let execution = child.execute(input, resources, bus);
                 tokio::pin!(execution);
                 tokio::select! {
-                    _ = entered.notified() => {},
+                    _ = entered.notified() => { child.saga_compensation_registry.write().unwrap().handlers.clear(); },
                     _ = &mut execution => panic!("pending child undo returned"),
                     _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => panic!("child undo did not start"),
                 }
@@ -1459,7 +1460,7 @@ mod tests {
         });
         let owner = OwnedStreamRecovery::try_new(
             Axon::<u32, u32, String, Resources>::start("parent-remaining").then(DropNestedSaga),
-            OwnedStreamContext::try_new(resources, Bus::new()).unwrap(),
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
             &StreamRecoveryAdmission::new(1),
             None,
         )
@@ -1490,6 +1491,9 @@ mod tests {
             .retained_children();
         assert_eq!(children.len(), 1);
         let child = &children[0].1;
+        let custody = child.retained_custody().unwrap()
+            .downcast::<crate::nested_custody::NestedSagaCustody<String, Resources>>().unwrap_or_else(|_| panic!("wrong typed custody"));
+        assert!(Arc::ptr_eq(&custody.resources, &resources));
         let pending = child.unresolved_tasks();
         assert_eq!(
             pending.len(),
@@ -1498,6 +1502,7 @@ mod tests {
         );
         assert_eq!(pending[0].input_snapshot, b"172");
         assert_eq!(pending[1].input_snapshot, b"171");
+        assert!(pending.iter().all(|task| custody.handlers.get(&task.node_id).is_some()));
         let report = child.snapshot();
         assert!(!report.finished);
         assert_eq!(
@@ -1508,6 +1513,34 @@ mod tests {
             report.steps[1].outcome,
             crate::SagaRollbackOutcome::NotInvoked
         );
+        let weak = Arc::downgrade(&resources);
+        drop(context);
+        drop(resources);
+        drop(custody);
+        drop(owner);
+        // A handler in this fixture captures the public journal. Its weak custody
+        // edge must not keep the typed resource/store alive after root release.
+        assert!(weak.upgrade().is_none());
+        assert!(child.retained_custody().is_none());
+    }
+    #[tokio::test]
+    async fn required_nested_custody_rejects_mismatch_capacity_and_busy_registry_before_effects() {
+        for mode in 0..3 {
+            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let graph = Axon::<u32, u32, String, Resources>::start("custody-pre-effect").then(FailingEffect);
+            let mut bus = Bus::new();
+            bus.insert(crate::nested_custody::RequiredOwnedCustody);
+            let configured = if mode == 0 { Arc::new(Resources { effects: AtomicUsize::new(0) }) } else { resources.clone() };
+            bus.insert(crate::nested_custody::OwnedResources(configured));
+            bus.insert(crate::nested_custody::CustodyStore::new(if mode == 1 { 0 } else { 1 }));
+            bus.set_access_policy("deny-framework-fixture", Some(ranvier_core::BusAccessPolicy::allow_only(Vec::new())));
+            let held = if mode == 2 { Some(graph.saga_compensation_registry.write().unwrap()) } else { None };
+            let report = graph.execute(181, resources.as_ref(), &mut bus).await;
+            assert!(matches!(report, crate::ExecutionReport::Unpersisted { result: Outcome::Emit(signal, _), .. }
+                if signal == match mode { 0 => "execution.nested_resources_unowned", 1 => "execution.nested_custody_capacity", _ => "execution.nested_registry_unavailable" }));
+            assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+            drop(held);
+        }
     }
     struct ExternalHook {
         mode: u8,

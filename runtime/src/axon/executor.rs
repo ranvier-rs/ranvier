@@ -88,7 +88,7 @@ where
 {
     fn prepare_owned_child(
         &self, resources: &Res, bus: &Bus,
-    ) -> Result<Option<(Self, std::sync::Arc<dyn std::any::Any + Send + Sync>)>, &'static str> {
+    ) -> Result<Option<(Self, crate::nested_custody::WeakCustody)>, &'static str> {
         use crate::nested_custody::{NestedSagaCustody, OwnedResources, RequiredOwnedCustody};
         if !bus.has::<RequiredOwnedCustody>() || !bus.has::<crate::execution_observation::ActiveObservation>() {
             return Ok(None);
@@ -105,9 +105,11 @@ where
             resources: owned.0.clone(),
             handlers: ranvier_core::saga::SagaCompensationRegistry { handlers },
         });
-        Ok(Some((graph, custody)))
+        let store = bus.read::<crate::nested_custody::CustodyStore>()
+            .ok_or("execution.nested_custody_unavailable")?;
+        Ok(Some((graph, store.reserve(custody)?)))
     }
-    fn record_owned_child(bus: &mut Bus, custody: std::sync::Arc<dyn std::any::Any + Send + Sync>) {
+    fn record_owned_child(bus: &mut Bus, custody: crate::nested_custody::WeakCustody) {
         let journal = crate::SagaRollbackJournal::new(&persistence_trace_id(bus));
         journal.retain_custody(custody);
         journal.finish();
@@ -127,8 +129,8 @@ where
         bus: &mut Bus,
         token: CancellationToken,
     ) -> crate::ExecutionReport<ExecutionTerminal<Out, E>> {
-        let prepared = self.prepare_owned_child(resources, bus);
         let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
+        let prepared = self.prepare_owned_child(resources, owner.bus());
         let selected;
         let graph = match prepared {
             Ok(Some((graph, custody))) => {
@@ -422,8 +424,8 @@ where
         resources: &Res,
         bus: &mut Bus,
     ) -> crate::ExecutionReport<Outcome<Out, E>> {
-        let prepared = self.prepare_owned_child(resources, bus);
         let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
+        let prepared = self.prepare_owned_child(resources, owner.bus());
         let selected;
         let graph = match prepared {
             Ok(Some((graph, custody))) => {
