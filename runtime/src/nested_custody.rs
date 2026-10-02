@@ -301,6 +301,27 @@ mod tests {
     use super::*;
     #[cfg(feature = "streaming")]
     #[tokio::test]
+    async fn poisoned_registered_start_keeps_gate_rejectable_and_joinable() {
+        use crate::managed_stream_task::PreparedStreamTask;
+        use tokio::time::Instant;
+        let root = CustodyStore::new(1);
+        let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = effects.clone();
+        let mut prepared = PreparedStreamTask::new(async move { observed.fetch_add(1, Ordering::SeqCst); });
+        let admission = reserve_in_with(&root.0 .0, Arc::new(()), Some(prepared.holder()), || {}).unwrap();
+        let core = root.0 .0.clone();
+        assert!(std::thread::spawn(move || {
+            let _held = core.records.lock().unwrap();
+            panic!("fixture poison");
+        }).join().is_err());
+        assert_eq!(prepared.grant_registered_start(&admission), Err("execution.nested_custody_unavailable"));
+        assert!(matches!(prepared.reject_until(Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+        assert_eq!(effects.load(Ordering::SeqCst), 0);
+        drop(root);
+        assert_eq!(prepared.grant_registered_start(&admission), Err("execution.parent_custody_released"));
+    }
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
     async fn registered_start_rejects_other_holder_and_retired_record_without_consuming_gate() {
         use crate::managed_stream_task::PreparedStreamTask;
         use tokio::time::Instant;
