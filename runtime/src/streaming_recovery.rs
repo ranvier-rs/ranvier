@@ -317,6 +317,126 @@ mod tests {
             }
         }
     }
+    #[tokio::test]
+    async fn cancellation_during_ready_source_poll_prevents_item_publication() {
+        struct Source(CancellationToken);
+        impl futures_core::Stream for Source {
+            type Item = u32;
+            fn poll_next(
+                self: Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Option<u32>> {
+                self.0.cancel(ranvier_core::CancellationReason::Explicit);
+                std::task::Poll::Ready(Some(7))
+            }
+        }
+        let token = CancellationToken::new();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let result = produce_bounded(
+            Box::pin(Source(token.clone())),
+            ranvier_core::streaming::StreamTimeoutConfig {
+                init: None,
+                idle: None,
+                total: None,
+            },
+            token,
+            sender,
+        )
+        .await;
+        assert!(matches!(
+            result.terminal,
+            crate::StreamConsumptionTerminal::Cancelled(_)
+        ));
+        assert!(receiver.recv().await.is_none());
+    }
+    struct QueueInit(Arc<Notify>);
+    #[async_trait::async_trait]
+    impl StreamingTransition<u32> for QueueInit {
+        type Item = u32;
+        type Error = String;
+        type Resources = Resources;
+        async fn run_stream(
+            &self,
+            _: u32,
+            _: &Resources,
+            _: &mut Bus,
+        ) -> Result<RawStream<u32>, String> {
+            use futures_util::StreamExt;
+            let entered = self.0.clone();
+            Ok(Box::pin(
+                futures_util::stream::once(async move {
+                    entered.notify_one();
+                    7
+                })
+                .chain(futures_util::stream::pending()),
+            ))
+        }
+    }
+    #[tokio::test]
+    async fn full_queue_consumer_close_runs_actual_shielded_saga_cleanup() {
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let graph = Axon::<u32, u32, String, Resources>::start("queue-close-cleanup")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Undo);
+        let owner = OwnedStreamRecovery::try_new(
+            graph,
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+        )
+        .unwrap();
+        let entered = Arc::new(Notify::new());
+        let task_entered = entered.clone();
+        let token = CancellationToken::new();
+        let driver_token = token.clone();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let task_owner = owner.clone();
+        let task = tokio::spawn(async move {
+            task_owner
+                .initialize_and_drive(43, &QueueInit(task_entered), Some(token), move |source| {
+                    produce_bounded(
+                        source,
+                        ranvier_core::streaming::StreamTimeoutConfig {
+                            init: None,
+                            idle: None,
+                            total: None,
+                        },
+                        driver_token,
+                        sender,
+                    )
+                })
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        receiver.close();
+        let report = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+        let Ok(StreamInitializationReport::Ready { value, .. }) = report else {
+            panic!("expected initialized consumption");
+        };
+        assert!(
+            matches!(value.consumption.terminal, crate::StreamConsumptionTerminal::Cancelled(context) if context.reason == ranvier_core::CancellationReason::ClientDisconnected)
+        );
+        assert!(value.cleanup.unwrap().is_complete());
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+        assert!(
+            owner
+                .inner
+                .context
+                .lock()
+                .await
+                .1
+                .read::<SagaStack>()
+                .unwrap()
+                .is_empty()
+        );
+        // Completion is observable without draining the already queued item.
+        assert_eq!(receiver.len(), 1);
+    }
     fn completed() -> StreamDriveResult<()> {
         StreamDriveResult {
             value: (),
