@@ -243,6 +243,41 @@ mod tests {
         );
         assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
     }
+    #[test]
+    fn poisoned_registry_rejects_before_effects_and_returns_original_authority() {
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let graph = Axon::<u32, u32, String, Resources>::start("private-graph")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Undo);
+        let original = graph.saga_compensation_registry.clone();
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = original.write().unwrap();
+            panic!("fixture registry poison");
+        }));
+        assert!(poisoned.is_err());
+        let mut bus = Bus::new();
+        bus.insert(String::from("private-request"));
+        let rejected = match OwnedStreamRecovery::try_new(
+            graph,
+            OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
+        ) {
+            Err(rejected) => rejected,
+            Ok(_) => panic!("poisoned authority must not enter"),
+        };
+        assert!(!format!("{rejected:?}").contains("private"));
+        let (returned_graph, context) = rejected.into_parts();
+        assert!(Arc::ptr_eq(
+            &original,
+            &returned_graph.saga_compensation_registry
+        ));
+        assert!(returned_graph.saga_compensation_registry.is_poisoned());
+        let (returned_resources, bus) = context.into_parts();
+        assert!(Arc::ptr_eq(&resources, &returned_resources));
+        assert_eq!(bus.read::<String>().unwrap(), "private-request");
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+    }
     struct PendingInit(Arc<Notify>);
     #[async_trait::async_trait]
     impl StreamingTransition<u32> for PendingInit {
@@ -319,6 +354,7 @@ mod tests {
         let graph = Axon::<u32, u32, String, Resources>::start("owned-abort")
             .with_saga_policy(SagaPolicy::Enabled)
             .then_compensated(Effect, Undo);
+        let external = graph.saga_compensation_registry.clone();
         let owner = OwnedStreamRecovery::try_new(
             graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
@@ -340,6 +376,11 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
             .await
             .unwrap();
+        external.write().unwrap().handlers.clear();
+        assert!(!Arc::ptr_eq(
+            &external,
+            &owner.inner.graph.saga_compensation_registry
+        ));
         assert!(
             owner.inner.context.try_lock().is_err(),
             "driver must retain live Bus borrow"
