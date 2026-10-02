@@ -178,12 +178,41 @@ where
                 Resources = Res,
             >,
     {
+        let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
+        self.initialize_stream_in_scope(input, resources, &mut owner, streaming, cancellation)
+            .await
+    }
+
+    /// Initialize without consuming/restoring the caller's invocation owner.
+    /// The supervisor must retain this owner through consumption and cleanup.
+    #[cfg(feature = "streaming")]
+    pub(crate) async fn initialize_stream_in_scope<Item, SErr, S>(
+        &self,
+        input: In,
+        resources: &Res,
+        owner: &mut crate::execution_observation::InvocationOwner<'_>,
+        streaming: &S,
+        cancellation: Option<CancellationToken>,
+    ) -> crate::streaming_initialization::StreamInitializationReport<
+        Out,
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Item> + Send>>,
+        E,
+    >
+    where
+        Item: Send + 'static,
+        SErr: Send + Sync + std::fmt::Debug + 'static,
+        S: ranvier_core::streaming::StreamingTransition<
+                Out,
+                Item = Item,
+                Error = SErr,
+                Resources = Res,
+            >,
+    {
         use crate::EffectBoundary;
         use crate::streaming_initialization::{
             StreamInitializationError, StreamInitializationReport, admit_prefix,
         };
         use futures_util::FutureExt as _;
-        let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
         let terminal = match &cancellation {
             Some(token) => {
                 self.execute_terminal_domain(input, resources, owner.bus(), token.clone())
@@ -1093,5 +1122,69 @@ where
         token: CancellationToken,
     ) -> crate::ExecutionReport<ExecutionTerminal<Out, E>> {
         self.execute_cancellable(input, &(), bus, token).await
+    }
+}
+
+#[cfg(all(test, feature = "streaming"))]
+mod scoped_stream_tests {
+    use super::*;
+    use futures_util::StreamExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Resources(AtomicUsize);
+    #[derive(Clone)]
+    struct Effect;
+    #[async_trait::async_trait]
+    impl ranvier_core::Transition<(), ()> for Effect {
+        type Error = String;
+        type Resources = Resources;
+        async fn run(&self, _: (), resources: &Resources, _: &mut Bus) -> Outcome<(), String> {
+            resources.0.fetch_add(1, Ordering::SeqCst);
+            Outcome::Next(())
+        }
+    }
+    #[derive(Clone)]
+    struct Init;
+    #[async_trait::async_trait]
+    impl ranvier_core::streaming::StreamingTransition<()> for Init {
+        type Error = String;
+        type Resources = Resources;
+        type Item = ();
+        async fn run_stream(
+            &self,
+            _: (),
+            _: &Resources,
+            _: &mut Bus,
+        ) -> Result<std::pin::Pin<Box<dyn futures_core::Stream<Item = ()> + Send>>, String>
+        {
+            Ok(Box::pin(futures_util::stream::empty()))
+        }
+    }
+    #[tokio::test]
+    async fn scoped_ready_keeps_original_invocation_and_pending_tasks_until_owner_drop() {
+        let resources = Resources(AtomicUsize::new(0));
+        let prefix = Axon::<(), (), String, Resources>::start("scoped-ready")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Effect);
+        let mut bus = Bus::new();
+        {
+            let mut owner = crate::execution_observation::InvocationOwner::begin(&mut bus);
+            let trace = persistence_trace_id(owner.bus());
+            let report = prefix
+                .initialize_stream_in_scope((), &resources, &mut owner, &Init, None)
+                .await;
+            let crate::StreamInitializationReport::Ready { mut value, .. } = report else {
+                panic!("expected Ready");
+            };
+            assert!(value.next().await.is_none());
+            assert_eq!(persistence_trace_id(owner.bus()), trace);
+            assert_eq!(owner.bus().read::<SagaPolicy>(), Some(&SagaPolicy::Enabled));
+            assert_eq!(owner.bus().read::<SagaStack>().unwrap().tasks.len(), 1);
+            assert!(crate::execution_observation::has_stream_recovery_authority(
+                owner.bus()
+            ));
+            assert_eq!(resources.0.load(Ordering::SeqCst), 1);
+        }
+        assert!(!bus.has::<crate::execution_observation::InvocationTrace>());
+        assert_eq!(bus.read::<SagaStack>().unwrap().tasks.len(), 1);
     }
 }
