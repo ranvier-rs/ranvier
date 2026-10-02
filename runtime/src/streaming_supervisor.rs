@@ -139,7 +139,7 @@ impl<Out, Item, E> Drop for SupervisedStreamInvocation<Out, Item, E> {
 /// Rejected start still exposes bounded access to the exact rejected/failed frame.
 pub struct StreamStartRejected<Out, E> {
     pub signal: &'static str,
-    pub report: crate::streaming_report_handle::StreamReportHandle<Out, E>,
+    report: crate::streaming_report_handle::StreamReportHandle<Out, E>,
     _custody: Option<crate::nested_custody::WeakCustody>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,6 +148,8 @@ pub enum StreamRetirementError {
     RecoveryReviewRequired,
 }
 impl<Out: Send + 'static, E: Send + 'static> StreamStartRejected<Out, E> {
+    /// Read or clone the report lease without replacing the exact retirement proof.
+    pub fn report(&self) -> &crate::streaming_report_handle::StreamReportHandle<Out, E> { &self.report }
     /// Release a finalized local root record only after joining the exact frame
     /// and proving its start gate was rejected. Repeated calls are idempotent.
     /// Executed, panicked or unknown frames cannot use this no-effect authority.
@@ -294,11 +296,11 @@ mod tests {
                 Err(rejected) => rejected, Ok(_) => panic!("closed root admitted"),
             };
             assert_eq!(rejected.signal, "execution.nested_custody_admission_closed");
-            let report = rejected.report.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+            let report = rejected.report().take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
             assert!(matches!(report, crate::streaming_report_handle::SupervisedStreamCompletion::RejectedBeforeStart));
             rejected.retire_unstarted_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
             rejected.retire_unstarted_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
-            assert_eq!(rejected.report.retirement_evidence(), crate::streaming_report_handle::StreamRetirementEvidence::RejectedBeforeStart);
+            assert_eq!(rejected.report().retirement_evidence(), crate::streaming_report_handle::StreamRetirementEvidence::RejectedBeforeStart);
             assert_eq!(supervisor.admission.in_use(), Ok(1));
             drop(rejected);
             assert_eq!(supervisor.admission.in_use(), Ok(0));
@@ -367,6 +369,63 @@ mod tests {
         }
         assert_eq!(supervisor.admission.in_use(), Ok(0));
         assert!(supervisor.reserve().is_ok());
+    }
+    #[tokio::test]
+    async fn rejected_frame_retirement_refunds_actual_record_after_timeout_and_report_transfer() {
+        use crate::streaming_report_handle::{StreamRetirementEvidence, StreamReportWaitError};
+        let root = CustodyStore::new(1);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let owner: crate::nested_custody::Capability = calls.clone();
+        let observed = calls.clone();
+        let mut prepared = crate::managed_stream_task::PreparedStreamTask::new_owned(owner.clone(), async move {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Err::<crate::StreamInitializationReport<u32, crate::streaming_recovery::StreamReadyResult<()>, String>, _>(crate::streaming_recovery::StreamInvocationAlreadyStarted)
+        });
+        let journal = crate::SagaRollbackJournal::new("rejected-retirement-fixture");
+        let observer = tokio::sync::watch::channel(crate::streaming_recovery::SupervisorObservation {
+            phase: crate::streaming_recovery::SupervisorPhase::NotStarted, disposition: None,
+            cleanup_complete: None, cleanup_timed_out: false, custody: crate::streaming_recovery::RecoveryCustody::Held,
+        }).1;
+        let receipt = root.client().reserve_stream(owner.clone(), &journal, Some(prepared.holder()), observer).unwrap();
+        prepared.reject_start().unwrap();
+        let report = crate::streaming_report_handle::StreamReportHandle::new(prepared.holder(), owner);
+        let clone = report.clone();
+        let rejected = StreamStartRejected { signal: "fixture.rejected_start", report, _custody: Some(receipt) };
+        let holder = prepared.holder();
+        let locked = holder.lock().await;
+        assert_eq!(rejected.retire_unstarted_until(tokio::time::Instant::now()).await,
+            Err(StreamRetirementError::Wait(StreamReportWaitError::TimedOut)));
+        assert_eq!(clone.retirement_evidence(), StreamRetirementEvidence::NotObserved);
+        assert!(root.reserve_stream_slot().is_err());
+        drop(locked);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let original = clone.take_report_until(deadline).await.unwrap();
+        assert!(matches!(original, crate::streaming_report_handle::SupervisedStreamCompletion::RejectedBeforeStart));
+        assert_eq!(rejected.report().retirement_evidence(), StreamRetirementEvidence::RejectedBeforeStart);
+        rejected.retire_unstarted_until(deadline).await.unwrap();
+        rejected.retire_unstarted_until(deadline).await.unwrap();
+        assert!(root.reserve_stream_slot().is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn executed_frame_cannot_use_unstarted_retirement_after_report_transfer() {
+        use crate::streaming_report_handle::StreamRetirementEvidence;
+        let supervisor = StreamSupervisor::new(1);
+        let circuit = crate::Axon::<u32, u32, String>::start("executed-retirement").then(Prefix).then_stream(Finite);
+        let (ticket, context) = supervisor.reserve().unwrap().with_context(||
+            OwnedStreamContext::try_new(Arc::new(()), ranvier_core::Bus::new())).unwrap();
+        let prepared = match ticket.prepare(&circuit, context, 269, std::time::Duration::from_secs(1), None) {
+            Ok(prepared) => prepared, Err(_) => panic!("setup rejected"),
+        };
+        let mut invocation = prepared.start(ranvier_core::CancellationToken::new()).await.unwrap_or_else(|e| panic!("{}", e.signal));
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        assert_eq!(tokio::time::timeout_at(deadline, invocation.items.recv()).await.unwrap(), Some(269));
+        let original = invocation.report.take_report_until(deadline).await.unwrap();
+        assert!(matches!(original, crate::streaming_report_handle::SupervisedStreamCompletion::Report(_)));
+        let wrong_authority = StreamStartRejected { signal: "fixture.executed", report: invocation.report.clone(), _custody: Some(invocation._custody.clone()) };
+        assert_eq!(wrong_authority.retire_unstarted_until(deadline).await, Err(StreamRetirementError::RecoveryReviewRequired));
+        assert_eq!(invocation.report.retirement_evidence(), StreamRetirementEvidence::RequiresRecoveryReview);
+        assert!(supervisor.reserve().is_err());
     }
     #[test]
     fn paired_reservation_precedes_factory_and_refunds_failure() {
