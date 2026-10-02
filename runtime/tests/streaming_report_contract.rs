@@ -97,7 +97,7 @@ async fn public_mapping_and_collection_preserve_move_only_rejection_without_init
                     StreamInitializationReport::Ready { prefix, value } => {
                         StreamInitializationReport::Ready {
                             prefix,
-                            value: value.collect::<Vec<_>>().await,
+                            value: value.collect_report().await,
                         }
                     }
                     report => report.map_value(|_| unreachable!("Ready handled above")),
@@ -131,11 +131,15 @@ async fn public_mapping_and_collection_preserve_move_only_rejection_without_init
                             },
                         value,
                     } => {
-                        assert_eq!(value.len(), 1);
-                        assert_eq!(*value[0].0, 42);
-                        assert_eq!(value[0].1.get(), 0);
                         assert_eq!(
-                            &*value[0].0 as *const usize as usize,
+                            value.terminal,
+                            ranvier_runtime::StreamConsumptionTerminal::Completed
+                        );
+                        assert_eq!(value.items.len(), 1);
+                        assert_eq!(*value.items[0].0, 42);
+                        assert_eq!(value.items[0].1.get(), 0);
+                        assert_eq!(
+                            &*value.items[0].0 as *const usize as usize,
                             address.load(Ordering::SeqCst)
                         );
                     }

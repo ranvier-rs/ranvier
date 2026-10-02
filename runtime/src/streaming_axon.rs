@@ -1,8 +1,8 @@
 //! Report-aware execution of a configured Axon prefix and terminal stream initializer.
 //! Prefix acknowledgments do not certify stream items or late completion.
-use crate::ObservedStream;
 use crate::axon::BoxFuture;
 use crate::streaming_initialization::StreamInitializationReport;
+use crate::{ObservedStream, StreamConsumptionReport};
 use futures_core::Stream;
 use futures_util::StreamExt;
 use ranvier_core::schematic::Schematic;
@@ -162,8 +162,8 @@ where
         }
     }
     /// Collect observed Ready items while retaining the prefix report.
-    /// Ready describes initialization only: timeout or other late termination can
-    /// truncate these items. This does not certify complete or durable collection.
+    /// Ready describes initialization; its consumption report distinguishes partial
+    /// timeout/cancellation from source completion. Neither certifies durability.
     /// The terminal collection owner cannot be chained as an ordinary Axon.
     pub fn collect_into_vec(self) -> CollectedStreamingAxon<In, Out, Item, E, Res> {
         CollectedStreamingAxon { streaming: self }
@@ -189,12 +189,33 @@ where
         input: In,
         resources: &Res,
         bus: &mut Bus,
-    ) -> StreamInitializationReport<Out, Vec<Item>, E> {
-        match self.streaming.execute(input, resources, bus).await {
+    ) -> StreamInitializationReport<Out, StreamConsumptionReport<Item>, E> {
+        Self::collect_initialized(self.streaming.execute(input, resources, bus).await).await
+    }
+    /// Preserve partial items and an observed cancellation terminal through the
+    /// same configured prefix and initializer as ordinary streaming execution.
+    pub async fn execute_cancellable(
+        &self,
+        input: In,
+        resources: &Res,
+        bus: &mut Bus,
+        token: CancellationToken,
+    ) -> StreamInitializationReport<Out, StreamConsumptionReport<Item>, E> {
+        Self::collect_initialized(
+            self.streaming
+                .execute_cancellable(input, resources, bus, token)
+                .await,
+        )
+        .await
+    }
+    async fn collect_initialized(
+        report: StreamInitializationReport<Out, ObservedStream<Item>, E>,
+    ) -> StreamInitializationReport<Out, StreamConsumptionReport<Item>, E> {
+        match report {
             StreamInitializationReport::Ready { prefix, value } => {
                 StreamInitializationReport::Ready {
                     prefix,
-                    value: value.collect().await,
+                    value: value.collect_report().await,
                 }
             }
             report => report.map_value(|_| unreachable!("Ready is handled above")),
@@ -291,7 +312,10 @@ mod tests {
                         cleanup: None,
                     },
                 value,
-            } => assert_eq!(value, vec!["a", "b", "c"]),
+            } => {
+                assert_eq!(value.items, vec!["a", "b", "c"]);
+                assert_eq!(value.terminal, crate::StreamConsumptionTerminal::Completed);
+            }
             _ => panic!("collection lost initialization report"),
         }
     }

@@ -233,7 +233,7 @@ impl TestAxon {
         input: In,
         resources: &Res,
         test_bus: TestBus,
-    ) -> ranvier_runtime::StreamInitializationReport<Out, Vec<Item>, E>
+    ) -> ranvier_runtime::StreamInitializationReport<Out, ranvier_runtime::StreamConsumptionReport<Item>, E>
     where
         In: Send + Sync + 'static,
         Out: Send + Sync + 'static,
