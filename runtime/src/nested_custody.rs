@@ -7,6 +7,49 @@ use std::{
 
 pub(crate) struct RequiredOwnedCustody;
 pub(crate) struct OwnedResources<Res>(pub(crate) Arc<Res>);
+impl<Res> Clone for OwnedResources<Res> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+/// Temporary explicit typed owner; restore the parent's original Bus storage on
+/// return, panic or future Drop. Required supervision retains the live record.
+pub(crate) struct OwnedResourceScope<'a> {
+    bus: &'a mut ranvier_core::Bus,
+    scope: Option<ranvier_core::bus::BusResourceScope>,
+    pub(crate) eligible: bool,
+}
+impl<'a> OwnedResourceScope<'a> {
+    pub(crate) fn begin<Res: Send + Sync + 'static>(
+        bus: &'a mut ranvier_core::Bus,
+        resources: Arc<Res>,
+    ) -> Self {
+        let access = bus.take_access_scope();
+        let eligible = bus.has::<RequiredOwnedCustody>()
+            && bus.has::<CustodyStore>()
+            && bus.has::<crate::execution_observation::ActiveObservation>();
+        let scope = bus.begin_resource_scope::<OwnedResources<Res>>();
+        bus.insert(OwnedResources(resources));
+        bus.restore_access_scope(access);
+        Self {
+            bus,
+            scope: Some(scope),
+            eligible,
+        }
+    }
+    pub(crate) fn bus(&mut self) -> &mut ranvier_core::Bus {
+        self.bus
+    }
+}
+impl Drop for OwnedResourceScope<'_> {
+    fn drop(&mut self) {
+        let access = self.bus.take_access_scope();
+        if let Some(scope) = self.scope.take() {
+            self.bus.restore_resource_scope(scope);
+        }
+        self.bus.restore_access_scope(access);
+    }
+}
 pub(crate) struct NestedSagaCustody<E, Res> {
     pub(crate) resources: Arc<Res>,
     pub(crate) handlers: ranvier_core::saga::SagaCompensationRegistry<E, Res>,
