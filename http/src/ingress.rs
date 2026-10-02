@@ -6993,6 +6993,21 @@ mod tests {
         assert_eq!(report.forced_aborts, 0);
     }
 
+    #[tokio::test]
+    async fn managed_task_invalid_ws_request_releases_reserved_slot() {
+        let app = Ranvier::http::<()>().ws("/invalid", |_, _, _| async {
+            panic!("invalid request must not run session")
+        });
+        let registry = ManagedTaskRegistry { reservation_limit: 1, ..Default::default() };
+        let (mut parts, _) = Request::builder().uri("/invalid").body(()).unwrap().into_parts();
+        parts.extensions.insert(RequestTaskOwner(registry.clone()));
+        let response = (app.routes[0].handler)(parts, &()).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let report = registry.drain_until(tokio::time::Instant::now() + Duration::from_secs(1)).await;
+        assert_eq!(report.forced_aborts, 0);
+        assert!(registry.tasks.lock().await.is_empty());
+    }
+
     #[test]
     fn cancellation_http_status_is_shared_by_ordinary_and_streaming_routes() {
         let deadline = cancellation_http_response(&CancellationContext::new(
