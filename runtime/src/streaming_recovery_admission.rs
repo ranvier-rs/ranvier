@@ -6,6 +6,7 @@ pub(crate) enum RecoveryAdmissionFailure {
     Capacity,
     Poisoned,
     RegistryPoisoned,
+    RegistryBusy,
 }
 #[derive(Clone)]
 pub(crate) struct StreamRecoveryAdmission(Arc<Mutex<State>>);

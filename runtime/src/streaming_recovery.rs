@@ -136,6 +136,73 @@ impl Drop for SupervisorObservationGuard {
     }
 }
 
+/// External owner retention. Count is bounded by shared admission; payload/lifetime
+/// budgets and authorized operator disposition must be added before production use.
+pub(crate) struct StreamRecoveryStore<In, Out, E, Res> {
+    admission: StreamRecoveryAdmission,
+    owners: std::sync::Mutex<
+        std::collections::HashMap<uuid::Uuid, OwnedStreamRecovery<In, Out, E, Res>>,
+    >,
+}
+impl<In, Out, E, Res> StreamRecoveryStore<In, Out, E, Res>
+where
+    In: Send + Sync + Serialize + DeserializeOwned + 'static,
+    Out: Send + Sync + Serialize + DeserializeOwned + 'static,
+    E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
+    Res: Send + Sync + 'static,
+{
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            admission: StreamRecoveryAdmission::new(capacity),
+            owners: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+    /// Store owner before returning any execution handle; no effects under this lock.
+    pub(crate) fn admit(
+        &self,
+        graph: Axon<In, Out, E, Res>,
+        context: OwnedStreamContext<Res>,
+    ) -> Result<
+        (uuid::Uuid, OwnedStreamRecovery<In, Out, E, Res>),
+        StreamRecoveryAdmissionRejected<In, Out, E, Res>,
+    > {
+        let mut owners = match self.owners.lock() {
+            Ok(owners) => owners,
+            Err(_) => {
+                return Err(StreamRecoveryAdmissionRejected {
+                    graph,
+                    context,
+                    reason: RecoveryAdmissionFailure::Poisoned,
+                });
+            }
+        };
+        let owner = OwnedStreamRecovery::try_new(graph, context, &self.admission)?;
+        let id = uuid::Uuid::new_v4();
+        owners.insert(id, owner.clone());
+        Ok((id, owner))
+    }
+    /// Close atomically with respect to owner insertion; existing owners remain held.
+    pub(crate) fn close(&self) -> Result<(), RecoveryAdmissionFailure> {
+        let _owners = self
+            .owners
+            .lock()
+            .map_err(|_| RecoveryAdmissionFailure::Poisoned)?;
+        self.admission.close()
+    }
+    /// Explicit ownership transfer only. Removing a map entry does not release its
+    /// permit or authorize replay: the returned owner remains responsible for custody.
+    pub(crate) fn take_for_reconciliation(
+        &self,
+        id: uuid::Uuid,
+    ) -> Result<Option<OwnedStreamRecovery<In, Out, E, Res>>, RecoveryAdmissionFailure> {
+        Ok(self
+            .owners
+            .lock()
+            .map_err(|_| RecoveryAdmissionFailure::Poisoned)?
+            .remove(&id))
+    }
+}
+
 /// A single invocation's exact graph, typed resources and request Bus. An external
 /// clone must outlive the supervisor, including forced task abort. No replay API.
 pub(crate) struct OwnedStreamRecovery<In, Out, E, Res> {
@@ -225,16 +292,19 @@ where
         // A poisoned registry has unknown authority: retain caller ownership.
         let handlers = graph
             .saga_compensation_registry
-            .read()
+            .try_read()
             .map(|registry| registry.handlers.clone())
-            .map_err(|_| ());
+            .map_err(|error| match error {
+                std::sync::TryLockError::WouldBlock => RecoveryAdmissionFailure::RegistryBusy,
+                std::sync::TryLockError::Poisoned(_) => RecoveryAdmissionFailure::RegistryPoisoned,
+            });
         let handlers = match handlers {
             Ok(handlers) => handlers,
-            Err(()) => {
+            Err(reason) => {
                 return Err(StreamRecoveryAdmissionRejected {
                     graph,
                     context,
-                    reason: RecoveryAdmissionFailure::RegistryPoisoned,
+                    reason,
                 });
             }
         };
@@ -1074,6 +1144,77 @@ mod tests {
         drop(owner);
         assert_eq!(observed.load(Ordering::SeqCst), 1);
         assert_eq!(admission.in_use(), Ok(0));
+    }
+    #[tokio::test]
+    async fn external_store_retains_actual_aborted_context_until_explicit_transfer() {
+        let store = StreamRecoveryStore::new(1);
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let graph = Axon::<u32, u32, String, Resources>::start("external-store-abort")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Undo);
+        let (id, owner) = store
+            .admit(
+                graph.clone(),
+                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            )
+            .unwrap();
+        let observer = owner.observe();
+        let entered = Arc::new(Notify::new());
+        let task_entered = entered.clone();
+        let task = tokio::spawn(async move {
+            owner
+                .initialize_and_drive(67, &Init, None, move |source| async move {
+                    let _source = source;
+                    task_entered.notify_one();
+                    std::future::pending::<StreamDriveResult<()>>().await
+                })
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        task.abort();
+        assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+        assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
+        assert_eq!(observer.borrow().custody, RecoveryCustody::Held);
+        assert_eq!(store.admission.in_use(), Ok(1));
+        let rejected = match store.admit(
+            graph,
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+        ) {
+            Err(rejected) => rejected,
+            Ok(_) => panic!("retained recovery must consume capacity"),
+        };
+        assert_eq!(rejected.reason, RecoveryAdmissionFailure::Capacity);
+        store.close().unwrap();
+        let retained = store.take_for_reconciliation(id).unwrap().unwrap();
+        assert_eq!(store.admission.in_use(), Ok(1));
+        {
+            let context = retained.inner.context.lock().await;
+            assert!(Arc::ptr_eq(&resources, &context.0));
+            let task = &context.1.read::<SagaStack>().unwrap().tasks[0];
+            assert_eq!(task.input_snapshot, b"67");
+            assert!(
+                retained
+                    .inner
+                    .graph
+                    .saga_compensation_registry
+                    .read()
+                    .unwrap()
+                    .get(&task.node_id)
+                    .is_some()
+            );
+        }
+        assert!(store.take_for_reconciliation(id).unwrap().is_none());
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
+        drop(retained);
+        assert_eq!(store.admission.in_use(), Ok(0));
+        assert_eq!(
+            observer.borrow().custody,
+            RecoveryCustody::ReleasedWithPendingTasks
+        );
     }
     fn completed() -> StreamDriveResult<()> {
         StreamDriveResult {
