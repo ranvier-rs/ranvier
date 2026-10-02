@@ -1031,6 +1031,180 @@ mod tests {
             std::future::pending().await
         }
     }
+    struct ExternalHook {
+        mode: u8,
+        calls: Arc<AtomicUsize>,
+    }
+    #[async_trait::async_trait]
+    impl crate::persistence::CompensationHook for ExternalHook {
+        async fn compensate(
+            &self,
+            _: crate::persistence::CompensationContext,
+        ) -> anyhow::Result<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            match self.mode {
+                1 => std::future::pending().await,
+                4 => Err(anyhow::anyhow!("private hook failure")),
+                _ => Ok(()),
+            }
+        }
+    }
+    struct ExternalMarker {
+        mode: u8,
+        applied: Arc<AtomicBool>,
+        reads: Arc<AtomicUsize>,
+        writes: Arc<AtomicUsize>,
+    }
+    #[async_trait::async_trait]
+    impl crate::persistence::CompensationIdempotencyStore for ExternalMarker {
+        async fn was_compensated(&self, _: &str) -> anyhow::Result<bool> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            if self.mode == 0 {
+                std::future::pending().await
+            } else {
+                Ok(self.applied.load(Ordering::SeqCst))
+            }
+        }
+        async fn mark_compensated(&self, _: &str) -> anyhow::Result<()> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            if self.mode == 2 {
+                return std::future::pending().await;
+            }
+            self.applied.store(true, Ordering::SeqCst);
+            if self.mode == 3 {
+                std::future::pending().await
+            } else {
+                Ok(())
+            }
+        }
+    }
+    #[tokio::test]
+    async fn external_read_hook_marker_and_backoff_share_grace_and_retain_exact_capability() {
+        use crate::persistence::{
+            CompensationHandle, CompensationIdempotencyHandle, CompensationRetryPolicy,
+            InMemoryPersistenceStore, PersistenceHandle, PersistenceStore, PersistenceTraceId,
+        };
+        for (mode, grace) in (0..5)
+            .map(|mode| (mode, std::time::Duration::from_millis(100)))
+            .chain([(0, std::time::Duration::ZERO)])
+        {
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
+            let calls = Arc::new(AtomicUsize::new(0));
+            let hook: Arc<dyn crate::persistence::CompensationHook> = Arc::new(ExternalHook {
+                mode,
+                calls: calls.clone(),
+            });
+            let applied = Arc::new(AtomicBool::new(false));
+            let reads = Arc::new(AtomicUsize::new(0));
+            let writes = Arc::new(AtomicUsize::new(0));
+            let marker: Arc<dyn crate::persistence::CompensationIdempotencyStore> =
+                Arc::new(ExternalMarker {
+                    mode,
+                    applied: applied.clone(),
+                    reads: reads.clone(),
+                    writes: writes.clone(),
+                });
+            let store = Arc::new(InMemoryPersistenceStore::new());
+            let mut bus = Bus::new();
+            bus.insert(PersistenceHandle::from_arc(store.clone()));
+            bus.insert(PersistenceTraceId::new("external-grace-trace"));
+            bus.insert(CompensationHandle::from_arc(hook.clone()));
+            bus.insert(CompensationIdempotencyHandle::from_arc(marker));
+            bus.insert(CompensationRetryPolicy {
+                max_attempts: 3,
+                backoff_ms: 1000,
+            });
+            let graph = Axon::<u32, u32, String, Resources>::start("private-external-circuit")
+                .then(FailingEffect);
+            let owner = OwnedStreamRecovery::try_new(
+                graph,
+                OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
+                &StreamRecoveryAdmission::new(1),
+                None,
+            )
+            .unwrap();
+            let report = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                owner.initialize_and_drive(127, &Init, None, grace, |_| async { completed() }),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let StreamInitializationReport::Rejected { prefix } = report else {
+                panic!("expected external cleanup prefix rejection");
+            };
+            let cleanup = prefix.cleanup().unwrap();
+            assert!(!cleanup.finished);
+            assert!(!cleanup.is_complete());
+            assert_eq!(cleanup.steps.len(), 1);
+            assert_eq!(
+                cleanup.steps[0].outcome,
+                if mode == 0 {
+                    crate::SagaRollbackOutcome::NotInvoked
+                } else {
+                    crate::SagaRollbackOutcome::InProgress
+                }
+            );
+            assert!(
+                !serde_json::to_string(cleanup)
+                    .unwrap()
+                    .contains("private-external-circuit")
+            );
+            match prefix {
+                crate::ExecutionReport::Recorded { result, .. }
+                | crate::ExecutionReport::Unconfirmed { result, .. } => assert!(
+                    matches!(result, crate::ExecutionTerminal::Outcome(Outcome::Fault(error)) if error == "original direct fault")
+                ),
+                _ => panic!("original terminal missing"),
+            }
+            let context = owner.inner.context.lock().await;
+            assert!(Arc::ptr_eq(&context.0, &resources));
+            let journal = context.1.read::<crate::SagaRollbackJournal>().unwrap();
+            let retained = journal.unresolved_external();
+            assert_eq!(retained.len(), 1);
+            assert_eq!(retained[0].context.trace_id, "external-grace-trace");
+            assert_eq!(retained[0].context.circuit, "private-external-circuit");
+            assert_eq!(retained[0].context.fault_kind, "Fault");
+            assert!(Arc::ptr_eq(&retained[0].handle.hook(), &hook));
+            assert!(retained[0].idempotency.is_some());
+            assert_eq!(retained[0].invoked.load(Ordering::SeqCst), mode != 0);
+            assert_eq!(calls.load(Ordering::SeqCst), usize::from(mode != 0));
+            assert_eq!(
+                reads.load(Ordering::SeqCst),
+                usize::from(grace != std::time::Duration::ZERO)
+            );
+            assert_eq!(
+                writes.load(Ordering::SeqCst),
+                usize::from(mode == 2 || mode == 3)
+            );
+            assert_eq!(applied.load(Ordering::SeqCst), mode == 3);
+            assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
+            assert!(owner.observe().borrow().cleanup_timed_out);
+            assert_eq!(owner.observe().borrow().cleanup_complete, Some(false));
+            assert!(!format!("{journal:?}").contains("private-external-circuit"));
+            drop(retained);
+            drop(context);
+            let persisted = store.load("external-grace-trace").await.unwrap().unwrap();
+            assert!(
+                !persisted
+                    .events
+                    .iter()
+                    .any(|event| event.outcome_kind == "Compensated")
+            );
+            assert_eq!(
+                persisted.completion,
+                Some(crate::persistence::CompletionState::Fault)
+            );
+            let observer = owner.observe();
+            drop(owner);
+            assert_eq!(
+                observer.borrow().custody,
+                RecoveryCustody::ReleasedWithPendingTasks
+            );
+        }
+    }
     #[derive(Clone)]
     struct FailingEffect;
     #[async_trait::async_trait]

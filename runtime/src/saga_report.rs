@@ -45,12 +45,21 @@ impl SagaRollbackReport {
     }
 }
 
+/// Sensitive local recovery capability; no automatic retry or serialization.
+#[derive(Clone)]
+pub(crate) struct ExternalCompensationRecovery {
+    pub(crate) context: crate::persistence::CompensationContext,
+    pub(crate) handle: crate::persistence::CompensationHandle,
+    pub(crate) idempotency: Option<crate::persistence::CompensationIdempotencyHandle>,
+    pub(crate) invoked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
 /// Invocation-owned cleanup journal. Cloning this handle does not copy steps.
 /// Call snapshot to obtain an owned serializable report, including partial work.
 #[derive(Clone)]
 pub struct SagaRollbackJournal(
     std::sync::Arc<std::sync::Mutex<SagaRollbackReport>>,
     std::sync::Arc<std::sync::Mutex<Vec<(usize, ranvier_core::saga::SagaTask)>>>,
+    std::sync::Arc<std::sync::Mutex<Vec<(usize, ExternalCompensationRecovery)>>>,
 );
 impl std::fmt::Debug for SagaRollbackJournal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -68,6 +77,7 @@ impl SagaRollbackJournal {
                 finished: false,
                 steps: Vec::new(),
             })),
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         )
     }
@@ -89,6 +99,7 @@ impl SagaRollbackJournal {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .is_empty()
+            || !self.2.lock().unwrap_or_else(|p| p.into_inner()).is_empty()
     }
     pub(crate) fn push_task(&self, task: ranvier_core::saga::SagaTask) {
         let mut report = self
@@ -105,6 +116,41 @@ impl SagaRollbackJournal {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push((index, task));
+    }
+    pub(crate) fn push_external(&self, recovery: ExternalCompensationRecovery) -> usize {
+        let mut report = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let index = report.steps.len();
+        report.finished = false;
+        report.steps.push(SagaRollbackStep {
+            node_id: "external-compensation".into(),
+            outcome: SagaRollbackOutcome::InProgress,
+        });
+        self.2
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((index, recovery));
+        index
+    }
+    /// Sensitive exact context/capability, accessible only to runtime reconciliation.
+    pub(crate) fn unresolved_external(&self) -> Vec<ExternalCompensationRecovery> {
+        self.2
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(|(_, item)| item.clone())
+            .collect()
+    }
+    pub(crate) fn settle_external(&self, index: usize, outcome: SagaRollbackOutcome) {
+        let mut report = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(step) = report.steps.get_mut(index) {
+            step.outcome = outcome;
+        }
+        if outcome == SagaRollbackOutcome::Completed {
+            self.2
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .retain(|(observed, _)| *observed != index);
+        }
     }
     pub fn snapshot(&self) -> SagaRollbackReport {
         self.0

@@ -859,6 +859,7 @@ where
                     timestamp_ms: now_ms(),
                 };
 
+                let journal = external_compensation_journal(bus, &trace_id);
                 if run_compensation(
                     compensation,
                     context,
@@ -866,6 +867,7 @@ where
                     compensation_idempotency.clone(),
                     bus.read::<crate::execution_observation::ActiveObservation>()
                         .map(|active| active.0.clone()),
+                    Some(journal),
                 )
                 .await
                 {
@@ -1131,6 +1133,7 @@ where
                 timestamp_ms: now_ms(),
             };
 
+            let journal = external_compensation_journal(bus, &trace_id);
             if run_compensation(
                 compensation,
                 compensation_context,
@@ -1138,6 +1141,7 @@ where
                 compensation_idempotency,
                 bus.read::<crate::execution_observation::ActiveObservation>()
                     .map(|active| active.0.clone()),
+                Some(journal),
             )
             .await
             {

@@ -1304,12 +1304,100 @@ fn compensation_idempotency_key(context: &CompensationContext) -> String {
     )
 }
 
+fn external_compensation_journal(bus: &mut Bus, trace_id: &str) -> crate::SagaRollbackJournal {
+    let journal = bus
+        .read::<crate::SagaRollbackJournal>()
+        .filter(|journal| journal.matches_trace(trace_id))
+        .cloned()
+        .unwrap_or_else(|| crate::SagaRollbackJournal::new(trace_id));
+    bus.insert(journal.clone());
+    journal
+}
+
 async fn run_compensation(
     handle: &CompensationHandle,
     context: CompensationContext,
     retry_policy: CompensationRetryPolicy,
     idempotency: Option<CompensationIdempotencyHandle>,
     observation: Option<Arc<crate::execution_observation::Observation>>,
+    journal: Option<crate::SagaRollbackJournal>,
+) -> bool {
+    use crate::saga_report::{ExternalCompensationRecovery, SagaRollbackOutcome};
+    use futures_util::FutureExt as _;
+    let recovery = ExternalCompensationRecovery {
+        context: context.clone(),
+        handle: handle.clone(),
+        idempotency: idempotency.clone(),
+        invoked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+    let prior_finished = journal.as_ref().is_none_or(|journal| {
+        let prior = journal.snapshot();
+        prior.finished || prior.steps.is_empty()
+    });
+    let index = journal
+        .as_ref()
+        .map(|journal| journal.push_external(recovery.clone()));
+    #[cfg(feature = "streaming")]
+    let deadline = observation
+        .as_ref()
+        .and_then(|active| active.begin_cleanup());
+    let result = {
+        let cleanup = std::panic::AssertUnwindSafe(async {
+            run_compensation_unbounded(
+                handle,
+                context,
+                retry_policy,
+                idempotency,
+                observation.clone(),
+                &recovery,
+            )
+            .await
+        })
+        .catch_unwind();
+        #[cfg(feature = "streaming")]
+        {
+            match deadline {
+                Some(deadline) if deadline <= tokio::time::Instant::now() => None,
+                Some(deadline) => tokio::time::timeout_at(deadline, cleanup).await.ok(),
+                None => Some(cleanup.await),
+            }
+        }
+        #[cfg(not(feature = "streaming"))]
+        {
+            Some(cleanup.await)
+        }
+    };
+    let outcome = match result {
+        Some(Ok(true)) => SagaRollbackOutcome::Completed,
+        Some(Ok(false)) => SagaRollbackOutcome::Fault,
+        Some(Err(_)) => SagaRollbackOutcome::Panicked,
+        None if recovery.invoked.load(std::sync::atomic::Ordering::SeqCst) => {
+            SagaRollbackOutcome::InProgress
+        }
+        None => SagaRollbackOutcome::NotInvoked,
+    };
+    #[cfg(feature = "streaming")]
+    if result.is_none() {
+        if let Some(active) = &observation {
+            active.cleanup_expired();
+        }
+    }
+    if let (Some(journal), Some(index)) = (journal, index) {
+        journal.settle_external(index, outcome);
+        if result.is_some() && prior_finished {
+            journal.finish();
+        }
+    }
+    matches!(result, Some(Ok(true)))
+}
+
+async fn run_compensation_unbounded(
+    handle: &CompensationHandle,
+    context: CompensationContext,
+    retry_policy: CompensationRetryPolicy,
+    idempotency: Option<CompensationIdempotencyHandle>,
+    observation: Option<Arc<crate::execution_observation::Observation>>,
+    recovery: &crate::saga_report::ExternalCompensationRecovery,
 ) -> bool {
     let hook = handle.hook();
     let key = compensation_idempotency_key(&context);
@@ -1343,6 +1431,9 @@ async fn run_compensation(
         if let Some(observation) = &observation {
             observation.effect();
         }
+        recovery
+            .invoked
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         match hook.compensate(context.clone()).await {
             Ok(()) => {
                 if let Some(store_handle) = idempotency.as_ref() {
@@ -2126,6 +2217,7 @@ mod tests {
                     timestamp_ms: 0,
                 },
                 CompensationRetryPolicy::default(),
+                None,
                 None,
                 None,
             )
