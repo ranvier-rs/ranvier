@@ -2148,6 +2148,78 @@ mod tests {
         assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
         assert_eq!(journal.snapshot().steps[0].outcome, crate::SagaRollbackOutcome::InProgress);
     }
+    #[tokio::test]
+    async fn parent_store_retains_child_when_actual_bounded_producer_aborts_at_full_queue() {
+        struct Source(Arc<AtomicUsize>, Arc<AtomicUsize>);
+        impl futures_core::Stream for Source {
+            type Item = u32;
+            fn poll_next(self: Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<Option<u32>> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                std::task::Poll::Ready(Some(277))
+            }
+        }
+        impl Drop for Source {
+            fn drop(&mut self) { self.1.fetch_add(1, Ordering::SeqCst); }
+        }
+        struct QueueInit(Arc<AtomicUsize>, Arc<AtomicUsize>);
+        #[async_trait::async_trait]
+        impl StreamingTransition<u32> for QueueInit {
+            type Item = u32;
+            type Error = String;
+            type Resources = Resources;
+            async fn run_stream(&self, _: u32, _: &Resources, _: &mut Bus) -> Result<RawStream<u32>, String> {
+                Ok(Box::pin(Source(self.0.clone(), self.1.clone())))
+            }
+        }
+        let parent = crate::nested_custody::CustodyStore::new(1);
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let weak = Arc::downgrade(&resources);
+        let child = OwnedStreamRecovery::try_new(
+            Axon::<u32, u32, String, Resources>::start("parent-full-queue")
+                .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1), None).unwrap();
+        let admission = child.admit_to_parent(parent.client()).await.unwrap();
+        let observer = child.observe();
+        let polls = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let initializer = QueueInit(polls.clone(), drops.clone());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let token = CancellationToken::new();
+        let task = tokio::spawn(async move {
+            child.initialize_and_drive(277, &initializer, None, std::time::Duration::from_secs(30), move |source| {
+                produce_bounded(source, ranvier_core::streaming::StreamTimeoutConfig {
+                    init: None, idle: None, total: None,
+                }, token, sender)
+            }).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while receiver.len() != 1 { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        assert_eq!(observer.borrow().phase, SupervisorPhase::Consuming);
+        task.abort();
+        assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(receiver.recv().await, Some(277));
+        assert_eq!(receiver.recv().await, None);
+        assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
+        let inner = admission.upgrade().unwrap().downcast::<RecoveryInner<u32, u32, String, Resources>>()
+            .unwrap_or_else(|_| panic!("wrong full-queue child owner"));
+        {
+            let context = inner.context.lock().await;
+            assert!(Arc::ptr_eq(&context.0, &resources));
+            let stack = context.1.read::<SagaStack>().unwrap();
+            assert_eq!(stack.tasks.len(), 1);
+            assert_eq!(stack.tasks[0].input_snapshot, b"277");
+        }
+        drop(inner);
+        drop(resources);
+        assert!(weak.upgrade().is_some());
+        drop(parent);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
+    }
     struct ExternalHook {
         mode: u8,
         calls: Arc<AtomicUsize>,
