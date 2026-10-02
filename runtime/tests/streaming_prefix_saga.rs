@@ -115,8 +115,8 @@ impl StreamingTransition<()> for InitFail {
         Err("initializer-fault".into())
     }
 }
-/// Characterization of OPEN ownership loss, not an acceptance assertion that
-/// unperformed cleanup is safe. Replace with desired cleanup/recovery assertions
+/// Characterization of OPEN root cleanup ownership retained only in caller Bus,
+/// not acceptance that unperformed cleanup is safe. Replace with desired assertions
 /// when the owned initializer/consumption handoff is implemented.
 #[tokio::test]
 async fn initializer_failure_retains_root_stack_without_reporting_cleanup() {
