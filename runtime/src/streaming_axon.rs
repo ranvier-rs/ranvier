@@ -556,6 +556,56 @@ mod tests {
         }
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn callable_owned_factory_uses_latest_timeout_after_modifiers_and_clone() {
+        #[derive(Clone)]
+        struct PendingCallableInit;
+        #[async_trait::async_trait]
+        impl StreamingTransition<String> for PendingCallableInit {
+            type Item = String;
+            type Error = String;
+            type Resources = ();
+            async fn run_stream(&self, _: String, _: &(), _: &mut Bus) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, String> {
+                std::future::pending().await
+            }
+        }
+        let original = Axon::<String, String, String>::start("callable-timeout")
+            .then_stream(PendingCallableInit).with_timeout(StreamTimeoutConfig {
+                init: None, idle: None, total: Some(std::time::Duration::from_secs(10)),
+            });
+        let modified = original.clone().map_items(|item| item).with_buffer_size(2)
+            .with_timeout(StreamTimeoutConfig { init: None, idle: None, total: Some(std::time::Duration::from_secs(1)) }).clone();
+        let mut plan = match modified.owned_definition.try_callable_plan(
+            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
+            Ok(plan) => plan, Err(_) => panic!("callable plan rejected"),
+        };
+        let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
+        };
+        assert_eq!(receiver.max_capacity(), 2);
+        let root = crate::nested_custody::CustodyStore::new(1);
+        let journal = crate::SagaRollbackJournal::new("callable-timeout-parent");
+        let control = CancellationToken::new();
+        let began = tokio::time::Instant::now();
+        plan.owner.register_and_start(root.client(), &journal, control.clone(), &mut prepared).await
+            .unwrap_or_else(|error| panic!("{}", error.signal));
+        let holder = prepared.holder();
+        let report = holder.lock().await.join_until(began + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
+        match report {
+            Ok(StreamInitializationReport::Cancelled { context, initialization, .. }) => {
+                assert_eq!(context.reason, ranvier_core::CancellationReason::DeadlineExceeded);
+                assert_eq!(initialization, crate::EffectBoundary::MayHaveRun);
+            }
+            _ => panic!("original cancellation report lost"),
+        }
+        assert_eq!(tokio::time::Instant::now() - began, std::time::Duration::from_secs(1));
+        assert!(!control.is_cancelled());
+        assert_eq!(receiver.recv().await, None);
+        assert_eq!(original.owned_definition.timeout_config.as_ref().unwrap().total,
+            Some(std::time::Duration::from_secs(10)));
+    }
+
     #[test]
     fn callable_owned_factory_capacity_rejection_returns_original_context() {
         let circuit = circuit(&["a"]);
