@@ -524,7 +524,7 @@ where
         client: crate::nested_custody::WeakCustodyClient,
         parent: Option<CancellationToken>,
     ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
-        self.bind_parent(client, parent, None, None).await
+        self.bind_parent(client, parent, None, None, None).await
     }
 
     async fn bind_parent(
@@ -533,6 +533,7 @@ where
         parent: Option<CancellationToken>,
         journal: Option<&crate::SagaRollbackJournal>,
         task: Option<crate::nested_custody::Capability>,
+        reservation: Option<&mut crate::nested_custody::CustodyReservation>,
     ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
         if self.inner.started.load(Ordering::Acquire) {
             return Err("execution.nested_stream_already_started");
@@ -551,9 +552,12 @@ where
             {
                 return Err("execution.nested_stream_already_bound");
             }
-            let admission = match journal {
-                Some(journal) => client.reserve_stream(self.inner.clone(), journal, task, self.observe())?,
-                None => client.reserve(self.inner.clone())?,
+            let admission = match (reservation, journal, task) {
+                (Some(reservation), Some(journal), Some(task)) =>
+                    reservation.finalize_stream(&client, self.inner.clone(), task, journal, self.observe())?,
+                (Some(_), _, _) => return Err("execution.nested_reservation_missing_frame"),
+                (None, Some(journal), task) => client.reserve_stream(self.inner.clone(), journal, task, self.observe())?,
+                (None, None, _) => client.reserve(self.inner.clone())?,
             };
             bus.insert(client);
             bus.insert(ParentStreamCustody(admission.clone(), parent.map(|token| token.child_token())));
@@ -579,7 +583,7 @@ where
         journal: &crate::SagaRollbackJournal,
         parent: Option<CancellationToken>,
     ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
-        self.bind_parent(client, parent, Some(journal), None).await
+        self.bind_parent(client, parent, Some(journal), None, None).await
     }
 
     /// Register exact child owner, indexed observation and actual task holder
@@ -594,7 +598,7 @@ where
         if !prepared.matches_owner(&(self.inner.clone() as crate::nested_custody::Capability)) {
             return Err("execution.nested_task_owner_mismatch");
         }
-        self.bind_parent(client, Some(parent), Some(journal), Some(prepared.holder())).await
+        self.bind_parent(client, Some(parent), Some(journal), Some(prepared.holder()), None).await
     }
 
     /// Register and grant the exact preparation, retaining registration on a
@@ -608,6 +612,35 @@ where
             return Err(ManagedStreamStartError { signal: "execution.nested_task_start_decided", custody: None });
         }
         let custody = match self.admit_managed_to_parent(client, journal, parent, prepared).await {
+            Ok(custody) => custody,
+            Err(signal) => {
+                let _ = prepared.reject_start();
+                return Err(ManagedStreamStartError { signal, custody: None });
+            }
+        };
+        if let Err(signal) = prepared.grant_registered_start(&custody) {
+            let _ = prepared.reject_start();
+            return Err(ManagedStreamStartError { signal, custody: Some(custody) });
+        }
+        Ok(custody)
+    }
+
+    /// Consume the pre-context root slot for this exact recovery frame.
+    /// Rejected frames remain caller-owned and must be joined; failed grants
+    /// return the finalized custody receipt for explicit cleanup.
+    pub(crate) async fn register_reserved_and_start<T: Send + 'static>(
+        &self, client: crate::nested_custody::WeakCustodyClient,
+        reservation: &mut crate::nested_custody::CustodyReservation,
+        journal: &crate::SagaRollbackJournal, parent: CancellationToken,
+        prepared: &mut crate::managed_stream_task::PreparedStreamTask<T>,
+    ) -> Result<crate::nested_custody::WeakCustody, ManagedStreamStartError> {
+        if !prepared.has_open_start() {
+            return Err(ManagedStreamStartError { signal: "execution.nested_task_start_decided", custody: None });
+        }
+        let admission = if prepared.matches_owner(&self.retention_capability()) {
+            self.bind_parent(client, Some(parent), Some(journal), Some(prepared.holder()), Some(reservation)).await
+        } else { Err("execution.nested_task_owner_mismatch") };
+        let custody = match admission {
             Ok(custody) => custody,
             Err(signal) => {
                 let _ = prepared.reject_start();
@@ -3265,6 +3298,49 @@ mod tests {
             }
         }
     }
+    #[tokio::test]
+    async fn reserved_root_slot_starts_actual_recovery_at_capacity_one() {
+        #[derive(Clone)]
+        struct FiniteInit;
+        #[async_trait::async_trait]
+        impl StreamingTransition<u32> for FiniteInit {
+            type Item = u32;
+            type Error = String;
+            type Resources = Resources;
+            async fn run_stream(&self, input: u32, _: &Resources, _: &mut Bus) -> Result<RawStream<u32>, String> {
+                Ok(Box::pin(futures_util::stream::iter([input])))
+            }
+        }
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let root = crate::nested_custody::CustodyStore::new(1);
+        let mut slot = root.reserve_stream_slot().unwrap();
+        let admission = StreamRecoveryAdmission::new(1);
+        let permit = admission.reserve().unwrap();
+        let circuit = Axon::<u32, u32, String, Resources>::start("reserved-recovery")
+            .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo).then_stream(FiniteInit);
+        let mut plan = match circuit.owned_definition.try_callable_plan_reserved(
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(), &admission, None, permit) {
+            Ok(plan) => plan, Err(_) => panic!("reserved plan rejected"),
+        };
+        let ((mut prepared, mut receiver), mut readiness) = match plan.prepare_bounded_ready(197, std::time::Duration::from_secs(5)) {
+            Ok(frame) => frame, Err(_) => panic!("preparation rejected"),
+        };
+        let handle = plan.report_handle(&prepared).unwrap();
+        let journal = crate::SagaRollbackJournal::new("reserved-recovery-parent");
+        let receipt = plan.owner.register_reserved_and_start(root.client(), &mut slot, &journal,
+            CancellationToken::new(), &mut prepared).await.unwrap_or_else(|e| panic!("{}", e.signal));
+        readiness.initialized().await.unwrap();
+        assert_eq!(receiver.recv().await, Some(197));
+        assert_eq!(receiver.recv().await, None);
+        let report = handle.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+        assert!(matches!(report, crate::streaming_report_handle::SupervisedStreamCompletion::Report(StreamInitializationReport::Ready { .. })));
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
+        assert_eq!(journal.retained_stream_observations().len(), 1);
+        assert!(root.reserve_stream_slot().is_err());
+        receipt.release();
+        assert!(root.reserve_stream_slot().is_ok());
+    }
+
     #[tokio::test]
     async fn dropped_readiness_receiver_runs_actual_shielded_prefix_cleanup() {
         let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
