@@ -518,6 +518,8 @@ where
         observation.phase(SupervisorPhase::Initializing);
         let mut context = self.inner.context.lock().await;
         let (resources, bus) = &mut *context;
+        bus.insert(crate::nested_custody::RequiredOwnedCustody);
+        bus.insert(crate::nested_custody::OwnedResources(resources.clone()));
         let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
         if let Some(active) = owner
             .bus()

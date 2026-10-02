@@ -62,6 +62,7 @@ pub struct SagaRollbackJournal(
     std::sync::Arc<std::sync::Mutex<Vec<(usize, ranvier_core::saga::SagaTask)>>>,
     std::sync::Arc<std::sync::Mutex<Vec<(usize, ExternalCompensationRecovery)>>>,
     std::sync::Arc<std::sync::Mutex<Vec<(usize, SagaRollbackJournal)>>>,
+    std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>>>,
 );
 impl std::fmt::Debug for SagaRollbackJournal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -82,7 +83,21 @@ impl SagaRollbackJournal {
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            std::sync::Arc::new(std::sync::Mutex::new(None)),
         )
+    }
+    pub(crate) fn retain_custody(&self, custody: std::sync::Arc<dyn std::any::Any + Send + Sync>) {
+        let mut incoming = Some(custody);
+        {
+            let mut retained = self.4.lock().unwrap_or_else(|p| p.into_inner());
+            if retained.is_none() { *retained = incoming.take(); }
+        }
+        // Any user resource destructor must run outside the journal lock.
+        drop(incoming);
+    }
+    #[cfg(test)]
+    pub(crate) fn retained_custody(&self) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+        self.4.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
     /// Owned local reconciliation inputs. These may contain secrets: never expose
     /// them as public responses/logs. Retention does not authorize replay or prove

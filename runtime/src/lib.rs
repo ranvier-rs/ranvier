@@ -11,6 +11,7 @@ pub mod persistence;
 pub mod replay;
 pub mod retry;
 pub mod saga_report;
+mod nested_custody;
 #[cfg(feature = "streaming")]
 pub mod streaming_axon;
 #[cfg(feature = "streaming")]

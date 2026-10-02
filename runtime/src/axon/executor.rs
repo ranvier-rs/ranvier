@@ -86,6 +86,34 @@ where
     E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
     Res: Send + Sync + 'static,
 {
+    fn prepare_owned_child(
+        &self, resources: &Res, bus: &Bus,
+    ) -> Result<Option<(Self, std::sync::Arc<dyn std::any::Any + Send + Sync>)>, &'static str> {
+        use crate::nested_custody::{NestedSagaCustody, OwnedResources, RequiredOwnedCustody};
+        if !bus.has::<RequiredOwnedCustody>() || !bus.has::<crate::execution_observation::ActiveObservation>() {
+            return Ok(None);
+        }
+        let owned = bus.read::<OwnedResources<Res>>()
+            .filter(|owned| std::ptr::eq(owned.0.as_ref(), resources))
+            .ok_or("execution.nested_resources_unowned")?;
+        let handlers = self.saga_compensation_registry.try_read()
+            .map_err(|_| "execution.nested_registry_unavailable")?.handlers.clone();
+        let mut graph = self.clone();
+        graph.saga_compensation_registry = std::sync::Arc::new(std::sync::RwLock::new(
+            ranvier_core::saga::SagaCompensationRegistry { handlers: handlers.clone() }));
+        let custody = std::sync::Arc::new(NestedSagaCustody {
+            resources: owned.0.clone(),
+            handlers: ranvier_core::saga::SagaCompensationRegistry { handlers },
+        });
+        Ok(Some((graph, custody)))
+    }
+    fn record_owned_child(bus: &mut Bus, custody: std::sync::Arc<dyn std::any::Any + Send + Sync>) {
+        let journal = crate::SagaRollbackJournal::new(&persistence_trace_id(bus));
+        journal.retain_custody(custody);
+        journal.finish();
+        bus.insert(journal);
+    }
+
     /// Execute with an explicit cooperative cancellation owner.
     ///
     /// Both execution paths return domain/infrastructure and durability reports. When
@@ -99,10 +127,19 @@ where
         bus: &mut Bus,
         token: CancellationToken,
     ) -> crate::ExecutionReport<ExecutionTerminal<Out, E>> {
+        let prepared = self.prepare_owned_child(resources, bus);
         let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
-        let terminal = self
-            .execute_terminal_domain(input, resources, owner.bus(), token)
-            .await;
+        let selected;
+        let graph = match prepared {
+            Ok(Some((graph, custody))) => {
+                Self::record_owned_child(owner.bus(), custody);
+                selected = graph;
+                &selected
+            }
+            Ok(None) => self,
+            Err(signal) => return owner.finish(ExecutionTerminal::Outcome(Outcome::emit(signal, None))),
+        };
+        let terminal = graph.execute_terminal_domain(input, resources, owner.bus(), token).await;
         owner.finish(terminal)
     }
 
@@ -385,8 +422,19 @@ where
         resources: &Res,
         bus: &mut Bus,
     ) -> crate::ExecutionReport<Outcome<Out, E>> {
+        let prepared = self.prepare_owned_child(resources, bus);
         let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
-        let outcome = self.execute_domain(input, resources, owner.bus()).await;
+        let selected;
+        let graph = match prepared {
+            Ok(Some((graph, custody))) => {
+                Self::record_owned_child(owner.bus(), custody);
+                selected = graph;
+                &selected
+            }
+            Ok(None) => self,
+            Err(signal) => return owner.finish(Outcome::emit(signal, None)),
+        };
+        let outcome = graph.execute_domain(input, resources, owner.bus()).await;
         owner.finish(outcome)
     }
 
