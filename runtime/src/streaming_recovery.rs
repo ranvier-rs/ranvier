@@ -3249,6 +3249,43 @@ mod tests {
             }
         }
     }
+    #[tokio::test]
+    async fn dropped_readiness_receiver_runs_actual_shielded_prefix_cleanup() {
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let circuit = Axon::<u32, u32, String, Resources>::start("readiness-cleanup")
+            .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo).then_stream(Init);
+        let mut plan = match circuit.owned_definition.try_callable_plan(
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(), &StreamRecoveryAdmission::new(1), None) {
+            Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+        };
+        let ((mut prepared, mut receiver), readiness) = match plan.prepare_bounded_ready(163, std::time::Duration::from_secs(5)) {
+            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
+        };
+        drop(readiness);
+        let root = crate::nested_custody::CustodyStore::new(1);
+        let journal = crate::SagaRollbackJournal::new("readiness-cleanup-parent");
+        let control = CancellationToken::new();
+        plan.owner.register_and_start(root.client(), &journal, control.clone(), &mut prepared).await
+            .unwrap_or_else(|error| panic!("{}", error.signal));
+        let holder = prepared.holder();
+        let report = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap().unwrap();
+        match report {
+            StreamInitializationReport::Ready { prefix, value } => {
+                assert!(matches!(prefix, crate::ExecutionReport::Unpersisted {
+                    result: (), ..
+                }));
+                assert!(matches!(value.consumption.unwrap().terminal, crate::StreamConsumptionTerminal::Cancelled(context)
+                    if context.reason == ranvier_core::CancellationReason::ClientDisconnected));
+                assert!(value.cleanup.unwrap().is_complete());
+            }
+            _ => panic!("original report lost"),
+        }
+        assert_eq!(receiver.recv().await, None);
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+        assert!(!control.is_cancelled());
+        assert!(plan.owner.inner.context.try_lock().unwrap().1.read::<SagaStack>().unwrap().is_empty());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn gated_zero_total_rejects_before_effects_and_preserves_parent_cancellation() {
         struct CountingInit;

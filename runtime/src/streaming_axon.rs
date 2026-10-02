@@ -40,8 +40,10 @@ pub(crate) struct OwnedStreamPlan<In, Out, Item, E, Res, S> {
     pub(crate) buffer_size: usize,
 }
 /// Initialization readiness only: neither durable completion nor source EOF.
-/// Waiting is cancellation-safe; dropping this owner before readiness prevents
-/// the notified producer from starting and leaves cleanup/report custody intact.
+/// Waiting is cancellation-safe. Dropping the receiver before the producer
+/// sends readiness prevents item production and leaves cleanup/report custody
+/// intact. A sent signal remains initialization evidence after later failures;
+/// dropping readiness alone is not cancellation of a prefix already running.
 pub struct StreamReadiness {
     receiver: Option<tokio::sync::oneshot::Receiver<()>>,
     observed: Option<Result<(), StreamReadinessError>>,
@@ -581,7 +583,10 @@ mod tests {
                 Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
             };
             let mut ready = Some(ready);
-            if dropped { drop(ready.take()); }
+            if dropped { drop(ready.take()); } else {
+                use futures_util::FutureExt;
+                assert!(ready.as_mut().unwrap().initialized().now_or_never().is_none());
+            }
             let root = crate::nested_custody::CustodyStore::new(1);
             let journal = crate::SagaRollbackJournal::new("readiness-parent");
             plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
@@ -605,6 +610,32 @@ mod tests {
                 _ => panic!("original Ready report lost"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn readiness_unavailable_is_repeatable_without_consuming_original_prefix_fault() {
+        let circuit = Axon::<String, String, String>::start("readiness-fault").then(Fault)
+            .then_stream(Chunks { items: vec![], pending: false, include_input: false });
+        let mut plan = match circuit.owned_definition.try_callable_plan(
+            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
+            Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+        };
+        let ((mut prepared, mut receiver), mut ready) = match plan.prepare_bounded_ready("".into(), std::time::Duration::from_secs(5)) {
+            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
+        };
+        let root = crate::nested_custody::CustodyStore::new(1);
+        let journal = crate::SagaRollbackJournal::new("readiness-fault-parent");
+        plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+            .unwrap_or_else(|error| panic!("{}", error.signal));
+        assert_eq!(ready.initialized().await, Err(StreamReadinessError::Unavailable));
+        assert_eq!(ready.initialized().await, Err(StreamReadinessError::Unavailable));
+        assert_eq!(receiver.recv().await, None);
+        let holder = prepared.holder();
+        let report = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
+        assert!(matches!(report, Ok(StreamInitializationReport::Rejected { prefix: crate::ExecutionReport::Unpersisted {
+            result: crate::ExecutionTerminal::Outcome(Outcome::Fault(error)), ..
+        } }) if error == "step failed"));
     }
 
     #[tokio::test]
