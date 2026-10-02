@@ -123,6 +123,22 @@ impl CustodyReservation {
         task: Capability, journal: &crate::SagaRollbackJournal,
         observer: tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>)
         -> Result<WeakCustody, &'static str> {
+        self.finalize_with_settlement(client, owner, task, journal, observer, None)
+    }
+    pub(crate) fn finalize_managed<T: Send + 'static>(&mut self, client: &WeakCustodyClient, owner: Capability,
+        prepared: &crate::managed_stream_task::PreparedStreamTask<T>, journal: &crate::SagaRollbackJournal,
+        observer: tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>) -> Result<WeakCustody, &'static str> {
+        if !prepared.matches_owner(&owner) { return Err("execution.nested_task_owner_mismatch"); }
+        if !prepared.has_open_start() { return Err("execution.nested_task_start_decided"); }
+        self.finalize_with_settlement(client, owner, prepared.holder(), journal, observer, Some(prepared.settlement()))
+    }
+    fn finalize_with_settlement(&mut self, client: &WeakCustodyClient, owner: Capability, task: Capability,
+        journal: &crate::SagaRollbackJournal,
+        observer: tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>,
+        settlement: Option<crate::managed_stream_task::TaskSettlement>) -> Result<WeakCustody, &'static str> {
+        if settlement.as_ref().is_some_and(|settlement| !settlement.matches(&task)) {
+            return Err("execution.nested_task_registration_mismatch");
+        }
         let receipt = self.receipt.as_ref().ok_or("execution.nested_reservation_decided")?;
         if !Weak::ptr_eq(&client.0, &receipt.store) { return Err("execution.nested_custody_mismatch"); }
         let store = receipt.store.upgrade().ok_or("execution.parent_custody_released")?;
@@ -136,7 +152,7 @@ impl CustodyReservation {
                 return Err("execution.nested_reservation_mismatch");
             }
             journal.retain_stream_child(observer);
-            std::mem::replace(record, CustodyRecord { owner: owner.clone(), task: Some(task), settlement: None, is_reservation: false })
+            std::mem::replace(record, CustodyRecord { owner: owner.clone(), task: Some(task), settlement, is_reservation: false })
         };
         let registered = WeakCustody { id: receipt.id, record: Arc::downgrade(&owner), store: receipt.store.clone() };
         self.receipt = None;
@@ -452,6 +468,44 @@ mod tests {
             disposition: None, cleanup_complete: None, cleanup_timed_out: false,
             custody: crate::streaming_recovery::RecoveryCustody::Held,
         }).1
+    }
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn atomic_managed_stage_racing_close_has_no_partial_task_snapshot() {
+        use crate::managed_stream_task::PreparedStreamTask;
+        for _ in 0..12 {
+            let root = CustodyStore::new(1);
+            let client = root.client();
+            let mut slot = root.reserve_stream_slot().unwrap();
+            let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let owner: Capability = effects.clone();
+            let observed = effects.clone();
+            let prepared = PreparedStreamTask::new_owned(owner.clone(), async move {
+                observed.fetch_add(1, Ordering::SeqCst); 331u32
+            });
+            let holder = prepared.holder();
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let ready = barrier.clone();
+            let worker = std::thread::spawn(move || {
+                let journal = crate::SagaRollbackJournal::new("atomic-stage-close");
+                ready.wait();
+                let result = slot.finalize_managed(&client, owner, &prepared, &journal, slot_observer());
+                drop(prepared); // Reject unopened gate; root retains a published holder.
+                result
+            });
+            barrier.wait();
+            let mut family = root.close_and_erased_family().unwrap();
+            let stage = worker.join().unwrap();
+            match stage {
+                Ok(_) => assert_eq!(family.tasks.len(), 1),
+                Err("execution.nested_custody_admission_closed") => assert!(family.tasks.is_empty()),
+                Err(other) => panic!("unexpected stage error: {other}"),
+            }
+            family.settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await;
+            assert!(family.statuses.iter().all(|(_, result)| result.is_ok()));
+            if !family.tasks.is_empty() { assert!(matches!(holder.lock().await.take_joined(), Some(Ok(None)))); }
+            assert_eq!(effects.load(Ordering::SeqCst), 0);
+        }
     }
     #[cfg(feature = "streaming")]
     #[test]

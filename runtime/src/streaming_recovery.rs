@@ -671,14 +671,10 @@ where
             let _ = prepared.reject_start();
             return Err(ManagedStreamStartError { signal: "execution.nested_task_owner_mismatch", custody: None });
         }
-        let custody = match slot.finalize_stream(client, self.inner.clone(), prepared.holder(), journal, self.observe()) {
+        let custody = match slot.finalize_managed(client, self.inner.clone(), prepared, journal, self.observe()) {
             Ok(custody) => custody,
             Err(signal) => { let _ = prepared.reject_start(); return Err(ManagedStreamStartError { signal, custody: None }); }
         };
-        if let Err(signal) = custody.attach_settlement(prepared.settlement()) {
-            let _ = prepared.reject_start();
-            return Err(ManagedStreamStartError { signal, custody: Some(custody) });
-        }
         Ok(custody)
     }
     pub(crate) fn start_staged<T: Send + 'static>(&self, client: crate::nested_custody::WeakCustodyClient,
