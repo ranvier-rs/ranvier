@@ -112,3 +112,6 @@ pub use testkit::AxonTestKit;
 pub mod streaming_consumption;
 #[cfg(feature = "streaming")]
 pub use streaming_consumption::{ObservedStream, StreamConsumptionReport, StreamConsumptionTerminal};
+
+#[cfg(feature = "streaming")]
+mod managed_stream_task;
