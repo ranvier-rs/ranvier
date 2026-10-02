@@ -853,10 +853,11 @@ impl Transition<u32, u32> for Count {
     }
 }
 
-struct FailSecondAppend {
+struct FailOnAppend {
     backing: InMemoryPersistenceStore,
     calls: Arc<AtomicUsize>,
-    apply_second_before_error: bool,
+    fail_on_append: usize,
+    apply_failed_append: bool,
 }
 
 #[cfg(feature = "streaming")]
@@ -887,10 +888,11 @@ async fn collected_stream_prefix_terminal_failure_blocks_initialization_and_reta
     let effects = Arc::new(AtomicUsize::new(0));
     let mut bus = Bus::new();
     bus.insert(PersistenceTraceId::new("stream-report"));
-    bus.insert(PersistenceHandle::from_store(FailSecondAppend {
+    bus.insert(PersistenceHandle::from_store(FailOnAppend {
         backing: backing.clone(),
         calls: writes.clone(),
-        apply_second_before_error: false,
+        fail_on_append: 2,
+        apply_failed_append: false,
     }));
     let axon = Axon::<u32, u32, String, ()>::new("stream-report")
         .then_stream(CountStream(effects.clone()))
@@ -1019,10 +1021,10 @@ async fn rejected_and_applied_unknown_entries_block_both_execution_paths() {
     }
 }
 #[async_trait::async_trait]
-impl PersistenceStore for FailSecondAppend {
+impl PersistenceStore for FailOnAppend {
     async fn append(&self, event: PersistenceEnvelope) -> anyhow::Result<()> {
-        if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
-            if self.apply_second_before_error {
+        if self.calls.fetch_add(1, Ordering::SeqCst) + 1 == self.fail_on_append {
+            if self.apply_failed_append {
                 self.backing.append(event).await?;
             }
             return Err(anyhow::anyhow!("secret-backend-sentinel"));
@@ -1049,18 +1051,17 @@ impl PersistenceStore for FailSecondAppend {
 
 #[tokio::test]
 async fn actual_execute_retains_first_failure_after_terminal_and_completion_succeed() {
-    for (trace_id, apply_second_before_error) in
-        [("not-applied", false), ("applied-lost-ack", true)]
-    {
+    for (trace_id, apply_failed_append) in [("not-applied", false), ("applied-lost-ack", true)] {
         let backing = InMemoryPersistenceStore::new();
         let writes = Arc::new(AtomicUsize::new(0));
         let effects = Arc::new(AtomicUsize::new(0));
         let mut bus = Bus::new();
         bus.insert(PersistenceTraceId::new(trace_id));
-        bus.insert(PersistenceHandle::from_store(FailSecondAppend {
+        bus.insert(PersistenceHandle::from_store(FailOnAppend {
             backing: backing.clone(),
             calls: writes.clone(),
-            apply_second_before_error,
+            fail_on_append: 2,
+            apply_failed_append,
         }));
         let axon = Axon::<u32, u32, String, ()>::new("report-fixture").then(Count(effects.clone()));
         let report = axon.execute(0, &(), &mut bus).await;
@@ -1079,17 +1080,73 @@ async fn actual_execute_retains_first_failure_after_terminal_and_completion_succ
 
         let trace = backing.load(trace_id).await.unwrap().unwrap();
         assert_eq!(trace.completion, Some(CompletionState::Success));
-        assert_eq!(
-            trace.events.len(),
-            if apply_second_before_error { 3 } else { 2 }
-        );
+        assert_eq!(trace.events.len(), if apply_failed_append { 3 } else { 2 });
         assert_eq!(
             trace
                 .events
                 .iter()
                 .filter(|event| event.outcome_kind == "Next")
                 .count(),
-            if apply_second_before_error { 2 } else { 1 }
+            if apply_failed_append { 2 } else { 1 }
+        );
+        assert_eq!(trace.events[0].outcome_kind, "Enter");
+        assert_eq!(
+            bus.read::<PersistenceHandle>()
+                .unwrap()
+                .store()
+                .load(trace_id)
+                .await
+                .unwrap(),
+            Some(trace)
+        );
+    }
+}
+
+#[tokio::test]
+async fn actual_execute_reports_terminal_append_ack_loss_after_domain_result() {
+    for (trace_id, apply_failed_append) in
+        [("terminal-not-applied", false), ("terminal-applied-lost-ack", true)]
+    {
+        let backing = InMemoryPersistenceStore::new();
+        let writes = Arc::new(AtomicUsize::new(0));
+        let effects = Arc::new(AtomicUsize::new(0));
+        let mut bus = Bus::new();
+        bus.insert(PersistenceTraceId::new(trace_id));
+        bus.insert(PersistenceHandle::from_store(FailOnAppend {
+            backing: backing.clone(),
+            calls: writes.clone(),
+            fail_on_append: 3,
+            apply_failed_append,
+        }));
+        let axon = Axon::<u32, u32, String, ()>::new("terminal-report-fixture")
+            .then(Count(effects.clone()));
+
+        let report = axon.execute(0, &(), &mut bus).await;
+
+        assert!(matches!(
+            &report,
+            ExecutionReport::Unconfirmed {
+                result: Outcome::Next(1),
+                operation: PersistenceOperation::Terminal,
+                effect: EffectBoundary::MayHaveRun,
+                ..
+            }
+        ));
+        assert!(!format!("{report:?}").contains("secret-backend-sentinel"));
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert_eq!(writes.load(Ordering::SeqCst), 3);
+
+        let trace = backing.load(trace_id).await.unwrap().unwrap();
+        // One case lacks the terminal row; this observed Success is not acceptance.
+        assert_eq!(trace.completion, Some(CompletionState::Success));
+        assert_eq!(trace.events.len(), if apply_failed_append { 3 } else { 2 });
+        assert_eq!(
+            trace
+                .events
+                .iter()
+                .filter(|event| event.outcome_kind == "Next")
+                .count(),
+            if apply_failed_append { 2 } else { 1 }
         );
         assert_eq!(trace.events[0].outcome_kind, "Enter");
         assert_eq!(
