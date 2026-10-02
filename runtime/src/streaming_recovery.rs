@@ -562,9 +562,12 @@ where
         client: crate::nested_custody::WeakCustodyClient,
         journal: &crate::SagaRollbackJournal,
         parent: CancellationToken,
-        task: Arc<Mutex<crate::managed_stream_task::ManagedStreamTask<T>>>,
+        prepared: &crate::managed_stream_task::PreparedStreamTask<T>,
     ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
-        self.bind_parent(client, Some(parent), Some(journal), Some(task)).await
+        if !prepared.matches_owner(&(self.inner.clone() as crate::nested_custody::Capability)) {
+            return Err("execution.nested_task_owner_mismatch");
+        }
+        self.bind_parent(client, Some(parent), Some(journal), Some(prepared.holder())).await
     }
 
     /// Build the gated future from this exact recovery owner and owned inputs.
@@ -581,7 +584,7 @@ where
         Fut: Future<Output = StreamDriveResult<T>> + Send + 'static,
     {
         let child = self.clone();
-        crate::managed_stream_task::PreparedStreamTask::new(async move {
+        crate::managed_stream_task::PreparedStreamTask::new_owned(self.inner.clone(), async move {
             child.initialize_and_drive(input, &streaming, None, cleanup_grace, drive).await
         })
     }
@@ -2612,7 +2615,7 @@ mod tests {
                 });
             let task = prepared.holder();
             let journal = crate::SagaRollbackJournal::new("rejected-managed-parent");
-            let result = child.admit_managed_to_parent(client, &journal, CancellationToken::new(), task.clone()).await;
+            let result = child.admit_managed_to_parent(client, &journal, CancellationToken::new(), &prepared).await;
             let signal = match failure {
                 0 => "execution.nested_custody_capacity",
                 1 => "execution.nested_custody_admission_closed",
@@ -2650,7 +2653,7 @@ mod tests {
                 });
             let task = prepared.holder();
             let journal = crate::SagaRollbackJournal::new("managed-actual-parent");
-            let admission = child.admit_managed_to_parent(parent.client(), &journal, control.clone(), task.clone()).await.unwrap();
+            let admission = child.admit_managed_to_parent(parent.client(), &journal, control.clone(), &prepared).await.unwrap();
             let task_weak = Arc::downgrade(&task);
             drop(task);
             let task = task_weak.upgrade().expect("parent must own actual task holder");

@@ -10,11 +10,20 @@ pub(crate) struct PreparedStreamTask<T> {
     task: std::sync::Arc<tokio::sync::Mutex<ManagedStreamTask<T>>>,
     permit: Option<oneshot::Sender<()>>,
     grant_decided: bool,
+    owner: Option<std::sync::Weak<dyn std::any::Any + Send + Sync>>,
 }
 impl<T: Send + 'static> PreparedStreamTask<T> {
     pub(crate) fn new<F: Future<Output = T> + Send + 'static>(future: F) -> Self {
         let (task, permit) = ManagedStreamTask::spawn_gated(future);
-        Self { task: std::sync::Arc::new(tokio::sync::Mutex::new(task)), permit: Some(permit), grant_decided: false }
+        Self { task: std::sync::Arc::new(tokio::sync::Mutex::new(task)), permit: Some(permit), grant_decided: false, owner: None }
+    }
+    pub(crate) fn new_owned<F: Future<Output = T> + Send + 'static>(owner: crate::nested_custody::Capability, future: F) -> Self {
+        let mut prepared = Self::new(future);
+        prepared.owner = Some(std::sync::Arc::downgrade(&owner));
+        prepared
+    }
+    pub(crate) fn matches_owner(&self, owner: &crate::nested_custody::Capability) -> bool {
+        self.owner.as_ref().is_some_and(|bound| std::sync::Weak::ptr_eq(bound, &std::sync::Arc::downgrade(owner)))
     }
     pub(crate) fn holder(&self) -> std::sync::Arc<tokio::sync::Mutex<ManagedStreamTask<T>>> {
         self.task.clone()
