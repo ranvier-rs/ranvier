@@ -2573,6 +2573,48 @@ mod tests {
         assert!(!journal.snapshot().is_complete());
     }
     #[tokio::test]
+    async fn rejected_managed_registration_joins_prepared_child_without_effects() {
+        for failure in 0..3 {
+            let parent = crate::nested_custody::CustodyStore::new(if failure == 0 { 0 } else { 1 });
+            let client = parent.client();
+            if failure == 1 { parent.close_admission().unwrap(); }
+            if failure == 2 { drop(parent); }
+            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let weak = Arc::downgrade(&resources);
+            let child = OwnedStreamRecovery::try_new(
+                Axon::<u32, u32, String, Resources>::start("rejected-managed-child")
+                    .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                &StreamRecoveryAdmission::new(1), None).unwrap();
+            let task_child = child.clone();
+            let (task, permit) = crate::managed_stream_task::ManagedStreamTask::prepare(async move {
+                task_child.initialize_and_drive(107, &PendingInit(Arc::new(Notify::new())), None,
+                    std::time::Duration::from_secs(5), |_| async {
+                        panic!("rejected registration must not initialize driver");
+                        #[allow(unreachable_code)] completed()
+                    }).await
+            });
+            let task = Arc::new(Mutex::new(task));
+            let journal = crate::SagaRollbackJournal::new("rejected-managed-parent");
+            let result = child.admit_managed_to_parent(client, &journal, CancellationToken::new(), task.clone()).await;
+            let signal = match failure {
+                0 => "execution.nested_custody_capacity",
+                1 => "execution.nested_custody_admission_closed",
+                _ => "execution.parent_custody_released",
+            };
+            assert!(matches!(result, Err(actual) if actual == signal));
+            drop(permit);
+            assert!(matches!(task.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+            assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+            assert!(!child.inner.started.load(Ordering::Acquire));
+            assert!(journal.retained_stream_observations().is_empty());
+            drop(child);
+            drop(resources);
+            assert!(weak.upgrade().is_none());
+        }
+    }
+
+    #[tokio::test]
     async fn managed_task_preserves_actual_child_initialization_report_and_rejected_start_has_no_effects() {
         for (grant_start, retire_root) in [(false, false), (true, false), (true, true)] {
             let parent = crate::nested_custody::CustodyStore::new(1);
