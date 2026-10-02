@@ -149,6 +149,8 @@ pub(crate) enum RecoveryDispositionFailure {
     NotExpired,
     InUse,
     RecordsFull,
+    InvalidIdentity,
+    DuplicateDecision,
     Poisoned,
 }
 struct StoredRecovery<In, Out, E, Res> {
@@ -200,6 +202,23 @@ where
                 });
             }
         };
+        let records_full = match self.records.lock() {
+            Ok(records) => records.len() >= self.record_capacity,
+            Err(_) => {
+                return Err(StreamRecoveryAdmissionRejected {
+                    graph,
+                    context,
+                    reason: RecoveryAdmissionFailure::Poisoned,
+                });
+            }
+        };
+        if records_full {
+            return Err(StreamRecoveryAdmissionRejected {
+                graph,
+                context,
+                reason: RecoveryAdmissionFailure::DispositionCapacity,
+            });
+        }
         let Some(expires) = std::time::Instant::now().checked_add(self.retention) else {
             return Err(StreamRecoveryAdmissionRejected {
                 graph,
@@ -237,6 +256,9 @@ where
         operator_id: uuid::Uuid,
         decision_id: uuid::Uuid,
     ) -> Result<(), RecoveryDispositionFailure> {
+        if operator_id.is_nil() || decision_id.is_nil() {
+            return Err(RecoveryDispositionFailure::InvalidIdentity);
+        }
         let mut owners = self
             .owners
             .lock()
@@ -252,6 +274,12 @@ where
             .records
             .lock()
             .map_err(|_| RecoveryDispositionFailure::Poisoned)?;
+        if records
+            .iter()
+            .any(|record| record.decision_id == decision_id)
+        {
+            return Err(RecoveryDispositionFailure::DuplicateDecision);
+        }
         if records.len() >= self.record_capacity {
             return Err(RecoveryDispositionFailure::RecordsFull);
         }
@@ -266,6 +294,27 @@ where
         drop(owners);
         drop(removed); // No user resource destructor under either store lock.
         Ok(())
+    }
+    /// Caller must retain reviewed external disposition evidence before acknowledging.
+    /// Pair binding prevents a stale/wrong-owner acknowledgment from deleting a record.
+    pub(crate) fn acknowledge_abandonment(
+        &self,
+        owner_id: uuid::Uuid,
+        decision_id: uuid::Uuid,
+    ) -> Result<bool, RecoveryDispositionFailure> {
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|_| RecoveryDispositionFailure::Poisoned)?;
+        if let Some(index) = records
+            .iter()
+            .position(|record| record.owner_id == owner_id && record.decision_id == decision_id)
+        {
+            records.remove(index);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
     pub(crate) fn abandonment_records(
         &self,
@@ -1418,6 +1467,10 @@ mod tests {
             store.abandon_expired(id, operator, decision),
             Err(RecoveryDispositionFailure::InUse)
         );
+        assert_eq!(
+            store.abandon_expired(id, uuid::Uuid::nil(), decision),
+            Err(RecoveryDispositionFailure::InvalidIdentity)
+        );
         drop(owner);
         store.abandon_expired(id, operator, decision).unwrap();
         let records = store.abandonment_records().unwrap();
@@ -1433,6 +1486,62 @@ mod tests {
         assert_eq!(store.admission.in_use(), Ok(0));
         assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
         assert!(!format!("{records:?}").contains("input_snapshot"));
+        let graph = Axon::<u32, u32, String, Resources>::start("full-disposition-records");
+        let rejected = match store.admit(
+            graph,
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+        ) {
+            Err(rejected) => rejected,
+            Ok(_) => panic!("full disposition records must gate admission"),
+        };
+        assert_eq!(
+            rejected.reason,
+            RecoveryAdmissionFailure::DispositionCapacity
+        );
+        assert!(
+            !store
+                .acknowledge_abandonment(uuid::Uuid::new_v4(), decision)
+                .unwrap()
+        );
+        assert_eq!(store.abandonment_records().unwrap().len(), 1);
+        assert!(store.acknowledge_abandonment(id, decision).unwrap());
+        let (graph, context) = rejected.into_parts();
+        let (next_id, next_owner) = store.admit(graph, context).unwrap();
+        drop(next_owner);
+        drop(store.take_for_reconciliation(next_id).unwrap());
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn retention_overflow_rejects_and_future_deadline_cannot_be_abandoned() {
+        for retention in [std::time::Duration::MAX, std::time::Duration::from_secs(60)] {
+            let store = StreamRecoveryStore::new(1, retention);
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
+            let graph = Axon::<u32, u32, String, Resources>::start("retention-boundary");
+            let result = store.admit(
+                graph,
+                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            );
+            if retention == std::time::Duration::MAX {
+                let rejected = match result {
+                    Err(rejected) => rejected,
+                    Ok(_) => panic!("invalid deadline must reject"),
+                };
+                assert_eq!(rejected.reason, RecoveryAdmissionFailure::InvalidRetention);
+                assert_eq!(store.admission.in_use(), Ok(0));
+            } else {
+                let (id, owner) = result.unwrap();
+                drop(owner);
+                assert_eq!(
+                    store.abandon_expired(id, uuid::Uuid::new_v4(), uuid::Uuid::new_v4()),
+                    Err(RecoveryDispositionFailure::NotExpired)
+                );
+                assert!(store.abandonment_records().unwrap().is_empty());
+                assert_eq!(store.admission.in_use(), Ok(1));
+            }
+            assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+        }
     }
     fn completed() -> StreamDriveResult<()> {
         StreamDriveResult {
