@@ -84,7 +84,7 @@ where
         }
         let (sender, receiver) = tokio::sync::mpsc::channel(self.buffer_size);
         let config = self.timeout_config.clone().unwrap_or(StreamTimeoutConfig {
-            init: None, idle: None, total: None,
+            init: None, idle: Some(std::time::Duration::from_secs(30)), total: None,
         });
         let prepared = self.prepare(input, grace, move |stream| async move {
             crate::streaming_recovery::produce_bounded(stream, config, token, sender).await
@@ -486,6 +486,43 @@ mod tests {
         let (returned, bus) = rejection.into_parts();
         assert!(Arc::ptr_eq(&resources, &returned));
         assert_eq!(bus.read::<u32>(), Some(&139));
+    }
+    #[tokio::test]
+    async fn owned_bounded_producer_preserves_eof_and_disconnect_reports() {
+        for disconnect in [false, true] {
+            let circuit = circuit(&["a", "b"]).with_buffer_size(1).map_items(|item| format!("{item}1"));
+            let plan = match circuit.owned_definition.try_plan::<Chunks, String>(
+                OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
+                &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
+                Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+            };
+            let control = CancellationToken::new();
+            let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5), control.clone()) {
+                Ok(prepared) => prepared, Err(error) => panic!("{}", error.signal),
+            };
+            assert_eq!(receiver.max_capacity(), 1);
+            let root = crate::nested_custody::CustodyStore::new(1);
+            let journal = crate::SagaRollbackJournal::new("bounded-plan-parent");
+            plan.owner.register_and_start(root.client(), &journal, control, &mut prepared).await
+                .unwrap_or_else(|error| panic!("{}", error.signal));
+            assert_eq!(receiver.recv().await, Some("a1".to_string()));
+            if disconnect { drop(receiver); } else {
+                assert_eq!(receiver.recv().await, Some("b1".to_string()));
+                assert_eq!(receiver.recv().await, None);
+            }
+            let holder = prepared.holder();
+            let joined = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
+            match joined {
+                Ok(StreamInitializationReport::Ready { value, .. }) => {
+                    let consumed = value.consumption.unwrap();
+                    if disconnect {
+                        assert!(matches!(consumed.terminal, crate::StreamConsumptionTerminal::Cancelled(context)
+                            if context.reason == ranvier_core::CancellationReason::ClientDisconnected));
+                    } else { assert_eq!(consumed.terminal, crate::StreamConsumptionTerminal::Completed); }
+                }
+                _ => panic!("typed consumption report lost"),
+            }
+        }
     }
     #[test]
     fn owned_plan_configuration_tracks_modifiers_without_changing_original_clone() {
