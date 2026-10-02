@@ -603,6 +603,11 @@ mod tests {
         let handle = plan.report_handle(&prepared).unwrap();
         let clone = handle.clone();
         assert_eq!(handle.settle_until(tokio::time::Instant::now()).await, Err(StreamReportWaitError::TimedOut));
+        {
+            use futures_util::FutureExt;
+            assert!(clone.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                .now_or_never().is_none());
+        }
         let root = crate::nested_custody::CustodyStore::new(1);
         let journal = crate::SagaRollbackJournal::new("public-report-parent");
         plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
@@ -624,6 +629,32 @@ mod tests {
         drop(handle); drop(clone);
         assert_eq!(admission.in_use().unwrap(), 0);
         assert!(weak.upgrade().is_none());
+    }
+
+    #[tokio::test]
+    async fn report_handle_rejects_foreign_owner_and_preserves_actual_frame_join_error() {
+        use crate::streaming_report_handle::SupervisedStreamCompletion;
+        let circuit = circuit(&["a"]);
+        let admission = crate::streaming_recovery_admission::StreamRecoveryAdmission::new(2);
+        let make = || match circuit.owned_definition.try_callable_plan(
+            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(), &admission, None) {
+            Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+        };
+        let mut plan = make();
+        let other = make();
+        let (mut prepared, _receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
+        };
+        assert!(matches!(other.report_handle(&prepared), Err("execution.nested_task_owner_mismatch")));
+        let handle = plan.report_handle(&prepared).unwrap();
+        prepared.holder().lock().await.abort_frame();
+        match handle.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap() {
+            SupervisedStreamCompletion::FrameFailed(error) => assert!(error.is_cancelled()),
+            _ => panic!("original JoinError lost"),
+        }
+        assert_eq!(plan.owner.observe().borrow().phase, crate::streaming_recovery::SupervisorPhase::NotStarted);
+        assert!(matches!(prepared.reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await,
+            Err(crate::managed_stream_task::ManagedTaskWaitError::AlreadyJoined)));
     }
 
     #[tokio::test]
