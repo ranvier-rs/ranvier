@@ -99,6 +99,10 @@ impl ManagedTaskRegistry {
     where
         F: Future<Output = ()> + Send + 'static,
     {
+        // Known closed admission must not queue behind a pending drain.
+        if self.is_closed() {
+            return Err(future);
+        }
         let mut tasks = self.tasks.lock().await;
         if self.is_closed() {
             return Err(future);
@@ -6691,17 +6695,27 @@ mod tests {
             }
         }).await.unwrap();
         let mut late = Box::pin(registry.spawn(std::future::pending::<()>()));
-        assert!(futures_util::poll!(&mut late).is_pending(), "registration must actually wait behind drain");
+        assert!(matches!(futures_util::poll!(&mut late), std::task::Poll::Ready(Err(_))), "draining registry must reject without waiting");
         release.notify_one();
         let report = tokio::time::timeout(Duration::from_secs(4), drain).await.unwrap().unwrap();
         assert_eq!(report.forced_aborts, 0);
-        assert!(tokio::time::timeout(Duration::from_secs(1), late).await.unwrap().is_err());
+
         let mut tasks = registry.tasks.lock().await;
         let remaining = tasks.len();
         // Fixture owns and always terminates the synthetic task before asserting.
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
         assert_eq!(remaining, 0, "drain returned success before a queued task registered");
+    }
+
+    #[tokio::test]
+    async fn managed_task_closed_admission_does_not_wait_for_drain_lock() {
+        let registry = ManagedTaskRegistry::default();
+        let _held = registry.tasks.lock().await;
+        registry.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut attempt = Box::pin(registry.spawn(std::future::pending::<()>()));
+        assert!(matches!(futures_util::poll!(&mut attempt), std::task::Poll::Ready(Err(_))),
+            "known closed admission must return ownership without awaiting the held drain lock");
     }
 
     #[tokio::test]
