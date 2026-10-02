@@ -490,6 +490,27 @@ mod tests {
         assert_eq!(bus.read::<u32>(), Some(&139));
     }
     #[tokio::test]
+    async fn invalid_bounded_buffer_returns_original_input_without_starting_frame() {
+        let circuit = circuit(&["a"]).with_buffer_size(0);
+        let admission = crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1);
+        let plan = match circuit.owned_definition.try_plan::<Chunks, String>(
+            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(), &admission, None) {
+            Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+        };
+        let input = "retained-input".repeat(20);
+        let pointer = input.as_ptr();
+        let error = match plan.prepare_bounded(input, std::time::Duration::from_secs(5)) {
+            Err(error) => error, Ok(_) => panic!("zero buffer must reject"),
+        };
+        assert_eq!(error.signal, "execution.stream_buffer_invalid");
+        assert_eq!(error.input.as_ptr(), pointer);
+        assert_eq!(error.input, "retained-input".repeat(20));
+        assert_eq!(plan.owner.observe().borrow().phase, crate::streaming_recovery::SupervisorPhase::NotStarted);
+        assert_eq!(admission.in_use().unwrap(), 1);
+        drop(plan);
+        assert_eq!(admission.in_use().unwrap(), 0);
+    }
+    #[tokio::test]
     async fn owned_bounded_producer_preserves_eof_and_disconnect_reports() {
         for mode in 0..3 {
             let circuit = circuit(&["a", "b"]).with_buffer_size(1).map_items(|item| format!("{item}1"));
