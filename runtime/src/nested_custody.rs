@@ -300,6 +300,28 @@ impl WeakCustody {
 mod tests {
     use super::*;
     #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn registered_start_rejects_other_holder_and_retired_record_without_consuming_gate() {
+        use crate::managed_stream_task::PreparedStreamTask;
+        use tokio::time::Instant;
+        let root = CustodyStore::new(2);
+        let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = effects.clone();
+        let mut first = PreparedStreamTask::new(async move { observed.fetch_add(1, Ordering::SeqCst); });
+        let mut second = PreparedStreamTask::new(async {});
+        let first_record = reserve_in_with(&root.0 .0, Arc::new(()), Some(first.holder()), || {}).unwrap();
+        let second_record = reserve_in_with(&root.0 .0, Arc::new(()), Some(second.holder()), || {}).unwrap();
+        root.close_admission().unwrap();
+        assert_eq!(first.grant_registered_start(&second_record), Err("execution.nested_task_registration_mismatch"));
+        assert_eq!(effects.load(Ordering::SeqCst), 0);
+        first.grant_registered_start(&first_record).unwrap();
+        assert!(matches!(first.holder().lock().await.join_until(Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(Some(())))));
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        second_record.release();
+        assert_eq!(second.grant_registered_start(&second_record), Err("execution.parent_custody_released"));
+        assert!(matches!(second.reject_until(Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+    }
+    #[cfg(feature = "streaming")]
     #[tokio::test(start_paused = true)]
     async fn family_transfer_deadline_and_unknown_id_preserve_original_result() {
         use crate::managed_stream_task::ManagedStreamTask;
