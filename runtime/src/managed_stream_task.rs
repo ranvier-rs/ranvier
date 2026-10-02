@@ -124,6 +124,10 @@ impl<T: Send + 'static> ManagedStreamTask<T> {
         }
     }
 
+    /// Actual joined frame evidence only, without moving or formatting its report.
+    pub(crate) fn rejected_before_start(&self) -> Option<bool> {
+        self.joined.as_ref().map(|joined| matches!(joined, Ok(None)))
+    }
     pub(crate) fn take_joined(&mut self) -> Option<Result<Option<T>, tokio::task::JoinError>> {
         self.joined.take()
     }

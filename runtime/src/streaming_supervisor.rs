@@ -142,6 +142,23 @@ pub struct StreamStartRejected<Out, E> {
     pub report: crate::streaming_report_handle::StreamReportHandle<Out, E>,
     _custody: Option<crate::nested_custody::WeakCustody>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamRetirementError {
+    Wait(crate::streaming_report_handle::StreamReportWaitError),
+    RecoveryReviewRequired,
+}
+impl<Out: Send + 'static, E: Send + 'static> StreamStartRejected<Out, E> {
+    /// Release a finalized local root record only after joining the exact frame
+    /// and proving its start gate was rejected. Repeated calls are idempotent.
+    /// Executed, panicked or unknown frames cannot use this no-effect authority.
+    pub async fn retire_unstarted_until(&self, deadline: tokio::time::Instant) -> Result<(), StreamRetirementError> {
+        if !self.report.prove_rejected_before_start(deadline).await.map_err(StreamRetirementError::Wait)? {
+            return Err(StreamRetirementError::RecoveryReviewRequired);
+        }
+        if let Some(custody) = &self._custody { custody.release(); }
+        Ok(())
+    }
+}
 impl StreamReservation {
     pub fn prepare<In, Out, Item, E, Res>(self,
         circuit: &crate::streaming_axon::StreamingAxon<In, Out, Item, E, Res>,
@@ -279,6 +296,9 @@ mod tests {
             assert_eq!(rejected.signal, "execution.nested_custody_admission_closed");
             let report = rejected.report.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
             assert!(matches!(report, crate::streaming_report_handle::SupervisedStreamCompletion::RejectedBeforeStart));
+            rejected.retire_unstarted_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+            rejected.retire_unstarted_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+            assert_eq!(rejected.report.retirement_evidence(), crate::streaming_report_handle::StreamRetirementEvidence::RejectedBeforeStart);
             assert_eq!(supervisor.admission.in_use(), Ok(1));
             drop(rejected);
             assert_eq!(supervisor.admission.in_use(), Ok(0));
