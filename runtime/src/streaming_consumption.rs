@@ -20,6 +20,8 @@ pub enum StreamConsumptionTerminal {
     Completed,
     Cancelled(CancellationContext),
     TimedOut(StreamTimeoutKind),
+    /// The configured duration cannot be represented by the runtime clock.
+    InvalidDeadline(StreamTimeoutKind),
 }
 
 /// Observed items, including partial values, and the independently observed end.
@@ -97,6 +99,22 @@ impl<Item> Stream for ObservedStream<Item> {
                 return this.finish(StreamConsumptionTerminal::Cancelled(context));
             }
         }
+        let active_phase = match this.last_item_at {
+            Some(at) => this.config.idle.map(|d| (at, d, StreamTimeoutKind::Idle)),
+            None => this
+                .config
+                .init
+                .map(|d| (this.started_at, d, StreamTimeoutKind::Init)),
+        };
+        let active_total = this
+            .config
+            .total
+            .map(|d| (this.started_at, d, StreamTimeoutKind::Total));
+        for (origin, duration, kind) in active_total.into_iter().chain(active_phase) {
+            if origin.checked_add(duration).is_none() {
+                return this.finish(StreamConsumptionTerminal::InvalidDeadline(kind));
+            }
+        }
         let total = this
             .config
             .total
@@ -119,6 +137,9 @@ impl<Item> Stream for ObservedStream<Item> {
             (a, b) => a.or(b),
         };
         if let Some((at, kind)) = deadline {
+            if at <= Instant::now() {
+                return this.finish(StreamConsumptionTerminal::TimedOut(kind));
+            }
             let timer = this
                 .timer
                 .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(at)));
@@ -157,6 +178,55 @@ mod tests {
             total: None,
         }
     }
+    #[tokio::test]
+    async fn invalid_deadline_is_not_silently_disabled() {
+        let report = ObservedStream::new(
+            Box::pin(stream::repeat(1)),
+            StreamTimeoutConfig {
+                total: Some(Duration::MAX),
+                ..config()
+            },
+            None,
+        )
+        .collect_report()
+        .await;
+        assert!(report.items.is_empty());
+        assert_eq!(
+            report.terminal,
+            StreamConsumptionTerminal::InvalidDeadline(StreamTimeoutKind::Total)
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_releases_source_and_never_polls_it_again() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        struct Source(Arc<AtomicUsize>);
+        impl Stream for Source {
+            type Item = usize;
+            fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<usize>> {
+                Poll::Ready(None)
+            }
+        }
+        impl Drop for Source {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut owner = ObservedStream::new(Box::pin(Source(drops.clone())), config(), None);
+        assert_eq!(owner.next().await, None);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(owner.next().await, None);
+        assert_eq!(
+            owner.terminal(),
+            Some(&StreamConsumptionTerminal::Completed)
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
     #[tokio::test]
     async fn collection_retains_move_only_non_sync_items_and_normal_terminal() {
         let report =
