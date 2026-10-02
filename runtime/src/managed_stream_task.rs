@@ -68,6 +68,31 @@ mod tests {
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
     #[tokio::test]
+    async fn settled_report_is_retained_until_explicit_take() {
+        let report = Arc::new(AtomicUsize::new(347));
+        let weak = Arc::downgrade(&report);
+        let (mut task, permit) = ManagedStreamTask::prepare(async move { report });
+        permit.send(()).unwrap();
+        task.settle_until(Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+        task.settle_until(Instant::now()).await.unwrap();
+        assert!(weak.upgrade().is_some());
+        let result = task.take_joined().unwrap().unwrap().unwrap();
+        assert_eq!(result.load(Ordering::SeqCst), 347);
+        assert!(task.take_joined().is_none());
+        assert_eq!(task.settle_until(Instant::now()).await, Err(ManagedTaskWaitError::AlreadyJoined));
+        drop(result);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[tokio::test]
+    async fn settled_panic_preserves_original_join_classification() {
+        let (mut task, permit) = ManagedStreamTask::prepare(async { panic!("private fixture"); });
+        permit.send(()).unwrap();
+        task.settle_until(Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+        assert!(task.take_joined().unwrap().unwrap_err().is_panic());
+    }
+
+    #[tokio::test]
     async fn rejected_start_never_polls_effect_future_and_task_is_joined() {
         let effects = Arc::new(AtomicUsize::new(0));
         let observed = effects.clone();
