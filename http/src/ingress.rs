@@ -119,6 +119,7 @@ pub struct HttpTaskDrainReport {
 
 impl ManagedTaskRegistry {
     /// Return ownership on rejection; never detach a task after drain begins.
+    #[cfg(test)]
     async fn spawn<F>(&self, future: F) -> Result<(), F>
     where
         F: Future<Output = ()> + Send + 'static,
@@ -200,6 +201,14 @@ fn task_admission_closed_response(reconciliation_required: bool) -> HttpResponse
             "code": "managed_task_admission_closed",
             "reconciliation_required": reconciliation_required,
         }).to_string()),
+    )
+}
+
+fn task_capacity_response() -> HttpResponse {
+    build_response(
+        Response::builder().status(StatusCode::SERVICE_UNAVAILABLE)
+            .header("content-type", "application/json").header("cache-control", "no-store"),
+        boxed_body(serde_json::json!({"code":"managed_task_capacity_exhausted", "reconciliation_required":false}).to_string()),
     )
 }
 
@@ -1805,10 +1814,14 @@ where
                     async move {
                         let mut bus = Bus::new();
                         install_request_cancellation(&parts, &mut bus);
-                        let task_owner = request_task_owner(&parts);
-                        if task_owner.as_ref().is_some_and(ManagedTaskRegistry::is_closed) {
-                            return task_admission_closed_response(false);
-                        }
+                        let task_reservation = match request_task_owner(&parts) {
+                            Some(owner) => match owner.reserve().await {
+                                Ok(reservation) => Some(reservation),
+                                Err(TaskReservationError::Closed) => return task_admission_closed_response(false),
+                                Err(TaskReservationError::Capacity) => return task_capacity_response(),
+                            },
+                            None => None,
+                        };
                         inject_query_params(&parts, &mut bus);
                         for injector in bus_injectors.iter() {
                             injector(&parts, &mut bus);
@@ -1850,8 +1863,8 @@ where
                                 }
                             }
                         };
-                        if let Some(owner) = task_owner {
-                            if owner.spawn(session_task).await.is_err() {
+                        if let Some(reservation) = task_reservation {
+                            if reservation.start(session_task).is_err() {
                                 return task_admission_closed_response(true);
                             }
                         } else {
@@ -3278,11 +3291,7 @@ where
                         Some(owner) => match owner.reserve().await {
                             Ok(reservation) => Some(reservation),
                             Err(TaskReservationError::Closed) => return task_admission_closed_response(false),
-                            Err(TaskReservationError::Capacity) => return build_response(
-                                Response::builder().status(StatusCode::SERVICE_UNAVAILABLE)
-                                    .header("content-type", "application/json").header("cache-control", "no-store"),
-                                boxed_body(serde_json::json!({"code":"managed_task_capacity_exhausted", "reconciliation_required":false}).to_string()),
-                            ),
+                            Err(TaskReservationError::Capacity) => return task_capacity_response(),
                         },
                         None => None,
                     };
@@ -6901,6 +6910,27 @@ mod tests {
         assert_eq!(response.headers()["cache-control"], "no-store");
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["reconciliation_required"], false);
+        assert_eq!(callbacks.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(registry.tasks.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn managed_task_capacity_ws_route_rejects_before_user_callbacks() {
+        let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = callbacks.clone();
+        let app = Ranvier::http::<()>()
+            .bus_injector(move |_, _| { calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst); })
+            .ws("/closed", |_, _, _| async { panic!("closed route must not upgrade") });
+        let registry = ManagedTaskRegistry { reservation_limit: 0, ..Default::default() };
+        let (mut parts, _) = Request::builder().uri("/closed").body(()).unwrap().into_parts();
+        parts.extensions.insert(RequestTaskOwner(registry.clone()));
+        let response = (app.routes[0].handler)(parts, &()).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["code"], "managed_task_capacity_exhausted");
         assert_eq!(body["reconciliation_required"], false);
         assert_eq!(callbacks.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(registry.tasks.lock().await.is_empty());
