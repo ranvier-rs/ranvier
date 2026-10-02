@@ -456,11 +456,79 @@ impl WeakCustody {
             drop(released);
         }
     }
+    /// Identity-checked removal primitive, NOT execution/reconciliation proof.
+    /// The framework caller must establish the original terminal and keep any
+    /// required recovery guards held through this call. Busy/poisoned registries
+    /// and missing records are failures; they never imply prior reconciliation.
+    #[cfg(feature = "streaming")]
+    pub(crate) fn release_exact_task(&self, owner: &Capability, task: &Capability) -> Result<(), &'static str> {
+        let store = self.store.upgrade().ok_or("execution.parent_custody_released")?;
+        let released = {
+            let mut records = store.records.try_lock().map_err(|_| "execution.nested_custody_unavailable")?;
+            if store.closed.load(Ordering::Acquire) { return Err("execution.parent_custody_released"); }
+            let record = records.get(&self.id).ok_or("execution.parent_custody_released")?;
+            if !Weak::ptr_eq(&self.record, &Arc::downgrade(&record.owner))
+                || !Arc::ptr_eq(owner, &record.owner)
+                || !record.task.as_ref().is_some_and(|registered| Arc::ptr_eq(task, registered))
+                || !record.settlement.as_ref().is_some_and(|settlement| settlement.matches(task))
+                || record.is_reservation {
+                return Err("execution.nested_task_registration_mismatch");
+            }
+            records.remove(&self.id)
+        };
+        // Destructors may re-enter custody; all user resources drop outside lock.
+        drop(released);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn exact_task_release_requires_original_identity_and_settlement() {
+        let root = CustodyStore::new(1);
+        let owner: Capability = Arc::new(347u32);
+        let mut prepared = crate::managed_stream_task::PreparedStreamTask::new_owned(owner.clone(), async { 349u32 });
+        let task: Capability = prepared.holder();
+        let receipt = reserve_in_with(&root.0 .0, owner.clone(), Some(task.clone()), || {}).unwrap();
+        assert_eq!(receipt.release_exact_task(&owner, &task), Err("execution.nested_task_registration_mismatch"));
+        receipt.attach_settlement(prepared.settlement()).unwrap();
+        let foreign_owner: Capability = Arc::new(347u32);
+        let foreign_task: Capability = Arc::new(349u32);
+        assert_eq!(receipt.release_exact_task(&foreign_owner, &task), Err("execution.nested_task_registration_mismatch"));
+        assert_eq!(receipt.release_exact_task(&owner, &foreign_task), Err("execution.nested_task_registration_mismatch"));
+        {
+            let _held = root.0 .0.records.lock().unwrap();
+            assert_eq!(receipt.release_exact_task(&owner, &task), Err("execution.nested_custody_unavailable"));
+        }
+        assert_eq!(root.0 .0.records.lock().unwrap().len(), 1);
+        // Fixture caller joins the actual rejected gate before identity removal.
+        assert!(matches!(prepared.reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+        root.close_admission().unwrap();
+        assert_eq!(receipt.release_exact_task(&owner, &task), Ok(()));
+        assert_eq!(receipt.release_exact_task(&owner, &task), Err("execution.parent_custody_released"));
+        assert!(root.0 .0.records.lock().unwrap().is_empty());
+    }
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn exact_task_release_preserves_poisoned_record() {
+        let root = CustodyStore::new(1);
+        let owner: Capability = Arc::new(353u32);
+        let mut prepared = crate::managed_stream_task::PreparedStreamTask::new_owned(owner.clone(), async {});
+        let task: Capability = prepared.holder();
+        let receipt = reserve_in_with(&root.0 .0, owner.clone(), Some(task.clone()), || {}).unwrap();
+        receipt.attach_settlement(prepared.settlement()).unwrap();
+        let core = root.0 .0.clone();
+        assert!(std::thread::spawn(move || { let _held = core.records.lock().unwrap(); panic!("fixture poison"); }).join().is_err());
+        assert_eq!(receipt.release_exact_task(&owner, &task), Err("execution.nested_custody_unavailable"));
+        match root.0 .0.records.lock() {
+            Err(poison) => assert_eq!(poison.into_inner().len(), 1),
+            Ok(_) => panic!("fixture registry was not poisoned"),
+        }
+        assert!(matches!(prepared.reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+    }
     #[cfg(feature = "streaming")]
     fn slot_observer() -> tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation> {
         tokio::sync::watch::channel(crate::streaming_recovery::SupervisorObservation {
