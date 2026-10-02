@@ -193,6 +193,37 @@ impl WeakCustody {
 mod tests {
     use super::*;
     #[test]
+    fn concurrent_admission_close_retains_every_success_and_rejects_later_reservations() {
+        let root = CustodyStore::new(16);
+        let barrier = Arc::new(std::sync::Barrier::new(17));
+        let mut workers = Vec::new();
+        for value in 0u32..16 {
+            let client = root.client();
+            let start = barrier.clone();
+            workers.push(std::thread::spawn(move || {
+                let record: Capability = Arc::new(value);
+                start.wait();
+                client.reserve(record.clone()).map(|admission| (admission, record))
+            }));
+        }
+        barrier.wait();
+        root.close_admission().unwrap();
+        let mut accepted = Vec::new();
+        for worker in workers {
+            match worker.join().unwrap() {
+                Ok(entry) => accepted.push(entry),
+                Err(signal) => assert_eq!(signal, "execution.nested_custody_admission_closed"),
+            }
+        }
+        assert_eq!(root.0 .0.records.lock().unwrap().len(), accepted.len());
+        for (admission, record) in &accepted {
+            assert!(root.client().validate_member(admission, record).is_ok());
+        }
+        assert!(matches!(root.reserve(Arc::new(())), Err("execution.nested_custody_admission_closed")));
+        for (admission, _) in accepted { admission.release(); }
+        assert!(root.0 .0.records.lock().unwrap().is_empty());
+    }
+    #[test]
     fn admission_close_fails_closed_on_poison_without_retiring_records() {
         let root = CustodyStore::new(1);
         let admission = root.reserve(Arc::new(43u32)).unwrap();
