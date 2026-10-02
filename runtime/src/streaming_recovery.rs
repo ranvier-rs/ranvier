@@ -2634,6 +2634,8 @@ mod tests {
             assert!(weak.upgrade().is_some());
             admission.release();
             assert!(weak.upgrade().is_none());
+            assert!(task_weak.upgrade().is_some());
+            drop(settled);
             assert!(task_weak.upgrade().is_none());
         }
     }

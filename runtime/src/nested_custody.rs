@@ -119,39 +119,66 @@ impl CustodyStore {
         Ok(records.iter().filter_map(|(id, record)|
             record.task.as_ref().map(|task| (*id, task.clone()))).collect())
     }
-    /// Homogeneous typed family settlement. Validate every holder type before
-    /// polling any handle; original outputs stay stored in each task holder.
-    /// Returned statuses do not transfer report custody. Before concurrently
-    /// retiring records, the supervisor must retain the actual typed holders
-    /// through result transfer; otherwise snapshot completion can drop reports.
+    /// Acquire result custody before waiting, so dropped waits and root/record
+    /// retirement cannot discard reports while this family lease remains owned.
     #[cfg(feature = "streaming")]
-    pub(crate) async fn settle_closed_tasks<T: Send + 'static>(
-        &self, deadline: tokio::time::Instant,
-    ) -> Result<Vec<(uuid::Uuid, Result<(), crate::managed_stream_task::ManagedTaskWaitError>)>, &'static str> {
-        use futures_util::{stream::FuturesUnordered, StreamExt};
+    pub(crate) fn closed_typed_family<T: Send + 'static>(&self) -> Result<ManagedTaskFamily<T>, &'static str> {
         let tasks = self.closed_tasks()?.into_iter().map(|(id, holder)| {
             holder.downcast::<tokio::sync::Mutex<crate::managed_stream_task::ManagedStreamTask<T>>>()
                 .map(|task| (id, task)).map_err(|_| "execution.nested_task_type_mismatch")
         }).collect::<Result<Vec<_>, _>>()?;
-        let mut pending = FuturesUnordered::new();
-        for (id, task) in tasks {
-            pending.push(async move {
-                let result = match tokio::time::timeout_at(deadline, task.lock()).await {
-                    Ok(mut task) => task.settle_until(deadline).await,
-                    Err(_) => Err(crate::managed_stream_task::ManagedTaskWaitError::TimedOut),
-                };
-                (id, result)
-            });
-        }
-        let mut settled = Vec::new();
-        while let Some(result) = pending.next().await { settled.push(result); }
-        Ok(settled)
+        Ok(ManagedTaskFamily { tasks, statuses: Vec::new() })
+    }
+    #[cfg(feature = "streaming")]
+    pub(crate) async fn settle_closed_tasks<T: Send + 'static>(
+        &self, deadline: tokio::time::Instant,
+    ) -> Result<ManagedTaskFamily<T>, &'static str> {
+        let mut family = self.closed_typed_family()?;
+        family.settle_until(deadline).await;
+        Ok(family)
     }
     pub(crate) fn client(&self) -> WeakCustodyClient {
         WeakCustodyClient(Arc::downgrade(&self.0 .0))
     }
     pub(crate) fn reserve(&self, record: Capability) -> Result<WeakCustody, &'static str> {
         reserve_in(&self.0 .0, record)
+    }
+}
+/// Private typed family lease; no serialization or Debug of task outputs.
+#[cfg(feature = "streaming")]
+pub(crate) struct ManagedTaskFamily<T> {
+    tasks: Vec<(uuid::Uuid, Arc<tokio::sync::Mutex<crate::managed_stream_task::ManagedStreamTask<T>>>)>,
+    statuses: Vec<(uuid::Uuid, Result<(), crate::managed_stream_task::ManagedTaskWaitError>)>,
+}
+#[cfg(feature = "streaming")]
+impl<T> std::ops::Deref for ManagedTaskFamily<T> {
+    type Target = [(uuid::Uuid, Result<(), crate::managed_stream_task::ManagedTaskWaitError>)];
+    fn deref(&self) -> &Self::Target { &self.statuses }
+}
+#[cfg(feature = "streaming")]
+impl<T: Send + 'static> ManagedTaskFamily<T> {
+    pub(crate) async fn settle_until(&mut self, deadline: tokio::time::Instant) {
+        use futures_util::{stream::FuturesUnordered, StreamExt};
+        let mut pending = FuturesUnordered::new();
+        for (id, task) in &self.tasks {
+            pending.push(async move {
+                let result = match tokio::time::timeout_at(deadline, task.lock()).await {
+                    Ok(mut task) => task.settle_until(deadline).await,
+                    Err(_) => Err(crate::managed_stream_task::ManagedTaskWaitError::TimedOut),
+                };
+                (*id, result)
+            });
+        }
+        self.statuses.clear();
+        while let Some(result) = pending.next().await { self.statuses.push(result); }
+    }
+    pub(crate) async fn take_joined(&self, id: uuid::Uuid, deadline: tokio::time::Instant)
+        -> Result<Option<Result<Option<T>, tokio::task::JoinError>>, &'static str> {
+        let task = self.tasks.iter().find(|(candidate, _)| *candidate == id)
+            .map(|(_, task)| task).ok_or("execution.nested_task_not_found")?;
+        let mut task = tokio::time::timeout_at(deadline, task.lock()).await
+            .map_err(|_| "execution.nested_task_transfer_timeout")?;
+        Ok(task.take_joined())
     }
 }
 impl WeakCustodyClient {
@@ -256,6 +283,32 @@ mod tests {
     use super::*;
     #[cfg(feature = "streaming")]
     #[tokio::test]
+    async fn family_lease_preserves_report_after_root_loss_and_dropped_wait() {
+        use crate::managed_stream_task::ManagedStreamTask;
+        use tokio::{sync::{Mutex as AsyncMutex, oneshot}, time::Instant};
+        let root = CustodyStore::new(1);
+        let (finish, gate) = oneshot::channel();
+        let (task, permit) = ManagedStreamTask::prepare(async move { Box::new(gate.await.unwrap()) });
+        let task = Arc::new(AsyncMutex::new(task));
+        let admission = reserve_in_with(&root.0 .0, Arc::new(()), Some(task), || {}).unwrap();
+        root.close_admission().unwrap();
+        let mut family = root.closed_typed_family::<Box<u32>>().unwrap();
+        permit.send(()).unwrap();
+        {
+            let wait = family.settle_until(Instant::now() + std::time::Duration::from_secs(5));
+            tokio::pin!(wait);
+            assert!(futures_util::poll!(&mut wait).is_pending());
+        }
+        admission.release();
+        drop(root);
+        finish.send(101u32).unwrap();
+        family.settle_until(Instant::now() + std::time::Duration::from_secs(5)).await;
+        assert_eq!(family.statuses, vec![(admission.id, Ok(()))]);
+        assert_eq!(*family.take_joined(admission.id, Instant::now()).await.unwrap().unwrap().unwrap().unwrap(), 101);
+        assert!(family.take_joined(admission.id, Instant::now()).await.unwrap().is_none());
+    }
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
     async fn concurrent_family_settlement_transfers_original_report_once() {
         use crate::managed_stream_task::ManagedStreamTask;
         use tokio::{sync::Mutex as AsyncMutex, time::Instant};
@@ -267,8 +320,8 @@ mod tests {
         permit.send(()).unwrap();
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         let (first, second) = tokio::join!(root.settle_closed_tasks::<Box<u32>>(deadline), root.settle_closed_tasks::<Box<u32>>(deadline));
-        assert_eq!(first.unwrap(), vec![(admission.id, Ok(()))]);
-        assert_eq!(second.unwrap(), vec![(admission.id, Ok(()))]);
+        assert_eq!(first.unwrap().statuses, vec![(admission.id, Ok(()))]);
+        assert_eq!(second.unwrap().statuses, vec![(admission.id, Ok(()))]);
         let (first, second) = tokio::join!(
             async { task.lock().await.take_joined() },
             async { task.lock().await.take_joined() },
@@ -299,7 +352,7 @@ mod tests {
         // Acquire explicit result custody before the snapshot can retire.
         let retained = weak_task.upgrade().unwrap();
         finish.send(97u32).unwrap();
-        assert_eq!(wait.await.unwrap(), vec![(admission.id, Ok(()))]);
+        assert_eq!(wait.await.unwrap().statuses, vec![(admission.id, Ok(()))]);
         assert_eq!(retained.lock().await.take_joined().unwrap().unwrap(), Some(97));
         drop(retained);
         assert!(weak_task.upgrade().is_none());
@@ -317,10 +370,10 @@ mod tests {
         permit.send(()).unwrap();
         let held = task.lock().await;
         let result = root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(3)).await.unwrap();
-        assert_eq!(result, vec![(admission.id, Err(ManagedTaskWaitError::TimedOut))]);
+        assert_eq!(result.statuses, vec![(admission.id, Err(ManagedTaskWaitError::TimedOut))]);
         drop(held);
         let result = root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(3)).await.unwrap();
-        assert_eq!(result, vec![(admission.id, Ok(()))]);
+        assert_eq!(result.statuses, vec![(admission.id, Ok(()))]);
         assert_eq!(task.lock().await.take_joined().unwrap().unwrap(), Some(83));
     }
     #[cfg(feature = "streaming")]
@@ -379,7 +432,7 @@ mod tests {
         let mismatch = reserve_in_with(&root.0 .0, Arc::new(()), Some(Arc::new(79u64)), || {}).unwrap();
         root.close_admission().unwrap();
         permit.send(()).unwrap();
-        assert_eq!(root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(5)).await, Err("execution.nested_task_type_mismatch"));
+        assert!(matches!(root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(5)).await, Err("execution.nested_task_type_mismatch")));
         assert!(first.lock().await.take_joined().is_none());
         mismatch.release();
         assert!(root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().iter().all(|(_, result)| result.is_ok()));
