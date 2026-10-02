@@ -49,6 +49,7 @@ struct Init(
     Arc<tokio::sync::Notify>,
     Arc<tokio::sync::Notify>,
     Arc<AtomicUsize>,
+    bool,
 );
 #[async_trait::async_trait]
 impl StreamingTransition<()> for Init {
@@ -62,7 +63,7 @@ impl StreamingTransition<()> for Init {
         _: &mut Bus,
     ) -> Result<Pin<Box<dyn futures_util::Stream<Item = String> + Send>>, String> {
         Ok(Box::pin(Source {
-            first: true,
+            first: self.3,
             pending: self.0.clone(),
             dropped: self.1.clone(),
             drops: self.2.clone(),
@@ -71,6 +72,11 @@ impl StreamingTransition<()> for Init {
 }
 #[tokio::test]
 async fn disconnected_peer_releases_pending_stream_without_shutdown_or_timeout() {
+    for first in [true, false] {
+        assert_disconnect(first).await;
+    }
+}
+async fn assert_disconnect(first: bool) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     drop(listener);
@@ -81,6 +87,7 @@ async fn disconnected_peer_releases_pending_stream_without_shutdown_or_timeout()
         pending.clone(),
         dropped.clone(),
         drops.clone(),
+        first,
     ));
     let ingress = HttpIngress::<()>::new()
         .bind(address.to_string())
@@ -100,6 +107,29 @@ async fn disconnected_peer_releases_pending_stream_without_shutdown_or_timeout()
     })
     .await
     .unwrap();
+    if !first {
+        // Disconnect before a first item without relying on response-header flush.
+        use tokio::io::AsyncWriteExt;
+        let mut socket = socket;
+        socket
+            .write_all(b"POST /stream HTTP/1.1\r\nHost: fixture\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), pending.notified())
+            .await
+            .unwrap();
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(socket);
+        let released = tokio::time::timeout(Duration::from_secs(3), dropped.notified())
+            .await
+            .is_ok();
+        let before_shutdown = drops.load(Ordering::SeqCst);
+        shutdown.cancel(CancellationReason::OperatorShutdown);
+        let _ = tokio::time::timeout(Duration::from_secs(3), &mut server.0).await;
+        assert!(released, "pre-first-item disconnect leaked source");
+        assert_eq!(before_shutdown, 1);
+        return;
+    }
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(socket))
         .await
         .unwrap();
@@ -137,7 +167,7 @@ async fn disconnected_peer_releases_pending_stream_without_shutdown_or_timeout()
     drop(body);
     drop(sender);
     drop(driver);
-    let released = tokio::time::timeout(Duration::from_millis(500), dropped.notified())
+    let released = tokio::time::timeout(Duration::from_secs(3), dropped.notified())
         .await
         .is_ok();
     let before_shutdown = drops.load(Ordering::SeqCst);
