@@ -1032,6 +1032,119 @@ mod tests {
         }
     }
     #[derive(Clone)]
+    struct FailingEffect;
+    #[async_trait::async_trait]
+    impl Transition<u32, u32> for FailingEffect {
+        type Error = String;
+        type Resources = Resources;
+        async fn run(&self, _: u32, resources: &Resources, _: &mut Bus) -> Outcome<u32, String> {
+            resources.effects.fetch_add(1, Ordering::SeqCst);
+            Outcome::Fault("original direct fault".into())
+        }
+    }
+    #[tokio::test]
+    async fn direct_undo_timeout_retains_failed_step_input_and_handler_for_both_saga_policies() {
+        for enabled in [false, true] {
+            for grace in [
+                std::time::Duration::ZERO,
+                std::time::Duration::from_millis(50),
+            ] {
+                let entered = Arc::new(Notify::new());
+                let captured = Arc::new(std::sync::Mutex::new(None));
+                let resources = Arc::new(Resources {
+                    effects: AtomicUsize::new(0),
+                });
+                let graph = Axon::<u32, u32, String, Resources>::start("direct-grace")
+                    .with_saga_policy(if enabled {
+                        SagaPolicy::Enabled
+                    } else {
+                        SagaPolicy::Disabled
+                    })
+                    .then_compensated(AdvancingEffect, Undo)
+                    .then_compensated(FailingEffect, PendingUndo(entered, captured.clone()));
+                let owner = OwnedStreamRecovery::try_new(
+                    graph,
+                    OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                    &StreamRecoveryAdmission::new(1),
+                    None,
+                )
+                .unwrap();
+                let report = tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    owner.initialize_and_drive(71, &Init, None, grace, |_| async {
+                        panic!("failed prefix must not start driver");
+                        #[allow(unreachable_code)]
+                        completed()
+                    }),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                let StreamInitializationReport::Rejected { prefix } = report else {
+                    panic!("expected rejected prefix");
+                };
+                let cleanup = prefix.cleanup().unwrap().clone();
+                assert!(!cleanup.finished);
+                assert!(!cleanup.is_complete());
+                assert_eq!(cleanup.steps.len(), 1);
+                assert_eq!(
+                    cleanup.steps[0].outcome,
+                    crate::SagaRollbackOutcome::InProgress
+                );
+                assert!(matches!(prefix, crate::ExecutionReport::Unpersisted {
+                    result: crate::ExecutionTerminal::Outcome(Outcome::Fault(error)), ..
+                } if error == "original direct fault"));
+                let context = owner.inner.context.try_lock().unwrap();
+                let retained = context
+                    .1
+                    .read::<crate::SagaRollbackJournal>()
+                    .unwrap()
+                    .unresolved_tasks();
+                assert_eq!(retained.len(), 1);
+                assert_eq!(retained[0].input_snapshot, b"72");
+                assert_eq!(retained[0].node_id, cleanup.steps[0].node_id);
+                assert!(
+                    owner
+                        .inner
+                        .graph
+                        .saga_compensation_registry
+                        .read()
+                        .unwrap()
+                        .get(&retained[0].node_id)
+                        .is_some()
+                );
+                assert_eq!(
+                    context
+                        .1
+                        .read::<SagaStack>()
+                        .map(|stack| stack.tasks.len())
+                        .unwrap_or(0),
+                    usize::from(enabled)
+                );
+                assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+                assert_eq!(
+                    captured.lock().unwrap().is_some(),
+                    grace != std::time::Duration::ZERO
+                );
+                assert_eq!(owner.observe().borrow().cleanup_complete, Some(false));
+                assert!(owner.observe().borrow().cleanup_timed_out);
+                assert_eq!(owner.observe().borrow().phase, SupervisorPhase::Returned);
+                assert!(
+                    !serde_json::to_string(&cleanup)
+                        .unwrap()
+                        .contains("input_snapshot")
+                );
+                drop(context);
+                let observer = owner.observe();
+                drop(owner);
+                assert_eq!(
+                    observer.borrow().custody,
+                    RecoveryCustody::ReleasedWithPendingTasks
+                );
+            }
+        }
+    }
+    #[derive(Clone)]
     struct StopPrefix(Option<CancellationToken>);
     #[async_trait::async_trait]
     impl Transition<u32, u32> for StopPrefix {

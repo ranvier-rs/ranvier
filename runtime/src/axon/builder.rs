@@ -1185,15 +1185,15 @@ where
                 });
 
             match saga_compensation_registry.write() {
-                Ok(mut registry) => registry.register(next_node_id.clone(), handler),
+                Ok(mut registry) => {
+                    registry.register(next_node_id.clone(), handler.clone());
+                    registry.register(comp_node_id.clone(), handler);
+                }
                 Err(poisoned) => {
-                    tracing::warn!(
-                        node_id = %next_node_id,
-                        "Saga compensation registry lock was poisoned; recovering registry for handler registration"
-                    );
-                    poisoned
-                        .into_inner()
-                        .register(next_node_id.clone(), handler);
+                    tracing::warn!(node_id = %next_node_id, "Saga compensation registry lock was poisoned; recovering registry for handler registration");
+                    let mut registry = poisoned.into_inner();
+                    registry.register(next_node_id.clone(), handler.clone());
+                    registry.register(comp_node_id.clone(), handler);
                 }
             }
         }

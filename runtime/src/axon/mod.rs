@@ -944,12 +944,19 @@ where
         });
     }
 
-    // State capture for Saga - SERIALIZE BEFORE CONSUMPTION
-    let saga_snapshot = if let Some(SagaPolicy::Enabled) = bus.read::<SagaPolicy>() {
-        Some(serde_json::to_vec(&state).unwrap_or_default())
-    } else {
-        None
+    // Reserve a recoverable input before this compensated transition can run.
+    // A serialization error cannot be replaced with an empty rollback payload.
+    let recovery_input = match serde_json::to_vec(&state) {
+        Ok(snapshot) => snapshot,
+        Err(_) => {
+            if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>() {
+                active.0.block(crate::PersistenceOperation::RecoveryPayload);
+            }
+            return Outcome::emit("execution.compensation.input_encoding_failed", None);
+        }
     };
+    let saga_snapshot = matches!(bus.read::<SagaPolicy>(), Some(SagaPolicy::Enabled))
+        .then(|| recovery_input.clone());
 
     if let Some(observation) = bus.read::<crate::execution_observation::ActiveObservation>() {
         observation.0.effect();
@@ -1035,28 +1042,65 @@ where
                 .filter(|journal| journal.matches_trace(&trace_id))
                 .cloned()
                 .unwrap_or_else(|| SagaRollbackJournal::new(&trace_id));
-            journal.push(comp_node_id.to_string(), SagaRollbackOutcome::InProgress);
+            journal.push_task(ranvier_core::saga::SagaTask {
+                node_id: comp_node_id.to_string(),
+                node_label: comp.label(),
+                input_snapshot: recovery_input,
+            });
             bus.insert(journal.clone());
             use futures_util::FutureExt as _;
-            let compensation_result =
-                std::panic::AssertUnwindSafe(async { comp.run(state, res, bus).await })
-                    .catch_unwind()
-                    .await;
+            #[cfg(feature = "streaming")]
+            let active = bus
+                .read::<crate::execution_observation::ActiveObservation>()
+                .cloned();
+            #[cfg(feature = "streaming")]
+            let deadline = active.as_ref().and_then(|active| active.0.begin_cleanup());
+            #[cfg(feature = "streaming")]
+            if deadline.is_some() {
+                bus.set_cancellation_token(ranvier_core::CancellationToken::new());
+            }
+            let compensation_result = {
+                let cleanup =
+                    std::panic::AssertUnwindSafe(async { comp.run(state, res, bus).await })
+                        .catch_unwind();
+                #[cfg(feature = "streaming")]
+                {
+                    match deadline {
+                        Some(deadline) if deadline <= tokio::time::Instant::now() => None,
+                        Some(deadline) => tokio::time::timeout_at(deadline, cleanup).await.ok(),
+                        None => Some(cleanup.await),
+                    }
+                }
+                #[cfg(not(feature = "streaming"))]
+                {
+                    Some(cleanup.await)
+                }
+            };
+            bus.clear_access_policy();
             let observation = match &compensation_result {
-                Ok(Outcome::Next(())) => SagaRollbackOutcome::Completed,
-                Ok(Outcome::Fault(_)) => SagaRollbackOutcome::Fault,
-                Ok(Outcome::Emit(_, _)) => SagaRollbackOutcome::Emitted,
-                Ok(Outcome::Branch(_, _)) => SagaRollbackOutcome::Branched,
-                Ok(Outcome::Jump(_, _)) => SagaRollbackOutcome::Jumped,
-                Err(_) => SagaRollbackOutcome::Panicked,
+                Some(Ok(Outcome::Next(()))) => SagaRollbackOutcome::Completed,
+                Some(Ok(Outcome::Fault(_))) => SagaRollbackOutcome::Fault,
+                Some(Ok(Outcome::Emit(_, _))) => SagaRollbackOutcome::Emitted,
+                Some(Ok(Outcome::Branch(_, _))) => SagaRollbackOutcome::Branched,
+                Some(Ok(Outcome::Jump(_, _))) => SagaRollbackOutcome::Jumped,
+                Some(Err(_)) => SagaRollbackOutcome::Panicked,
+                None => SagaRollbackOutcome::InProgress,
             };
             journal.settle(observation);
-            if !matches!(bus.read::<SagaPolicy>(), Some(SagaPolicy::Enabled)) {
+            #[cfg(feature = "streaming")]
+            if compensation_result.is_none() {
+                if let Some(active) = &active {
+                    active.0.cleanup_expired();
+                }
+            }
+            if compensation_result.is_some()
+                && !matches!(bus.read::<SagaPolicy>(), Some(SagaPolicy::Enabled))
+            {
                 journal.finish();
             }
             bus.insert(journal);
 
-            let compensation_kind = if matches!(compensation_result, Ok(Outcome::Next(()))) {
+            let compensation_kind = if matches!(compensation_result, Some(Ok(Outcome::Next(())))) {
                 "Compensated"
             } else {
                 "CompensationIncomplete"
@@ -1069,8 +1113,9 @@ where
                         compensation_kind.to_string()
                     } else {
                         match &compensation_result {
-                            Ok(outcome) => outcome_type_name(outcome),
-                            Err(_) => "Panicked".to_string(),
+                            Some(Ok(outcome)) => outcome_type_name(outcome),
+                            Some(Err(_)) => "Panicked".to_string(),
+                            None => "Interrupted".to_string(),
                         }
                     },
                     duration_ms: 0,
@@ -1101,8 +1146,9 @@ where
                         Ok(None)
                     } else {
                         match &compensation_result {
-                            Ok(outcome) => serde_json::to_value(outcome).map(Some),
-                            Err(_) => Ok(Some(serde_json::json!({"status": "panicked"}))),
+                            Some(Ok(outcome)) => serde_json::to_value(outcome).map(Some),
+                            Some(Err(_)) => Ok(Some(serde_json::json!({"status": "panicked"}))),
+                            None => Ok(Some(serde_json::json!({"status": "interrupted"}))),
                         }
                     },
                     bus,
