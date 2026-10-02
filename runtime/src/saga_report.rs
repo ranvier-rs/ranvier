@@ -63,6 +63,8 @@ pub struct SagaRollbackJournal(
     std::sync::Arc<std::sync::Mutex<Vec<(usize, ExternalCompensationRecovery)>>>,
     std::sync::Arc<std::sync::Mutex<Vec<(usize, SagaRollbackJournal)>>>,
     std::sync::Arc<std::sync::Mutex<Option<crate::nested_custody::WeakCustody>>>,
+    #[cfg(feature = "streaming")]
+    std::sync::Arc<std::sync::Mutex<Vec<(usize, tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>)>>>,
 );
 impl std::fmt::Debug for SagaRollbackJournal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -84,7 +86,31 @@ impl SagaRollbackJournal {
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             std::sync::Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(feature = "streaming")]
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         )
+    }
+    /// Attach safe child observation at an actual parent-local report index.
+    /// A returned stream is not automatically reconciled or removed: even EOF may
+    /// leave successful child effects requiring compensation after parent failure.
+    #[cfg(feature = "streaming")]
+    pub(crate) fn retain_stream_child(
+        &self,
+        observer: tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>,
+    ) {
+        let mut report = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let index = report.steps.len();
+        report.finished = false;
+        report.steps.push(SagaRollbackStep {
+            node_id: "nested-stream-invocation".into(),
+            outcome: SagaRollbackOutcome::InProgress,
+        });
+        self.5.lock().unwrap_or_else(|p| p.into_inner()).push((index, observer));
+    }
+    #[cfg(feature = "streaming")]
+    pub(crate) fn retained_stream_observations(&self) -> Vec<(usize, crate::streaming_recovery::SupervisorObservation)> {
+        self.5.lock().unwrap_or_else(|p| p.into_inner()).iter()
+            .map(|(index, observer)| (*index, observer.borrow().clone())).collect()
     }
     pub(crate) fn retain_custody(&self, custody: crate::nested_custody::WeakCustody) {
         let mut incoming = Some(custody);
@@ -118,6 +144,10 @@ impl SagaRollbackJournal {
     pub(crate) fn has_unresolved_tasks(&self) -> bool {
         let mut pending = vec![self.clone()];
         while let Some(journal) = pending.pop() {
+            #[cfg(feature = "streaming")]
+            if !journal.5.lock().unwrap_or_else(|p| p.into_inner()).is_empty() {
+                return true;
+            }
             if !journal
                 .1
                 .lock()

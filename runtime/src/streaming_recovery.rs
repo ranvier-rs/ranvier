@@ -513,6 +513,18 @@ where
         result
     }
 
+    /// Parent report retains observation, while the root store retains the actual
+    /// owner. Watch receivers contain no typed resources or raw recovery inputs.
+    pub(crate) async fn admit_to_parent_journal(
+        &self,
+        client: crate::nested_custody::WeakCustodyClient,
+        journal: &crate::SagaRollbackJournal,
+    ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
+        let admission = self.admit_to_parent(client).await?;
+        journal.retain_stream_child(self.observe());
+        Ok(admission)
+    }
+
     pub(crate) async fn initialize_and_drive<Item, SErr, S, T, F, Fut>(
         &self,
         input: In,
@@ -1943,7 +1955,10 @@ mod tests {
         let child = OwnedStreamRecovery::try_new(
             Axon::<u32, u32, String, Resources>::start("full-owned-child").with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
             OwnedStreamContext::try_new(resources.clone(), bus).unwrap(), &StreamRecoveryAdmission::new(1), None).unwrap();
-        let admission = child.admit_to_parent(parent.client()).await.unwrap();
+        let parent_journal = crate::SagaRollbackJournal::new("parent-stream-report");
+        let admission = child.admit_to_parent_journal(parent.client(), &parent_journal).await.unwrap();
+        assert!(parent_journal.has_unresolved_tasks());
+        assert!(!parent_journal.snapshot().is_complete());
         assert!(matches!(parent.reserve(Arc::new(())), Err("execution.nested_custody_capacity")));
         let observer = child.observe();
         let entered = Arc::new(Notify::new());
@@ -1959,6 +1974,10 @@ mod tests {
         task.abort();
         assert!(matches!(task.await, Err(error) if error.is_cancelled()));
         assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
+        let observations = parent_journal.retained_stream_observations();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].0, 0);
+        assert_eq!(observations[0].1.phase, SupervisorPhase::Interrupted);
         assert_eq!(observer.borrow().custody, RecoveryCustody::Held);
         let inner = admission.upgrade().unwrap().downcast::<RecoveryInner<u32, u32, String, Resources>>()
             .unwrap_or_else(|_| panic!("wrong full child owner"));
