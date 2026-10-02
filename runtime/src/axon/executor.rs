@@ -250,6 +250,14 @@ where
             StreamInitializationError, StreamInitializationReport, admit_prefix,
         };
         use futures_util::FutureExt as _;
+        if let Some(grace) = cleanup_grace {
+            if let Some(active) = owner
+                .bus()
+                .read::<crate::execution_observation::ActiveObservation>()
+            {
+                active.0.configure_cleanup(grace);
+            }
+        }
         let terminal = match &cancellation {
             Some(token) => {
                 self.execute_terminal_domain(input, resources, owner.bus(), token.clone())
@@ -357,19 +365,12 @@ where
         bus.clear_access_policy();
         bus.set_cancellation_token(CancellationToken::new());
         let trace = persistence_trace_id(bus);
-        match grace {
-            Some(grace) => {
-                // Dropping rollback preserves its InProgress journal and unpopped stack.
-                // Oversized durations must not panic after effects have run.
-                // Treat an unrepresentable deadline as an exhausted cleanup budget.
-                let now = tokio::time::Instant::now();
-                let deadline = now.checked_add(grace).unwrap_or(now);
-                let _ =
-                    tokio::time::timeout_at(deadline, self.rollback_saga(resources, bus, &trace))
-                        .await;
+        if let Some(grace) = grace {
+            if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>() {
+                active.0.configure_cleanup(grace);
             }
-            None => self.rollback_saga(resources, bus, &trace).await,
         }
+        self.rollback_saga(resources, bus, &trace).await;
         // A panicked compensator may leave its access policy installed.
         bus.clear_access_policy();
         bus.read::<crate::SagaRollbackJournal>()
@@ -898,7 +899,43 @@ where
         outcome
     }
 
+    /// One invocation deadline across every Saga rollback entry, including prefix cleanup.
     async fn rollback_saga(&self, resources: &Res, bus: &mut Bus, trace_id: &str) {
+        #[cfg(feature = "streaming")]
+        {
+            bus.clear_access_policy();
+            let active = bus
+                .read::<crate::execution_observation::ActiveObservation>()
+                .cloned();
+            if let Some(active) = active {
+                if let Some(deadline) = active.0.begin_cleanup() {
+                    let journal = bus
+                        .read::<crate::SagaRollbackJournal>()
+                        .filter(|journal| journal.matches_trace(trace_id))
+                        .cloned()
+                        .unwrap_or_else(|| crate::SagaRollbackJournal::new(trace_id));
+                    bus.insert(journal);
+                    bus.set_cancellation_token(CancellationToken::new());
+                    if deadline <= tokio::time::Instant::now() {
+                        active.0.cleanup_expired();
+                    } else if tokio::time::timeout_at(
+                        deadline,
+                        self.rollback_saga_unbounded(resources, bus, trace_id),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        active.0.cleanup_expired();
+                    }
+                    bus.clear_access_policy();
+                    return;
+                }
+            }
+        }
+        self.rollback_saga_unbounded(resources, bus, trace_id).await;
+    }
+
+    async fn rollback_saga_unbounded(&self, resources: &Res, bus: &mut Bus, trace_id: &str) {
         use crate::saga_report::{SagaRollbackJournal, SagaRollbackOutcome};
         let journal = bus
             .read::<SagaRollbackJournal>()

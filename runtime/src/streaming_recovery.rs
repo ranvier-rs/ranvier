@@ -110,6 +110,7 @@ pub(crate) struct SupervisorObservation {
     pub(crate) phase: SupervisorPhase,
     pub(crate) disposition: Option<SupervisorDisposition>,
     pub(crate) cleanup_complete: Option<bool>,
+    pub(crate) cleanup_timed_out: bool,
     pub(crate) custody: RecoveryCustody,
 }
 struct SupervisorObservationGuard {
@@ -462,6 +463,7 @@ where
                     phase: SupervisorPhase::NotStarted,
                     disposition: None,
                     cleanup_complete: None,
+                    cleanup_timed_out: false,
                     custody: RecoveryCustody::Held,
                 })
                 .0,
@@ -475,8 +477,8 @@ where
     /// Keeps InvocationOwner live until the Ready driver returns or is dropped.
     /// The internal driver must derive its terminal from actual source/control observations.
     /// Non-completed consumption runs shielded local cleanup; no replay is authorized.
-    /// The explicit grace bounds cooperative initializer/late Saga cleanup only.
-    /// Prefix rollback, non-yielding handlers and external resource custody need separate limits.
+    /// One explicit invocation grace bounds cooperative Saga rollback including prefix cleanup.
+    /// Direct hooks, non-yielding handlers and external resource custody need separate limits.
     pub(crate) async fn initialize_and_drive<Item, SErr, S, T, F, Fut>(
         &self,
         input: In,
@@ -517,6 +519,13 @@ where
         let mut context = self.inner.context.lock().await;
         let (resources, bus) = &mut *context;
         let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
+        if let Some(active) = owner
+            .bus()
+            .read::<crate::execution_observation::ActiveObservation>()
+        {
+            active.0.configure_cleanup(cleanup_grace);
+            active.0.observe_cleanup(self.inner.observation.clone());
+        }
         let report = self
             .inner
             .graph
@@ -1022,6 +1031,131 @@ mod tests {
             std::future::pending().await
         }
     }
+    #[derive(Clone)]
+    struct StopPrefix(Option<CancellationToken>);
+    #[async_trait::async_trait]
+    impl Transition<u32, u32> for StopPrefix {
+        type Error = String;
+        type Resources = Resources;
+        async fn run(&self, _: u32, _: &Resources, _: &mut Bus) -> Outcome<u32, String> {
+            if let Some(token) = &self.0 {
+                token.cancel(ranvier_core::CancellationReason::ClientDisconnected);
+                std::future::pending().await
+            } else {
+                Outcome::Fault("original prefix fault".into())
+            }
+        }
+    }
+    #[tokio::test]
+    async fn prefix_fault_and_cancel_share_bounded_cleanup_without_losing_original_terminal() {
+        for cancellation in [false, true] {
+            for pending_top in [false, true] {
+                let entered = Arc::new(Notify::new());
+                let captured = Arc::new(std::sync::Mutex::new(None));
+                let resources = Arc::new(Resources {
+                    effects: AtomicUsize::new(0),
+                });
+                let token = CancellationToken::new();
+                let prefix = Axon::<u32, u32, String, Resources>::start("prefix-grace")
+                    .with_saga_policy(SagaPolicy::Enabled);
+                let pending = PendingUndo(entered.clone(), captured.clone());
+                let graph = if pending_top {
+                    prefix
+                        .then_compensated(AdvancingEffect, Undo)
+                        .then_compensated(AdvancingEffect, pending)
+                } else {
+                    prefix
+                        .then_compensated(AdvancingEffect, pending)
+                        .then_compensated(AdvancingEffect, Undo)
+                }
+                .then(StopPrefix(cancellation.then_some(token.clone())));
+                let owner = OwnedStreamRecovery::try_new(
+                    graph,
+                    OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                    &StreamRecoveryAdmission::new(1),
+                    None,
+                )
+                .unwrap();
+                let task_owner = owner.clone();
+                let task = tokio::spawn(async move {
+                    task_owner
+                        .initialize_and_drive(
+                            97,
+                            &Init,
+                            Some(token),
+                            std::time::Duration::from_millis(100),
+                            |_| async {
+                                panic!("rejected prefix must not start driver");
+                                #[allow(unreachable_code)]
+                                completed()
+                            },
+                        )
+                        .await
+                });
+                tokio::time::timeout(std::time::Duration::from_secs(3), entered.notified())
+                    .await
+                    .unwrap();
+                assert_eq!(owner.observe().borrow().phase, SupervisorPhase::CleaningUp);
+                let report = tokio::time::timeout(std::time::Duration::from_secs(3), task)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                let StreamInitializationReport::Rejected { prefix } = report else {
+                    panic!("expected prefix rejection");
+                };
+                let cleanup = prefix.cleanup().unwrap();
+                assert!(!cleanup.finished);
+                assert!(!cleanup.is_complete());
+                assert_eq!(cleanup.steps.len(), if pending_top { 1 } else { 2 });
+                assert_eq!(
+                    cleanup.steps.last().unwrap().outcome,
+                    crate::SagaRollbackOutcome::InProgress
+                );
+                match prefix {
+                    crate::ExecutionReport::Unpersisted {
+                        result: crate::ExecutionTerminal::Cancelled(context),
+                        ..
+                    } if cancellation => assert_eq!(
+                        context.reason,
+                        ranvier_core::CancellationReason::ClientDisconnected
+                    ),
+                    crate::ExecutionReport::Unpersisted {
+                        result: crate::ExecutionTerminal::Outcome(Outcome::Fault(error)),
+                        ..
+                    } if !cancellation => assert_eq!(error, "original prefix fault"),
+                    _ => panic!("original terminal was lost"),
+                }
+                let context = owner.inner.context.try_lock().unwrap();
+                assert!(Arc::ptr_eq(&context.0, &resources));
+                let retained = context
+                    .1
+                    .read::<crate::SagaRollbackJournal>()
+                    .unwrap()
+                    .unresolved_tasks();
+                assert_eq!(retained.len(), 1);
+                assert_eq!(
+                    retained[0].input_snapshot,
+                    if pending_top { b"98" } else { b"97" }
+                );
+                assert_eq!(
+                    context.1.read::<SagaStack>().unwrap().tasks.len(),
+                    usize::from(pending_top)
+                );
+                assert_eq!(
+                    resources.effects.load(Ordering::SeqCst),
+                    if pending_top { 2 } else { 3 }
+                );
+                assert!(owner.observe().borrow().cleanup_timed_out);
+                assert_eq!(owner.observe().borrow().cleanup_complete, Some(false));
+                assert_eq!(
+                    owner.observe().borrow().disposition,
+                    Some(SupervisorDisposition::PrefixRejected)
+                );
+                drop(context);
+            }
+        }
+    }
     struct GraceInit(u8, CancellationToken);
     #[async_trait::async_trait]
     impl StreamingTransition<u32> for GraceInit {
@@ -1128,22 +1262,27 @@ mod tests {
                 };
                 assert!(!cleanup.finished);
                 assert!(!cleanup.is_complete());
-                assert_eq!(cleanup.steps.len(), 1);
-                assert_eq!(
-                    cleanup.steps[0].outcome,
-                    crate::SagaRollbackOutcome::InProgress
-                );
+                let exhausted_at_entry = grace != std::time::Duration::from_millis(50);
+                assert_eq!(cleanup.steps.len(), usize::from(!exhausted_at_entry));
+                if !exhausted_at_entry {
+                    assert_eq!(
+                        cleanup.steps[0].outcome,
+                        crate::SagaRollbackOutcome::InProgress
+                    );
+                }
                 assert_eq!(drivers.load(Ordering::SeqCst), usize::from(mode == 0));
                 assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
-                assert_eq!(
-                    observed_journal
-                        .lock()
-                        .unwrap()
-                        .as_ref()
-                        .unwrap()
-                        .snapshot(),
-                    cleanup
-                );
+                if !exhausted_at_entry {
+                    assert_eq!(
+                        observed_journal
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .unwrap()
+                            .snapshot(),
+                        cleanup
+                    );
+                }
                 let context = owner
                     .inner
                     .context
@@ -1151,14 +1290,20 @@ mod tests {
                     .expect("cleanup returned ownership");
                 assert!(Arc::ptr_eq(&resources, &context.0));
                 let journal = context.1.read::<crate::SagaRollbackJournal>().unwrap();
-                assert_eq!(journal.unresolved_tasks()[0].input_snapshot, b"90");
-                assert_eq!(
-                    context.1.read::<SagaStack>().unwrap().tasks[0].input_snapshot,
-                    b"89"
-                );
+                if exhausted_at_entry {
+                    assert!(journal.unresolved_tasks().is_empty());
+                    assert_eq!(context.1.read::<SagaStack>().unwrap().tasks.len(), 2);
+                } else {
+                    assert_eq!(journal.unresolved_tasks()[0].input_snapshot, b"90");
+                    assert_eq!(
+                        context.1.read::<SagaStack>().unwrap().tasks[0].input_snapshot,
+                        b"89"
+                    );
+                }
                 drop(context);
                 assert_eq!(owner.observe().borrow().phase, SupervisorPhase::Returned);
                 assert_eq!(owner.observe().borrow().cleanup_complete, Some(false));
+                assert!(owner.observe().borrow().cleanup_timed_out);
                 assert_eq!(owner.observe().borrow().custody, RecoveryCustody::Held);
                 assert_eq!(admission.in_use().unwrap(), 1);
                 assert!(matches!(

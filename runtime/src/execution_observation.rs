@@ -16,6 +16,17 @@ pub(crate) struct Observation {
     completed: AtomicBool,
     blocked: AtomicBool,
     encoding_failed: AtomicBool,
+    #[cfg(feature = "streaming")]
+    cleanup_budget: Mutex<Option<CleanupBudget>>,
+    #[cfg(feature = "streaming")]
+    cleanup_observer:
+        Mutex<Option<tokio::sync::watch::Sender<crate::streaming_recovery::SupervisorObservation>>>,
+}
+
+#[cfg(feature = "streaming")]
+struct CleanupBudget {
+    grace: std::time::Duration,
+    deadline: Option<tokio::time::Instant>,
 }
 
 #[cfg(test)]
@@ -569,6 +580,66 @@ mod tests {
 }
 
 impl Observation {
+    #[cfg(feature = "streaming")]
+    pub(crate) fn configure_cleanup(&self, grace: std::time::Duration) {
+        self.cleanup_budget
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_or_insert(CleanupBudget {
+                grace,
+                deadline: None,
+            });
+    }
+    #[cfg(feature = "streaming")]
+    pub(crate) fn observe_cleanup(
+        &self,
+        sender: tokio::sync::watch::Sender<crate::streaming_recovery::SupervisorObservation>,
+    ) {
+        *self
+            .cleanup_observer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(sender);
+    }
+    #[cfg(feature = "streaming")]
+    pub(crate) fn begin_cleanup(&self) -> Option<tokio::time::Instant> {
+        let deadline = {
+            let mut budget = self
+                .cleanup_budget
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            budget.as_mut().map(|budget| {
+                *budget.deadline.get_or_insert_with(|| {
+                    let now = tokio::time::Instant::now();
+                    now.checked_add(budget.grace).unwrap_or(now)
+                })
+            })
+        };
+        if deadline.is_some() {
+            if let Some(sender) = self
+                .cleanup_observer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+            {
+                sender.send_modify(|state| {
+                    state.phase = crate::streaming_recovery::SupervisorPhase::CleaningUp
+                });
+            }
+        }
+        deadline
+    }
+    #[cfg(feature = "streaming")]
+    pub(crate) fn cleanup_expired(&self) {
+        if let Some(sender) = self
+            .cleanup_observer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            sender.send_modify(|state| state.cleanup_timed_out = true);
+        }
+    }
+
     pub(crate) fn encoding_failed(&self, operation: PersistenceOperation) {
         self.encoding_failed.store(true, Ordering::SeqCst);
         self.failed(operation);
