@@ -93,20 +93,38 @@ impl LocalTaskClaim {
         -> Result<SagaRollbackOutcome, LocalTaskClaimError> {
         use futures_util::FutureExt as _;
         if tokio::time::Instant::now() >= deadline { return Err(LocalTaskClaimError::TimedOut); }
+        self.validate_original()?;
+        if tokio::time::Instant::now() >= deadline { return Err(LocalTaskClaimError::TimedOut); }
         self.invoked = true;
         let observed = tokio::time::timeout_at(deadline,
-            std::panic::AssertUnwindSafe(async { handler(&self.task.input_snapshot, resources, bus).await }).catch_unwind())
+            std::panic::AssertUnwindSafe(async {
+                // Classify and drop user result payloads inside the same panic
+                // boundary as factory/poll. No raw E escapes into fixed metadata.
+                match handler(&self.task.input_snapshot, resources, bus).await {
+                    ranvier_core::Outcome::Next(()) => SagaRollbackOutcome::Completed,
+                    ranvier_core::Outcome::Fault(_) => SagaRollbackOutcome::Fault,
+                    ranvier_core::Outcome::Emit(_, _) => SagaRollbackOutcome::Emitted,
+                    ranvier_core::Outcome::Branch(_, _) => SagaRollbackOutcome::Branched,
+                    ranvier_core::Outcome::Jump(_, _) => SagaRollbackOutcome::Jumped,
+                }
+            }).catch_unwind())
             .await.map_err(|_| LocalTaskClaimError::TimedOut)?;
-        let outcome = match observed {
-            Err(_) => SagaRollbackOutcome::Panicked,
-            Ok(ranvier_core::Outcome::Next(())) => SagaRollbackOutcome::Completed,
-            Ok(ranvier_core::Outcome::Fault(_)) => SagaRollbackOutcome::Fault,
-            Ok(ranvier_core::Outcome::Emit(_, _)) => SagaRollbackOutcome::Emitted,
-            Ok(ranvier_core::Outcome::Branch(_, _)) => SagaRollbackOutcome::Branched,
-            Ok(ranvier_core::Outcome::Jump(_, _)) => SagaRollbackOutcome::Jumped,
-        };
+        let outcome = observed.unwrap_or(SagaRollbackOutcome::Panicked);
         self.settle_original(outcome)?;
         Ok(outcome)
+    }
+    fn validate_original(&self) -> Result<(), LocalTaskClaimError> {
+        let report = self.journal.0.try_lock().map_err(|_| LocalTaskClaimError::Unavailable)?;
+        let claims = self.journal.6.try_lock().map_err(|_| LocalTaskClaimError::Unavailable)?;
+        let tasks = self.journal.1.try_lock().map_err(|_| LocalTaskClaimError::Unavailable)?;
+        if !claims.get(&self.index).is_some_and(|token| std::sync::Arc::ptr_eq(token, &self.token))
+            || !tasks.iter().any(|(index, task)| *index == self.index && std::sync::Arc::ptr_eq(task, &self.task)) {
+            return Err(LocalTaskClaimError::IdentityMismatch);
+        }
+        match report.steps.get(self.index) {
+            Some(step) if step.node_id == self.task.node_id && step.outcome == SagaRollbackOutcome::InProgress => Ok(()),
+            _ => Err(LocalTaskClaimError::IdentityMismatch),
+        }
     }
     fn settle_original(&mut self, outcome: SagaRollbackOutcome) -> Result<(), LocalTaskClaimError> {
         let mut report = self.journal.0.try_lock().map_err(|_| LocalTaskClaimError::Unavailable)?;
@@ -501,6 +519,53 @@ mod tests {
         journal.push_uninvoked_task(ranvier_core::saga::SagaTask { node_id: "original".into(),
             node_label: "private".into(), input_snapshot: vec![4, 2, 7] });
         journal
+    }
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn stale_claim_token_cannot_invoke_original_hook() {
+        let journal = claim_fixture(); let claim = journal.claim_not_invoked(0).unwrap();
+        journal.6.lock().unwrap().insert(0, std::sync::Arc::new(()));
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)); let observed = calls.clone();
+        let handler: ranvier_core::saga::SagaCompensationFn<String, ()> = std::sync::Arc::new(move |_, _, _| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst); Box::pin(async { ranvier_core::Outcome::Next(()) })
+        });
+        let result = claim.invoke(handler, &(), &mut ranvier_core::Bus::new(), tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await;
+        assert_eq!(result, Err(super::LocalTaskClaimError::IdentityMismatch));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(journal.has_unresolved_tasks());
+    }
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn claim_classifies_panicking_returned_error_drop_without_losing_original_input() {
+        struct PanickingError;
+        impl Drop for PanickingError { fn drop(&mut self) { panic!("returned error drop fixture"); } }
+        let journal = claim_fixture(); let claim = journal.claim_not_invoked(0).unwrap();
+        let handler: ranvier_core::saga::SagaCompensationFn<PanickingError, ()> = std::sync::Arc::new(|_, _, _|
+            Box::pin(async { ranvier_core::Outcome::Fault(PanickingError) }));
+        assert_eq!(claim.invoke(handler, &(), &mut ranvier_core::Bus::new(), tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await,
+            Ok(super::SagaRollbackOutcome::Panicked));
+        assert_eq!(journal.1.lock().unwrap()[0].1.input_snapshot, [4, 2, 7]);
+        assert!(matches!(journal.claim_not_invoked(0), Err(super::LocalTaskClaimError::Claimed)));
+    }
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn unavailable_and_expired_claims_have_zero_hook_calls_and_retain_original_input() {
+        use super::{LocalTaskClaimError as Error, SagaRollbackOutcome as Outcome};
+        for expired in [false, true] {
+            let journal = claim_fixture(); let claim = journal.claim_not_invoked(0).unwrap();
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)); let observed = calls.clone();
+            let handler: ranvier_core::saga::SagaCompensationFn<String, ()> = std::sync::Arc::new(move |_, _, _| {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst); Box::pin(async { ranvier_core::Outcome::Next(()) })
+            });
+            let held = (!expired).then(|| journal.6.lock().unwrap());
+            let deadline = tokio::time::Instant::now() + if expired { std::time::Duration::ZERO } else { std::time::Duration::from_secs(5) };
+            assert_eq!(claim.invoke(handler, &(), &mut ranvier_core::Bus::new(), deadline).await,
+                Err(if expired { Error::TimedOut } else { Error::Unavailable }));
+            drop(held);
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(journal.1.lock().unwrap()[0].1.input_snapshot, [4, 2, 7]);
+            assert_eq!(journal.snapshot().steps[0].outcome, if expired { Outcome::NotInvoked } else { Outcome::InProgress });
+        }
     }
     #[cfg(feature = "streaming")]
     #[test]
