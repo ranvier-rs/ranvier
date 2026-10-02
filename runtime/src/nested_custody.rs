@@ -261,6 +261,9 @@ fn reserve_in_with(
     Ok(weak)
 }
 impl WeakCustody {
+    /// In-process custody correlation only; never a persisted event identity.
+    #[cfg(feature = "streaming")]
+    pub(crate) fn id(&self) -> uuid::Uuid { self.id }
     #[cfg(test)]
     pub(crate) fn upgrade(&self) -> Option<Capability> {
         self.record.upgrade()
