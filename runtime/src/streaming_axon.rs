@@ -284,7 +284,7 @@ where
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        let this = unsafe { self.get_unchecked_mut() };
+        let this = self.get_mut();
 
         if this.finished {
             return std::task::Poll::Ready(None);
@@ -534,6 +534,30 @@ mod timeout_wakeup_tests {
             this.0.fetch_add(1, Ordering::SeqCst);
         }
     }
+    #[tokio::test]
+    async fn deadline_wins_ready_items_and_dropped_timers_do_not_wake() {
+        let delay = Duration::from_millis(20);
+        let config = StreamTimeoutConfig {
+            init: None,
+            idle: None,
+            total: Some(delay),
+        };
+        let counter = Arc::new(WakeCount(AtomicUsize::new(0)));
+        let task_waker = waker(counter.clone());
+        let mut cx = Context::from_waker(&task_waker);
+        let mut ready = Box::pin(TimeoutStream::new(stream::repeat(7), config.clone()));
+        assert_eq!(ready.as_mut().poll_next(&mut cx), Poll::Ready(Some(7)));
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(ready.as_mut().poll_next(&mut cx), Poll::Ready(None));
+        drop(ready);
+        counter.0.store(0, Ordering::SeqCst);
+        let mut pending = Box::pin(TimeoutStream::new(stream::pending::<usize>(), config));
+        assert_eq!(pending.as_mut().poll_next(&mut cx), Poll::Pending);
+        drop(pending);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(counter.0.load(Ordering::SeqCst), 0);
+    }
+
     #[tokio::test]
     async fn pending_stream_deadlines_register_their_own_wakeup() {
         for mode in 0..3 {
