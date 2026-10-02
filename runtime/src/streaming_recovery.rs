@@ -43,8 +43,19 @@ pub(crate) async fn produce_bounded<Item: Send + 'static>(
     token: CancellationToken,
     sender: tokio::sync::mpsc::Sender<Item>,
 ) -> StreamDriveResult<()> {
+    produce_bounded_with_total_origin(source, config, token, sender, tokio::time::Instant::now()).await
+}
+
+/// Consume against the actual gated invocation origin rather than restarting total.
+pub(crate) async fn produce_bounded_with_total_origin<Item: Send + 'static>(
+    source: RawStream<Item>,
+    config: ranvier_core::streaming::StreamTimeoutConfig,
+    token: CancellationToken,
+    sender: tokio::sync::mpsc::Sender<Item>,
+    invocation_started_at: tokio::time::Instant,
+) -> StreamDriveResult<()> {
     use futures_util::{FutureExt, StreamExt};
-    let mut observed = crate::ObservedStream::new(source, config, Some(token));
+    let mut observed = crate::ObservedStream::with_total_origin(source, config, Some(token), invocation_started_at);
     let terminal = loop {
         let permit = tokio::select! {
             biased;
@@ -628,7 +639,7 @@ where
         SErr: Send + Sync + std::fmt::Debug + 'static,
         S: StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res>,
         T: Send + 'static,
-        F: FnOnce(RawStream<Item>, CancellationToken) -> Fut + Send + 'static,
+        F: FnOnce(RawStream<Item>, CancellationToken, tokio::time::Instant) -> Fut + Send + 'static,
         Fut: Future<Output = StreamDriveResult<T>> + Send + 'static,
     {
         let child = self.clone();
@@ -655,7 +666,7 @@ where
         F: FnOnce(RawStream<Item>) -> Fut,
         Fut: Future<Output = StreamDriveResult<T>>,
     {
-        self.initialize_and_drive_controlled(input, streaming, token, cleanup_grace, |source, _control| drive(source)).await
+        self.initialize_and_drive_controlled(input, streaming, token, cleanup_grace, |source, _control, _origin| drive(source)).await
     }
 
     pub(crate) async fn initialize_and_drive_controlled<Item, SErr, S, T, F, Fut>(
@@ -673,9 +684,11 @@ where
         Item: Send + 'static,
         SErr: Send + Sync + std::fmt::Debug + 'static,
         S: StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res>,
-        F: FnOnce(RawStream<Item>, CancellationToken) -> Fut,
+        F: FnOnce(RawStream<Item>, CancellationToken, tokio::time::Instant) -> Fut,
         Fut: Future<Output = StreamDriveResult<T>>,
     {
+        // Start only when the admitted gated future is actually polled.
+        let invocation_started_at = tokio::time::Instant::now();
         if self
             .inner
             .started
@@ -750,7 +763,7 @@ where
                     tokio::select! {
                         biased;
                         context = token.cancelled() => Err(StreamDriverError::Cancelled(context)),
-                        observed = async { drive(value, token.clone()).await } => Ok(observed),
+                        observed = async { drive(value, token.clone(), invocation_started_at).await } => Ok(observed),
                     }
                 })
                 .catch_unwind()

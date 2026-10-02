@@ -87,9 +87,9 @@ where
             init: None, idle: Some(std::time::Duration::from_secs(30)), total: None,
         });
         let maps = self.item_maps.clone();
-        let prepared = self.owner.prepare_managed_controlled(input, self.initializer.clone(), grace, move |stream, token| async move {
+        let prepared = self.owner.prepare_managed_controlled(input, self.initializer.clone(), grace, move |stream, token, origin| async move {
             let mapped = stream.map(move |item| maps.iter().fold(item, |item, map| map(item)));
-            crate::streaming_recovery::produce_bounded(Box::pin(mapped), config, token, sender).await
+            crate::streaming_recovery::produce_bounded_with_total_origin(Box::pin(mapped), config, token, sender, origin).await
         });
         Ok((prepared, receiver))
     }
@@ -510,6 +510,45 @@ mod tests {
         drop(plan);
         assert_eq!(admission.in_use().unwrap(), 0);
     }
+    #[tokio::test(start_paused = true)]
+    async fn owned_bounded_initializer_time_is_not_regranted_to_consumption() {
+        #[derive(Clone)]
+        struct DelayedChunks;
+        #[async_trait::async_trait]
+        impl StreamingTransition<String> for DelayedChunks {
+            type Item = String;
+            type Error = String;
+            type Resources = ();
+            async fn run_stream(&self, _: String, _: &(), _: &mut Bus) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, String> {
+                tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                Ok(Box::pin(futures_util::stream::iter(vec!["late".to_string()])))
+            }
+        }
+        let circuit = Axon::<String, String, String>::start("delayed-owned-total").then_stream(DelayedChunks)
+            .with_timeout(StreamTimeoutConfig { init: None, idle: None, total: Some(std::time::Duration::from_secs(5)) });
+        let plan = match circuit.owned_definition.try_plan::<DelayedChunks, String>(
+            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
+            Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+        };
+        let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
+        };
+        let root = crate::nested_custody::CustodyStore::new(1);
+        let journal = crate::SagaRollbackJournal::new("delayed-total-parent");
+        plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+            .unwrap_or_else(|error| panic!("{}", error.signal));
+        let holder = prepared.holder();
+        let joined = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(20)).await.unwrap().unwrap().unwrap();
+        match joined {
+            Ok(StreamInitializationReport::Ready { value, .. }) => {
+                assert_eq!(value.consumption.unwrap().terminal, crate::StreamConsumptionTerminal::TimedOut(StreamTimeoutKind::Total));
+            }
+            _ => panic!("original report lost"),
+        }
+        assert_eq!(receiver.recv().await, None);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn owned_bounded_pending_source_retains_idle_and_total_timeout_reports() {
         #[derive(Clone)]
