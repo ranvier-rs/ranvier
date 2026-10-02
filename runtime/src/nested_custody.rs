@@ -251,6 +251,68 @@ impl WeakCustody {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn family_settlement_drop_preserves_completed_report_and_pending_handle() {
+        use crate::managed_stream_task::ManagedStreamTask;
+        use tokio::{sync::{Mutex as AsyncMutex, oneshot}, time::Instant};
+        let root = CustodyStore::new(2);
+        let report = Arc::new(67u32);
+        let weak_report = Arc::downgrade(&report);
+        let (ready, ready_gate) = oneshot::channel();
+        let (first, first_permit) = ManagedStreamTask::prepare(async move {
+            ready.send(()).unwrap();
+            report
+        });
+        let (finish, finish_gate) = oneshot::channel();
+        let (second, second_permit) = ManagedStreamTask::prepare(async move {
+            Arc::new(finish_gate.await.unwrap())
+        });
+        let first = Arc::new(AsyncMutex::new(first));
+        let second = Arc::new(AsyncMutex::new(second));
+        let first_record = reserve_in_with(&root.0 .0, Arc::new(()), Some(first.clone()), || {}).unwrap();
+        let second_record = reserve_in_with(&root.0 .0, Arc::new(()), Some(second.clone()), || {}).unwrap();
+        root.close_admission().unwrap();
+        first_permit.send(()).unwrap();
+        second_permit.send(()).unwrap();
+        ready_gate.await.unwrap();
+        {
+            let wait = root.settle_closed_tasks::<Arc<u32>>(Instant::now() + std::time::Duration::from_secs(5));
+            tokio::pin!(wait);
+            assert!(futures_util::poll!(&mut wait).is_pending());
+        }
+        assert!(weak_report.upgrade().is_some());
+        // Completed output stays in the actual holder after the family future drops.
+        let original = first.lock().await.take_joined().unwrap().unwrap().unwrap();
+        assert_eq!(*original, 67);
+        finish.send(71u32).unwrap();
+        let settled = root.settle_closed_tasks::<Arc<u32>>(Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+        assert_eq!(settled.len(), 2);
+        assert!(settled.iter().any(|(id, status)| *id == first_record.id && *status == Err(crate::managed_stream_task::ManagedTaskWaitError::AlreadyJoined)));
+        assert!(settled.iter().any(|(id, status)| *id == second_record.id && *status == Ok(())));
+        assert_eq!(*second.lock().await.take_joined().unwrap().unwrap().unwrap(), 71);
+        drop(original);
+        assert!(weak_report.upgrade().is_none());
+    }
+
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn family_type_preflight_does_not_consume_matching_task() {
+        use crate::managed_stream_task::ManagedStreamTask;
+        use tokio::{sync::Mutex as AsyncMutex, time::Instant};
+        let root = CustodyStore::new(2);
+        let (first, permit) = ManagedStreamTask::prepare(async { 73u32 });
+        let first = Arc::new(AsyncMutex::new(first));
+        reserve_in_with(&root.0 .0, Arc::new(()), Some(first.clone()), || {}).unwrap();
+        let mismatch = reserve_in_with(&root.0 .0, Arc::new(()), Some(Arc::new(79u64)), || {}).unwrap();
+        root.close_admission().unwrap();
+        permit.send(()).unwrap();
+        assert_eq!(root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(5)).await, Err("execution.nested_task_type_mismatch"));
+        assert!(first.lock().await.take_joined().is_none());
+        mismatch.release();
+        assert!(root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().iter().all(|(_, result)| result.is_ok()));
+        assert_eq!(first.lock().await.take_joined().unwrap().unwrap(), Some(73));
+    }
     #[test]
     fn closed_task_snapshot_excludes_plain_owners_and_keeps_holder_after_record_release() {
         let root = CustodyStore::new(2);
