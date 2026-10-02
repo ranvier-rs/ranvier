@@ -2596,7 +2596,7 @@ mod tests {
     }
     #[tokio::test]
     async fn rejected_managed_registration_joins_prepared_child_without_effects() {
-        for failure in 0..3 {
+        for failure in 0..4 {
             let parent = crate::nested_custody::CustodyStore::new(if failure == 0 { 0 } else { 1 });
             let client = parent.client();
             if failure == 1 { parent.close_admission().unwrap(); }
@@ -2613,19 +2613,27 @@ mod tests {
                     panic!("rejected registration must not initialize driver");
                     #[allow(unreachable_code)] completed()
                 });
-            let task = prepared.holder();
             let journal = crate::SagaRollbackJournal::new("rejected-managed-parent");
-            let result = child.admit_managed_to_parent(client, &journal, CancellationToken::new(), &prepared).await;
+            let target = if failure == 3 {
+                OwnedStreamRecovery::try_new(
+                    Axon::<u32, u32, String, Resources>::start("foreign-registration-owner"),
+                    OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                    &StreamRecoveryAdmission::new(1), None).unwrap()
+            } else { child.clone() };
+            let result = target.admit_managed_to_parent(client, &journal, CancellationToken::new(), &prepared).await;
             let signal = match failure {
                 0 => "execution.nested_custody_capacity",
                 1 => "execution.nested_custody_admission_closed",
-                _ => "execution.parent_custody_released",
+                2 => "execution.parent_custody_released",
+                _ => "execution.nested_task_owner_mismatch",
             };
             assert!(matches!(result, Err(actual) if actual == signal));
             assert!(matches!(prepared.reject_until( tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             assert!(!child.inner.started.load(Ordering::Acquire));
             assert!(journal.retained_stream_observations().is_empty());
+            assert!(!target.inner.started.load(Ordering::Acquire));
+            drop(target);
             drop(child);
             drop(resources);
             assert!(weak.upgrade().is_none());
