@@ -253,6 +253,7 @@ struct TimeoutStream<S> {
     first_item_received: bool,
     last_item_at: tokio::time::Instant,
     finished: bool,
+    deadline_timer: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
 impl<S, Item> TimeoutStream<S>
@@ -268,6 +269,7 @@ where
             first_item_received: false,
             last_item_at: now,
             finished: false,
+            deadline_timer: None,
         }
     }
 }
@@ -288,11 +290,34 @@ where
             return std::task::Poll::Ready(None);
         }
 
-        // Check total timeout
-        if let Some(total) = this.config.total {
-            if this.started_at.elapsed() >= total {
-                tracing::warn!("Stream total timeout exceeded ({:?})", total);
+        // Arm the earliest applicable deadline even when the source never wakes.
+        // A deadline already reached takes precedence over a newly available item.
+        let total = this
+            .config
+            .total
+            .and_then(|d| this.started_at.checked_add(d));
+        let phase = if this.first_item_received {
+            this.config
+                .idle
+                .and_then(|d| this.last_item_at.checked_add(d))
+        } else {
+            this.config
+                .init
+                .and_then(|d| this.started_at.checked_add(d))
+        };
+        let deadline = match (total, phase) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        if let Some(deadline) = deadline {
+            let timer = this
+                .deadline_timer
+                .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
+            timer.as_mut().reset(deadline);
+            if std::future::Future::poll(timer.as_mut(), cx).is_ready() {
                 this.finished = true;
+                this.deadline_timer = None;
+                tracing::warn!("Stream deadline exceeded");
                 return std::task::Poll::Ready(None);
             }
         }
@@ -307,33 +332,7 @@ where
                 this.finished = true;
                 std::task::Poll::Ready(None)
             }
-            std::task::Poll::Pending => {
-                let now = tokio::time::Instant::now();
-
-                // Check init timeout (before first item)
-                if !this.first_item_received {
-                    if let Some(init) = this.config.init {
-                        if now.duration_since(this.started_at) >= init {
-                            tracing::warn!("Stream init timeout exceeded ({:?})", init);
-                            this.finished = true;
-                            return std::task::Poll::Ready(None);
-                        }
-                    }
-                }
-
-                // Check idle timeout (between items)
-                if this.first_item_received {
-                    if let Some(idle) = this.config.idle {
-                        if now.duration_since(this.last_item_at) >= idle {
-                            tracing::warn!("Stream idle timeout exceeded ({:?})", idle);
-                            this.finished = true;
-                            return std::task::Poll::Ready(None);
-                        }
-                    }
-                }
-
-                std::task::Poll::Pending
-            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
 }
@@ -514,5 +513,53 @@ mod tests {
         );
         token.cancel(ranvier_core::CancellationReason::Explicit);
         assert_eq!(value.next().await, None);
+    }
+}
+
+#[cfg(test)]
+mod timeout_wakeup_tests {
+    use super::*;
+    use futures_util::{
+        stream,
+        task::{ArcWake, waker},
+    };
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        task::{Context, Poll},
+        time::Duration,
+    };
+    struct WakeCount(AtomicUsize);
+    impl ArcWake for WakeCount {
+        fn wake_by_ref(this: &Arc<Self>) {
+            this.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    #[tokio::test]
+    async fn pending_stream_deadlines_register_their_own_wakeup() {
+        for mode in 0..3 {
+            let delay = Duration::from_millis(20);
+            let config = StreamTimeoutConfig {
+                init: (mode == 0).then_some(delay),
+                idle: (mode == 1).then_some(delay),
+                total: (mode == 2).then_some(delay),
+            };
+            let input = stream::iter((mode == 1).then_some(7)).chain(stream::pending());
+            let mut wrapped = Box::pin(TimeoutStream::new(input, config));
+            let counter = Arc::new(WakeCount(AtomicUsize::new(0)));
+            let task_waker = waker(counter.clone());
+            let mut cx = Context::from_waker(&task_waker);
+            if mode == 1 {
+                assert_eq!(wrapped.as_mut().poll_next(&mut cx), Poll::Ready(Some(7)));
+            }
+            assert_eq!(wrapped.as_mut().poll_next(&mut cx), Poll::Pending);
+            // This observation timer does not poll the stream or share its waker.
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            assert!(
+                counter.0.load(Ordering::SeqCst) > 0,
+                "deadline mode {mode} never woke its consumer"
+            );
+            assert_eq!(wrapped.as_mut().poll_next(&mut cx), Poll::Ready(None));
+            assert_eq!(wrapped.as_mut().poll_next(&mut cx), Poll::Ready(None));
+        }
     }
 }
