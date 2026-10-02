@@ -76,6 +76,42 @@ pub(crate) enum LocalTaskClaimError { Unavailable, Missing, NotEligible, Claimed
 #[cfg(feature = "streaming")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExternalTaskClaimError { Unavailable, Missing, NotEligible, Claimed, IdentityMismatch, TimedOut }
+#[cfg(feature = "streaming")]
+struct PanicSafeDropFuture<F> {
+    inner: Option<std::pin::Pin<Box<F>>>,
+    drop_panicked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+#[cfg(feature = "streaming")]
+impl<F> Unpin for PanicSafeDropFuture<F> {}
+#[cfg(feature = "streaming")]
+impl<F> PanicSafeDropFuture<F> {
+    fn new(future: F, drop_panicked: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self { inner: Some(Box::pin(future)), drop_panicked }
+    }
+}
+#[cfg(feature = "streaming")]
+impl<F: std::future::Future> std::future::Future for PanicSafeDropFuture<F> {
+    type Output = F::Output;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let Some(inner) = self.get_mut().inner.as_mut() else {
+            return std::task::Poll::Pending;
+        };
+        inner.as_mut().poll(context)
+    }
+}
+#[cfg(feature = "streaming")]
+impl<F> Drop for PanicSafeDropFuture<F> {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take()
+            && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(inner))).is_err()
+        {
+            self.drop_panicked.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
 /// Framework-only exclusive lease; the journal retains the original bytes.
 /// This is not original owner, durable reconciliation or retirement authority.
 #[cfg(feature = "streaming")]
@@ -195,22 +231,37 @@ impl ExternalTaskClaim {
             return Err(ExternalTaskClaimError::TimedOut);
         }
         self.validate_original()?;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(ExternalTaskClaimError::TimedOut);
+        }
         let Some(idempotency) = self.recovery.idempotency.clone() else {
             return Ok(crate::streaming_report_handle::StreamExternalReadback::ReadUnavailable);
         };
         let store = idempotency.store();
         let key = crate::persistence::compensation_idempotency_key(&self.recovery.context);
-        let read = std::panic::AssertUnwindSafe(async move { store.was_compensated(&key).await })
-            .catch_unwind();
-        match tokio::time::timeout_at(deadline, read).await {
-            Err(_) => Err(ExternalTaskClaimError::TimedOut),
-            Ok(Err(_)) | Ok(Ok(Err(_))) => {
+        let drop_panicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let readback = PanicSafeDropFuture::new(
+            async move { store.was_compensated(&key).await },
+            drop_panicked.clone(),
+        );
+        let checked = std::panic::AssertUnwindSafe(tokio::time::timeout_at(deadline, readback))
+            .catch_unwind().await;
+        match checked {
+            Err(_) => Ok(crate::streaming_report_handle::StreamExternalReadback::ReadUnavailable),
+            Ok(Err(_)) => Err(ExternalTaskClaimError::TimedOut),
+            Ok(Ok(_)) if tokio::time::Instant::now() >= deadline => {
+                Err(ExternalTaskClaimError::TimedOut)
+            }
+            Ok(Ok(Err(_))) => {
                 Ok(crate::streaming_report_handle::StreamExternalReadback::ReadUnavailable)
             }
-            Ok(Ok(Ok(false))) => Ok(crate::streaming_report_handle::StreamExternalReadback::NotConfirmed),
+            Ok(Ok(Ok(_))) if drop_panicked.load(std::sync::atomic::Ordering::SeqCst) => {
+                Ok(crate::streaming_report_handle::StreamExternalReadback::ReadUnavailable)
+            }
+            Ok(Ok(Ok(false))) => Ok(crate::streaming_report_handle::StreamExternalReadback::MarkerAbsent),
             Ok(Ok(Ok(true))) => {
                 self.settle_confirmed()?;
-                Ok(crate::streaming_report_handle::StreamExternalReadback::Confirmed)
+                Ok(crate::streaming_report_handle::StreamExternalReadback::MarkerPresent)
             }
         }
     }

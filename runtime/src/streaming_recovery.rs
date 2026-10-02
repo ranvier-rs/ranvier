@@ -797,7 +797,7 @@ where
                         crate::streaming_report_handle::StreamExternalRecoveryError::FrameNotReported,
                     _ => crate::streaming_report_handle::StreamExternalRecoveryError::Unavailable,
                 })?;
-                owner.reconcile_next_external_compensation_until(deadline).await
+                owner.readback_next_external_compensation_until(deadline).await
             })
         })
     }
@@ -871,7 +871,7 @@ where
             | LocalTaskClaimError::Claimed | LocalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
         })
     }
-    async fn reconcile_next_external_compensation_until(
+    async fn readback_next_external_compensation_until(
         &self,
         deadline: tokio::time::Instant,
     ) -> Result<crate::streaming_report_handle::StreamExternalReadback, crate::streaming_report_handle::StreamExternalRecoveryError> {
@@ -892,6 +892,11 @@ where
         }
         let journal = context.1.read::<crate::SagaRollbackJournal>().cloned()
             .ok_or(Error::JournalUnavailable)?;
+        // The journal claim retains the exact capability. Marker I/O does not
+        // need the mutable owner Bus/resources context, so release it before
+        // awaiting a user-provided store while keeping the recovery operation
+        // serialized by `_operation`.
+        drop(context);
         let claim = journal.claim_next_external().map_err(|error| match error {
             ExternalTaskClaimError::Unavailable => Error::Unavailable,
             ExternalTaskClaimError::TimedOut => Error::Wait(StreamReportWaitError::TimedOut),

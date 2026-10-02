@@ -157,10 +157,20 @@ pub enum StreamLocalRecoveryError {
     HandlerRegistryUnavailable,
 }
 pub(crate) type LocalRecovery = Arc<dyn Fn(Instant) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<crate::SagaRollbackOutcome, StreamLocalRecoveryError>> + Send>> + Send + Sync>;
-/// Safe result of reading the external compensation completion marker. A
-/// negative or unavailable read is inconclusive and never authorizes replay.
+/// Observation returned by reading the existing external compensation key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamExternalReadback { Confirmed, NotConfirmed, ReadUnavailable }
+pub enum StreamExternalReadback {
+    /// The stored key exists and the claimed journal row was locally settled.
+    /// The legacy key omits `fault_step`, so this does not establish a globally
+    /// unique per-effect identity or exactly-once external execution.
+    MarkerPresent,
+    /// No marker exists for the current key. This does not prove the external
+    /// action did not occur.
+    MarkerAbsent,
+    /// No marker store exists or the read failed/panicked; the row stays retained.
+    ReadUnavailable,
+}
+/// Fixed failures while joining the original owner or claiming its journal row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamExternalRecoveryError {
     Wait(StreamReportWaitError),
@@ -209,21 +219,18 @@ impl<Out: Send + 'static, E: Send + 'static> StreamReportHandle<Out, E> {
     pub async fn reconcile_next_local_compensation_until(&self, deadline: Instant)
         -> Result<crate::SagaRollbackOutcome, StreamLocalRecoveryError> {
         let recovery = self.local_recovery.as_ref().ok_or(StreamLocalRecoveryError::Unavailable)?;
-        self.require_reported_frame(deadline).await?;
         recovery(deadline).await
     }
-    /// Read back only the first retained external compensation marker from this
-    /// joined report's original typed owner. This never calls the external hook.
-    /// A missing marker, read failure or timeout keeps the original capability;
-    /// a positive marker completes one row but never seals the journal.
-    pub async fn reconcile_next_external_compensation_until(&self, deadline: Instant)
+    /// Read only the first retained external compensation marker from this
+    /// report's original typed owner. This never calls the external hook. A
+    /// missing marker or read failure keeps the original capability; a positive
+    /// marker completes one row but never seals the journal. The result
+    /// describes the existing key and does not establish a globally unique
+    /// effect identity. The deadline bounds yielding store futures, but cannot
+    /// preempt synchronous blocking code.
+    pub async fn readback_next_external_compensation_until(&self, deadline: Instant)
         -> Result<StreamExternalReadback, StreamExternalRecoveryError> {
         let recovery = self.external_recovery.as_ref().ok_or(StreamExternalRecoveryError::Unavailable)?;
-        self.require_reported_frame(deadline).await.map_err(|error| match error {
-            StreamLocalRecoveryError::Wait(error) => StreamExternalRecoveryError::Wait(error),
-            StreamLocalRecoveryError::FrameNotReported => StreamExternalRecoveryError::FrameNotReported,
-            _ => StreamExternalRecoveryError::Unavailable,
-        })?;
         recovery(deadline).await
     }
     pub(crate) async fn require_reported_frame(&self, deadline: Instant) -> Result<(), StreamLocalRecoveryError> {
