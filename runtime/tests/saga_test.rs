@@ -721,3 +721,63 @@ async fn direct_compensation_panic_preserves_original_fault_for_both_saga_polici
         );
     }
 }
+
+#[tokio::test]
+async fn saga_handler_factory_panic_keeps_remaining_rollback_and_business_fault() {
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let axon = Axon::<SagaState, SagaState, String>::start("factory-panic")
+        .with_saga_policy(SagaPolicy::Enabled)
+        .then_compensated(
+            SuccStep { id: "1".into() },
+            CompStep {
+                id: "1".into(),
+                results: results.clone(),
+            },
+        )
+        .then_compensated(
+            SuccStep { id: "2".into() },
+            CompStep {
+                id: "2".into(),
+                results: results.clone(),
+            },
+        )
+        .then(FailStep);
+    let node = axon
+        .schematic
+        .nodes
+        .iter()
+        .find(|n| n.label == "Step_2")
+        .unwrap()
+        .id
+        .clone();
+    axon.saga_compensation_registry.write().unwrap().register(
+        node,
+        Arc::new(|_, _, _| panic!("synthetic compensation factory panic")),
+    );
+    let report = axon
+        .execute(
+            SagaState {
+                cnt: 0,
+                log: vec![],
+            },
+            &(),
+            &mut Bus::new(),
+        )
+        .await;
+    assert!(
+        matches!(&report, ranvier_runtime::ExecutionReport::Unpersisted {result:Outcome::Fault(error),..} if error == "Planned SAGA Failure")
+    );
+    let cleanup = report.cleanup().unwrap();
+    assert!(cleanup.finished);
+    assert!(!cleanup.is_complete());
+    assert_eq!(cleanup.steps.len(), 2);
+    assert_eq!(
+        cleanup.steps[0].outcome,
+        ranvier_runtime::SagaRollbackOutcome::Panicked
+    );
+    assert_eq!(
+        cleanup.steps[1].outcome,
+        ranvier_runtime::SagaRollbackOutcome::Completed
+    );
+    assert_eq!(results.lock().unwrap().len(), 1);
+}

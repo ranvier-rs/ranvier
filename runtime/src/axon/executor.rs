@@ -844,9 +844,11 @@ where
                 journal.push(task.node_id.clone(), SagaRollbackOutcome::InProgress);
                 bus.insert(journal.clone());
                 use futures_util::FutureExt as _;
-                let result = AssertUnwindSafe(handler(task.input_snapshot, resources, bus))
-                    .catch_unwind()
-                    .await;
+                // Factory invocation can unwind before returning its future.
+                let result =
+                    AssertUnwindSafe(async { handler(task.input_snapshot, resources, bus).await })
+                        .catch_unwind()
+                        .await;
                 // A panicked handler bypasses its normal guard removal. Journal
                 // writes and the next handler belong to the framework scope.
                 bus.clear_access_policy();
