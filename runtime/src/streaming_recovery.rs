@@ -2118,24 +2118,33 @@ mod tests {
         let journal = captured.lock().unwrap().clone().unwrap();
         assert!(!journal.snapshot().is_complete());
         assert_eq!(journal.snapshot().steps[0].outcome, crate::SagaRollbackOutcome::InProgress);
-        assert_eq!(journal.unresolved_tasks().len(), 1);
+        let unresolved = journal.unresolved_tasks();
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].input_snapshot, b"264");
+        assert_eq!(journal.snapshot().steps.len(), 1);
         let inner = admission.upgrade().unwrap()
             .downcast::<RecoveryInner<u32, u32, String, Resources>>()
             .unwrap_or_else(|_| panic!("wrong child cleanup owner"));
         {
             let context = inner.context.lock().await;
             assert!(Arc::ptr_eq(&context.0, &resources));
+            assert!(!context.1.has::<crate::nested_custody::CustodyStore>());
+            assert!(context.1.has::<crate::nested_custody::WeakCustodyClient>());
+            assert!(inner.graph.saga_compensation_registry.read().unwrap().get(&unresolved[0].node_id).is_some());
             let stack = context.1.read::<SagaStack>().unwrap();
             assert_eq!(stack.tasks.len(), 1);
             assert_eq!(stack.tasks[0].input_snapshot, b"263");
             assert!(inner.graph.saga_compensation_registry.read().unwrap().get(&stack.tasks[0].node_id).is_some());
         }
         assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+        drop(unresolved);
+        let registry = Arc::downgrade(&inner.graph.saga_compensation_registry);
         drop(inner);
         drop(resources);
         assert!(weak.upgrade().is_some());
         drop(parent);
         assert!(weak.upgrade().is_none());
+        assert!(registry.upgrade().is_none());
         assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
         assert_eq!(journal.snapshot().steps[0].outcome, crate::SagaRollbackOutcome::InProgress);
     }
