@@ -497,6 +497,15 @@ where
         client: crate::nested_custody::WeakCustodyClient,
         parent: Option<CancellationToken>,
     ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
+        self.bind_parent(client, parent, None).await
+    }
+
+    async fn bind_parent(
+        &self,
+        client: crate::nested_custody::WeakCustodyClient,
+        parent: Option<CancellationToken>,
+        journal: Option<&crate::SagaRollbackJournal>,
+    ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
         if self.inner.started.load(Ordering::Acquire) {
             return Err("execution.nested_stream_already_started");
         }
@@ -514,7 +523,10 @@ where
             {
                 return Err("execution.nested_stream_already_bound");
             }
-            let admission = client.reserve(self.inner.clone())?;
+            let admission = match journal {
+                Some(journal) => client.reserve_stream(self.inner.clone(), journal, self.observe())?,
+                None => client.reserve(self.inner.clone())?,
+            };
             bus.insert(client);
             bus.insert(ParentStreamCustody(admission.clone(), parent.map(|token| token.child_token())));
             Ok(admission)
@@ -539,9 +551,7 @@ where
         journal: &crate::SagaRollbackJournal,
         parent: Option<CancellationToken>,
     ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
-        let admission = self.admit_to_parent_with_control(client, parent).await?;
-        journal.retain_stream_child(self.observe());
-        Ok(admission)
+        self.bind_parent(client, parent, Some(journal)).await
     }
 
     pub(crate) async fn initialize_and_drive<Item, SErr, S, T, F, Fut>(

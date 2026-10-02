@@ -112,6 +112,16 @@ impl CustodyStore {
     }
 }
 impl WeakCustodyClient {
+    #[cfg(feature = "streaming")]
+    pub(crate) fn reserve_stream(
+        &self,
+        record: Capability,
+        journal: &crate::SagaRollbackJournal,
+        observer: tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>,
+    ) -> Result<WeakCustody, &'static str> {
+        let store = self.0.upgrade().ok_or("execution.parent_custody_released")?;
+        reserve_in_with(&store, record, || journal.retain_stream_child(observer))
+    }
     pub(crate) fn validate_member(
         &self,
         admission: &WeakCustody,
@@ -146,6 +156,13 @@ impl WeakCustodyClient {
     }
 }
 fn reserve_in(store: &Arc<StoreInner>, record: Capability) -> Result<WeakCustody, &'static str> {
+    reserve_in_with(store, record, || {})
+}
+// Only fixed framework bookkeeping may run under this gate. No user callbacks,
+// awaits or record retirement. Lock order: store records -> journal report/list.
+fn reserve_in_with(
+    store: &Arc<StoreInner>, record: Capability, register: impl FnOnce(),
+) -> Result<WeakCustody, &'static str> {
     let mut records = store
         .records
         .lock()
@@ -169,6 +186,7 @@ fn reserve_in(store: &Arc<StoreInner>, record: Capability) -> Result<WeakCustody
         store: Arc::downgrade(store),
     };
     records.insert(id, record);
+    register();
     Ok(weak)
 }
 impl WeakCustody {
