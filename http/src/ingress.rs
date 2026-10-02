@@ -80,11 +80,24 @@ struct RequestCancellationToken(CancellationToken);
 #[derive(Clone)]
 struct RequestTaskOwner(ManagedTaskRegistry);
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct ManagedTaskRegistry {
     tasks: Arc<Mutex<tokio::task::JoinSet<()>>>,
     closed: Arc<std::sync::atomic::AtomicBool>,
+    reservation_limit: usize,
 }
+
+impl Default for ManagedTaskRegistry {
+    fn default() -> Self {
+        Self {
+            tasks: Arc::new(Mutex::new(tokio::task::JoinSet::new())),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            reservation_limit: 1024,
+        }
+    }
+}
+#[derive(Debug, PartialEq, Eq)]
+enum TaskReservationError { Closed, Capacity }
 
 type ManagedTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
@@ -122,15 +135,24 @@ impl ManagedTaskRegistry {
         Ok(())
     }
 
-    async fn reserve(&self) -> Option<ManagedTaskReservation> {
-        if self.is_closed() { return None; }
+    async fn reserve(&self) -> Result<ManagedTaskReservation, TaskReservationError> {
+        if self.is_closed() { return Err(TaskReservationError::Closed); }
         let mut tasks = self.tasks.lock().await;
-        if self.is_closed() { return None; }
+        if self.is_closed() { return Err(TaskReservationError::Closed); }
+        // Reap completed work so admission counts live slots, not historical requests.
+        while let Some(result) = tasks.try_join_next() {
+            if result.is_err() {
+                tracing::warn!("Managed task completed abnormally during admission");
+            }
+        }
+        if tasks.len() >= self.reservation_limit {
+            return Err(TaskReservationError::Capacity);
+        }
         let (sender, receiver) = tokio::sync::oneshot::channel::<ManagedTask>();
         tasks.spawn(async move {
             if let Ok(task) = receiver.await { task.await; }
         });
-        Some(ManagedTaskReservation(sender))
+        Ok(ManagedTaskReservation(sender))
     }
 
     fn is_closed(&self) -> bool {
@@ -3254,8 +3276,13 @@ where
                 async move {
                     let task_reservation = match request_task_owner(&parts) {
                         Some(owner) => match owner.reserve().await {
-                            Some(reservation) => Some(reservation),
-                            None => return task_admission_closed_response(false),
+                            Ok(reservation) => Some(reservation),
+                            Err(TaskReservationError::Closed) => return task_admission_closed_response(false),
+                            Err(TaskReservationError::Capacity) => return build_response(
+                                Response::builder().status(StatusCode::SERVICE_UNAVAILABLE)
+                                    .header("content-type", "application/json").header("cache-control", "no-store"),
+                                boxed_body(serde_json::json!({"code":"managed_task_capacity_exhausted", "reconciliation_required":false}).to_string()),
+                            ),
                         },
                         None => None,
                     };
@@ -6859,7 +6886,7 @@ mod tests {
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         retained.await;
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert!(registry.reserve().await.is_none());
+        assert!(matches!(registry.reserve().await, Err(TaskReservationError::Closed)));
     }
 
     #[tokio::test]
@@ -6879,6 +6906,26 @@ mod tests {
             assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), usize::from(start));
             assert!(registry.tasks.lock().await.is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn managed_task_reservation_capacity_recovers_after_slot_release() {
+        let registry = ManagedTaskRegistry { reservation_limit: 1, ..Default::default() };
+        let slot = registry.reserve().await.unwrap();
+        assert!(matches!(registry.reserve().await, Err(TaskReservationError::Capacity)));
+        drop(slot);
+        // Observe completion of the actual oneshot receiver before reserving again.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                match registry.reserve().await {
+                    Ok(slot) => { drop(slot); break; }
+                    Err(TaskReservationError::Capacity) => tokio::task::yield_now().await,
+                    Err(_) => panic!("capacity recovery closed registry"),
+                }
+            }
+        }).await.unwrap();
+        let report = registry.drain_until(tokio::time::Instant::now() + Duration::from_secs(1)).await;
+        assert_eq!(report.forced_aborts, 0);
     }
 
     #[test]
