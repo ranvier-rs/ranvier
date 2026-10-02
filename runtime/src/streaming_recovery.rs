@@ -2027,6 +2027,57 @@ mod tests {
         assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
         admission.release();
     }
+    #[tokio::test]
+    async fn parent_store_retains_child_after_actual_initializer_abort_without_driver_poll() {
+        let parent = crate::nested_custody::CustodyStore::new(1);
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let weak = Arc::downgrade(&resources);
+        let mut bus = Bus::new();
+        bus.insert(9911u64);
+        let child = OwnedStreamRecovery::try_new(
+            Axon::<u32, u32, String, Resources>::start("parent-child-init-abort")
+                .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+            OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
+            &StreamRecoveryAdmission::new(1), None).unwrap();
+        let admission = child.admit_to_parent(parent.client()).await.unwrap();
+        let observer = child.observe();
+        let entered = Arc::new(Notify::new());
+        let signal = entered.clone();
+        let drivers = Arc::new(AtomicUsize::new(0));
+        let driver_calls = drivers.clone();
+        let task = tokio::spawn(async move {
+            child.initialize_and_drive(251, &PendingInit(signal), None,
+                std::time::Duration::from_secs(30), move |_| async move {
+                    driver_calls.fetch_add(1, Ordering::SeqCst);
+                    completed()
+                }).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+        assert_eq!(observer.borrow().phase, SupervisorPhase::Initializing);
+        task.abort();
+        assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+        assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
+        assert_eq!(observer.borrow().custody, RecoveryCustody::Held);
+        assert_eq!(drivers.load(Ordering::SeqCst), 0);
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
+        let inner = admission.upgrade().unwrap()
+            .downcast::<RecoveryInner<u32, u32, String, Resources>>()
+            .unwrap_or_else(|_| panic!("wrong initializer recovery owner"));
+        {
+            let context = inner.context.lock().await;
+            assert!(Arc::ptr_eq(&context.0, &resources));
+            assert_eq!(context.1.read::<u64>(), Some(&9911));
+            let retained = &context.1.read::<SagaStack>().unwrap().tasks[0];
+            assert_eq!(retained.input_snapshot, b"251");
+            assert!(inner.graph.saga_compensation_registry.read().unwrap().get(&retained.node_id).is_some());
+        }
+        drop(inner);
+        drop(resources);
+        assert!(weak.upgrade().is_some());
+        drop(parent);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
+    }
     struct ExternalHook {
         mode: u8,
         calls: Arc<AtomicUsize>,
