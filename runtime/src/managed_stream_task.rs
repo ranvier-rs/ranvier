@@ -12,6 +12,15 @@ pub(crate) struct ManagedStreamTask<T> {
 pub(crate) enum ManagedTaskWaitError { TimedOut, AlreadyJoined }
 
 impl<T: Send + 'static> ManagedStreamTask<T> {
+    /// Reject the unopened start gate before returning the borrowed join wait.
+    /// Even an unpolled/dropped wait cannot grant start; caller retains this
+    /// task owner and must retry join after a timeout or dropped wait.
+    pub(crate) fn reject_start_until(
+        &mut self, permit: oneshot::Sender<()>, deadline: Instant,
+    ) -> impl Future<Output = Result<Result<Option<T>, tokio::task::JoinError>, ManagedTaskWaitError>> + '_ {
+        drop(permit);
+        self.join_until(deadline)
+    }
     /// The future is never polled until the registering supervisor grants start.
     /// Dropping the permit rejects start; caller still owns and must join the task.
     pub(crate) fn prepare<F>(future: F) -> (Self, oneshot::Sender<()>)
@@ -66,6 +75,17 @@ impl<T> Drop for ManagedStreamTask<T> {
 mod tests {
     use super::*;
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    #[tokio::test]
+    async fn unpolled_rejection_wait_rejects_start_and_preserves_join_custody() {
+        let effects = Arc::new(AtomicUsize::new(0));
+        let observed = effects.clone();
+        let (mut task, permit) = ManagedStreamTask::prepare(async move {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        drop(task.reject_start_until(permit, Instant::now()));
+        assert!(matches!(task.join_until(Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+        assert_eq!(effects.load(Ordering::SeqCst), 0);
+    }
 
     #[tokio::test]
     async fn settled_report_is_retained_until_explicit_take() {

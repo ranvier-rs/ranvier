@@ -2603,8 +2603,7 @@ mod tests {
                 _ => "execution.parent_custody_released",
             };
             assert!(matches!(result, Err(actual) if actual == signal));
-            drop(permit);
-            assert!(matches!(task.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+            assert!(matches!(task.lock().await.reject_start_until(permit, tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             assert!(!child.inner.started.load(Ordering::Acquire));
             assert!(journal.retained_stream_observations().is_empty());
