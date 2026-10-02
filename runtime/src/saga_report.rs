@@ -112,6 +112,40 @@ impl SagaRollbackJournal {
         self.5.lock().unwrap_or_else(|p| p.into_inner()).iter()
             .map(|(index, observer)| (*index, observer.borrow().clone())).collect()
     }
+    /// Wait for the current child observation set using one absolute deadline.
+    /// This does not cancel children or retire their recovery records. Returned
+    /// and Interrupted are local execution termination, not durable completion.
+    #[cfg(feature = "streaming")]
+    pub(crate) async fn drain_stream_children(&self, deadline: tokio::time::Instant) -> Result<(), usize> {
+        use futures_util::{stream::FuturesUnordered, StreamExt};
+        let observers: Vec<_> = self.5.lock().unwrap_or_else(|p| p.into_inner())
+            .iter().map(|(_, observer)| observer.clone()).collect();
+        let mut pending = FuturesUnordered::new();
+        for mut observer in observers {
+            pending.push(async move {
+                loop {
+                    let settled = {
+                        let state = observer.borrow_and_update();
+                        matches!(state.phase, crate::streaming_recovery::SupervisorPhase::Returned
+                            | crate::streaming_recovery::SupervisorPhase::Interrupted)
+                            || state.custody != crate::streaming_recovery::RecoveryCustody::Held
+                    };
+                    if settled { return true; }
+                    if observer.changed().await.is_err() { return false; }
+                }
+            });
+        }
+        let mut unknown = 0;
+        while !pending.is_empty() {
+            match tokio::time::timeout_at(deadline, pending.next()).await {
+                Ok(Some(true)) => {},
+                Ok(Some(false)) => unknown += 1,
+                Ok(None) => break,
+                Err(_) => return Err(unknown + pending.len()),
+            }
+        }
+        if unknown == 0 { Ok(()) } else { Err(unknown) }
+    }
     pub(crate) fn retain_custody(&self, custody: crate::nested_custody::WeakCustody) {
         let mut incoming = Some(custody);
         {

@@ -2438,6 +2438,7 @@ mod tests {
                 tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
                 control.cancel(ranvier_core::CancellationReason::OperatorShutdown);
             }
+            assert_eq!(journal.drain_stream_children(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(()));
             let report = tokio::time::timeout(std::time::Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
             if override_control {
                 assert!(matches!(report, StreamInitializationReport::Rejected { prefix:
