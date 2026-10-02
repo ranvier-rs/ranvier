@@ -60,7 +60,7 @@ pub struct SagaRollbackJournal(
     std::sync::Arc<std::sync::Mutex<SagaRollbackReport>>,
     std::sync::Arc<std::sync::Mutex<Vec<(usize, ranvier_core::saga::SagaTask)>>>,
     std::sync::Arc<std::sync::Mutex<Vec<(usize, ExternalCompensationRecovery)>>>,
-    std::sync::Arc<std::sync::Mutex<Vec<SagaRollbackJournal>>>,
+    std::sync::Arc<std::sync::Mutex<Vec<(usize, SagaRollbackJournal)>>>,
 );
 impl std::fmt::Debug for SagaRollbackJournal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -98,11 +98,25 @@ impl SagaRollbackJournal {
     pub(crate) fn has_unresolved_tasks(&self) -> bool {
         let mut pending = vec![self.clone()];
         while let Some(journal) = pending.pop() {
-            if !journal.1.lock().unwrap_or_else(|p| p.into_inner()).is_empty()
-                || !journal.2.lock().unwrap_or_else(|p| p.into_inner()).is_empty() {
+            if !journal
+                .1
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_empty()
+                || !journal
+                    .2
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_empty()
+            {
                 return true;
             }
-            pending.extend(journal.retained_children());
+            pending.extend(
+                journal
+                    .retained_children()
+                    .into_iter()
+                    .map(|(_, child)| child),
+            );
         }
         false
     }
@@ -110,10 +124,23 @@ impl SagaRollbackJournal {
     /// parent. Keeping child storage distinct preserves local indices and trace.
     /// This is custody, not replay authority or typed child-resource recovery.
     pub(crate) fn retain_child(&self, child: Self) {
-        self.push("nested-invocation".into(), SagaRollbackOutcome::InProgress);
-        self.3.lock().unwrap_or_else(|p| p.into_inner()).push(child);
+        let mut report = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let index = report.steps.len();
+        report.finished = false;
+        report.steps.push(SagaRollbackStep {
+            node_id: "nested-invocation".into(),
+            outcome: SagaRollbackOutcome::InProgress,
+        });
+        self.3
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((index, child));
     }
-    pub(crate) fn retained_children(&self) -> Vec<Self> {
+    #[cfg(all(test, feature = "streaming"))]
+    pub(crate) fn shares_report_with(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+    pub(crate) fn retained_children(&self) -> Vec<(usize, Self)> {
         self.3.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
     pub(crate) fn push_task(&self, task: ranvier_core::saga::SagaTask) {

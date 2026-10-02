@@ -1047,7 +1047,9 @@ impl Session {
             let mut parent = self.previous_cleanup;
             if let Some(child) = pending_child {
                 let journal = parent.get_or_insert_with(|| {
-                    let trace = bus.read::<PersistenceTraceId>().map(|trace| trace.0.clone())
+                    let trace = bus
+                        .read::<PersistenceTraceId>()
+                        .map(|trace| trace.0.clone())
                         .or_else(|| bus.read::<InvocationTrace>().map(|trace| trace.0.clone()))
                         .unwrap_or_else(|| bus.id.to_string());
                     crate::saga_report::SagaRollbackJournal::new(&trace)
@@ -1067,6 +1069,7 @@ impl Session {
             let _ = bus.remove::<ActiveObservation>();
         }
     }
+
 }
 
 /// Exact control-plane state suspended across a framework initialization boundary.
