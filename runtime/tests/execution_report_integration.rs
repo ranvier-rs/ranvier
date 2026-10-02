@@ -1302,3 +1302,131 @@ async fn verify_compensated_result_ack_cancellation(apply_blocked: bool) {
         &bus.read::<PersistenceHandle>().unwrap().store()
     ));
 }
+
+struct MarkerWriteAckFailure {
+    backing: InMemoryCompensationIdempotencyStore,
+    apply_before_error: bool,
+    reads: AtomicUsize,
+    writes: AtomicUsize,
+    last_key: std::sync::Mutex<Option<String>>,
+}
+
+#[async_trait::async_trait]
+impl CompensationIdempotencyStore for MarkerWriteAckFailure {
+    async fn was_compensated(&self, key: &str) -> anyhow::Result<bool> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        *self.last_key.lock().unwrap() = Some(key.to_string());
+        self.backing.was_compensated(key).await
+    }
+
+    async fn mark_compensated(&self, key: &str) -> anyhow::Result<()> {
+        self.writes.fetch_add(1, Ordering::SeqCst);
+        *self.last_key.lock().unwrap() = Some(key.to_string());
+        if self.apply_before_error {
+            self.backing.mark_compensated(key).await?;
+        }
+        Err(anyhow::anyhow!("private-marker-ack-sentinel"))
+    }
+}
+
+#[derive(Clone)]
+struct CountFault(Arc<AtomicUsize>);
+
+#[async_trait::async_trait]
+impl Transition<u32, u32> for CountFault {
+    type Error = String;
+    type Resources = ();
+
+    async fn run(&self, _: u32, _: &(), _: &mut Bus) -> Outcome<u32, String> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Outcome::Fault("business-fault".into())
+    }
+}
+
+#[derive(Clone)]
+struct CountCompensation(Arc<AtomicUsize>);
+
+#[async_trait::async_trait]
+impl CompensationHook for CountCompensation {
+    async fn compensate(&self, _: CompensationContext) -> anyhow::Result<()> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn compensation_marker_write_ack_loss_preserves_fault_and_uncertainty() {
+    for apply_before_error in [false, true] {
+        let trace_id = if apply_before_error {
+            "marker-applied-ack-lost"
+        } else {
+            "marker-not-applied"
+        };
+        let trace_store = InMemoryPersistenceStore::new();
+        let marker_store = Arc::new(MarkerWriteAckFailure {
+            backing: InMemoryCompensationIdempotencyStore::new(),
+            apply_before_error,
+            reads: AtomicUsize::new(0),
+            writes: AtomicUsize::new(0),
+            last_key: std::sync::Mutex::new(None),
+        });
+        let effects = Arc::new(AtomicUsize::new(0));
+        let compensation_calls = Arc::new(AtomicUsize::new(0));
+        let mut bus = Bus::new();
+        bus.insert(PersistenceTraceId::new(trace_id));
+        bus.insert(PersistenceHandle::from_store(trace_store.clone()));
+        bus.insert(CompensationIdempotencyHandle::from_arc(
+            marker_store.clone(),
+        ));
+        bus.insert(CompensationHandle::from_hook(CountCompensation(
+            compensation_calls.clone(),
+        )));
+        let axon =
+            Axon::<u32, u32, String, ()>::new("marker-ack-loss").then(CountFault(effects.clone()));
+
+        let report = axon.execute(7, &(), &mut bus).await;
+
+        assert!(matches!(
+            report,
+            ExecutionReport::Unconfirmed {
+                result: Outcome::Fault(ref message),
+                operation: PersistenceOperation::CompensationWrite,
+                effect: EffectBoundary::MayHaveRun,
+                ..
+            } if message == "business-fault"
+        ));
+        assert!(
+            !serde_json::to_string(&report)
+                .unwrap()
+                .contains("private-marker-ack-sentinel")
+        );
+        let cleanup = report.cleanup().expect("external compensation is observed");
+        assert_eq!(cleanup.trace_id, trace_id);
+        assert!(!cleanup.is_complete());
+        assert_eq!(cleanup.steps.len(), 1);
+        assert_eq!(
+            cleanup.steps[0].outcome,
+            ranvier_runtime::SagaRollbackOutcome::Fault
+        );
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert_eq!(compensation_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(marker_store.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(marker_store.writes.load(Ordering::SeqCst), 1);
+
+        let key = marker_store.last_key.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            marker_store.backing.was_compensated(&key).await.unwrap(),
+            apply_before_error
+        );
+        let trace = trace_store.load(trace_id).await.unwrap().unwrap();
+        assert_eq!(trace.completion, Some(CompletionState::Fault));
+        assert_eq!(
+            trace
+                .events
+                .iter()
+                .map(|event| event.outcome_kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Enter", "Fault", "Fault"]
+        );
+    }
+}
