@@ -2574,7 +2574,7 @@ mod tests {
     }
     #[tokio::test]
     async fn managed_task_preserves_actual_child_initialization_report_and_rejected_start_has_no_effects() {
-        for grant_start in [false, true] {
+        for (grant_start, retire_root) in [(false, false), (true, false), (true, true)] {
             let parent = crate::nested_custody::CustodyStore::new(1);
             let control = CancellationToken::new();
             let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
@@ -2619,6 +2619,10 @@ mod tests {
                     tokio::pin!(wait);
                     assert!(futures_util::poll!(&mut wait).is_pending());
                 }
+                if retire_root {
+                    admission.release();
+                    drop(parent);
+                }
                 control.cancel(ranvier_core::CancellationReason::OperatorShutdown);
             } else { drop(permit); }
             settled.settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await;
@@ -2637,7 +2641,7 @@ mod tests {
             }
             drop(child);
             drop(resources);
-            assert!(weak.upgrade().is_some());
+            assert_eq!(weak.upgrade().is_some(), !retire_root);
             admission.release();
             assert!(weak.upgrade().is_none());
             assert!(task_weak.upgrade().is_some());
