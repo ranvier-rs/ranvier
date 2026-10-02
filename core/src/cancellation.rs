@@ -149,6 +149,17 @@ impl CancellationToken {
         )
     }
 
+    /// Create a child with an absolute monotonic deadline. The deadline is not
+    /// extended by phase transitions or time spent constructing the child.
+    pub fn child_with_deadline_at(&self, deadline: Instant) -> Self {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        Self::from_parts(Some(self.clone()), self.inner.family.clone(),
+            Some(CancellationDeadline {
+                instant: deadline,
+                unix_ms: now_ms().saturating_add(duration_ms(remaining)),
+            }))
+    }
+
     /// Request cancellation with a fixed reason.
     ///
     /// Returns `true` only when this token records a new local request. An

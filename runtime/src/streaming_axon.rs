@@ -86,8 +86,11 @@ where
         let config = self.timeout_config.clone().unwrap_or(StreamTimeoutConfig {
             init: None, idle: Some(std::time::Duration::from_secs(30)), total: None,
         });
+        if config.total.is_some_and(|duration| tokio::time::Instant::now().checked_add(duration).is_none()) {
+            return Err(BoundedPreparationRejected { signal: "execution.stream_deadline_invalid", input });
+        }
         let maps = self.item_maps.clone();
-        let prepared = self.owner.prepare_managed_controlled(input, self.initializer.clone(), grace, move |stream, token, origin| async move {
+        let prepared = self.owner.prepare_managed_controlled(input, self.initializer.clone(), grace, config.total, move |stream, token, origin| async move {
             let mapped = stream.map(move |item| maps.iter().fold(item, |item, map| map(item)));
             crate::streaming_recovery::produce_bounded_with_total_origin(Box::pin(mapped), config, token, sender, origin).await
         });
@@ -571,8 +574,8 @@ mod tests {
         let holder = prepared.holder();
         let joined = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(20)).await.unwrap().unwrap().unwrap();
         match joined {
-            Ok(StreamInitializationReport::Ready { value, .. }) => {
-                assert_eq!(value.consumption.unwrap().terminal, crate::StreamConsumptionTerminal::TimedOut(StreamTimeoutKind::Total));
+            Ok(StreamInitializationReport::Cancelled { context, .. }) => {
+                assert_eq!(context.reason, ranvier_core::CancellationReason::DeadlineExceeded);
             }
             _ => panic!("original report lost"),
         }

@@ -632,7 +632,7 @@ where
     /// Build the gated future from this exact recovery owner and owned inputs.
     /// The supervisor must register this owner's holder before granting start.
     pub(crate) fn prepare_managed_controlled<Item, SErr, S, T, F, Fut>(
-        &self, input: In, streaming: S, cleanup_grace: std::time::Duration, drive: F,
+        &self, input: In, streaming: S, cleanup_grace: std::time::Duration, total: Option<std::time::Duration>, drive: F,
     ) -> crate::managed_stream_task::PreparedStreamTask<Result<StreamInitializationReport<Out, StreamReadyResult<T>, E>, StreamInvocationAlreadyStarted>>
     where
         Item: Send + 'static,
@@ -644,7 +644,7 @@ where
     {
         let child = self.clone();
         crate::managed_stream_task::PreparedStreamTask::new_owned(self.inner.clone(), async move {
-            child.initialize_and_drive_controlled(input, &streaming, None, cleanup_grace, drive).await
+            child.initialize_and_drive_controlled(input, &streaming, None, cleanup_grace, total, drive).await
         })
     }
 
@@ -666,7 +666,7 @@ where
         F: FnOnce(RawStream<Item>) -> Fut,
         Fut: Future<Output = StreamDriveResult<T>>,
     {
-        self.initialize_and_drive_controlled(input, streaming, token, cleanup_grace, |source, _control, _origin| drive(source)).await
+        self.initialize_and_drive_controlled(input, streaming, token, cleanup_grace, None, |source, _control, _origin| drive(source)).await
     }
 
     pub(crate) async fn initialize_and_drive_controlled<Item, SErr, S, T, F, Fut>(
@@ -675,6 +675,7 @@ where
         streaming: &S,
         token: Option<CancellationToken>,
         cleanup_grace: std::time::Duration,
+        total: Option<std::time::Duration>,
         drive: F,
     ) -> Result<
         StreamInitializationReport<Out, StreamReadyResult<T>, E>,
@@ -726,6 +727,13 @@ where
                 expires.saturating_duration_since(std::time::Instant::now())),
             None => parent,
         };
+        // Consumption observes this same total origin. Only initialization needs
+        // a child deadline token; do not leak its local control into the parent.
+        let initialization_token = match total {
+            Some(duration) => token.child_with_deadline_at(
+                invocation_started_at.checked_add(duration).unwrap_or(invocation_started_at)),
+            None => token.clone(),
+        };
         owner.bus().insert(crate::nested_custody::RequiredOwnedCustody);
         if !owner.bus().has::<crate::nested_custody::WeakCustodyClient>() {
             owner.bus().insert(crate::nested_custody::CustodyStore::new(128));
@@ -746,7 +754,7 @@ where
                 resources.as_ref(),
                 &mut owner,
                 streaming,
-                Some(token.clone()),
+                Some(initialization_token),
                 Some(cleanup_grace),
             )
             .await;
