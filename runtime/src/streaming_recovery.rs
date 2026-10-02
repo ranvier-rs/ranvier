@@ -827,6 +827,79 @@ mod tests {
             assert_eq!(Arc::strong_count(&resources), 1);
         }
     }
+    #[tokio::test]
+    async fn late_observer_retains_local_completion_and_rejected_retry_cannot_rewrite_it() {
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let graph = Axon::<u32, u32, String, Resources>::start("late-observer")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Undo);
+        let owner = OwnedStreamRecovery::try_new(
+            graph,
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+        )
+        .unwrap();
+        let report = owner
+            .initialize_and_drive(61, &EndInit(true), None, |source| async move {
+                let observed = crate::ObservedStream::new(
+                    source,
+                    ranvier_core::streaming::StreamTimeoutConfig {
+                        init: None,
+                        idle: None,
+                        total: None,
+                    },
+                    None,
+                )
+                .collect_report()
+                .await;
+                StreamDriveResult {
+                    value: observed.items,
+                    terminal: observed.terminal,
+                }
+            })
+            .await;
+        assert!(matches!(
+            report,
+            Ok(StreamInitializationReport::Ready { .. })
+        ));
+        // No receiver existed while updates were published.
+        let observer = owner.observe();
+        let before = observer.borrow().clone();
+        assert_eq!(before.phase, SupervisorPhase::Returned);
+        assert_eq!(
+            before.disposition,
+            Some(SupervisorDisposition::Consumption(
+                crate::StreamConsumptionTerminal::Completed
+            ))
+        );
+        assert_eq!(before.cleanup_complete, None);
+        assert_eq!(
+            owner
+                .inner
+                .context
+                .lock()
+                .await
+                .1
+                .read::<SagaStack>()
+                .unwrap()
+                .tasks
+                .len(),
+            1
+        );
+        assert!(matches!(
+            owner
+                .initialize_and_drive(62, &Init, None, |_| async { completed() })
+                .await,
+            Err(StreamInvocationAlreadyStarted)
+        ));
+        assert_eq!(*observer.borrow(), before);
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
+        assert!(!format!("{before:?}").contains("input_snapshot"));
+        drop(owner);
+        assert_eq!(observer.borrow().phase, SupervisorPhase::Returned);
+        assert_eq!(Arc::strong_count(&resources), 1);
+    }
     fn completed() -> StreamDriveResult<()> {
         StreamDriveResult {
             value: (),
