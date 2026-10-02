@@ -100,6 +100,21 @@ pub(crate) struct CustodyReservation {
 }
 #[cfg(feature = "streaming")]
 impl CustodyReservation {
+    /// Check the original placeholder before a context callback. No callback or
+    /// arbitrary resource destruction occurs while holding the registry lock.
+    pub(crate) fn validate_open(&self, client: &WeakCustodyClient) -> Result<(), &'static str> {
+        let receipt = self.receipt.as_ref().ok_or("execution.nested_reservation_decided")?;
+        if !Weak::ptr_eq(&client.0, &receipt.store) { return Err("execution.nested_custody_mismatch"); }
+        let store = receipt.store.upgrade().ok_or("execution.parent_custody_released")?;
+        let records = store.records.lock().map_err(|_| "execution.nested_custody_unavailable")?;
+        if store.closed.load(Ordering::Acquire) { return Err("execution.parent_custody_released"); }
+        if store.admission_closed.load(Ordering::Acquire) { return Err("execution.nested_custody_admission_closed"); }
+        let record = records.get(&receipt.id).ok_or("execution.parent_custody_released")?;
+        if !Arc::ptr_eq(&record.owner, &self.marker) || record.task.is_some() {
+            return Err("execution.nested_reservation_mismatch");
+        }
+        Ok(())
+    }
     pub(crate) fn finalize_stream(&mut self, client: &WeakCustodyClient, owner: Capability,
         task: Capability, journal: &crate::SagaRollbackJournal,
         observer: tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>)

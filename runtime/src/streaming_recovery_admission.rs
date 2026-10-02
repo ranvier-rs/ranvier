@@ -48,6 +48,12 @@ impl StreamRecoveryAdmission {
         let _state = self.0.lock().map_err(|_| RecoveryAdmissionFailure::Poisoned)?;
         Ok(())
     }
+    pub(crate) fn validate_open_permit(&self, permit: &RecoveryPermit) -> Result<(), RecoveryAdmissionFailure> {
+        if !Arc::ptr_eq(&self.0, &permit.0) { return Err(RecoveryAdmissionFailure::PermitMismatch); }
+        let state = self.0.lock().map_err(|_| RecoveryAdmissionFailure::Poisoned)?;
+        if state.closed { return Err(RecoveryAdmissionFailure::Closed); }
+        Ok(())
+    }
     pub(crate) fn close(&self) -> Result<(), RecoveryAdmissionFailure> {
         self.0
             .lock()
