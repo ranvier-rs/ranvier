@@ -1031,16 +1031,21 @@ impl Session {
             // These records do not own arbitrary borrowed child resources/handlers.
             if let Some(mut stack) = bus.remove::<ranvier_core::saga::SagaStack>() {
                 if !stack.is_empty() {
-                    let journal = bus.read::<crate::saga_report::SagaRollbackJournal>().cloned()
+                    let journal = bus
+                        .read::<crate::saga_report::SagaRollbackJournal>()
+                        .cloned()
                         .unwrap_or_else(|| {
-                            let trace = bus.read::<PersistenceTraceId>().map(|trace| trace.0.clone())
-                                .or_else(|| bus.read::<InvocationTrace>().map(|trace| trace.0.clone()))
+                            let trace = bus
+                                .read::<PersistenceTraceId>()
+                                .map(|trace| trace.0.clone())
+                                .or_else(|| {
+                                    bus.read::<InvocationTrace>().map(|trace| trace.0.clone())
+                                })
                                 .unwrap_or_else(|| bus.id.to_string());
                             crate::saga_report::SagaRollbackJournal::new(&trace)
                         });
                     while let Some(task) = stack.pop() {
-                        journal.push_task(task);
-                        journal.settle(crate::saga_report::SagaRollbackOutcome::NotInvoked);
+                        journal.push_uninvoked_task(task);
                     }
                     bus.insert(journal);
                 }

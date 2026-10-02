@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SagaRollbackOutcome {
-    /// Cleanup budget was exhausted before this handler was invoked.
+    /// No handler invocation was observed for this retained input, including
+    /// budget exhaustion or scope restoration before rollback reached it.
     NotInvoked,
     InProgress,
     Panicked,
@@ -143,7 +144,13 @@ impl SagaRollbackJournal {
     pub(crate) fn retained_children(&self) -> Vec<(usize, Self)> {
         self.3.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
+    pub(crate) fn push_uninvoked_task(&self, task: ranvier_core::saga::SagaTask) {
+        self.push_task_observed(task, SagaRollbackOutcome::NotInvoked);
+    }
     pub(crate) fn push_task(&self, task: ranvier_core::saga::SagaTask) {
+        self.push_task_observed(task, SagaRollbackOutcome::InProgress);
+    }
+    fn push_task_observed(&self, task: ranvier_core::saga::SagaTask, outcome: SagaRollbackOutcome) {
         let mut report = self
             .0
             .lock()
@@ -152,7 +159,7 @@ impl SagaRollbackJournal {
         report.finished = false;
         report.steps.push(SagaRollbackStep {
             node_id: task.node_id.clone(),
-            outcome: SagaRollbackOutcome::InProgress,
+            outcome,
         });
         self.1
             .lock()
@@ -257,6 +264,24 @@ impl SagaRollbackJournal {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn uninvoked_task_retention_moves_bytes_and_preserves_prior_observation() {
+        let journal = super::SagaRollbackJournal::new("move-input");
+        journal.push("already-entered".into(), super::SagaRollbackOutcome::InProgress);
+        let bytes = vec![1, 2, 3, 4];
+        let allocation = bytes.as_ptr();
+        journal.push_uninvoked_task(ranvier_core::saga::SagaTask {
+            node_id: "remaining".into(), node_label: "remaining".into(), input_snapshot: bytes,
+        });
+        let retained = journal.1.lock().unwrap();
+        assert_eq!(retained[0].1.input_snapshot.as_ptr(), allocation);
+        assert_eq!(retained[0].0, 1);
+        drop(retained);
+        let report = journal.snapshot();
+        assert!(!report.finished);
+        assert_eq!(report.steps[0].outcome, super::SagaRollbackOutcome::InProgress);
+        assert_eq!(report.steps[1].outcome, super::SagaRollbackOutcome::NotInvoked);
+    }
     use super::*;
     struct ReleaseProbe {
         report: std::sync::Weak<std::sync::Mutex<SagaRollbackReport>>,
