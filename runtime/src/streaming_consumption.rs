@@ -227,6 +227,44 @@ mod tests {
         assert_eq!(polls.load(Ordering::SeqCst), 0);
     }
 
+
+    #[tokio::test(start_paused = true)]
+    async fn original_total_origin_does_not_age_first_item_or_idle_budget() {
+        let origin = Instant::now();
+        tokio::time::advance(std::time::Duration::from_secs(8)).await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let source = stream::poll_fn(move |cx| rx.poll_recv(cx));
+        let mut observed = ObservedStream::with_total_origin(Box::pin(source), StreamTimeoutConfig {
+            init: Some(std::time::Duration::from_secs(3)),
+            idle: Some(std::time::Duration::from_secs(2)),
+            total: Some(std::time::Duration::from_secs(20)),
+        }, None, origin);
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        tx.send(1).unwrap();
+        assert_eq!(observed.next().await, Some(1));
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        tx.send(2).unwrap();
+        assert_eq!(observed.next().await, Some(2));
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        assert_eq!(observed.next().await, None);
+        assert_eq!(observed.terminal(), Some(&StreamConsumptionTerminal::TimedOut(StreamTimeoutKind::Idle)));
+        drop(tx);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_control_wins_expired_original_total_budget() {
+        let origin = Instant::now();
+        tokio::time::advance(std::time::Duration::from_secs(8)).await;
+        let token = CancellationToken::new();
+        token.cancel(CancellationReason::Explicit);
+        let report = ObservedStream::with_total_origin(Box::pin(stream::repeat(1)), StreamTimeoutConfig {
+            init: None, idle: None, total: Some(std::time::Duration::from_secs(5)),
+        }, Some(token), origin).collect_report().await;
+        assert!(report.items.is_empty());
+        assert!(matches!(report.terminal, StreamConsumptionTerminal::Cancelled(context)
+            if context.reason == CancellationReason::Explicit));
+    }
+
     use std::{cell::Cell, time::Duration};
     fn config() -> StreamTimeoutConfig {
         StreamTimeoutConfig {
