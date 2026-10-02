@@ -193,6 +193,19 @@ impl WeakCustody {
 mod tests {
     use super::*;
     #[test]
+    fn admission_close_fails_closed_on_poison_without_retiring_records() {
+        let root = CustodyStore::new(1);
+        let admission = root.reserve(Arc::new(43u32)).unwrap();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = root.0 .0.records.lock().unwrap();
+            panic!("fixture poison");
+        }));
+        assert_eq!(root.close_admission(), Err("execution.nested_custody_unavailable"));
+        assert!(admission.upgrade().is_some());
+        drop(root);
+        assert!(admission.upgrade().is_none());
+    }
+    #[test]
     fn admission_close_preserves_members_until_actual_owner_retirement() {
         let root = CustodyStore::new(2);
         let client = root.client();

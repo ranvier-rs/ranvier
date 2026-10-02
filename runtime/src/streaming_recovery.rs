@@ -2425,6 +2425,8 @@ mod tests {
                 &StreamRecoveryAdmission::new(1), None).unwrap();
             let journal = crate::SagaRollbackJournal::new("inherited-control-parent");
             let admission = child.admit_to_parent_journal_with_control(parent.client(), &journal, Some(control.clone())).await.unwrap();
+            parent.close_admission().unwrap();
+            assert!(matches!(parent.reserve(Arc::new(())), Err("execution.nested_custody_admission_closed")));
             let entered = Arc::new(Notify::new());
             let signal = entered.clone();
             let task = tokio::spawn(async move {
