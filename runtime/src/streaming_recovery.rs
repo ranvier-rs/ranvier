@@ -705,6 +705,26 @@ where
         result
     }
 
+    pub(crate) fn recovery_probe(&self) -> crate::streaming_report_handle::RecoveryProbe {
+        let owner = self.clone();
+        Arc::new(move |deadline| {
+            let owner = owner.clone();
+            Box::pin(async move {
+                use crate::streaming_report_handle::{StreamLiveRecoveryState, StreamRecoveryProbeError as Error};
+                let mut context = tokio::time::timeout_at(deadline, owner.inner.context.lock()).await.map_err(|_| Error::TimedOut)?;
+                let bus = &mut context.1;
+                let access = bus.take_access_scope();
+                let result = (|| {
+                    let saga_stack_nonempty = bus.read::<ranvier_core::saga::SagaStack>().is_some_and(|stack| !stack.is_empty());
+                    let journal = bus.read::<crate::SagaRollbackJournal>();
+                    let recovery_pending = match journal { Some(journal) => journal.try_recovery_pending(256)?, None => false };
+                    Ok(StreamLiveRecoveryState { saga_stack_nonempty, journal_present: journal.is_some(), recovery_pending })
+                })();
+                bus.restore_access_scope(access);
+                result
+            })
+        })
+    }
     /// Retain the exact graph/context owner through public report-handle waits.
     pub(crate) fn retention_capability(&self) -> crate::nested_custody::Capability {
         self.inner.clone()

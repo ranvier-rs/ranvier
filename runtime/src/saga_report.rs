@@ -174,6 +174,28 @@ impl SagaRollbackJournal {
             .map(|(_, task)| task.clone())
             .collect()
     }
+    /// Bounded, fail-closed live check. Never clones retained input bytes and
+    /// never waits on a synchronous journal mutex held by another operation.
+    #[cfg(feature = "streaming")]
+    pub(crate) fn try_recovery_pending(&self, limit: usize) -> Result<bool, crate::streaming_report_handle::StreamRecoveryProbeError> {
+        use crate::streaming_report_handle::StreamRecoveryProbeError as Error;
+        let mut pending = vec![self.clone()];
+        let mut seen = std::collections::HashSet::new();
+        while let Some(journal) = pending.pop() {
+            if !seen.insert(std::sync::Arc::as_ptr(&journal.0) as usize) { continue; }
+            if seen.len() > limit { return Err(Error::TraversalLimit); }
+            if !journal.0.try_lock().map_err(|_| Error::Unavailable)?.is_complete()
+                || !journal.1.try_lock().map_err(|_| Error::Unavailable)?.is_empty()
+                || !journal.2.try_lock().map_err(|_| Error::Unavailable)?.is_empty()
+                || !journal.5.try_lock().map_err(|_| Error::Unavailable)?.is_empty() {
+                return Ok(true);
+            }
+            let children = journal.3.try_lock().map_err(|_| Error::Unavailable)?;
+            if pending.len().saturating_add(children.len()) > limit { return Err(Error::TraversalLimit); }
+            pending.extend(children.iter().map(|(_, child)| child.clone()));
+        }
+        Ok(false)
+    }
     /// Framework custody checks must not clone sensitive input bytes.
     pub(crate) fn has_unresolved_tasks(&self) -> bool {
         let mut pending = vec![self.clone()];

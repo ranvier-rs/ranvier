@@ -242,7 +242,7 @@ impl StreamReservation {
         };
         let journal = crate::SagaRollbackJournal::new("supervised-stream-root");
         let report = crate::streaming_report_handle::StreamReportHandle::new(prepared.holder(),
-            std::sync::Arc::new((plan.owner.retention_capability(), journal.clone())));
+            std::sync::Arc::new((plan.owner.retention_capability(), journal.clone()))).with_recovery_probe(plan.owner.recovery_probe());
         let custody = match plan.owner.stage_reserved(&client, &mut slot, &journal, &mut prepared) {
             Ok(custody) => custody,
             Err(error) => return Err(StreamPrepareError::Staging(StreamStartRejected { signal: error.signal, report, _custody: error.custody })),

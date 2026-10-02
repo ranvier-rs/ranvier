@@ -126,6 +126,17 @@ fn assess_joined<Out, E>(joined: &Result<Option<Original<Out, E>>, tokio::task::
     assessment
 }
 
+/// Live state from the original typed owner, separate from copied report evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamLiveRecoveryState {
+    pub saga_stack_nonempty: bool,
+    pub journal_present: bool,
+    pub recovery_pending: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamRecoveryProbeError { TimedOut, Unavailable, TraversalLimit, NotConfigured }
+pub(crate) type RecoveryProbe = Arc<dyn Fn(Instant) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<StreamLiveRecoveryState, StreamRecoveryProbeError>> + Send>> + Send + Sync>;
+
 /// Clones share one original report. Waiting never retires recovery custody;
 /// only explicit report transfer consumes the result, once across all clones.
 /// Dropping the final lease is not successful cleanup or durable reconciliation.
@@ -134,13 +145,21 @@ pub struct StreamReportHandle<Out, E> {
     _owner: crate::nested_custody::Capability,
     retirement: Arc<AtomicU8>,
     assessment: Arc<Mutex<Option<StreamReportAssessment>>>,
+    probe: Option<RecoveryProbe>,
 }
 impl<Out, E> Clone for StreamReportHandle<Out, E> {
-    fn clone(&self) -> Self { Self { task: self.task.clone(), _owner: self._owner.clone(), retirement: self.retirement.clone(), assessment: self.assessment.clone() } }
+    fn clone(&self) -> Self { Self { task: self.task.clone(), _owner: self._owner.clone(), retirement: self.retirement.clone(), assessment: self.assessment.clone(), probe: self.probe.clone() } }
 }
 impl<Out: Send + 'static, E: Send + 'static> StreamReportHandle<Out, E> {
     pub(crate) fn new(task: Arc<tokio::sync::Mutex<crate::managed_stream_task::ManagedStreamTask<Original<Out, E>>>>,
-        owner: crate::nested_custody::Capability) -> Self { Self { task, _owner: owner, retirement: Arc::new(AtomicU8::new(0)), assessment: Arc::new(Mutex::new(None)) } }
+        owner: crate::nested_custody::Capability) -> Self { Self { task, _owner: owner, retirement: Arc::new(AtomicU8::new(0)), assessment: Arc::new(Mutex::new(None)), probe: None } }
+    pub(crate) fn with_recovery_probe(mut self, probe: RecoveryProbe) -> Self { self.probe = Some(probe); self }
+    /// Inspect the original owner with bounded context wait. This snapshot is
+    /// neither retirement authorization nor proof of external reconciliation.
+    pub async fn live_recovery_until(&self, deadline: Instant) -> Result<StreamLiveRecoveryState, StreamRecoveryProbeError> {
+        let probe = self.probe.as_ref().ok_or(StreamRecoveryProbeError::NotConfigured)?;
+        (probe)(deadline).await
+    }
     /// Join without taking the report. Timeout or dropped wait keeps the same
     /// frame/result available, including during mutex contention.
     pub async fn settle_until(&self, deadline: Instant) -> Result<(), StreamReportWaitError> {
