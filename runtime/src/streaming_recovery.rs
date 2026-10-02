@@ -177,8 +177,14 @@ where
             }
         };
         let owner = OwnedStreamRecovery::try_new(graph, context, &self.admission)?;
-        let id = uuid::Uuid::new_v4();
-        owners.insert(id, owner.clone());
+        let id = loop {
+            let id = uuid::Uuid::new_v4();
+            if let std::collections::hash_map::Entry::Vacant(entry) = owners.entry(id) {
+                entry.insert(owner.clone());
+                break id;
+            }
+            // Never replace another request's recovery custody on key collision.
+        };
         Ok((id, owner))
     }
     /// Close atomically with respect to owner insertion; existing owners remain held.
@@ -1215,6 +1221,72 @@ mod tests {
             observer.borrow().custody,
             RecoveryCustody::ReleasedWithPendingTasks
         );
+    }
+    #[test]
+    fn busy_registry_admission_is_prompt_and_does_not_consume_store_capacity() {
+        let store = Arc::new(StreamRecoveryStore::new(1));
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let graph = Axon::<u32, u32, String, Resources>::start("busy-registry")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Undo);
+        let external = graph.saga_compensation_registry.clone();
+        let guard = external.write().unwrap();
+        let thread_store = store.clone();
+        let thread_resources = resources.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = thread_store.admit(
+                graph,
+                OwnedStreamContext::try_new(thread_resources, Bus::new()).unwrap(),
+            );
+            sender.send(result).unwrap();
+        });
+        let received = receiver.recv_timeout(std::time::Duration::from_secs(2));
+        drop(guard); // Also release a regressed blocking read before joining the worker.
+        worker.join().unwrap();
+        let rejected = match received.unwrap() {
+            Err(rejected) => rejected,
+            Ok(_) => panic!("busy registry must reject before effects"),
+        };
+        assert_eq!(rejected.reason, RecoveryAdmissionFailure::RegistryBusy);
+        assert_eq!(store.admission.in_use(), Ok(0));
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+        let (graph, context) = rejected.into_parts();
+        let (id, owner) = store.admit(graph, context).unwrap();
+        store.close().unwrap();
+        drop(owner);
+        assert_eq!(store.admission.in_use(), Ok(1));
+        drop(store.take_for_reconciliation(id).unwrap().unwrap());
+        assert_eq!(store.admission.in_use(), Ok(0));
+    }
+    #[test]
+    fn closed_store_rejects_before_effects_and_preserves_original_request() {
+        let store = StreamRecoveryStore::new(1);
+        store.close().unwrap();
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let graph = Axon::<u32, u32, String, Resources>::start("closed-store");
+        let registry = graph.saga_compensation_registry.clone();
+        let mut bus = Bus::new();
+        bus.insert(String::from("private-request-capability"));
+        let rejected = match store.admit(
+            graph,
+            OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
+        ) {
+            Err(rejected) => rejected,
+            Ok(_) => panic!("closed store must not admit"),
+        };
+        assert_eq!(rejected.reason, RecoveryAdmissionFailure::Closed);
+        let (graph, context) = rejected.into_parts();
+        assert!(Arc::ptr_eq(&registry, &graph.saga_compensation_registry));
+        let (returned, bus) = context.into_parts();
+        assert!(Arc::ptr_eq(&resources, &returned));
+        assert_eq!(bus.read::<String>().unwrap(), "private-request-capability");
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+        assert_eq!(store.admission.in_use(), Ok(0));
     }
     fn completed() -> StreamDriveResult<()> {
         StreamDriveResult {
