@@ -232,6 +232,11 @@ impl CompensationIdempotencyHandle {
         }
     }
 
+    #[cfg(all(test, feature = "streaming"))]
+    pub(crate) fn shares_store_with(&self, store: &Arc<dyn CompensationIdempotencyStore>) -> bool {
+        Arc::ptr_eq(&self.inner, store)
+    }
+
     pub fn store(&self) -> Arc<dyn CompensationIdempotencyStore> {
         match &self.observation {
             None => self.inner.clone(),

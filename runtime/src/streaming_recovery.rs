@@ -1133,12 +1133,15 @@ mod tests {
                 assert_eq!(pending[0].context.circuit, "external-abort-circuit");
                 assert!(Arc::ptr_eq(&pending[0].handle.hook(), &hook));
                 assert!(pending[0].invoked.load(Ordering::SeqCst));
+                assert!(pending[0].idempotency.as_ref().unwrap().shares_store_with(&marker));
+                assert!(!format!("{journal:?}").contains("external-abort-circuit"));
                 assert!(!journal.snapshot().finished);
                 assert_eq!(
                     journal.snapshot().steps[0].outcome,
                     crate::SagaRollbackOutcome::InProgress
                 );
             }
+            let interrupted = observer.borrow().clone();
             assert!(matches!(
                 retained
                     .initialize_and_drive(
@@ -1151,6 +1154,7 @@ mod tests {
                     .await,
                 Err(StreamInvocationAlreadyStarted)
             ));
+            assert_eq!(*observer.borrow(), interrupted);
             assert_eq!(capability.calls.load(Ordering::SeqCst), 1);
             assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
             assert_eq!(capability.applied.load(Ordering::SeqCst), marker_phase);
