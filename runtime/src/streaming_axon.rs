@@ -39,6 +39,29 @@ pub(crate) struct OwnedStreamPlan<In, Out, Item, E, Res, S> {
     pub(crate) timeout_config: Option<StreamTimeoutConfig>,
     pub(crate) buffer_size: usize,
 }
+/// Initialization readiness only: neither durable completion nor source EOF.
+/// Waiting is cancellation-safe; dropping this owner before readiness prevents
+/// the notified producer from starting and leaves cleanup/report custody intact.
+pub struct StreamReadiness {
+    receiver: Option<tokio::sync::oneshot::Receiver<()>>,
+    observed: Option<Result<(), StreamReadinessError>>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamReadinessError {
+    /// Initialization rejected, failed, cancelled, or the gated frame did not start.
+    Unavailable,
+}
+impl StreamReadiness {
+    pub async fn initialized(&mut self) -> Result<(), StreamReadinessError> {
+        if let Some(observed) = self.observed { return observed; }
+        let observed = self.receiver.as_mut().expect("unobserved readiness retains receiver")
+            .await.map_err(|_| StreamReadinessError::Unavailable);
+        self.receiver = None;
+        self.observed = Some(observed);
+        observed
+    }
+}
+
 type BoundedFrame<Out, Item, E> = (
     crate::managed_stream_task::PreparedStreamTask<Result<StreamInitializationReport<Out,
         crate::streaming_recovery::StreamReadyResult<()>, E>, crate::streaming_recovery::StreamInvocationAlreadyStarted>>,
@@ -51,7 +74,7 @@ type OwnedPlanFactory<In, Out, Item, E, Res> = Arc<dyn Fn(
 /// Concrete initializer identity is hidden; original report and context types remain.
 pub(crate) struct OwnedCallablePlan<In, Out, Item, E, Res> {
     pub(crate) owner: crate::streaming_recovery::OwnedStreamRecovery<In, Out, E, Res>,
-    prepare: Option<Box<dyn FnOnce(In, std::time::Duration) -> Result<BoundedFrame<Out, Item, E>, BoundedPreparationRejected<In>> + Send + Sync>>,
+    prepare: Option<Box<dyn FnOnce(In, std::time::Duration, Option<tokio::sync::oneshot::Sender<()>>) -> Result<BoundedFrame<Out, Item, E>, BoundedPreparationRejected<In>> + Send + Sync>>,
 }
 impl<In, Out, Item, E, Res> OwnedCallablePlan<In, Out, Item, E, Res> {
     /// One preparation decision per admitted plan, before allocating a channel
@@ -59,9 +82,19 @@ impl<In, Out, Item, E, Res> OwnedCallablePlan<In, Out, Item, E, Res> {
     pub(crate) fn prepare_bounded(&mut self, input: In, grace: std::time::Duration)
         -> Result<BoundedFrame<Out, Item, E>, BoundedPreparationRejected<In>> {
         match self.prepare.take() {
-            Some(prepare) => prepare(input, grace),
+            Some(prepare) => prepare(input, grace, None),
             None => Err(BoundedPreparationRejected { signal: "execution.stream_preparation_decided", input }),
         }
+    }
+    pub(crate) fn prepare_bounded_ready(&mut self, input: In, grace: std::time::Duration)
+        -> Result<(BoundedFrame<Out, Item, E>, StreamReadiness), BoundedPreparationRejected<In>> {
+        let prepare = match self.prepare.take() {
+            Some(prepare) => prepare,
+            None => return Err(BoundedPreparationRejected { signal: "execution.stream_preparation_decided", input }),
+        };
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let frame = prepare(input, grace, Some(sender))?;
+        Ok((frame, StreamReadiness { receiver: Some(receiver), observed: None }))
     }
 }
 pub(crate) struct BoundedPreparationRejected<In> {
@@ -86,7 +119,7 @@ where
             let plan = definition.try_plan::<S, SErr>(context, admission, expires)?;
             Ok(OwnedCallablePlan {
                 owner: plan.owner.clone(),
-                prepare: Some(Box::new(move |input, grace| plan.prepare_bounded::<SErr>(input, grace))),
+                prepare: Some(Box::new(move |input, grace, ready| plan.prepare_bounded_notifying::<SErr>(input, grace, ready))),
             })
         })
     }
@@ -125,6 +158,13 @@ where
     where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
         SErr: Send + Sync + Debug + 'static,
     {
+        self.prepare_bounded_notifying::<SErr>(input, grace, None)
+    }
+    pub(crate) fn prepare_bounded_notifying<SErr>(&self, input: In, grace: std::time::Duration, ready: Option<tokio::sync::oneshot::Sender<()>>)
+        -> Result<(crate::managed_stream_task::PreparedStreamTask<Result<StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult<()>, E>, crate::streaming_recovery::StreamInvocationAlreadyStarted>>, tokio::sync::mpsc::Receiver<Item>), BoundedPreparationRejected<In>>
+    where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
+        SErr: Send + Sync + Debug + 'static,
+    {
         if self.buffer_size == 0 {
             return Err(BoundedPreparationRejected { signal: "execution.stream_buffer_invalid", input });
         }
@@ -137,6 +177,14 @@ where
         let (sender, receiver) = tokio::sync::mpsc::channel(self.buffer_size);
         let maps = self.item_maps.clone();
         let prepared = self.owner.prepare_managed_controlled(input, self.initializer.clone(), grace, config.total, move |stream, token, origin| async move {
+            if let Some(ready) = ready {
+                if ready.send(()).is_err() {
+                    return crate::streaming_recovery::StreamDriveResult {
+                        value: (), terminal: crate::StreamConsumptionTerminal::Cancelled(
+                            ranvier_core::CancellationContext::new(ranvier_core::CancellationReason::ClientDisconnected)),
+                    };
+                }
+            }
             let mapped = stream.map(move |item| maps.iter().fold(item, |item, map| map(item)));
             crate::streaming_recovery::produce_bounded_with_total_origin(Box::pin(mapped), config, token, sender, origin).await
         });
@@ -520,6 +568,45 @@ mod tests {
             _ => panic!("original report not ready"),
         }
     }
+    #[tokio::test]
+    async fn callable_readiness_retains_original_report_and_dropped_waiter_stops_production() {
+        for dropped in [false, true] {
+            let circuit = circuit(&["a"]);
+            let mut plan = match circuit.owned_definition.try_callable_plan(
+                OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
+                &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
+                Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+            };
+            let ((mut prepared, mut receiver), ready) = match plan.prepare_bounded_ready("".into(), std::time::Duration::from_secs(5)) {
+                Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
+            };
+            let mut ready = Some(ready);
+            if dropped { drop(ready.take()); }
+            let root = crate::nested_custody::CustodyStore::new(1);
+            let journal = crate::SagaRollbackJournal::new("readiness-parent");
+            plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+                .unwrap_or_else(|error| panic!("{}", error.signal));
+            if let Some(ready) = ready.as_mut() {
+                assert_eq!(ready.initialized().await, Ok(()));
+                assert_eq!(ready.initialized().await, Ok(()));
+                assert_eq!(receiver.recv().await, Some("a".to_string()));
+            }
+            assert_eq!(receiver.recv().await, None);
+            let holder = prepared.holder();
+            let report = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
+            match report {
+                Ok(StreamInitializationReport::Ready { value, .. }) => {
+                    let terminal = value.consumption.unwrap().terminal;
+                    if dropped {
+                        assert!(matches!(terminal, crate::StreamConsumptionTerminal::Cancelled(context)
+                            if context.reason == ranvier_core::CancellationReason::ClientDisconnected));
+                    } else { assert_eq!(terminal, crate::StreamConsumptionTerminal::Completed); }
+                }
+                _ => panic!("original Ready report lost"),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn callable_owned_factory_runs_current_maps_without_initializer_type_at_call_site() {
         let circuit = circuit(&["a"]).map_items(|item| format!("{item}1"))
