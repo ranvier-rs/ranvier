@@ -2597,6 +2597,9 @@ mod tests {
             let task = Arc::new(Mutex::new(task));
             let journal = crate::SagaRollbackJournal::new("managed-actual-parent");
             let admission = child.admit_managed_to_parent(parent.client(), &journal, control.clone(), task.clone()).await.unwrap();
+            let task_weak = Arc::downgrade(&task);
+            drop(task);
+            let task = task_weak.upgrade().expect("parent must own actual task holder");
             parent.close_admission().unwrap();
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             assert!(!child.inner.started.load(Ordering::Acquire));
@@ -2622,6 +2625,7 @@ mod tests {
             assert!(weak.upgrade().is_some());
             admission.release();
             assert!(weak.upgrade().is_none());
+            assert!(task_weak.upgrade().is_none());
         }
     }
     struct ExternalHook {
