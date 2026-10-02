@@ -530,7 +530,16 @@ where
         client: crate::nested_custody::WeakCustodyClient,
         journal: &crate::SagaRollbackJournal,
     ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
-        let admission = self.admit_to_parent(client).await?;
+        self.admit_to_parent_journal_with_control(client, journal, None).await
+    }
+
+    pub(crate) async fn admit_to_parent_journal_with_control(
+        &self,
+        client: crate::nested_custody::WeakCustodyClient,
+        journal: &crate::SagaRollbackJournal,
+        parent: Option<CancellationToken>,
+    ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
+        let admission = self.admit_to_parent_with_control(client, parent).await?;
         journal.retain_stream_child(self.observe());
         Ok(admission)
     }
@@ -2414,7 +2423,8 @@ mod tests {
                     .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
                 &StreamRecoveryAdmission::new(1), None).unwrap();
-            let admission = child.admit_to_parent_with_control(parent.client(), Some(control.clone())).await.unwrap();
+            let journal = crate::SagaRollbackJournal::new("inherited-control-parent");
+            let admission = child.admit_to_parent_journal_with_control(parent.client(), &journal, Some(control.clone())).await.unwrap();
             let entered = Arc::new(Notify::new());
             let signal = entered.clone();
             let task = tokio::spawn(async move {
@@ -2436,8 +2446,11 @@ mod tests {
                 assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
                 assert!(!control.is_cancelled());
             } else {
+                assert!(matches!(report, StreamInitializationReport::Cancelled { context, .. }
+                    if context.reason == ranvier_core::CancellationReason::OperatorShutdown));
                 assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
                 assert_eq!(control.context().unwrap().reason, ranvier_core::CancellationReason::OperatorShutdown);
+                assert_eq!(journal.retained_stream_observations()[0].1.disposition, Some(SupervisorDisposition::InitializationCancelled));
             }
             admission.release();
         }
