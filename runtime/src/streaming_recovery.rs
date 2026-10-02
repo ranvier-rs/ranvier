@@ -114,6 +114,9 @@ pub(crate) enum SupervisorDisposition {
 pub(crate) enum RecoveryCustody {
     Held,
     ReleasedWithPendingTasks,
+    /// Custody ended while retained state could not be established. No empty
+    /// journal, cleanup completion or successful reconciliation is inferred.
+    ReleasedWithUnknownState,
     ReleasedWithoutRetainedTasks,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -375,16 +378,17 @@ impl<In, Out, E, Res> Drop for RecoveryInner<In, Out, E, Res> {
         // The last Arc is gone: there can be no live task/context-lock borrower.
         let (_, bus) = self.context.get_mut();
         let access = bus.take_access_scope();
-        let pending = bus
+        let stack_pending = bus
             .read::<ranvier_core::saga::SagaStack>()
-            .is_some_and(|stack| !stack.is_empty())
-            || bus
-                .read::<crate::SagaRollbackJournal>()
-                .is_some_and(crate::SagaRollbackJournal::has_unresolved_tasks);
+            .is_some_and(|stack| !stack.is_empty());
+        let journal_pending = bus.read::<crate::SagaRollbackJournal>()
+            .map(|journal| journal.try_retained_work_pending(256)).transpose();
         bus.restore_access_scope(access);
         self.observation.send_modify(|state| {
-            state.custody = if pending {
+            state.custody = if stack_pending || matches!(journal_pending, Ok(Some(true))) {
                 RecoveryCustody::ReleasedWithPendingTasks
+            } else if journal_pending.is_err() {
+                RecoveryCustody::ReleasedWithUnknownState
             } else {
                 RecoveryCustody::ReleasedWithoutRetainedTasks
             }

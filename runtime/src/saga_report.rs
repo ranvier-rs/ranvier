@@ -66,6 +66,8 @@ pub struct SagaRollbackJournal(
     #[cfg(feature = "streaming")]
     std::sync::Arc<std::sync::Mutex<Vec<(usize, tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>)>>>,
 );
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JournalRetentionError { Unavailable, TraversalLimit }
 impl std::fmt::Debug for SagaRollbackJournal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SagaRollbackJournal")
@@ -200,35 +202,37 @@ impl SagaRollbackJournal {
         }
         Ok(false)
     }
-    /// Framework custody checks must not clone sensitive input bytes.
-    pub(crate) fn has_unresolved_tasks(&self) -> bool {
+    /// Presence of retained work, not hook completion or retirement permission.
+    /// Nonblocking and bounded even during scope restoration or final owner Drop.
+    /// Unknown state must retain custody rather than certify an empty journal.
+    pub(crate) fn try_retained_work_pending(&self, limit: usize) -> Result<bool, JournalRetentionError> {
         let mut pending = vec![self.clone()];
+        let mut seen = std::collections::HashSet::new();
         while let Some(journal) = pending.pop() {
+            if seen.len() >= limit || !seen.insert(std::sync::Arc::as_ptr(&journal.0) as usize) {
+                return Err(JournalRetentionError::TraversalLimit);
+            }
+            if !journal.1.try_lock().map_err(|_| JournalRetentionError::Unavailable)?.is_empty()
+                || !journal.2.try_lock().map_err(|_| JournalRetentionError::Unavailable)?.is_empty() {
+                return Ok(true);
+            }
             #[cfg(feature = "streaming")]
-            if !journal.5.lock().unwrap_or_else(|p| p.into_inner()).is_empty() {
-                return true;
+            if !journal.5.try_lock().map_err(|_| JournalRetentionError::Unavailable)?.is_empty() {
+                return Ok(true);
             }
-            if !journal
-                .1
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .is_empty()
-                || !journal
-                    .2
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .is_empty()
-            {
-                return true;
+            let children = journal.3.try_lock().map_err(|_| JournalRetentionError::Unavailable)?;
+            if seen.len().saturating_add(pending.len()).saturating_add(children.len()) > limit {
+                return Err(JournalRetentionError::TraversalLimit);
             }
-            pending.extend(
-                journal
-                    .retained_children()
-                    .into_iter()
-                    .map(|(_, child)| child),
-            );
+            // Only bounded journal handles are cloned; retained inputs never are.
+            pending.extend(children.iter().map(|(_, child)| child.clone()));
         }
-        false
+        Ok(false)
+    }
+    /// Conservative compatibility for retention callers: unknown means retain.
+    /// This is not report completeness, reconciliation or replay authority.
+    pub(crate) fn has_unresolved_tasks(&self) -> bool {
+        self.try_retained_work_pending(256).unwrap_or(true)
     }
     /// Session attaches only a newly isolated invocation journal to its suspended
     /// parent. Keeping child storage distinct preserves local indices and trace.
@@ -514,7 +518,37 @@ mod tests {
         assert_eq!(snapshot.steps.len(), 10_000);
         assert_eq!(published.snapshot().steps.len(), 10_001);
         assert!(!published.snapshot().is_complete());
-    }    #[cfg(feature = "streaming")]
+    }
+    #[test]
+    fn custody_check_does_not_wait_on_busy_journal() {
+        let journal = SagaRollbackJournal::new("busy custody");
+        let held = journal.1.lock().unwrap();
+        let clone = journal.clone();
+        let (send, receive) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || { send.send(clone.has_unresolved_tasks()).unwrap(); });
+        let result = receive.recv_timeout(std::time::Duration::from_millis(200));
+        drop(held);
+        worker.join().unwrap();
+        assert_eq!(result, Ok(true));
+    }
+    #[test]
+    fn retained_work_check_bounds_cycles_graph_size_and_poison_without_input_clones() {
+        let root = SagaRollbackJournal::new("retention root");
+        let child = SagaRollbackJournal::new("retention child");
+        root.retain_child(child.clone());
+        assert_eq!(root.try_retained_work_pending(2), Ok(false));
+        assert_eq!(root.try_retained_work_pending(1), Err(JournalRetentionError::TraversalLimit));
+        child.retain_child(root.clone());
+        let cyclic = root.try_retained_work_pending(4);
+        let retained = root.has_unresolved_tasks();
+        root.3.lock().unwrap().clear(); child.3.lock().unwrap().clear();
+        assert_eq!(cyclic, Err(JournalRetentionError::TraversalLimit)); assert!(retained);
+        let poison = child.clone();
+        assert!(std::thread::spawn(move || { let _held = poison.2.lock().unwrap(); panic!("retention poison fixture"); }).join().is_err());
+        assert_eq!(child.try_retained_work_pending(4), Err(JournalRetentionError::Unavailable));
+        assert!(child.has_unresolved_tasks());
+    }
+    #[cfg(feature = "streaming")]
     #[test]
     fn live_probe_does_not_certify_complete_cyclic_recovery_graph() {
         use crate::streaming_report_handle::StreamRecoveryProbeError as Error;
