@@ -32,6 +32,21 @@ impl<In, Out, E, Res> Clone for OwnedStreamRecovery<In, Out, E, Res> {
         }
     }
 }
+/// Failed pre-effect admission retains the original graph and request context.
+pub(crate) struct StreamRecoveryAdmissionRejected<In, Out, E, Res> {
+    graph: Axon<In, Out, E, Res>,
+    context: OwnedStreamContext<Res>,
+}
+impl<In, Out, E, Res> std::fmt::Debug for StreamRecoveryAdmissionRejected<In, Out, E, Res> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StreamRecoveryAdmissionRejected { reason: registry_poisoned }")
+    }
+}
+impl<In, Out, E, Res> StreamRecoveryAdmissionRejected<In, Out, E, Res> {
+    pub(crate) fn into_parts(self) -> (Axon<In, Out, E, Res>, OwnedStreamContext<Res>) {
+        (self.graph, self.context)
+    }
+}
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct StreamInvocationAlreadyStarted;
 impl<In, Out, E, Res> OwnedStreamRecovery<In, Out, E, Res>
@@ -41,14 +56,31 @@ where
     E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
     Res: Send + Sync + 'static,
 {
-    pub(crate) fn new(graph: Axon<In, Out, E, Res>, context: OwnedStreamContext<Res>) -> Self {
-        Self {
+    pub(crate) fn try_new(
+        mut graph: Axon<In, Out, E, Res>,
+        context: OwnedStreamContext<Res>,
+    ) -> Result<Self, StreamRecoveryAdmissionRejected<In, Out, E, Res>> {
+        // Copy handler Arcs under the original read lock before any effects.
+        // A poisoned registry has unknown authority: retain caller ownership.
+        let handlers = graph
+            .saga_compensation_registry
+            .read()
+            .map(|registry| registry.handlers.clone())
+            .map_err(|_| ());
+        let handlers = match handlers {
+            Ok(handlers) => handlers,
+            Err(()) => return Err(StreamRecoveryAdmissionRejected { graph, context }),
+        };
+        graph.saga_compensation_registry = Arc::new(std::sync::RwLock::new(
+            ranvier_core::saga::SagaCompensationRegistry { handlers },
+        ));
+        Ok(Self {
             inner: Arc::new(RecoveryInner {
                 graph,
                 context: Mutex::new(context.into_parts()),
                 started: AtomicBool::new(false),
             }),
-        }
+        })
     }
     /// Keeps InvocationOwner live until the Ready driver returns or is dropped.
     /// This primitive does not classify late terminal/cleanup or authorize retry.
@@ -175,6 +207,42 @@ mod tests {
             Ok(Box::pin(futures_util::stream::pending()))
         }
     }
+    #[test]
+    fn recovery_registry_isolated_from_external_graph_mutation() {
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let graph = Axon::<u32, u32, String, Resources>::start("registry-freeze")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Undo);
+        let external = graph.saga_compensation_registry.clone();
+        let node = external
+            .read()
+            .unwrap()
+            .handlers
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        let owner = OwnedStreamRecovery::try_new(
+            graph,
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+        )
+        .unwrap();
+        external.write().unwrap().handlers.clear();
+        assert!(
+            owner
+                .inner
+                .graph
+                .saga_compensation_registry
+                .read()
+                .unwrap()
+                .get(&node)
+                .is_some(),
+            "external mutation removed recovery handler"
+        );
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+    }
     struct PendingInit(Arc<Notify>);
     #[async_trait::async_trait]
     impl StreamingTransition<u32> for PendingInit {
@@ -199,11 +267,12 @@ mod tests {
         let graph = Axon::<u32, u32, String, Resources>::start("initializer-abort")
             .with_saga_policy(SagaPolicy::Enabled)
             .then_compensated(Effect, Undo);
-        let registry = Arc::downgrade(&graph.saga_compensation_registry);
-        let owner = OwnedStreamRecovery::new(
+        let owner = OwnedStreamRecovery::try_new(
             graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-        );
+        )
+        .unwrap();
+        let registry = Arc::downgrade(&owner.inner.graph.saga_compensation_registry);
         let entered = Arc::new(Notify::new());
         let task_entered = entered.clone();
         let drivers = Arc::new(AtomicUsize::new(0));
@@ -250,11 +319,12 @@ mod tests {
         let graph = Axon::<u32, u32, String, Resources>::start("owned-abort")
             .with_saga_policy(SagaPolicy::Enabled)
             .then_compensated(Effect, Undo);
-        let registry = Arc::downgrade(&graph.saga_compensation_registry);
-        let owner = OwnedStreamRecovery::new(
+        let owner = OwnedStreamRecovery::try_new(
             graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-        );
+        )
+        .unwrap();
+        let registry = Arc::downgrade(&owner.inner.graph.saga_compensation_registry);
         let entered = Arc::new(Notify::new());
         let task_owner = owner.clone();
         let task_entered = entered.clone();
