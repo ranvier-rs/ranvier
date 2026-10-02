@@ -588,6 +588,13 @@ mod tests {
             SupervisorPhase::Returned
         );
         assert_eq!(observer.borrow().cleanup_complete, Some(true));
+        drop(owner);
+        assert_eq!(
+            observer.borrow().custody,
+            RecoveryCustody::ReleasedWithoutRetainedTasks
+        );
+        assert_eq!(observer.borrow().cleanup_complete, Some(true));
+        assert_eq!(observer.borrow().phase, SupervisorPhase::Returned);
         assert!(matches!(
             &observer.borrow().disposition,
             Some(SupervisorDisposition::Consumption(
@@ -935,8 +942,21 @@ mod tests {
         assert_eq!(*observer.borrow(), before);
         assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
         assert!(!format!("{before:?}").contains("input_snapshot"));
+        {
+            let mut context = owner.inner.context.lock().await;
+            context.1.set_access_policy(
+                "custody-fixture",
+                Some(ranvier_core::BusAccessPolicy::allow_only(vec![
+                    ranvier_core::BusTypeRef::of::<u32>(),
+                ])),
+            );
+            assert!(context.1.get::<SagaStack>().is_err());
+        }
+        let remaining_owner = owner.clone();
         assert_eq!(observer.borrow().custody, RecoveryCustody::Held);
         drop(owner);
+        assert_eq!(observer.borrow().custody, RecoveryCustody::Held);
+        drop(remaining_owner);
         assert_eq!(
             observer.borrow().custody,
             RecoveryCustody::ReleasedWithPendingTasks

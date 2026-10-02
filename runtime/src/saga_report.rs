@@ -165,6 +165,7 @@ mod tests {
         journal.push_task(task);
         journal.settle(SagaRollbackOutcome::Completed);
         journal.finish();
+        assert!(journal.has_unresolved_tasks());
         assert_eq!(journal.unresolved_tasks().len(), 1);
         assert_eq!(
             journal.unresolved_tasks()[0].input_snapshot,
@@ -199,6 +200,7 @@ mod tests {
             journal.settle(SagaRollbackOutcome::Completed);
         }
         journal.finish();
+        assert!(!published.has_unresolved_tasks());
         let snapshot = published.snapshot();
         assert_eq!(snapshot.steps.len(), 10_000);
         assert!(snapshot.is_complete());
