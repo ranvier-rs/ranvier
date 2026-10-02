@@ -87,49 +87,58 @@ impl<Item> ObservedStream<Item> {
         }
     }
 }
-impl<Item> Stream for ObservedStream<Item> {
-    type Item = Item;
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Item>> {
-        let this = self.get_mut();
-        if this.terminal.is_some() {
-            return Poll::Ready(None);
+impl<Item> ObservedStream<Item> {
+    /// Observe control without polling another source item during backpressure.
+    pub(crate) async fn stopped(&mut self) -> StreamConsumptionTerminal {
+        futures_util::future::poll_fn(|cx| self.poll_stop(cx)).await;
+        self.terminal
+            .clone()
+            .expect("ready control records terminal")
+    }
+    fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        if self.terminal.is_some() {
+            return Poll::Ready(());
         }
-        if let Some(cancellation) = &mut this.cancellation {
+        if let Some(cancellation) = &mut self.cancellation {
             if let Poll::Ready(context) = cancellation.as_mut().poll(cx) {
-                return this.finish(StreamConsumptionTerminal::Cancelled(context));
+                return self
+                    .finish(StreamConsumptionTerminal::Cancelled(context))
+                    .map(|_| ());
             }
         }
-        let active_phase = match this.last_item_at {
-            Some(at) => this.config.idle.map(|d| (at, d, StreamTimeoutKind::Idle)),
-            None => this
+        let active_phase = match self.last_item_at {
+            Some(at) => self.config.idle.map(|d| (at, d, StreamTimeoutKind::Idle)),
+            None => self
                 .config
                 .init
-                .map(|d| (this.started_at, d, StreamTimeoutKind::Init)),
+                .map(|d| (self.started_at, d, StreamTimeoutKind::Init)),
         };
-        let active_total = this
+        let active_total = self
             .config
             .total
-            .map(|d| (this.started_at, d, StreamTimeoutKind::Total));
+            .map(|d| (self.started_at, d, StreamTimeoutKind::Total));
         for (origin, duration, kind) in active_total.into_iter().chain(active_phase) {
             if origin.checked_add(duration).is_none() {
-                return this.finish(StreamConsumptionTerminal::InvalidDeadline(kind));
+                return self
+                    .finish(StreamConsumptionTerminal::InvalidDeadline(kind))
+                    .map(|_| ());
             }
         }
-        let total = this
+        let total = self
             .config
             .total
-            .and_then(|d| this.started_at.checked_add(d))
+            .and_then(|d| self.started_at.checked_add(d))
             .map(|at| (at, StreamTimeoutKind::Total));
-        let phase = match this.last_item_at {
-            Some(at) => this
+        let phase = match self.last_item_at {
+            Some(at) => self
                 .config
                 .idle
                 .and_then(|d| at.checked_add(d))
                 .map(|at| (at, StreamTimeoutKind::Idle)),
-            None => this
+            None => self
                 .config
                 .init
-                .and_then(|d| this.started_at.checked_add(d))
+                .and_then(|d| self.started_at.checked_add(d))
                 .map(|at| (at, StreamTimeoutKind::Init)),
         };
         let deadline = match (total, phase) {
@@ -138,15 +147,29 @@ impl<Item> Stream for ObservedStream<Item> {
         };
         if let Some((at, kind)) = deadline {
             if at <= Instant::now() {
-                return this.finish(StreamConsumptionTerminal::TimedOut(kind));
+                return self
+                    .finish(StreamConsumptionTerminal::TimedOut(kind))
+                    .map(|_| ());
             }
-            let timer = this
+            let timer = self
                 .timer
                 .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(at)));
             timer.as_mut().reset(at);
             if timer.as_mut().poll(cx).is_ready() {
-                return this.finish(StreamConsumptionTerminal::TimedOut(kind));
+                return self
+                    .finish(StreamConsumptionTerminal::TimedOut(kind))
+                    .map(|_| ());
             }
+        }
+        Poll::Pending
+    }
+}
+impl<Item> Stream for ObservedStream<Item> {
+    type Item = Item;
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Item>> {
+        let this = self.get_mut();
+        if this.poll_stop(cx).is_ready() {
+            return Poll::Ready(None);
         }
         match this
             .inner

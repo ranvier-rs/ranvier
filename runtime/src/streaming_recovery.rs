@@ -25,6 +25,52 @@ pub(crate) struct StreamReadyResult<T> {
     pub(crate) cleanup: Option<crate::SagaRollbackReport>,
 }
 
+/// Bounded delivery: reserve before polling source, keep controls live while full,
+/// and release source before returning to shielded cleanup. Completion is returned
+/// directly to supervisor rather than sent behind queued items.
+pub(crate) async fn produce_bounded<Item: Send + 'static>(
+    source: RawStream<Item>,
+    config: ranvier_core::streaming::StreamTimeoutConfig,
+    token: CancellationToken,
+    sender: tokio::sync::mpsc::Sender<Item>,
+) -> StreamDriveResult<()> {
+    use futures_util::{FutureExt, StreamExt};
+    let mut observed = crate::ObservedStream::new(source, config, Some(token));
+    let terminal = loop {
+        let permit = tokio::select! {
+            biased;
+            terminal = observed.stopped() => break terminal,
+            _ = sender.closed() => break crate::StreamConsumptionTerminal::Cancelled(
+                ranvier_core::CancellationContext::new(ranvier_core::CancellationReason::ClientDisconnected)),
+            permit = sender.reserve() => match permit {
+                Ok(permit) => permit,
+                Err(_) => break crate::StreamConsumptionTerminal::Cancelled(
+                    ranvier_core::CancellationContext::new(ranvier_core::CancellationReason::ClientDisconnected)),
+            },
+        };
+        let item = tokio::select! {
+            biased;
+            _ = sender.closed() => break crate::StreamConsumptionTerminal::Cancelled(
+                ranvier_core::CancellationContext::new(ranvier_core::CancellationReason::ClientDisconnected)),
+            item = observed.next() => item,
+        };
+        match item {
+            Some(item) => {
+                if let Some(terminal) = observed.stopped().now_or_never() {
+                    break terminal;
+                }
+                permit.send(item);
+            }
+            None => break observed.terminal().cloned().expect("EOF records terminal"),
+        }
+    };
+    drop(observed);
+    StreamDriveResult {
+        value: (),
+        terminal,
+    }
+}
+
 /// A single invocation's exact graph, typed resources and request Bus. An external
 /// clone must outlive the supervisor, including forced task abort. No replay API.
 pub(crate) struct OwnedStreamRecovery<In, Out, E, Res> {
@@ -197,6 +243,80 @@ mod tests {
     };
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::Notify;
+    #[tokio::test]
+    async fn full_queue_observes_cancel_disconnect_and_deadline_without_extra_source_poll() {
+        use std::{
+            cell::Cell,
+            task::{Context, Poll},
+        };
+        struct Source {
+            polls: Arc<AtomicUsize>,
+            drops: Arc<AtomicUsize>,
+            entered: Arc<Notify>,
+        }
+        impl futures_core::Stream for Source {
+            type Item = Cell<u32>;
+            fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+                self.polls.fetch_add(1, Ordering::SeqCst);
+                self.entered.notify_one();
+                Poll::Ready(Some(Cell::new(7)))
+            }
+        }
+        impl Drop for Source {
+            fn drop(&mut self) {
+                self.drops.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        for mode in 0..3 {
+            let polls = Arc::new(AtomicUsize::new(0));
+            let drops = Arc::new(AtomicUsize::new(0));
+            let entered = Arc::new(Notify::new());
+            let source = Source {
+                polls: polls.clone(),
+                drops: drops.clone(),
+                entered: entered.clone(),
+            };
+            let token = CancellationToken::new();
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+            let task = tokio::spawn(produce_bounded(
+                Box::pin(source),
+                ranvier_core::streaming::StreamTimeoutConfig {
+                    init: None,
+                    idle: None,
+                    total: (mode == 2).then_some(std::time::Duration::from_millis(200)),
+                },
+                token.clone(),
+                sender,
+            ));
+            tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+                .await
+                .unwrap();
+            if mode == 0 {
+                token.cancel(ranvier_core::CancellationReason::Explicit);
+            }
+            if mode == 1 {
+                receiver.close();
+            }
+            let result = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(polls.load(Ordering::SeqCst), 1);
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+            match mode {
+                0 => assert!(
+                    matches!(result.terminal, crate::StreamConsumptionTerminal::Cancelled(context) if context.reason == ranvier_core::CancellationReason::Explicit)
+                ),
+                1 => assert!(
+                    matches!(result.terminal, crate::StreamConsumptionTerminal::Cancelled(context) if context.reason == ranvier_core::CancellationReason::ClientDisconnected)
+                ),
+                _ => assert_eq!(
+                    result.terminal,
+                    crate::StreamConsumptionTerminal::TimedOut(crate::StreamTimeoutKind::Total)
+                ),
+            }
+        }
+    }
     fn completed() -> StreamDriveResult<()> {
         StreamDriveResult {
             value: (),
