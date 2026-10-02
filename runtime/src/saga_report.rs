@@ -117,6 +117,10 @@ impl SagaRollbackJournal {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push((index, task));
     }
+    pub(crate) fn can_finish_external(&self) -> bool {
+        let report = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        report.finished || report.steps.is_empty()
+    }
     pub(crate) fn push_external(&self, recovery: ExternalCompensationRecovery) -> usize {
         let mut report = self.0.lock().unwrap_or_else(|p| p.into_inner());
         let index = report.steps.len();
@@ -141,16 +145,23 @@ impl SagaRollbackJournal {
             .collect()
     }
     pub(crate) fn settle_external(&self, index: usize, outcome: SagaRollbackOutcome) {
-        let mut report = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(step) = report.steps.get_mut(index) {
-            step.outcome = outcome;
+        {
+            let mut report = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(step) = report.steps.get_mut(index) {
+                step.outcome = outcome;
+            }
         }
-        if outcome == SagaRollbackOutcome::Completed {
-            self.2
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .retain(|(observed, _)| *observed != index);
-        }
+        // Releasing a user hook can invoke its destructor. Never do that under journal locks.
+        let released = if outcome == SagaRollbackOutcome::Completed {
+            let mut retained = self.2.lock().unwrap_or_else(|p| p.into_inner());
+            retained
+                .iter()
+                .position(|(observed, _)| *observed == index)
+                .map(|position| retained.swap_remove(position))
+        } else {
+            None
+        };
+        drop(released);
     }
     pub fn snapshot(&self) -> SagaRollbackReport {
         self.0
@@ -205,6 +216,53 @@ impl SagaRollbackJournal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct ReleaseProbe {
+        report: std::sync::Weak<std::sync::Mutex<SagaRollbackReport>>,
+        retained: std::sync::Weak<std::sync::Mutex<Vec<(usize, ExternalCompensationRecovery)>>>,
+        released: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl Drop for ReleaseProbe {
+        fn drop(&mut self) {
+            assert!(self.report.upgrade().unwrap().try_lock().is_ok());
+            assert!(self.retained.upgrade().unwrap().try_lock().is_ok());
+            self.released
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    #[async_trait::async_trait]
+    impl crate::persistence::CompensationHook for ReleaseProbe {
+        async fn compensate(
+            &self,
+            _: crate::persistence::CompensationContext,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+    #[test]
+    fn completed_external_release_drops_user_hook_outside_journal_locks() {
+        let journal = SagaRollbackJournal::new("release-probe");
+        let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let recovery = ExternalCompensationRecovery {
+            context: crate::persistence::CompensationContext {
+                trace_id: "release-probe".into(),
+                circuit: "private-circuit".into(),
+                fault_kind: "Fault".into(),
+                fault_step: 1,
+                timestamp_ms: 0,
+            },
+            handle: crate::persistence::CompensationHandle::from_hook(ReleaseProbe {
+                report: std::sync::Arc::downgrade(&journal.0),
+                retained: std::sync::Arc::downgrade(&journal.2),
+                released: released.clone(),
+            }),
+            idempotency: None,
+            invoked: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let index = journal.push_external(recovery);
+        journal.settle_external(index, SagaRollbackOutcome::Completed);
+        assert!(released.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(journal.unresolved_external().is_empty());
+    }
     #[test]
     fn unresolved_inputs_are_private_and_completion_removes_only_its_own_observation() {
         let journal = SagaRollbackJournal::new("recovery-fixture");

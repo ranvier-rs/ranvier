@@ -1059,6 +1059,9 @@ mod tests {
     impl crate::persistence::CompensationIdempotencyStore for ExternalMarker {
         async fn was_compensated(&self, _: &str) -> anyhow::Result<bool> {
             self.reads.fetch_add(1, Ordering::SeqCst);
+            if self.mode == 6 {
+                return Err(anyhow::anyhow!("private read failure"));
+            }
             if self.mode == 0 {
                 std::future::pending().await
             } else {
@@ -1071,6 +1074,9 @@ mod tests {
                 return std::future::pending().await;
             }
             self.applied.store(true, Ordering::SeqCst);
+            if self.mode == 5 {
+                return Err(anyhow::anyhow!("private applied marker failure"));
+            }
             if self.mode == 3 {
                 std::future::pending().await
             } else {
@@ -1084,7 +1090,7 @@ mod tests {
             CompensationHandle, CompensationIdempotencyHandle, CompensationRetryPolicy,
             InMemoryPersistenceStore, PersistenceHandle, PersistenceStore, PersistenceTraceId,
         };
-        for (mode, grace) in (0..5)
+        for (mode, grace) in (0..7)
             .map(|mode| (mode, std::time::Duration::from_millis(100)))
             .chain([(0, std::time::Duration::ZERO)])
         {
@@ -1136,13 +1142,15 @@ mod tests {
                 panic!("expected external cleanup prefix rejection");
             };
             let cleanup = prefix.cleanup().unwrap();
-            assert!(!cleanup.finished);
+            assert_eq!(cleanup.finished, mode >= 5);
             assert!(!cleanup.is_complete());
             assert_eq!(cleanup.steps.len(), 1);
             assert_eq!(
                 cleanup.steps[0].outcome,
-                if mode == 0 {
+                if mode == 0 || mode == 6 {
                     crate::SagaRollbackOutcome::NotInvoked
+                } else if mode == 5 {
+                    crate::SagaRollbackOutcome::Fault
                 } else {
                     crate::SagaRollbackOutcome::InProgress
                 }
@@ -1169,19 +1177,25 @@ mod tests {
             assert_eq!(retained[0].context.fault_kind, "Fault");
             assert!(Arc::ptr_eq(&retained[0].handle.hook(), &hook));
             assert!(retained[0].idempotency.is_some());
-            assert_eq!(retained[0].invoked.load(Ordering::SeqCst), mode != 0);
-            assert_eq!(calls.load(Ordering::SeqCst), usize::from(mode != 0));
+            assert_eq!(
+                retained[0].invoked.load(Ordering::SeqCst),
+                mode != 0 && mode != 6
+            );
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                usize::from(mode != 0 && mode != 6)
+            );
             assert_eq!(
                 reads.load(Ordering::SeqCst),
                 usize::from(grace != std::time::Duration::ZERO)
             );
             assert_eq!(
                 writes.load(Ordering::SeqCst),
-                usize::from(mode == 2 || mode == 3)
+                usize::from(mode == 2 || mode == 3 || mode == 5)
             );
-            assert_eq!(applied.load(Ordering::SeqCst), mode == 3);
+            assert_eq!(applied.load(Ordering::SeqCst), mode == 3 || mode == 5);
             assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
-            assert!(owner.observe().borrow().cleanup_timed_out);
+            assert_eq!(owner.observe().borrow().cleanup_timed_out, mode < 5);
             assert_eq!(owner.observe().borrow().cleanup_complete, Some(false));
             assert!(!format!("{journal:?}").contains("private-external-circuit"));
             drop(retained);

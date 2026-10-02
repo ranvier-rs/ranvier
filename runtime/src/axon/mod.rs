@@ -1330,10 +1330,9 @@ async fn run_compensation(
         idempotency: idempotency.clone(),
         invoked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
-    let prior_finished = journal.as_ref().is_none_or(|journal| {
-        let prior = journal.snapshot();
-        prior.finished || prior.steps.is_empty()
-    });
+    let prior_finished = journal
+        .as_ref()
+        .is_none_or(crate::SagaRollbackJournal::can_finish_external);
     let index = journal
         .as_ref()
         .map(|journal| journal.push_external(recovery.clone()));
@@ -1369,6 +1368,9 @@ async fn run_compensation(
     };
     let outcome = match result {
         Some(Ok(true)) => SagaRollbackOutcome::Completed,
+        Some(Ok(false)) if !recovery.invoked.load(std::sync::atomic::Ordering::SeqCst) => {
+            SagaRollbackOutcome::NotInvoked
+        }
         Some(Ok(false)) => SagaRollbackOutcome::Fault,
         Some(Err(_)) => SagaRollbackOutcome::Panicked,
         None if recovery.invoked.load(std::sync::atomic::Ordering::SeqCst) => {
@@ -1422,6 +1424,7 @@ async fn run_compensation_unbounded(
                     store_operation = "compensation_idempotency_read",
                     "Failed to check compensation idempotency state"
                 );
+                return false;
             }
         }
     }
@@ -1445,6 +1448,7 @@ async fn run_compensation_unbounded(
                             store_operation = "compensation_idempotency_write",
                             "Failed to mark compensation idempotency state"
                         );
+                        return false;
                     }
                 }
                 return true;
@@ -2796,7 +2800,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compensation_idempotency_store_failure_does_not_block_compensation() {
+    async fn compensation_idempotency_read_failure_blocks_hook_without_success_claim() {
         let store_impl = Arc::new(InMemoryPersistenceStore::new());
         let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -2835,16 +2839,16 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(persisted.completion, Some(CompletionState::Compensated));
+        assert_eq!(persisted.completion, Some(CompletionState::Fault));
         assert_eq!(
             persisted.events.last().map(|e| e.outcome_kind.as_str()),
-            Some("Compensated")
+            Some("Fault")
         );
 
         let recorded = calls.lock().await;
-        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded.len(), 0);
         assert_eq!(*read_calls.lock().await, 1);
-        assert_eq!(*write_calls.lock().await, 1);
+        assert_eq!(*write_calls.lock().await, 0);
     }
 
     #[tokio::test]

@@ -133,7 +133,14 @@ async fn pre_cancelled_cleanup_reports_applied_compensation_without_ack() {
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(trace.completion, Some(CompletionState::Compensated));
+            assert_eq!(trace.completion, Some(CompletionState::Cancelled));
+            assert!(
+                !trace
+                    .events
+                    .iter()
+                    .any(|event| event.outcome_kind == "Compensated")
+            );
+            assert!(!report.cleanup().unwrap().is_complete());
         }
     }
 }

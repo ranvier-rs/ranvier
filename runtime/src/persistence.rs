@@ -143,7 +143,7 @@ impl Default for CompensationRetryPolicy {
 /// Compensation hook contract for irreversible side effects.
 ///
 /// **Production-stable since 0.12 (M156).** Implement and register this hook
-/// via [`CompensationHandle`] to define rollback actions when an Axon pipeline
+/// via [`CompensationHandle`] to define rollback actions when an Axon execution
 /// faults after committing external side effects.
 #[async_trait]
 pub trait CompensationHook: Send + Sync {
@@ -186,8 +186,11 @@ impl CompensationHandle {
 
 /// Idempotency store contract for compensation execution deduplication.
 ///
-/// **Production-stable since 0.12 (M156).** Ensures that compensation actions
-/// are executed at most once even when retried after a process restart.
+/// Tracks completed compensation keys across executions. The separate
+/// read, external hook, and marker write are not an atomic claim protocol.
+/// Lost acknowledgements and concurrent callers require reconciliation or
+/// downstream deduplication before retry; this trait alone cannot guarantee
+/// at-most-once external actions across failures or process restarts.
 /// Built-in adapters: [`InMemoryCompensationIdempotencyStore`],
 /// [`PostgresCompensationIdempotencyStore`] (feature `persistence-postgres`),
 /// [`RedisCompensationIdempotencyStore`] (feature `persistence-redis`).
