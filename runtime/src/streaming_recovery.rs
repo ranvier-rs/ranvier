@@ -2493,6 +2493,38 @@ mod tests {
             admission.release();
         }
     }
+    #[tokio::test]
+    async fn bound_parent_deadline_interrupts_actual_initializer_without_extending_original_deadline() {
+        let parent = crate::nested_custody::CustodyStore::new(1);
+        let root = CancellationToken::new();
+        let control = root.child_with_deadline(std::time::Duration::from_millis(200));
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let child = OwnedStreamRecovery::try_new(
+            Axon::<u32, u32, String, Resources>::start("inherited-parent-deadline")
+                .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1), None).unwrap();
+        let journal = crate::SagaRollbackJournal::new("deadline-parent-observation");
+        let admission = child.admit_to_parent_journal_with_control(parent.client(), &journal, Some(control.clone())).await.unwrap();
+        let entered = Arc::new(Notify::new());
+        let signal = entered.clone();
+        let task = tokio::spawn(async move {
+            child.initialize_and_drive(313, &PendingInit(signal), None, std::time::Duration::from_secs(5), |_| async {
+                panic!("deadline-cancelled initializer must not start driver");
+                #[allow(unreachable_code)] completed()
+            }).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+        let report = tokio::time::timeout(std::time::Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
+        let StreamInitializationReport::Cancelled { context, .. } = report else { panic!("expected inherited deadline cancellation"); };
+        assert_eq!(context.reason, ranvier_core::CancellationReason::DeadlineExceeded);
+        assert_eq!(context, control.context().unwrap());
+        assert!(context.deadline_ms.is_some());
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+        assert!(!root.is_cancelled());
+        assert_eq!(journal.retained_stream_observations()[0].1.disposition, Some(SupervisorDisposition::InitializationCancelled));
+        admission.release();
+    }
     struct ExternalHook {
         mode: u8,
         calls: Arc<AtomicUsize>,
