@@ -164,7 +164,9 @@ async fn main() -> anyhow::Result<()> {
 
     println!("=== Auth JWT Role Demo ===\n");
 
-    let verifier = auth::JwtVerifier::from_env().map_err(anyhow::Error::msg)?;
+    let secret = std::env::var("JWT_SECRET")
+        .map_err(|_| anyhow::Error::msg("JWT_SECRET configuration is unavailable"))?;
+    let verifier = auth::JwtVerifier::from_secret(secret.as_bytes()).map_err(anyhow::Error::msg)?;
 
     // ── Build Circuits ───────────────────────────────────────────────────
 

@@ -121,8 +121,10 @@ dispatch and inventory records fulfilled status before returning success.
 Every local ledger retains at most 1000 records; completed records are retained.
 Duplicate/concurrent dispatch is rejected, with one successful local dispatch.
 
-RequireNoDispatch is a compensation gate, not a shipping reversal. Definite
-pre-dispatch rejection records Rejected and permits refund/release. Shipped or
+RequireNoDispatch is a compensation gate, not a shipping reversal. The
+pre-dispatch rejection path is currently a test-only mock: it records Rejected
+and permits refund/release. The shipped example always simulates tracking and
+does not exercise that provider outcome. Shipped or
 ambiguous dispatch blocks refund/release and yields incomplete cleanup. The
 uncertain-response fixture deliberately records a tracking ID before returning
 an ambiguous error, proving the local flow retains payment and reservation.

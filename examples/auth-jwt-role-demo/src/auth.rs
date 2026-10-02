@@ -27,12 +27,6 @@ impl JwtVerifier {
         })
     }
 
-    pub fn from_env() -> Result<Self, &'static str> {
-        let secret =
-            std::env::var("JWT_SECRET").map_err(|_| "JWT_SECRET configuration is unavailable")?;
-        Self::from_secret(secret.as_bytes())
-    }
-
     pub fn issue_token(&self, username: &str, roles: Vec<String>) -> Result<String, &'static str> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

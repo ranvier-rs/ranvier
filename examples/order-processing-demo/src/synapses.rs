@@ -328,8 +328,20 @@ struct PaymentRecord {
 enum DispatchState {
     NotStarted,
     Pending,
+    #[cfg(test)]
     Rejected,
     Shipped(String),
+}
+
+impl DispatchState {
+    fn permits_refund(&self) -> bool {
+        match self {
+            Self::NotStarted => true,
+            #[cfg(test)]
+            Self::Rejected => true,
+            Self::Pending | Self::Shipped(_) => false,
+        }
+    }
 }
 
 pub struct DispatchPermit {
@@ -341,6 +353,7 @@ pub struct DispatchPermit {
 
 #[derive(Debug)]
 pub enum DispatchError {
+    #[cfg(test)]
     Rejected,
     Uncertain,
 }
@@ -439,6 +452,7 @@ impl PaymentSynapse {
         }
         match result {
             Ok(tracking) => record.dispatch = DispatchState::Shipped(tracking.clone()),
+            #[cfg(test)]
             Err(DispatchError::Rejected) => record.dispatch = DispatchState::Rejected,
             Err(DispatchError::Uncertain) => return Err("Dispatch requires reconciliation".into()),
         }
@@ -453,12 +467,7 @@ impl PaymentSynapse {
         let Some(record) = records.get(&order.request.order_id) else {
             return Ok(());
         };
-        if record.owner != order.reservation_owner
-            || !matches!(
-                record.dispatch,
-                DispatchState::NotStarted | DispatchState::Rejected
-            )
-        {
+        if record.owner != order.reservation_owner || !record.dispatch.permits_refund() {
             return Err("Dispatch requires reconciliation before refund".into());
         }
         Ok(())
@@ -481,10 +490,7 @@ impl PaymentSynapse {
             if record.owner != order.reservation_owner || record.amount != order.payable_amount {
                 return Err("Refund owner or amount mismatch".into());
             }
-            if !matches!(
-                record.dispatch,
-                DispatchState::NotStarted | DispatchState::Rejected
-            ) {
+            if !record.dispatch.permits_refund() {
                 return Err("Dispatch requires reconciliation before refund".into());
             }
             match record.state {
