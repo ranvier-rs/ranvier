@@ -38,6 +38,10 @@ pub(crate) struct OwnedStreamPlan<In, Out, Item, E, Res, S> {
     pub(crate) timeout_config: Option<StreamTimeoutConfig>,
     pub(crate) buffer_size: usize,
 }
+pub(crate) struct BoundedPreparationRejected<In> {
+    pub(crate) signal: &'static str,
+    pub(crate) input: In,
+}
 impl<In, Out, Item, E, Res> OwnedStreamDefinition<In, Out, Item, E, Res>
 where
     In: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
@@ -70,6 +74,23 @@ where
     Res: Send + Sync + 'static,
     Item: Send + 'static,
 {
+    pub(crate) fn prepare_bounded<SErr>(&self, input: In, grace: std::time::Duration, token: CancellationToken)
+        -> Result<(crate::managed_stream_task::PreparedStreamTask<Result<StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult<()>, E>, crate::streaming_recovery::StreamInvocationAlreadyStarted>>, tokio::sync::mpsc::Receiver<Item>), BoundedPreparationRejected<In>>
+    where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
+        SErr: Send + Sync + Debug + 'static,
+    {
+        if self.buffer_size == 0 {
+            return Err(BoundedPreparationRejected { signal: "execution.stream_buffer_invalid", input });
+        }
+        let (sender, receiver) = tokio::sync::mpsc::channel(self.buffer_size);
+        let config = self.timeout_config.clone().unwrap_or(StreamTimeoutConfig {
+            init: None, idle: None, total: None,
+        });
+        let prepared = self.prepare(input, grace, move |stream| async move {
+            crate::streaming_recovery::produce_bounded(stream, config, token, sender).await
+        });
+        Ok((prepared, receiver))
+    }
     pub(crate) fn prepare<T, F, Fut, SErr>(&self, input: In, grace: std::time::Duration, drive: F)
         -> crate::managed_stream_task::PreparedStreamTask<Result<StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult<T>, E>, crate::streaming_recovery::StreamInvocationAlreadyStarted>>
     where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
