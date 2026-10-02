@@ -11,7 +11,7 @@ pub(crate) struct PreparedStreamTask<T> {
 }
 impl<T: Send + 'static> PreparedStreamTask<T> {
     pub(crate) fn new<F: Future<Output = T> + Send + 'static>(future: F) -> Self {
-        let (task, permit) = ManagedStreamTask::prepare(future);
+        let (task, permit) = ManagedStreamTask::spawn_gated(future);
         Self { task: std::sync::Arc::new(tokio::sync::Mutex::new(task)), permit: Some(permit), grant_decided: false }
     }
     pub(crate) fn holder(&self) -> std::sync::Arc<tokio::sync::Mutex<ManagedStreamTask<T>>> {
@@ -55,7 +55,8 @@ impl<T: Send + 'static> ManagedStreamTask<T> {
     /// Reject the unopened start gate before returning the borrowed join wait.
     /// Even an unpolled/dropped wait cannot grant start; caller retains this
     /// task owner and must retry join after a timeout or dropped wait.
-    pub(crate) fn reject_start_until(
+    #[cfg(test)]
+    fn reject_start_until(
         &mut self, permit: oneshot::Sender<()>, deadline: Instant,
     ) -> impl Future<Output = Result<Result<Option<T>, tokio::task::JoinError>, ManagedTaskWaitError>> + '_ {
         drop(permit);
@@ -63,7 +64,7 @@ impl<T: Send + 'static> ManagedStreamTask<T> {
     }
     /// The future is never polled until the registering supervisor grants start.
     /// Dropping the permit rejects start; caller still owns and must join the task.
-    pub(crate) fn prepare<F>(future: F) -> (Self, oneshot::Sender<()>)
+    fn spawn_gated<F>(future: F) -> (Self, oneshot::Sender<()>)
     where F: Future<Output = T> + Send + 'static {
         let (permit, gate) = oneshot::channel();
         let handle = tokio::spawn(async move {
@@ -71,6 +72,11 @@ impl<T: Send + 'static> ManagedStreamTask<T> {
             Some(future.await)
         });
         (Self { handle: Some(handle), joined: None }, permit)
+    }
+    #[cfg(test)]
+    pub(crate) fn prepare<F>(future: F) -> (Self, oneshot::Sender<()>)
+    where F: Future<Output = T> + Send + 'static {
+        Self::spawn_gated(future)
     }
 
     /// Borrow the handle rather than moving it into the deadline future.
