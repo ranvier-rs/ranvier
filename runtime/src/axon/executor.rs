@@ -208,6 +208,43 @@ where
                 Resources = Res,
             >,
     {
+        self.initialize_stream_in_scope_with_cleanup_grace(
+            input,
+            resources,
+            owner,
+            streaming,
+            cancellation,
+            None,
+        )
+        .await
+    }
+
+    /// Initialize without consuming/restoring the caller's invocation owner.
+    /// The supervisor must retain this owner through consumption and cleanup.
+    #[cfg(feature = "streaming")]
+    pub(crate) async fn initialize_stream_in_scope_with_cleanup_grace<Item, SErr, S>(
+        &self,
+        input: In,
+        resources: &Res,
+        owner: &mut crate::execution_observation::InvocationOwner<'_>,
+        streaming: &S,
+        cancellation: Option<CancellationToken>,
+        cleanup_grace: Option<std::time::Duration>,
+    ) -> crate::streaming_initialization::StreamInitializationReport<
+        Out,
+        std::pin::Pin<Box<dyn futures_core::Stream<Item = Item> + Send>>,
+        E,
+    >
+    where
+        Item: Send + 'static,
+        SErr: Send + Sync + std::fmt::Debug + 'static,
+        S: ranvier_core::streaming::StreamingTransition<
+                Out,
+                Item = Item,
+                Error = SErr,
+                Resources = Res,
+            >,
+    {
         use crate::EffectBoundary;
         use crate::streaming_initialization::{
             StreamInitializationError, StreamInitializationReport, admit_prefix,
@@ -238,10 +275,11 @@ where
                 context,
                 initialization: EffectBoundary::NotInvoked,
                 initialization_cleanup: self
-                    .cleanup_stream_initialization(
+                    .cleanup_stream_initialization_with_grace(
                         resources,
                         owner.bus(),
                         initialization_saga_enabled,
+                        cleanup_grace,
                     )
                     .await,
             };
@@ -280,10 +318,11 @@ where
                 error,
                 initialization: EffectBoundary::MayHaveRun,
                 initialization_cleanup: self
-                    .cleanup_stream_initialization(
+                    .cleanup_stream_initialization_with_grace(
                         resources,
                         owner.bus(),
                         initialization_saga_enabled,
+                        cleanup_grace,
                     )
                     .await,
             },
@@ -292,10 +331,11 @@ where
                 context,
                 initialization: EffectBoundary::MayHaveRun,
                 initialization_cleanup: self
-                    .cleanup_stream_initialization(
+                    .cleanup_stream_initialization_with_grace(
                         resources,
                         owner.bus(),
                         initialization_saga_enabled,
+                        cleanup_grace,
                     )
                     .await,
             },
@@ -311,16 +351,38 @@ where
         bus: &mut Bus,
         enabled: bool,
     ) -> Option<crate::SagaRollbackReport> {
+        self.cleanup_stream_initialization_with_grace(resources, bus, enabled, None)
+            .await
+    }
+
+    /// A separate cooperative compensation budget; never reuse a cancelled workflow token.
+    #[cfg(feature = "streaming")]
+    pub(crate) async fn cleanup_stream_initialization_with_grace(
+        &self,
+        resources: &Res,
+        bus: &mut Bus,
+        enabled: bool,
+        grace: Option<std::time::Duration>,
+    ) -> Option<crate::SagaRollbackReport> {
         if !enabled {
             return None;
         }
         bus.clear_access_policy();
         bus.set_cancellation_token(CancellationToken::new());
         let trace = persistence_trace_id(bus);
-        self.rollback_saga(resources, bus, &trace).await;
+        match grace {
+            Some(grace) => {
+                // Dropping rollback preserves its InProgress journal and unpopped stack.
+                let _ =
+                    tokio::time::timeout(grace, self.rollback_saga(resources, bus, &trace)).await;
+            }
+            None => self.rollback_saga(resources, bus, &trace).await,
+        }
         // A panicked compensator may leave its access policy installed.
         bus.clear_access_policy();
-        bus.read::<crate::SagaRollbackReport>().cloned()
+        bus.read::<crate::SagaRollbackJournal>()
+            .map(crate::SagaRollbackJournal::snapshot)
+            .or_else(|| bus.read::<crate::SagaRollbackReport>().cloned())
     }
 
     /// Execute the Axon with the given input and resources.

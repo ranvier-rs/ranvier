@@ -480,6 +480,7 @@ where
         input: In,
         streaming: &S,
         token: Option<CancellationToken>,
+        cleanup_grace: std::time::Duration,
         drive: F,
     ) -> Result<
         StreamInitializationReport<Out, StreamReadyResult<T>, E>,
@@ -517,12 +518,13 @@ where
         let report = self
             .inner
             .graph
-            .initialize_stream_in_scope(
+            .initialize_stream_in_scope_with_cleanup_grace(
                 input,
                 resources.as_ref(),
                 &mut owner,
                 streaming,
                 Some(token.clone()),
+                Some(cleanup_grace),
             )
             .await;
         let mapped = match report {
@@ -549,10 +551,11 @@ where
                     observation.phase(SupervisorPhase::CleaningUp);
                     self.inner
                         .graph
-                        .cleanup_stream_initialization(
+                        .cleanup_stream_initialization_with_grace(
                             resources.as_ref(),
                             owner.bus(),
                             saga_enabled,
+                            Some(cleanup_grace),
                         )
                         .await
                 } else {
@@ -801,18 +804,24 @@ mod tests {
         let task_owner = owner.clone();
         let task = tokio::spawn(async move {
             task_owner
-                .initialize_and_drive(43, &QueueInit(task_entered), Some(token), move |source| {
-                    produce_bounded(
-                        source,
-                        ranvier_core::streaming::StreamTimeoutConfig {
-                            init: None,
-                            idle: None,
-                            total: None,
-                        },
-                        driver_token,
-                        sender,
-                    )
-                })
+                .initialize_and_drive(
+                    43,
+                    &QueueInit(task_entered),
+                    Some(token),
+                    std::time::Duration::from_secs(5),
+                    move |source| {
+                        produce_bounded(
+                            source,
+                            ranvier_core::streaming::StreamTimeoutConfig {
+                                init: None,
+                                idle: None,
+                                total: None,
+                            },
+                            driver_token,
+                            sender,
+                        )
+                    },
+                )
                 .await
         });
         tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
@@ -921,27 +930,33 @@ mod tests {
             .unwrap();
             let (sender, _receiver) = tokio::sync::mpsc::channel(1);
             let report = owner
-                .initialize_and_drive(47, &PanicInit(mode), None, move |source| {
-                    if mode == 0 {
-                        panic!("private-driver-factory-payload");
-                    }
-                    async move {
-                        if mode == 3 {
-                            panic!("private-driver-poll-payload");
+                .initialize_and_drive(
+                    47,
+                    &PanicInit(mode),
+                    None,
+                    std::time::Duration::from_secs(5),
+                    move |source| {
+                        if mode == 0 {
+                            panic!("private-driver-factory-payload");
                         }
-                        produce_bounded(
-                            source,
-                            ranvier_core::streaming::StreamTimeoutConfig {
-                                init: None,
-                                idle: None,
-                                total: None,
-                            },
-                            CancellationToken::new(),
-                            sender,
-                        )
-                        .await
-                    }
-                })
+                        async move {
+                            if mode == 3 {
+                                panic!("private-driver-poll-payload");
+                            }
+                            produce_bounded(
+                                source,
+                                ranvier_core::streaming::StreamTimeoutConfig {
+                                    init: None,
+                                    idle: None,
+                                    total: None,
+                                },
+                                CancellationToken::new(),
+                                sender,
+                            )
+                            .await
+                        }
+                    },
+                )
                 .await;
             let Ok(StreamInitializationReport::Ready { prefix, value }) = report else {
                 panic!("expected late failure after initialization");
@@ -1001,6 +1016,154 @@ mod tests {
             std::future::pending().await
         }
     }
+    struct GraceInit(u8, CancellationToken);
+    #[async_trait::async_trait]
+    impl StreamingTransition<u32> for GraceInit {
+        type Item = u32;
+        type Error = String;
+        type Resources = Resources;
+        async fn run_stream(
+            &self,
+            _: u32,
+            _: &Resources,
+            _: &mut Bus,
+        ) -> Result<RawStream<u32>, String> {
+            match self.0 {
+                1 => Err("fixture initializer failure".into()),
+                2 => {
+                    self.1
+                        .cancel(ranvier_core::CancellationReason::ClientDisconnected);
+                    std::future::pending().await
+                }
+                _ => Ok(Box::pin(futures_util::stream::pending())),
+            }
+        }
+    }
+    #[tokio::test]
+    async fn cleanup_grace_returns_partial_report_and_retains_live_reconciliation_context() {
+        for mode in 0..3 {
+            let entered = Arc::new(Notify::new());
+            let observed_journal = Arc::new(std::sync::Mutex::new(None));
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
+            let graph = Axon::<u32, u32, String, Resources>::start("cleanup-grace")
+                .with_saga_policy(SagaPolicy::Enabled)
+                .then_compensated(AdvancingEffect, Undo)
+                .then_compensated(
+                    AdvancingEffect,
+                    PendingUndo(entered.clone(), observed_journal.clone()),
+                );
+            let admission = StreamRecoveryAdmission::new(1);
+            let owner = OwnedStreamRecovery::try_new(
+                graph,
+                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                &admission,
+                None,
+            )
+            .unwrap();
+            let token = CancellationToken::new();
+            let drivers = Arc::new(AtomicUsize::new(0));
+            let driver_calls = drivers.clone();
+            let report = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                owner.initialize_and_drive(
+                    89,
+                    &GraceInit(mode, token.clone()),
+                    Some(token),
+                    std::time::Duration::from_millis(50),
+                    move |source| async move {
+                        driver_calls.fetch_add(1, Ordering::SeqCst);
+                        let consumed = crate::ObservedStream::new(
+                            source,
+                            ranvier_core::streaming::StreamTimeoutConfig {
+                                init: None,
+                                idle: None,
+                                total: Some(std::time::Duration::ZERO),
+                            },
+                            None,
+                        )
+                        .collect_report()
+                        .await;
+                        StreamDriveResult {
+                            value: consumed.items,
+                            terminal: consumed.terminal,
+                        }
+                    },
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let cleanup = match report {
+                StreamInitializationReport::Ready { value, .. } if mode == 0 => {
+                    assert_eq!(
+                        value.consumption.unwrap().terminal,
+                        crate::StreamConsumptionTerminal::TimedOut(crate::StreamTimeoutKind::Total)
+                    );
+                    value.cleanup.unwrap()
+                }
+                StreamInitializationReport::Failed {
+                    initialization_cleanup,
+                    ..
+                } if mode == 1 => initialization_cleanup.unwrap(),
+                StreamInitializationReport::Cancelled {
+                    initialization_cleanup,
+                    ..
+                } if mode == 2 => initialization_cleanup.unwrap(),
+                _ => panic!("wrong initialization disposition"),
+            };
+            assert!(!cleanup.finished);
+            assert!(!cleanup.is_complete());
+            assert_eq!(cleanup.steps.len(), 1);
+            assert_eq!(
+                cleanup.steps[0].outcome,
+                crate::SagaRollbackOutcome::InProgress
+            );
+            assert_eq!(drivers.load(Ordering::SeqCst), usize::from(mode == 0));
+            assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+            assert_eq!(
+                observed_journal
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .snapshot(),
+                cleanup
+            );
+            let context = owner
+                .inner
+                .context
+                .try_lock()
+                .expect("cleanup returned ownership");
+            assert!(Arc::ptr_eq(&resources, &context.0));
+            let journal = context.1.read::<crate::SagaRollbackJournal>().unwrap();
+            assert_eq!(journal.unresolved_tasks()[0].input_snapshot, b"90");
+            assert_eq!(
+                context.1.read::<SagaStack>().unwrap().tasks[0].input_snapshot,
+                b"89"
+            );
+            drop(context);
+            assert_eq!(owner.observe().borrow().phase, SupervisorPhase::Returned);
+            assert_eq!(owner.observe().borrow().cleanup_complete, Some(false));
+            assert_eq!(owner.observe().borrow().custody, RecoveryCustody::Held);
+            assert_eq!(admission.in_use().unwrap(), 1);
+            assert!(matches!(
+                owner
+                    .initialize_and_drive(
+                        99,
+                        &Init,
+                        None,
+                        std::time::Duration::from_secs(1),
+                        |_| async { completed() }
+                    )
+                    .await,
+                Err(StreamInvocationAlreadyStarted)
+            ));
+            drop(owner);
+            assert_eq!(admission.in_use().unwrap(), 0);
+        }
+    }
     #[tokio::test]
     async fn forced_abort_during_compensation_retains_popped_and_remaining_inputs() {
         for pending_top in [true, false] {
@@ -1033,23 +1196,29 @@ mod tests {
             let task_owner = owner.clone();
             let task = tokio::spawn(async move {
                 task_owner
-                    .initialize_and_drive(53, &Init, None, |source| async move {
-                        let observed = crate::ObservedStream::new(
-                            source,
-                            ranvier_core::streaming::StreamTimeoutConfig {
-                                init: None,
-                                idle: None,
-                                total: Some(std::time::Duration::ZERO),
-                            },
-                            None,
-                        )
-                        .collect_report()
-                        .await;
-                        StreamDriveResult {
-                            value: observed.items,
-                            terminal: observed.terminal,
-                        }
-                    })
+                    .initialize_and_drive(
+                        53,
+                        &Init,
+                        None,
+                        std::time::Duration::from_secs(5),
+                        |source| async move {
+                            let observed = crate::ObservedStream::new(
+                                source,
+                                ranvier_core::streaming::StreamTimeoutConfig {
+                                    init: None,
+                                    idle: None,
+                                    total: Some(std::time::Duration::ZERO),
+                                },
+                                None,
+                            )
+                            .collect_report()
+                            .await;
+                            StreamDriveResult {
+                                value: observed.items,
+                                terminal: observed.terminal,
+                            }
+                        },
+                    )
                     .await
             });
             tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
@@ -1119,7 +1288,13 @@ mod tests {
             drop(context);
             assert!(matches!(
                 owner
-                    .initialize_and_drive(99, &Init, None, |_| async { completed() })
+                    .initialize_and_drive(
+                        99,
+                        &Init,
+                        None,
+                        std::time::Duration::from_secs(5),
+                        |_| async { completed() }
+                    )
                     .await,
                 Err(StreamInvocationAlreadyStarted)
             ));
@@ -1155,23 +1330,29 @@ mod tests {
         )
         .unwrap();
         let report = owner
-            .initialize_and_drive(61, &EndInit(true), None, |source| async move {
-                let observed = crate::ObservedStream::new(
-                    source,
-                    ranvier_core::streaming::StreamTimeoutConfig {
-                        init: None,
-                        idle: None,
-                        total: None,
-                    },
-                    None,
-                )
-                .collect_report()
-                .await;
-                StreamDriveResult {
-                    value: observed.items,
-                    terminal: observed.terminal,
-                }
-            })
+            .initialize_and_drive(
+                61,
+                &EndInit(true),
+                None,
+                std::time::Duration::from_secs(5),
+                |source| async move {
+                    let observed = crate::ObservedStream::new(
+                        source,
+                        ranvier_core::streaming::StreamTimeoutConfig {
+                            init: None,
+                            idle: None,
+                            total: None,
+                        },
+                        None,
+                    )
+                    .collect_report()
+                    .await;
+                    StreamDriveResult {
+                        value: observed.items,
+                        terminal: observed.terminal,
+                    }
+                },
+            )
             .await;
         assert!(matches!(
             report,
@@ -1203,7 +1384,13 @@ mod tests {
         );
         assert!(matches!(
             owner
-                .initialize_and_drive(62, &Init, None, |_| async { completed() })
+                .initialize_and_drive(
+                    62,
+                    &Init,
+                    None,
+                    std::time::Duration::from_secs(5),
+                    |_| async { completed() }
+                )
                 .await,
             Err(StreamInvocationAlreadyStarted)
         ));
@@ -1338,11 +1525,17 @@ mod tests {
         let task_entered = entered.clone();
         let task = tokio::spawn(async move {
             owner
-                .initialize_and_drive(67, &Init, None, move |source| async move {
-                    let _source = source;
-                    task_entered.notify_one();
-                    std::future::pending::<StreamDriveResult<()>>().await
-                })
+                .initialize_and_drive(
+                    67,
+                    &Init,
+                    None,
+                    std::time::Duration::from_secs(5),
+                    move |source| async move {
+                        let _source = source;
+                        task_entered.notify_one();
+                        std::future::pending::<StreamDriveResult<()>>().await
+                    },
+                )
                 .await
         });
         tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
@@ -1475,23 +1668,29 @@ mod tests {
             .unwrap();
         let observer = owner.observe();
         let report = owner
-            .initialize_and_drive(71, &EndInit(true), None, |source| async move {
-                let observed = crate::ObservedStream::new(
-                    source,
-                    ranvier_core::streaming::StreamTimeoutConfig {
-                        init: None,
-                        idle: None,
-                        total: None,
-                    },
-                    None,
-                )
-                .collect_report()
-                .await;
-                StreamDriveResult {
-                    value: observed.items,
-                    terminal: observed.terminal,
-                }
-            })
+            .initialize_and_drive(
+                71,
+                &EndInit(true),
+                None,
+                std::time::Duration::from_secs(5),
+                |source| async move {
+                    let observed = crate::ObservedStream::new(
+                        source,
+                        ranvier_core::streaming::StreamTimeoutConfig {
+                            init: None,
+                            idle: None,
+                            total: None,
+                        },
+                        None,
+                    )
+                    .collect_report()
+                    .await;
+                    StreamDriveResult {
+                        value: observed.items,
+                        terminal: observed.terminal,
+                    }
+                },
+            )
             .await;
         assert!(matches!(
             report,
@@ -1597,10 +1796,16 @@ mod tests {
             .unwrap();
         let report = tokio::time::timeout(
             std::time::Duration::from_secs(3),
-            owner.initialize_and_drive(73, &Init, None, |source| async move {
-                let _source = source;
-                std::future::pending::<StreamDriveResult<()>>().await
-            }),
+            owner.initialize_and_drive(
+                73,
+                &Init,
+                None,
+                std::time::Duration::from_secs(5),
+                |source| async move {
+                    let _source = source;
+                    std::future::pending::<StreamDriveResult<()>>().await
+                },
+            ),
         )
         .await
         .unwrap();
@@ -1642,10 +1847,16 @@ mod tests {
         let drivers = Arc::new(AtomicUsize::new(0));
         let driver_calls = drivers.clone();
         let report = owner
-            .initialize_and_drive(79, &Init, None, move |_| async move {
-                driver_calls.fetch_add(1, Ordering::SeqCst);
-                completed()
-            })
+            .initialize_and_drive(
+                79,
+                &Init,
+                None,
+                std::time::Duration::from_secs(5),
+                move |_| async move {
+                    driver_calls.fetch_add(1, Ordering::SeqCst);
+                    completed()
+                },
+            )
             .await;
         assert!(matches!(
             report,
@@ -1686,6 +1897,7 @@ mod tests {
                     83,
                     &PendingInit(task_entered),
                     Some(task_token),
+                    std::time::Duration::from_secs(5),
                     move |_| async move {
                         driver_calls.fetch_add(1, Ordering::SeqCst);
                         completed()
@@ -1743,25 +1955,31 @@ mod tests {
         let token = CancellationToken::new();
         let driver_token = token.clone();
         let report = owner
-            .initialize_and_drive(31, &Init, Some(token), move |source| async move {
-                external.write().unwrap().handlers.clear();
-                driver_token.cancel(ranvier_core::CancellationReason::Explicit);
-                let observed = crate::ObservedStream::new(
-                    source,
-                    ranvier_core::streaming::StreamTimeoutConfig {
-                        init: None,
-                        idle: None,
-                        total: None,
-                    },
-                    Some(driver_token),
-                )
-                .collect_report()
-                .await;
-                StreamDriveResult {
-                    value: observed.items,
-                    terminal: observed.terminal,
-                }
-            })
+            .initialize_and_drive(
+                31,
+                &Init,
+                Some(token),
+                std::time::Duration::from_secs(5),
+                move |source| async move {
+                    external.write().unwrap().handlers.clear();
+                    driver_token.cancel(ranvier_core::CancellationReason::Explicit);
+                    let observed = crate::ObservedStream::new(
+                        source,
+                        ranvier_core::streaming::StreamTimeoutConfig {
+                            init: None,
+                            idle: None,
+                            total: None,
+                        },
+                        Some(driver_token),
+                    )
+                    .collect_report()
+                    .await;
+                    StreamDriveResult {
+                        value: observed.items,
+                        terminal: observed.terminal,
+                    }
+                },
+            )
             .await;
         let Ok(StreamInitializationReport::Ready { prefix, value }) = report else {
             panic!("expected initialized consumption");
@@ -1841,23 +2059,29 @@ mod tests {
             )
             .unwrap();
             let report = owner
-                .initialize_and_drive(41, &EndInit(mode == 0), None, move |source| async move {
-                    let observed = crate::ObservedStream::new(
-                        source,
-                        ranvier_core::streaming::StreamTimeoutConfig {
-                            init: None,
-                            idle: None,
-                            total: (mode != 0).then_some(std::time::Duration::ZERO),
-                        },
-                        None,
-                    )
-                    .collect_report()
-                    .await;
-                    StreamDriveResult {
-                        value: observed.items,
-                        terminal: observed.terminal,
-                    }
-                })
+                .initialize_and_drive(
+                    41,
+                    &EndInit(mode == 0),
+                    None,
+                    std::time::Duration::from_secs(5),
+                    move |source| async move {
+                        let observed = crate::ObservedStream::new(
+                            source,
+                            ranvier_core::streaming::StreamTimeoutConfig {
+                                init: None,
+                                idle: None,
+                                total: (mode != 0).then_some(std::time::Duration::ZERO),
+                            },
+                            None,
+                        )
+                        .collect_report()
+                        .await;
+                        StreamDriveResult {
+                            value: observed.items,
+                            terminal: observed.terminal,
+                        }
+                    },
+                )
                 .await;
             let Ok(StreamInitializationReport::Ready { value, .. }) = report else {
                 panic!("expected initialized consumption");
@@ -2059,10 +2283,16 @@ mod tests {
         let task_owner = owner.clone();
         let task = tokio::spawn(async move {
             task_owner
-                .initialize_and_drive(23, &PendingInit(task_entered), None, move |_| async move {
-                    task_drivers.fetch_add(1, Ordering::SeqCst);
-                    completed()
-                })
+                .initialize_and_drive(
+                    23,
+                    &PendingInit(task_entered),
+                    None,
+                    std::time::Duration::from_secs(5),
+                    move |_| async move {
+                        task_drivers.fetch_add(1, Ordering::SeqCst);
+                        completed()
+                    },
+                )
                 .await
         });
         tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
@@ -2113,11 +2343,17 @@ mod tests {
         let task_entered = entered.clone();
         let task = tokio::spawn(async move {
             task_owner
-                .initialize_and_drive(17, &Init, None, move |source| async move {
-                    let _source = source;
-                    task_entered.notify_one();
-                    std::future::pending::<StreamDriveResult<()>>().await
-                })
+                .initialize_and_drive(
+                    17,
+                    &Init,
+                    None,
+                    std::time::Duration::from_secs(5),
+                    move |source| async move {
+                        let _source = source;
+                        task_entered.notify_one();
+                        std::future::pending::<StreamDriveResult<()>>().await
+                    },
+                )
                 .await
         });
         tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
@@ -2134,7 +2370,13 @@ mod tests {
         );
         let concurrent = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            owner.initialize_and_drive(99, &Init, None, |_| async { completed() }),
+            owner.initialize_and_drive(
+                99,
+                &Init,
+                None,
+                std::time::Duration::from_secs(5),
+                |_| async { completed() },
+            ),
         )
         .await
         .unwrap();
@@ -2163,7 +2405,13 @@ mod tests {
         );
         drop(context);
         let repeated = owner
-            .initialize_and_drive(18, &Init, None, |_| async { completed() })
+            .initialize_and_drive(
+                18,
+                &Init,
+                None,
+                std::time::Duration::from_secs(5),
+                |_| async { completed() },
+            )
             .await;
         assert!(matches!(repeated, Err(StreamInvocationAlreadyStarted)));
         assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
