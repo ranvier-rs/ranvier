@@ -15,6 +15,8 @@ mod nested_custody;
 #[cfg(feature = "streaming")]
 pub mod streaming_axon;
 #[cfg(feature = "streaming")]
+pub mod streaming_report_handle;
+#[cfg(feature = "streaming")]
 pub mod streaming_initialization;
 #[cfg(feature = "streaming")]
 mod streaming_recovery;

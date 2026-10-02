@@ -610,6 +610,11 @@ where
         Ok(custody)
     }
 
+    /// Retain the exact graph/context owner through public report-handle waits.
+    pub(crate) fn retention_capability(&self) -> crate::nested_custody::Capability {
+        self.inner.clone()
+    }
+
     /// Build the gated future from this exact recovery owner and owned inputs.
     /// The supervisor must register this owner's holder before granting start.
     pub(crate) fn prepare_managed<Item, SErr, S, T, F, Fut>(

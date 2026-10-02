@@ -99,6 +99,22 @@ impl<In, Out, Item, E, Res> OwnedCallablePlan<In, Out, Item, E, Res> {
         Ok((frame, StreamReadiness { receiver: Some(receiver), observed: None }))
     }
 }
+impl<In, Out, Item, E, Res> OwnedCallablePlan<In, Out, Item, E, Res>
+where
+    In: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+    Out: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+    E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + Debug + 'static,
+    Res: Send + Sync + 'static,
+{
+    pub(crate) fn report_handle(&self, prepared: &crate::managed_stream_task::PreparedStreamTask<Result<
+        StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult<()>, E>,
+        crate::streaming_recovery::StreamInvocationAlreadyStarted>>)
+        -> Result<crate::streaming_report_handle::StreamReportHandle<Out, E>, &'static str> {
+        let owner = self.owner.retention_capability();
+        if !prepared.matches_owner(&owner) { return Err("execution.nested_task_owner_mismatch"); }
+        Ok(crate::streaming_report_handle::StreamReportHandle::new(prepared.holder(), owner))
+    }
+}
 pub(crate) struct BoundedPreparationRejected<In> {
     pub(crate) signal: &'static str,
     pub(crate) input: In,
@@ -570,6 +586,46 @@ mod tests {
             _ => panic!("original report not ready"),
         }
     }
+    #[tokio::test]
+    async fn public_report_handle_retains_owner_and_transfers_original_result_once() {
+        use crate::streaming_report_handle::{StreamReportWaitError, SupervisedStreamCompletion};
+        let circuit = circuit(&["a"]);
+        let admission = crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1);
+        let resources = Arc::new(());
+        let weak = Arc::downgrade(&resources);
+        let mut plan = match circuit.owned_definition.try_callable_plan(
+            OwnedStreamContext::try_new(resources, Bus::new()).unwrap(), &admission, None) {
+            Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+        };
+        let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
+        };
+        let handle = plan.report_handle(&prepared).unwrap();
+        let clone = handle.clone();
+        assert_eq!(handle.settle_until(tokio::time::Instant::now()).await, Err(StreamReportWaitError::TimedOut));
+        let root = crate::nested_custody::CustodyStore::new(1);
+        let journal = crate::SagaRollbackJournal::new("public-report-parent");
+        plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+            .unwrap_or_else(|error| panic!("{}", error.signal));
+        assert_eq!(receiver.recv().await, Some("a".to_string()));
+        assert_eq!(receiver.recv().await, None);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        handle.settle_until(deadline).await.unwrap();
+        drop(plan); drop(prepared); drop(root);
+        assert_eq!(admission.in_use().unwrap(), 1);
+        assert!(weak.upgrade().is_some());
+        match clone.take_report_until(deadline).await.unwrap() {
+            SupervisedStreamCompletion::Report(StreamInitializationReport::Ready { value, .. }) => {
+                assert!(matches!(value.consumption, Ok(crate::StreamConsumptionTerminal::Completed)));
+            }
+            _ => panic!("original report lost"),
+        }
+        assert!(matches!(handle.take_report_until(deadline).await, Err(StreamReportWaitError::AlreadyTaken)));
+        drop(handle); drop(clone);
+        assert_eq!(admission.in_use().unwrap(), 0);
+        assert!(weak.upgrade().is_none());
+    }
+
     #[tokio::test]
     async fn callable_readiness_retains_original_report_and_dropped_waiter_stops_production() {
         for dropped in [false, true] {
