@@ -179,7 +179,10 @@ where
             >,
     {
         use crate::EffectBoundary;
-        use crate::streaming_initialization::{StreamInitializationReport, admit_prefix};
+        use crate::streaming_initialization::{
+            StreamInitializationError, StreamInitializationReport, admit_prefix,
+        };
+        use futures_util::FutureExt as _;
         let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
         let terminal = match &cancellation {
             Some(token) => {
@@ -215,7 +218,18 @@ where
             };
         }
         let result = {
-            let initialization = streaming.run_stream(output, resources, owner.bus());
+            // Construct the user future inside the unwind boundary: manual trait
+            // implementations can panic before returning a future. Dropping this
+            // owner still cannot await cleanup; panic hooks remain process policy.
+            let initialization = async {
+                AssertUnwindSafe(async {
+                    streaming.run_stream(output, resources, owner.bus()).await
+                })
+                .catch_unwind()
+                .await
+                .map_err(|_| StreamInitializationError::Panicked)?
+                .map_err(|error| StreamInitializationError::Transition(format!("{error:?}")))
+            };
             tokio::pin!(initialization);
             match &cancellation {
                 Some(token) => tokio::select! {
@@ -230,9 +244,7 @@ where
             Ok(Ok(value)) => StreamInitializationReport::Ready { prefix, value },
             Ok(Err(error)) => StreamInitializationReport::Failed {
                 prefix,
-                error: crate::streaming_initialization::StreamInitializationError::Transition(
-                    format!("{error:?}"),
-                ),
+                error,
                 initialization: EffectBoundary::MayHaveRun,
                 initialization_cleanup: self
                     .cleanup_stream_initialization(

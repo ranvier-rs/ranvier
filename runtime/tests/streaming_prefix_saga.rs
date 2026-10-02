@@ -486,3 +486,98 @@ async fn assert_panic_guard(panic_last: bool) {
     bus.clear_access_policy();
     assert_eq!(bus.read::<String>().unwrap(), "caller-value");
 }
+
+/// Manual trait implementation exercises panic before a future is returned as well
+/// as panic during its first poll. Payload is deliberately synthetic, not private.
+#[derive(Clone)]
+struct PanicInit(bool, Arc<AtomicUsize>);
+impl StreamingTransition<()> for PanicInit {
+    type Item = ();
+    type Error = String;
+    type Resources = Resources;
+    fn run_stream<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        _: (),
+        _: &'life1 Resources,
+        _: &'life2 mut Bus,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<Pin<Box<dyn futures_util::Stream<Item = ()> + Send>>, String>,
+                > + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        self.1.fetch_add(1, Ordering::SeqCst);
+        if self.0 {
+            panic!("synthetic initializer factory panic");
+        }
+        Box::pin(async { panic!("synthetic initializer poll panic") })
+    }
+}
+#[tokio::test]
+async fn initializer_factory_and_poll_panic_compensate_with_nonclone_resources() {
+    use ranvier_runtime::{EffectBoundary, StreamInitializationReport};
+    for factory in [false, true] {
+        for cancellable in [false, true] {
+            let res = Resources(std::sync::Mutex::new(Vec::new()));
+            let address = &res as *const Resources as usize;
+            let initialized = Arc::new(AtomicUsize::new(0));
+            let caller = ranvier_core::CancellationToken::new();
+            let mut bus = Bus::new();
+            bus.set_cancellation_token(caller.clone());
+            let stream = Axon::<(), (), String, Resources>::start("initializer-panic")
+                .with_saga_policy(SagaPolicy::Enabled)
+                .then_compensated(ResourceEffect(1, false), ResourceEffect(11, true))
+                .then_compensated(ResourceEffect(2, false), ResourceEffect(12, true))
+                .then_stream(PanicInit(factory, initialized.clone()));
+            let report = if cancellable {
+                stream
+                    .execute_cancellable((), &res, &mut bus, ranvier_core::CancellationToken::new())
+                    .await
+            } else {
+                stream.execute((), &res, &mut bus).await
+            };
+            let StreamInitializationReport::Failed {
+                prefix:
+                    ExecutionReport::Unpersisted {
+                        result: (),
+                        cleanup: None,
+                    },
+                error,
+                initialization: EffectBoundary::MayHaveRun,
+                initialization_cleanup: Some(cleanup),
+            } = report
+            else {
+                panic!("panic must retain independent failure/cleanup evidence")
+            };
+            assert_eq!(error.to_string(), "Stream initialization panicked");
+            assert!(cleanup.is_complete());
+            assert_eq!(cleanup.steps.len(), 2);
+            assert_eq!(initialized.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                *res.0.lock().unwrap(),
+                vec![(1, address), (2, address), (12, address), (11, address)]
+            );
+            assert!(
+                bus.read::<ranvier_core::saga::SagaStack>()
+                    .unwrap()
+                    .tasks
+                    .is_empty()
+            );
+            bus.cancellation_token()
+                .unwrap()
+                .cancel(ranvier_core::CancellationReason::Explicit);
+            assert!(
+                caller.context().is_some(),
+                "exact caller token must restore"
+            );
+        }
+    }
+}

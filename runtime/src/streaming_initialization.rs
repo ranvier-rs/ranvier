@@ -7,11 +7,14 @@ use ranvier_core::{CancellationContext, Outcome};
 #[derive(Debug)]
 pub enum StreamInitializationError {
     Transition(String),
+    /// The initializer unwound. No panic payload is retained; process hooks may log it.
+    Panicked,
 }
 impl std::fmt::Display for StreamInitializationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Transition(detail) => write!(f, "Stream initialization failed: {detail}"),
+            Self::Panicked => f.write_str("Stream initialization panicked"),
         }
     }
 }
