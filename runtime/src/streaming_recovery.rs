@@ -497,7 +497,7 @@ where
         client: crate::nested_custody::WeakCustodyClient,
         parent: Option<CancellationToken>,
     ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
-        self.bind_parent(client, parent, None).await
+        self.bind_parent(client, parent, None, None).await
     }
 
     async fn bind_parent(
@@ -505,6 +505,7 @@ where
         client: crate::nested_custody::WeakCustodyClient,
         parent: Option<CancellationToken>,
         journal: Option<&crate::SagaRollbackJournal>,
+        task: Option<crate::nested_custody::Capability>,
     ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
         if self.inner.started.load(Ordering::Acquire) {
             return Err("execution.nested_stream_already_started");
@@ -524,7 +525,7 @@ where
                 return Err("execution.nested_stream_already_bound");
             }
             let admission = match journal {
-                Some(journal) => client.reserve_stream(self.inner.clone(), journal, self.observe())?,
+                Some(journal) => client.reserve_stream(self.inner.clone(), journal, task, self.observe())?,
                 None => client.reserve(self.inner.clone())?,
             };
             bus.insert(client);
@@ -551,7 +552,19 @@ where
         journal: &crate::SagaRollbackJournal,
         parent: Option<CancellationToken>,
     ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
-        self.bind_parent(client, parent, Some(journal)).await
+        self.bind_parent(client, parent, Some(journal), None).await
+    }
+
+    /// Register exact child owner, indexed observation and actual task holder
+    /// together before the caller grants its prepared task's start permit.
+    pub(crate) async fn admit_managed_to_parent<T: Send + 'static>(
+        &self,
+        client: crate::nested_custody::WeakCustodyClient,
+        journal: &crate::SagaRollbackJournal,
+        parent: CancellationToken,
+        task: Arc<Mutex<crate::managed_stream_task::ManagedStreamTask<T>>>,
+    ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
+        self.bind_parent(client, Some(parent), Some(journal), Some(task)).await
     }
 
     pub(crate) async fn initialize_and_drive<Item, SErr, S, T, F, Fut>(
@@ -2574,15 +2587,16 @@ mod tests {
             let entered = Arc::new(Notify::new());
             let signal = entered.clone();
             let task_child = child.clone();
-            let (mut task, permit) = crate::managed_stream_task::ManagedStreamTask::prepare(async move {
+            let (task, permit) = crate::managed_stream_task::ManagedStreamTask::prepare(async move {
                 task_child.initialize_and_drive(331, &PendingInit(signal), None,
                     std::time::Duration::from_secs(5), |_| async {
                         panic!("cancelled initializer must not run driver");
                         #[allow(unreachable_code)] completed()
                     }).await
             });
+            let task = Arc::new(Mutex::new(task));
             let journal = crate::SagaRollbackJournal::new("managed-actual-parent");
-            let admission = child.admit_to_parent_journal_with_control(parent.client(), &journal, Some(control.clone())).await.unwrap();
+            let admission = child.admit_managed_to_parent(parent.client(), &journal, control.clone(), task.clone()).await.unwrap();
             parent.close_admission().unwrap();
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             assert!(!child.inner.started.load(Ordering::Acquire));
@@ -2591,7 +2605,7 @@ mod tests {
                 tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
                 control.cancel(ranvier_core::CancellationReason::OperatorShutdown);
             } else { drop(permit); }
-            let joined = task.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap();
+            let joined = task.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap();
             if grant_start {
                 assert!(matches!(joined, Some(Ok(StreamInitializationReport::Cancelled { context, .. }))
                     if context.reason == ranvier_core::CancellationReason::OperatorShutdown));
@@ -2602,6 +2616,7 @@ mod tests {
                 assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
                 assert!(!child.inner.started.load(Ordering::Acquire));
             }
+            drop(task);
             drop(child);
             drop(resources);
             assert!(weak.upgrade().is_some());

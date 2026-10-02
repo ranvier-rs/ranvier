@@ -57,12 +57,16 @@ pub(crate) struct NestedSagaCustody<E, Res> {
     pub(crate) resources: Arc<Res>,
     pub(crate) handlers: ranvier_core::saga::SagaCompensationRegistry<E, Res>,
 }
-type Capability = Arc<dyn Any + Send + Sync>;
+pub(crate) type Capability = Arc<dyn Any + Send + Sync>;
+struct CustodyRecord {
+    owner: Capability,
+    _task: Option<Capability>,
+}
 struct StoreInner {
     closed: AtomicBool,
     admission_closed: AtomicBool,
     capacity: usize,
-    records: Mutex<HashMap<uuid::Uuid, Capability>>,
+    records: Mutex<HashMap<uuid::Uuid, CustodyRecord>>,
 }
 struct StoreOwner(Arc<StoreInner>);
 impl Drop for StoreOwner {
@@ -117,10 +121,11 @@ impl WeakCustodyClient {
         &self,
         record: Capability,
         journal: &crate::SagaRollbackJournal,
+        task: Option<Capability>,
         observer: tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>,
     ) -> Result<WeakCustody, &'static str> {
         let store = self.0.upgrade().ok_or("execution.parent_custody_released")?;
-        reserve_in_with(&store, record, || journal.retain_stream_child(observer))
+        reserve_in_with(&store, record, task, || journal.retain_stream_child(observer))
     }
     pub(crate) fn validate_member(
         &self,
@@ -141,7 +146,7 @@ impl WeakCustodyClient {
         if store.closed.load(Ordering::Acquire)
             || !records
                 .get(&admission.id)
-                .is_some_and(|record| Arc::ptr_eq(record, owner))
+                .is_some_and(|record| Arc::ptr_eq(&record.owner, owner))
         {
             return Err("execution.parent_custody_released");
         }
@@ -156,12 +161,12 @@ impl WeakCustodyClient {
     }
 }
 fn reserve_in(store: &Arc<StoreInner>, record: Capability) -> Result<WeakCustody, &'static str> {
-    reserve_in_with(store, record, || {})
+    reserve_in_with(store, record, None, || {})
 }
 // Only fixed framework bookkeeping may run under this gate. No user callbacks,
 // awaits or record retirement. Lock order: store records -> journal report/list.
 fn reserve_in_with(
-    store: &Arc<StoreInner>, record: Capability, register: impl FnOnce(),
+    store: &Arc<StoreInner>, record: Capability, task: Option<Capability>, register: impl FnOnce(),
 ) -> Result<WeakCustody, &'static str> {
     let mut records = store
         .records
@@ -185,7 +190,7 @@ fn reserve_in_with(
         record: Arc::downgrade(&record),
         store: Arc::downgrade(store),
     };
-    records.insert(id, record);
+    records.insert(id, CustodyRecord { owner: record, _task: task });
     register();
     Ok(weak)
 }
@@ -218,7 +223,7 @@ mod tests {
         let recorded = registered.clone();
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let reserve = std::thread::spawn(move || reserve_in_with(&core, Arc::new(47u32), || {
+        let reserve = std::thread::spawn(move || reserve_in_with(&core, Arc::new(47u32), None, || {
             entered_tx.send(()).unwrap();
             release_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
             recorded.store(true, Ordering::Release);
