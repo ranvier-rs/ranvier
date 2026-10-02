@@ -38,6 +38,7 @@ pub struct ObservedStream<Item> {
     inner: Option<Pin<Box<dyn Stream<Item = Item> + Send>>>,
     config: StreamTimeoutConfig,
     started_at: Instant,
+    total_started_at: Instant,
     last_item_at: Option<Instant>,
     timer: Option<Pin<Box<Sleep>>>,
     cancellation: Option<Pin<Box<dyn Future<Output = CancellationContext> + Send>>>,
@@ -49,10 +50,22 @@ impl<Item> ObservedStream<Item> {
         config: StreamTimeoutConfig,
         token: Option<CancellationToken>,
     ) -> Self {
+        Self::with_total_origin(stream, config, token, Instant::now())
+    }
+    /// Carry the invocation's original total-budget origin into consumption.
+    /// First-item and idle deadlines retain their own consumption-phase clocks.
+    /// This constructor does not enforce deadlines during prefix/initialization.
+    pub(crate) fn with_total_origin(
+        stream: Pin<Box<dyn Stream<Item = Item> + Send>>,
+        config: StreamTimeoutConfig,
+        token: Option<CancellationToken>,
+        total_started_at: Instant,
+    ) -> Self {
         Self {
             inner: Some(stream),
             config,
             started_at: Instant::now(),
+            total_started_at,
             last_item_at: None,
             timer: None,
             cancellation: token.map(|token| {
@@ -116,7 +129,7 @@ impl<Item> ObservedStream<Item> {
         let active_total = self
             .config
             .total
-            .map(|d| (self.started_at, d, StreamTimeoutKind::Total));
+            .map(|d| (self.total_started_at, d, StreamTimeoutKind::Total));
         for (origin, duration, kind) in active_total.into_iter().chain(active_phase) {
             if origin.checked_add(duration).is_none() {
                 return self
@@ -127,7 +140,7 @@ impl<Item> ObservedStream<Item> {
         let total = self
             .config
             .total
-            .and_then(|d| self.started_at.checked_add(d))
+            .and_then(|d| self.total_started_at.checked_add(d))
             .map(|at| (at, StreamTimeoutKind::Total));
         let phase = match self.last_item_at {
             Some(at) => self
@@ -193,6 +206,27 @@ mod tests {
     use super::*;
     use futures_util::stream;
     use ranvier_core::CancellationReason;
+
+    #[tokio::test(start_paused = true)]
+    async fn original_total_origin_expires_before_ready_source_is_polled() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        let origin = Instant::now();
+        tokio::time::advance(std::time::Duration::from_secs(8)).await;
+        let polls = Arc::new(AtomicUsize::new(0));
+        let count = polls.clone();
+        let source = stream::poll_fn(move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+            Poll::Ready(Some(1))
+        });
+        let report = ObservedStream::with_total_origin(Box::pin(source), StreamTimeoutConfig {
+            init: Some(std::time::Duration::from_secs(30)), idle: None,
+            total: Some(std::time::Duration::from_secs(5)),
+        }, None, origin).collect_report().await;
+        assert!(report.items.is_empty());
+        assert_eq!(report.terminal, StreamConsumptionTerminal::TimedOut(StreamTimeoutKind::Total));
+        assert_eq!(polls.load(Ordering::SeqCst), 0);
+    }
+
     use std::{cell::Cell, time::Duration};
     fn config() -> StreamTimeoutConfig {
         StreamTimeoutConfig {
