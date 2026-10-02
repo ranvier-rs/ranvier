@@ -78,6 +78,37 @@ impl StreamSupervisor {
         recovery.and(root)
     }
 }
+/// Heterogeneous task/owner lease. Settlement retains original typed reports.
+/// Neither settlement nor dropping this lease authorizes recovery retirement.
+pub struct StreamDrainLease { family: crate::nested_custody::ErasedTaskFamily }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamDrainStatus { Settled, TimedOut, ReportAlreadyTransferred, Unavailable }
+impl StreamSupervisor {
+    /// Close admissions and retain every registered managed task before waiting.
+    /// An unfinalized reservation cannot attach a task after this snapshot.
+    pub fn close_for_drain(&self) -> Result<StreamDrainLease, &'static str> {
+        let recovery = self.admission.close();
+        let family = self.root.close_and_erased_family()?;
+        recovery.map_err(|_| "execution.stream_recovery_admission_unavailable")?;
+        Ok(StreamDrainLease { family })
+    }
+}
+impl StreamDrainLease {
+    pub fn unfinalized_reservations(&self) -> usize { self.family.reserved }
+    pub async fn settle_until(&mut self, deadline: tokio::time::Instant) {
+        self.family.settle_until(deadline).await;
+    }
+    /// IDs are in-process correlation only, never persisted execution identity.
+    pub fn statuses(&self) -> Vec<(uuid::Uuid, StreamDrainStatus)> {
+        use crate::managed_stream_task::ManagedTaskWaitError as Error;
+        self.family.statuses.iter().map(|(id, status)| (*id, match status {
+            Ok(()) => StreamDrainStatus::Settled,
+            Err(Error::TimedOut) => StreamDrainStatus::TimedOut,
+            Err(Error::AlreadyJoined) => StreamDrainStatus::ReportAlreadyTransferred,
+            _ => StreamDrainStatus::Unavailable,
+        })).collect()
+    }
+}
 impl StreamReservation {
     /// Invoke one context factory only after paired admission succeeded.
     /// A successful ticket cannot be reused for another context factory.

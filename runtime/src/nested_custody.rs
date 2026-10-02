@@ -61,6 +61,8 @@ pub(crate) type Capability = Arc<dyn Any + Send + Sync>;
 struct CustodyRecord {
     owner: Capability,
     task: Option<Capability>,
+    #[cfg(feature = "streaming")]
+    settlement: Option<crate::managed_stream_task::TaskSettlement>,
 }
 struct StoreInner {
     closed: AtomicBool,
@@ -132,7 +134,7 @@ impl CustodyReservation {
                 return Err("execution.nested_reservation_mismatch");
             }
             journal.retain_stream_child(observer);
-            std::mem::replace(record, CustodyRecord { owner: owner.clone(), task: Some(task) })
+            std::mem::replace(record, CustodyRecord { owner: owner.clone(), task: Some(task), settlement: None })
         };
         let registered = WeakCustody { id: receipt.id, record: Arc::downgrade(&owner), store: receipt.store.clone() };
         self.receipt = None;
@@ -206,6 +208,19 @@ impl CustodyStore {
         let mut family = self.closed_typed_family()?;
         family.settle_until(deadline).await;
         Ok(family)
+    }
+    #[cfg(feature = "streaming")]
+    pub(crate) fn close_and_erased_family(&self) -> Result<ErasedTaskFamily, &'static str> {
+        let records = self.0 .0.records.lock().map_err(|_| "execution.nested_custody_unavailable")?;
+        self.0 .0.admission_closed.store(true, Ordering::Release);
+        let mut tasks = Vec::new();
+        let mut reserved = 0;
+        for (id, record) in records.iter() {
+            if record.task.is_none() { reserved += 1; continue; }
+            let settlement = record.settlement.clone().ok_or("execution.nested_task_settlement_missing")?;
+            tasks.push((*id, record.owner.clone(), settlement));
+        }
+        Ok(ErasedTaskFamily { tasks, statuses: Vec::new(), reserved })
     }
     pub(crate) fn client(&self) -> WeakCustodyClient {
         WeakCustodyClient(Arc::downgrade(&self.0 .0))
@@ -326,13 +341,41 @@ fn reserve_in_with(
         record: Arc::downgrade(&record),
         store: Arc::downgrade(store),
     };
-    records.insert(id, CustodyRecord { owner: record, task });
+    records.insert(id, CustodyRecord { owner: record, task, #[cfg(feature = "streaming")] settlement: None });
     register();
     Ok(weak)
+}
+#[cfg(feature = "streaming")]
+pub(crate) struct ErasedTaskFamily {
+    tasks: Vec<(uuid::Uuid, Capability, crate::managed_stream_task::TaskSettlement)>,
+    pub(crate) statuses: Vec<(uuid::Uuid, Result<(), crate::managed_stream_task::ManagedTaskWaitError>)>,
+    pub(crate) reserved: usize,
+}
+#[cfg(feature = "streaming")]
+impl ErasedTaskFamily {
+    pub(crate) async fn settle_until(&mut self, deadline: tokio::time::Instant) {
+        use futures_util::{stream::FuturesUnordered, StreamExt};
+        let mut pending = FuturesUnordered::new();
+        for (id, _, task) in &self.tasks { pending.push(async move { (*id, task.settle_until(deadline).await) }); }
+        self.statuses.clear();
+        while let Some(status) = pending.next().await { self.statuses.push(status); }
+    }
 }
 impl WeakCustody {
     /// Validate the exact registered task and send its framework start gate
     /// under the retirement lock. No user future is polled under this lock.
+    #[cfg(feature = "streaming")]
+    pub(crate) fn attach_settlement(&self, settlement: crate::managed_stream_task::TaskSettlement) -> Result<(), &'static str> {
+        let store = self.store.upgrade().ok_or("execution.parent_custody_released")?;
+        let mut records = store.records.lock().map_err(|_| "execution.nested_custody_unavailable")?;
+        if store.closed.load(Ordering::Acquire) { return Err("execution.parent_custody_released"); }
+        let record = records.get_mut(&self.id).ok_or("execution.parent_custody_released")?;
+        if !Weak::ptr_eq(&self.record, &Arc::downgrade(&record.owner)) { return Err("execution.nested_task_owner_mismatch"); }
+        if !record.task.as_ref().is_some_and(|holder| settlement.matches(holder)) { return Err("execution.nested_task_registration_mismatch"); }
+        if record.settlement.is_some() { return Err("execution.nested_task_settlement_decided"); }
+        record.settlement = Some(settlement);
+        Ok(())
+    }
     #[cfg(feature = "streaming")]
     pub(crate) fn grant_task_start(&self, task: &Capability, permit: &mut Option<tokio::sync::oneshot::Sender<()>>)
         -> Result<(), &'static str> {

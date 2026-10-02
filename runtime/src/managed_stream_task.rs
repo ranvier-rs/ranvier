@@ -5,6 +5,27 @@
 use std::future::Future;
 use tokio::{sync::oneshot, task::JoinHandle, time::Instant};
 
+/// Framework-only settlement closure retaining the exact original typed holder.
+#[derive(Clone)]
+pub(crate) struct TaskSettlement {
+    holder: crate::nested_custody::Capability,
+    settle: std::sync::Arc<dyn Fn(Instant) -> std::pin::Pin<Box<dyn Future<Output = Result<(), ManagedTaskWaitError>> + Send>> + Send + Sync>,
+}
+impl TaskSettlement {
+    fn new<T: Send + 'static>(task: std::sync::Arc<tokio::sync::Mutex<ManagedStreamTask<T>>>) -> Self {
+        let holder: crate::nested_custody::Capability = task.clone();
+        Self { holder, settle: std::sync::Arc::new(move |deadline| {
+            let task = task.clone();
+            Box::pin(async move {
+                let mut task = tokio::time::timeout_at(deadline, task.lock()).await.map_err(|_| ManagedTaskWaitError::TimedOut)?;
+                task.settle_until(deadline).await
+            })
+        }) }
+    }
+    pub(crate) fn matches(&self, holder: &crate::nested_custody::Capability) -> bool { std::sync::Arc::ptr_eq(&self.holder, holder) }
+    pub(crate) async fn settle_until(&self, deadline: Instant) -> Result<(), ManagedTaskWaitError> { (self.settle)(deadline).await }
+}
+
 /// Own the exact start permit with its task; callers never select a permit.
 pub(crate) struct PreparedStreamTask<T> {
     task: std::sync::Arc<tokio::sync::Mutex<ManagedStreamTask<T>>>,
@@ -28,6 +49,7 @@ impl<T: Send + 'static> PreparedStreamTask<T> {
     pub(crate) fn holder(&self) -> std::sync::Arc<tokio::sync::Mutex<ManagedStreamTask<T>>> {
         self.task.clone()
     }
+    pub(crate) fn settlement(&self) -> TaskSettlement { TaskSettlement::new(self.task.clone()) }
     pub(crate) fn reject_start(&mut self) -> Result<(), ManagedTaskWaitError> {
         if self.grant_decided { return Err(ManagedTaskWaitError::StartGrantDecided); }
         self.permit.take();

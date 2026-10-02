@@ -618,6 +618,10 @@ where
                 return Err(ManagedStreamStartError { signal, custody: None });
             }
         };
+        if let Err(signal) = custody.attach_settlement(prepared.settlement()) {
+            let _ = prepared.reject_start();
+            return Err(ManagedStreamStartError { signal, custody: Some(custody) });
+        }
         if let Err(signal) = prepared.grant_registered_start(&custody) {
             let _ = prepared.reject_start();
             return Err(ManagedStreamStartError { signal, custody: Some(custody) });
@@ -647,6 +651,10 @@ where
                 return Err(ManagedStreamStartError { signal, custody: None });
             }
         };
+        if let Err(signal) = custody.attach_settlement(prepared.settlement()) {
+            let _ = prepared.reject_start();
+            return Err(ManagedStreamStartError { signal, custody: Some(custody) });
+        }
         if let Err(signal) = prepared.grant_registered_start(&custody) {
             let _ = prepared.reject_start();
             return Err(ManagedStreamStartError { signal, custody: Some(custody) });
