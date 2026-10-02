@@ -80,6 +80,8 @@ struct RequestCancellationToken(CancellationToken);
 #[derive(Clone)]
 struct RequestTaskOwner(ManagedTaskRegistry);
 
+const DEFAULT_MANAGED_TASK_CAPACITY: usize = 1024;
+
 #[derive(Clone)]
 struct ManagedTaskRegistry {
     tasks: Arc<Mutex<tokio::task::JoinSet<()>>>,
@@ -92,7 +94,7 @@ impl Default for ManagedTaskRegistry {
         Self {
             tasks: Arc::new(Mutex::new(tokio::task::JoinSet::new())),
             closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            reservation_limit: 1024,
+            reservation_limit: DEFAULT_MANAGED_TASK_CAPACITY,
         }
     }
 }
@@ -1399,7 +1401,7 @@ where
             on_start: None,
             on_shutdown: None,
             graceful_shutdown_timeout: Duration::from_secs(30),
-            managed_task_capacity: 1024,
+            managed_task_capacity: DEFAULT_MANAGED_TASK_CAPACITY,
             bus_injectors: Vec::new(),
             static_assets: StaticAssetsConfig::default(),
             health: HealthConfig::default(),
@@ -7034,6 +7036,26 @@ mod tests {
         assert!(matches!(cloned.task_registry.reserve().await, Err(TaskReservationError::Closed)));
         let disabled = Ranvier::http::<()>().managed_task_capacity(0).into_raw_service(());
         assert!(matches!(disabled.task_registry.reserve().await, Err(TaskReservationError::Capacity)));
+    }
+
+    #[tokio::test]
+    async fn managed_task_zero_capacity_keeps_ordinary_http_available() {
+        #[derive(Clone)]
+        struct Ping;
+        #[async_trait::async_trait]
+        impl Transition<(), String> for Ping {
+            type Error = String;
+            type Resources = ();
+            async fn run(&self, _: (), _: &(), _: &mut Bus) -> Outcome<String, String> {
+                Outcome::Next("pong".to_string())
+            }
+        }
+        let app = crate::test_harness::TestApp::new(
+            Ranvier::http::<()>().managed_task_capacity(0)
+                .get("/ping", Axon::<(), (), String>::start("zero-capacity-ping").then(Ping)), ());
+        let response = app.send(crate::test_harness::TestRequest::get("/ping")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().unwrap(), "pong");
     }
 
     #[test]
