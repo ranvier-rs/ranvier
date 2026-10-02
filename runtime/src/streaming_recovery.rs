@@ -2565,6 +2565,7 @@ mod tests {
             let parent = crate::nested_custody::CustodyStore::new(1);
             let control = CancellationToken::new();
             let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let weak = Arc::downgrade(&resources);
             let child = OwnedStreamRecovery::try_new(
                 Axon::<u32, u32, String, Resources>::start("managed-actual-child")
                     .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
@@ -2583,6 +2584,8 @@ mod tests {
             let journal = crate::SagaRollbackJournal::new("managed-actual-parent");
             let admission = child.admit_to_parent_journal_with_control(parent.client(), &journal, Some(control.clone())).await.unwrap();
             parent.close_admission().unwrap();
+            assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+            assert!(!child.inner.started.load(Ordering::Acquire));
             if grant_start {
                 permit.send(()).unwrap();
                 tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
@@ -2599,7 +2602,11 @@ mod tests {
                 assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
                 assert!(!child.inner.started.load(Ordering::Acquire));
             }
+            drop(child);
+            drop(resources);
+            assert!(weak.upgrade().is_some());
             admission.release();
+            assert!(weak.upgrade().is_none());
         }
     }
     struct ExternalHook {
