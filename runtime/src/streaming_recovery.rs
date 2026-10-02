@@ -475,6 +475,8 @@ where
     /// Keeps InvocationOwner live until the Ready driver returns or is dropped.
     /// The internal driver must derive its terminal from actual source/control observations.
     /// Non-completed consumption runs shielded local cleanup; no replay is authorized.
+    /// The explicit grace bounds cooperative initializer/late Saga cleanup only.
+    /// Prefix rollback, non-yielding handlers and external resource custody need separate limits.
     pub(crate) async fn initialize_and_drive<Item, SErr, S, T, F, Fut>(
         &self,
         input: In,
@@ -1013,6 +1015,10 @@ mod tests {
             assert!(!bus.cancellation_token().unwrap().is_cancelled());
             *self.1.lock().unwrap() = bus.read::<crate::SagaRollbackJournal>().cloned();
             self.0.notify_one();
+            bus.set_access_policy(
+                "pending-undo",
+                Some(ranvier_core::bus::BusAccessPolicy::allow_only(Vec::new())),
+            );
             std::future::pending().await
         }
     }
@@ -1041,127 +1047,135 @@ mod tests {
     }
     #[tokio::test]
     async fn cleanup_grace_returns_partial_report_and_retains_live_reconciliation_context() {
-        for mode in 0..3 {
-            let entered = Arc::new(Notify::new());
-            let observed_journal = Arc::new(std::sync::Mutex::new(None));
-            let resources = Arc::new(Resources {
-                effects: AtomicUsize::new(0),
-            });
-            let graph = Axon::<u32, u32, String, Resources>::start("cleanup-grace")
-                .with_saga_policy(SagaPolicy::Enabled)
-                .then_compensated(AdvancingEffect, Undo)
-                .then_compensated(
-                    AdvancingEffect,
-                    PendingUndo(entered.clone(), observed_journal.clone()),
-                );
-            let admission = StreamRecoveryAdmission::new(1);
-            let owner = OwnedStreamRecovery::try_new(
-                graph,
-                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-                &admission,
-                None,
-            )
-            .unwrap();
-            let token = CancellationToken::new();
-            let drivers = Arc::new(AtomicUsize::new(0));
-            let driver_calls = drivers.clone();
-            let report = tokio::time::timeout(
-                std::time::Duration::from_secs(3),
-                owner.initialize_and_drive(
-                    89,
-                    &GraceInit(mode, token.clone()),
-                    Some(token),
-                    std::time::Duration::from_millis(50),
-                    move |source| async move {
-                        driver_calls.fetch_add(1, Ordering::SeqCst);
-                        let consumed = crate::ObservedStream::new(
-                            source,
-                            ranvier_core::streaming::StreamTimeoutConfig {
-                                init: None,
-                                idle: None,
-                                total: Some(std::time::Duration::ZERO),
-                            },
-                            None,
-                        )
-                        .collect_report()
-                        .await;
-                        StreamDriveResult {
-                            value: consumed.items,
-                            terminal: consumed.terminal,
-                        }
-                    },
-                ),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-            let cleanup = match report {
-                StreamInitializationReport::Ready { value, .. } if mode == 0 => {
-                    assert_eq!(
-                        value.consumption.unwrap().terminal,
-                        crate::StreamConsumptionTerminal::TimedOut(crate::StreamTimeoutKind::Total)
+        for grace in [
+            std::time::Duration::ZERO,
+            std::time::Duration::from_millis(50),
+            std::time::Duration::MAX,
+        ] {
+            for mode in 0..3 {
+                let entered = Arc::new(Notify::new());
+                let observed_journal = Arc::new(std::sync::Mutex::new(None));
+                let resources = Arc::new(Resources {
+                    effects: AtomicUsize::new(0),
+                });
+                let graph = Axon::<u32, u32, String, Resources>::start("cleanup-grace")
+                    .with_saga_policy(SagaPolicy::Enabled)
+                    .then_compensated(AdvancingEffect, Undo)
+                    .then_compensated(
+                        AdvancingEffect,
+                        PendingUndo(entered.clone(), observed_journal.clone()),
                     );
-                    value.cleanup.unwrap()
-                }
-                StreamInitializationReport::Failed {
-                    initialization_cleanup,
-                    ..
-                } if mode == 1 => initialization_cleanup.unwrap(),
-                StreamInitializationReport::Cancelled {
-                    initialization_cleanup,
-                    ..
-                } if mode == 2 => initialization_cleanup.unwrap(),
-                _ => panic!("wrong initialization disposition"),
-            };
-            assert!(!cleanup.finished);
-            assert!(!cleanup.is_complete());
-            assert_eq!(cleanup.steps.len(), 1);
-            assert_eq!(
-                cleanup.steps[0].outcome,
-                crate::SagaRollbackOutcome::InProgress
-            );
-            assert_eq!(drivers.load(Ordering::SeqCst), usize::from(mode == 0));
-            assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
-            assert_eq!(
-                observed_journal
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .snapshot(),
-                cleanup
-            );
-            let context = owner
-                .inner
-                .context
-                .try_lock()
-                .expect("cleanup returned ownership");
-            assert!(Arc::ptr_eq(&resources, &context.0));
-            let journal = context.1.read::<crate::SagaRollbackJournal>().unwrap();
-            assert_eq!(journal.unresolved_tasks()[0].input_snapshot, b"90");
-            assert_eq!(
-                context.1.read::<SagaStack>().unwrap().tasks[0].input_snapshot,
-                b"89"
-            );
-            drop(context);
-            assert_eq!(owner.observe().borrow().phase, SupervisorPhase::Returned);
-            assert_eq!(owner.observe().borrow().cleanup_complete, Some(false));
-            assert_eq!(owner.observe().borrow().custody, RecoveryCustody::Held);
-            assert_eq!(admission.in_use().unwrap(), 1);
-            assert!(matches!(
-                owner
-                    .initialize_and_drive(
-                        99,
-                        &Init,
-                        None,
-                        std::time::Duration::from_secs(1),
-                        |_| async { completed() }
-                    )
-                    .await,
-                Err(StreamInvocationAlreadyStarted)
-            ));
-            drop(owner);
-            assert_eq!(admission.in_use().unwrap(), 0);
+                let admission = StreamRecoveryAdmission::new(1);
+                let owner = OwnedStreamRecovery::try_new(
+                    graph,
+                    OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                    &admission,
+                    None,
+                )
+                .unwrap();
+                let token = CancellationToken::new();
+                let drivers = Arc::new(AtomicUsize::new(0));
+                let driver_calls = drivers.clone();
+                let report = tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    owner.initialize_and_drive(
+                        89,
+                        &GraceInit(mode, token.clone()),
+                        Some(token),
+                        grace,
+                        move |source| async move {
+                            driver_calls.fetch_add(1, Ordering::SeqCst);
+                            let consumed = crate::ObservedStream::new(
+                                source,
+                                ranvier_core::streaming::StreamTimeoutConfig {
+                                    init: None,
+                                    idle: None,
+                                    total: Some(std::time::Duration::ZERO),
+                                },
+                                None,
+                            )
+                            .collect_report()
+                            .await;
+                            StreamDriveResult {
+                                value: consumed.items,
+                                terminal: consumed.terminal,
+                            }
+                        },
+                    ),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                let cleanup = match report {
+                    StreamInitializationReport::Ready { value, .. } if mode == 0 => {
+                        assert_eq!(
+                            value.consumption.unwrap().terminal,
+                            crate::StreamConsumptionTerminal::TimedOut(
+                                crate::StreamTimeoutKind::Total
+                            )
+                        );
+                        value.cleanup.unwrap()
+                    }
+                    StreamInitializationReport::Failed {
+                        initialization_cleanup,
+                        ..
+                    } if mode == 1 => initialization_cleanup.unwrap(),
+                    StreamInitializationReport::Cancelled {
+                        initialization_cleanup,
+                        ..
+                    } if mode == 2 => initialization_cleanup.unwrap(),
+                    _ => panic!("wrong initialization disposition"),
+                };
+                assert!(!cleanup.finished);
+                assert!(!cleanup.is_complete());
+                assert_eq!(cleanup.steps.len(), 1);
+                assert_eq!(
+                    cleanup.steps[0].outcome,
+                    crate::SagaRollbackOutcome::InProgress
+                );
+                assert_eq!(drivers.load(Ordering::SeqCst), usize::from(mode == 0));
+                assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+                assert_eq!(
+                    observed_journal
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .snapshot(),
+                    cleanup
+                );
+                let context = owner
+                    .inner
+                    .context
+                    .try_lock()
+                    .expect("cleanup returned ownership");
+                assert!(Arc::ptr_eq(&resources, &context.0));
+                let journal = context.1.read::<crate::SagaRollbackJournal>().unwrap();
+                assert_eq!(journal.unresolved_tasks()[0].input_snapshot, b"90");
+                assert_eq!(
+                    context.1.read::<SagaStack>().unwrap().tasks[0].input_snapshot,
+                    b"89"
+                );
+                drop(context);
+                assert_eq!(owner.observe().borrow().phase, SupervisorPhase::Returned);
+                assert_eq!(owner.observe().borrow().cleanup_complete, Some(false));
+                assert_eq!(owner.observe().borrow().custody, RecoveryCustody::Held);
+                assert_eq!(admission.in_use().unwrap(), 1);
+                assert!(matches!(
+                    owner
+                        .initialize_and_drive(
+                            99,
+                            &Init,
+                            None,
+                            std::time::Duration::from_secs(1),
+                            |_| async { completed() }
+                        )
+                        .await,
+                    Err(StreamInvocationAlreadyStarted)
+                ));
+                drop(owner);
+                assert_eq!(admission.in_use().unwrap(), 0);
+            }
         }
     }
     #[tokio::test]

@@ -342,19 +342,6 @@ where
         }
     }
 
-    /// Undo accepted-prefix tasks while initializer resources are still borrowed.
-    /// This is separate from prefix durability and writes no engine completion.
-    #[cfg(feature = "streaming")]
-    pub(crate) async fn cleanup_stream_initialization(
-        &self,
-        resources: &Res,
-        bus: &mut Bus,
-        enabled: bool,
-    ) -> Option<crate::SagaRollbackReport> {
-        self.cleanup_stream_initialization_with_grace(resources, bus, enabled, None)
-            .await
-    }
-
     /// A separate cooperative compensation budget; never reuse a cancelled workflow token.
     #[cfg(feature = "streaming")]
     pub(crate) async fn cleanup_stream_initialization_with_grace(
@@ -373,8 +360,13 @@ where
         match grace {
             Some(grace) => {
                 // Dropping rollback preserves its InProgress journal and unpopped stack.
+                // Oversized durations must not panic after effects have run.
+                // Treat an unrepresentable deadline as an exhausted cleanup budget.
+                let now = tokio::time::Instant::now();
+                let deadline = now.checked_add(grace).unwrap_or(now);
                 let _ =
-                    tokio::time::timeout(grace, self.rollback_saga(resources, bus, &trace)).await;
+                    tokio::time::timeout_at(deadline, self.rollback_saga(resources, bus, &trace))
+                        .await;
             }
             None => self.rollback_saga(resources, bus, &trace).await,
         }
@@ -1252,7 +1244,7 @@ mod scoped_stream_tests {
             assert_eq!(stack.tasks.len(), 1);
             assert_ne!(stack.tasks[0].node_id, "parent-node");
             let cleanup = prefix
-                .cleanup_stream_initialization(&resources, child.bus(), true)
+                .cleanup_stream_initialization_with_grace(&resources, child.bus(), true, None)
                 .await
                 .unwrap();
             assert!(cleanup.is_complete());
