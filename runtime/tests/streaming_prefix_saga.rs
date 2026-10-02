@@ -385,3 +385,77 @@ async fn initializer_cleanup_keeps_stored_prefix_confirmation_independent() {
         Some(CompletionState::Success)
     );
 }
+
+#[derive(Clone)]
+struct GuardedPanic(Arc<AtomicUsize>);
+#[async_trait::async_trait]
+impl Transition<(), ()> for GuardedPanic {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: (), _: &(), bus: &mut Bus) -> Outcome<(), String> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        bus.set_access_policy(
+            "guarded-compensator",
+            Some(ranvier_core::BusAccessPolicy::deny_only(vec![
+                ranvier_core::BusTypeRef::of::<ranvier_runtime::SagaRollbackReport>(),
+            ])),
+        );
+        panic!("synthetic compensation panic");
+    }
+}
+#[tokio::test]
+async fn panicked_compensator_cannot_hide_initializer_cleanup_or_caller_guard() {
+    use ranvier_runtime::{SagaRollbackOutcome, StreamInitializationReport};
+    let effects = Arc::new(AtomicUsize::new(0));
+    let normal_undo = Arc::new(AtomicUsize::new(0));
+    let panicked = Arc::new(AtomicUsize::new(0));
+    let init = Arc::new(AtomicUsize::new(0));
+    let mut bus = Bus::new();
+    bus.insert("caller-value".to_string());
+    bus.set_access_policy(
+        "caller-guard",
+        Some(ranvier_core::BusAccessPolicy::deny_only(vec![
+            ranvier_core::BusTypeRef::of::<String>(),
+        ])),
+    );
+    let report = Axon::<(), (), String>::start("guarded-init-cleanup")
+        .with_saga_policy(SagaPolicy::Enabled)
+        .then_compensated(Effect(effects.clone()), GuardedPanic(panicked.clone()))
+        .then_compensated(Effect(effects.clone()), Effect(normal_undo.clone()))
+        .then_stream(InitFail(init.clone()))
+        .execute((), &(), &mut bus)
+        .await;
+    let StreamInitializationReport::Failed {
+        prefix:
+            ExecutionReport::Unpersisted {
+                result: (),
+                cleanup: None,
+            },
+        initialization_cleanup: Some(cleanup),
+        ..
+    } = report
+    else {
+        panic!("panic guard hid cleanup report");
+    };
+    assert!(cleanup.finished);
+    assert!(!cleanup.is_complete());
+    assert_eq!(
+        cleanup
+            .steps
+            .iter()
+            .map(|step| step.outcome)
+            .collect::<Vec<_>>(),
+        vec![
+            SagaRollbackOutcome::Completed,
+            SagaRollbackOutcome::Panicked
+        ]
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 2);
+    assert_eq!(normal_undo.load(Ordering::SeqCst), 1);
+    assert_eq!(panicked.load(Ordering::SeqCst), 1);
+    assert_eq!(init.load(Ordering::SeqCst), 1);
+    assert!(
+        bus.get::<String>().is_err(),
+        "caller access policy must restore"
+    );
+}
