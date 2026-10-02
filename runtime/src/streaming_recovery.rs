@@ -567,6 +567,25 @@ where
         self.bind_parent(client, Some(parent), Some(journal), Some(task)).await
     }
 
+    /// Build the gated future from this exact recovery owner and owned inputs.
+    /// The supervisor must register this owner's holder before granting start.
+    pub(crate) fn prepare_managed<Item, SErr, S, T, F, Fut>(
+        &self, input: In, streaming: S, cleanup_grace: std::time::Duration, drive: F,
+    ) -> crate::managed_stream_task::PreparedStreamTask<Result<StreamInitializationReport<Out, StreamReadyResult<T>, E>, StreamInvocationAlreadyStarted>>
+    where
+        Item: Send + 'static,
+        SErr: Send + Sync + std::fmt::Debug + 'static,
+        S: StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res>,
+        T: Send + 'static,
+        F: FnOnce(RawStream<Item>) -> Fut + Send + 'static,
+        Fut: Future<Output = StreamDriveResult<T>> + Send + 'static,
+    {
+        let child = self.clone();
+        crate::managed_stream_task::PreparedStreamTask::new(async move {
+            child.initialize_and_drive(input, &streaming, None, cleanup_grace, drive).await
+        })
+    }
+
     pub(crate) async fn initialize_and_drive<Item, SErr, S, T, F, Fut>(
         &self,
         input: In,
@@ -2627,14 +2646,11 @@ mod tests {
                 &StreamRecoveryAdmission::new(1), None).unwrap();
             let entered = Arc::new(Notify::new());
             let signal = entered.clone();
-            let task_child = child.clone();
-            let mut prepared = crate::managed_stream_task::PreparedStreamTask::new(async move {
-                task_child.initialize_and_drive(331, &PendingInit(signal), None,
-                    std::time::Duration::from_secs(5), |_| async {
-                        panic!("cancelled initializer must not run driver");
-                        #[allow(unreachable_code)] completed()
-                    }).await
-            });
+            let mut prepared = child.prepare_managed(331, PendingInit(signal),
+                std::time::Duration::from_secs(5), |_| async {
+                    panic!("cancelled initializer must not run driver");
+                    #[allow(unreachable_code)] completed()
+                });
             let task = prepared.holder();
             let journal = crate::SagaRollbackJournal::new("managed-actual-parent");
             let admission = child.admit_managed_to_parent(parent.client(), &journal, control.clone(), task.clone()).await.unwrap();
