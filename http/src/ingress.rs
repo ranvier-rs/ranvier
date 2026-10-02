@@ -3316,7 +3316,19 @@ where
                     // Spawn a task to consume the stream and send SSE frames
                     let producer_task = async move {
                         let mut pinned = Box::pin(stream);
-                        while let Some(item) = futures_util::StreamExt::next(&mut pinned).await {
+                        loop {
+                            // A source may remain Pending forever without another
+                            // item. Body drop must still release its owned producer.
+                            let item = tokio::select! {
+                                biased;
+                                _ = tx.closed() => {
+                                    tracing::info!("SSE client disconnected");
+                                    return;
+                                }
+                                item = futures_util::StreamExt::next(&mut pinned) => {
+                                    match item { Some(item) => item, None => break }
+                                }
+                            };
                             let text = match serde_json::to_string(&item) {
                                 Ok(json) => format!("data: {}\n\n", json),
                                 Err(_) => {
