@@ -1162,18 +1162,17 @@ where
                     Box::pin(async move {
                         let input: Out = match serde_json::from_slice(&input_data) {
                             Ok(input) => input,
-                            Err(error) => {
+                            Err(_) => {
+                                // Decoder diagnostics can include snapshot values.
+                                // Keep a fixed classification at every output boundary.
                                 tracing::error!(
-                                    error = %error,
-                                    input_type = %type_name_of::<Out>(),
+                                    error = "invalid_compensation_input",
                                     "Saga compensation input deserialization failed"
                                 );
                                 return Outcome::emit(
                                     "saga.compensation.input_deserialization_failed",
                                     Some(serde_json::json!({
-                                        "error": error.to_string(),
-                                        "input_type": type_name_of::<Out>(),
-                                        "snapshot_bytes": input_data.len()
+                                        "error": "invalid_compensation_input"
                                     })),
                                 );
                             }
