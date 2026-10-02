@@ -28,6 +28,11 @@ impl<T: Send + 'static> PreparedStreamTask<T> {
     pub(crate) fn holder(&self) -> std::sync::Arc<tokio::sync::Mutex<ManagedStreamTask<T>>> {
         self.task.clone()
     }
+    pub(crate) fn reject_start(&mut self) -> Result<(), ManagedTaskWaitError> {
+        if self.grant_decided { return Err(ManagedTaskWaitError::StartGrantDecided); }
+        self.permit.take();
+        Ok(())
+    }
     #[cfg(test)]
     fn grant_start(&mut self) -> Result<(), &'static str> {
         let permit = self.permit.take().ok_or("execution.nested_task_start_decided")?;

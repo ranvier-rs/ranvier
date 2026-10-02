@@ -409,6 +409,11 @@ impl<In, Out, E, Res> StreamRecoveryAdmissionRejected<In, Out, E, Res> {
 }
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct StreamInvocationAlreadyStarted;
+/// Failure retains any successfully registered custody for explicit recovery.
+pub(crate) struct ManagedStreamStartError {
+    pub(crate) signal: &'static str,
+    pub(crate) custody: Option<crate::nested_custody::WeakCustody>,
+}
 impl<In, Out, E, Res> OwnedStreamRecovery<In, Out, E, Res>
 where
     In: Send + Sync + Serialize + DeserializeOwned + 'static,
@@ -568,6 +573,27 @@ where
             return Err("execution.nested_task_owner_mismatch");
         }
         self.bind_parent(client, Some(parent), Some(journal), Some(prepared.holder())).await
+    }
+
+    /// Register and grant the exact preparation, retaining registration on a
+    /// failed grant. Caller retains preparation and must join rejected tasks.
+    pub(crate) async fn register_and_start<T: Send + 'static>(
+        &self, client: crate::nested_custody::WeakCustodyClient,
+        journal: &crate::SagaRollbackJournal, parent: CancellationToken,
+        prepared: &mut crate::managed_stream_task::PreparedStreamTask<T>,
+    ) -> Result<crate::nested_custody::WeakCustody, ManagedStreamStartError> {
+        let custody = match self.admit_managed_to_parent(client, journal, parent, prepared).await {
+            Ok(custody) => custody,
+            Err(signal) => {
+                let _ = prepared.reject_start();
+                return Err(ManagedStreamStartError { signal, custody: None });
+            }
+        };
+        if let Err(signal) = prepared.grant_registered_start(&custody) {
+            let _ = prepared.reject_start();
+            return Err(ManagedStreamStartError { signal, custody: Some(custody) });
+        }
+        Ok(custody)
     }
 
     /// Build the gated future from this exact recovery owner and owned inputs.
@@ -2620,14 +2646,14 @@ mod tests {
                     OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
                     &StreamRecoveryAdmission::new(1), None).unwrap()
             } else { child.clone() };
-            let result = target.admit_managed_to_parent(client, &journal, CancellationToken::new(), &prepared).await;
+            let result = target.register_and_start(client, &journal, CancellationToken::new(), &mut prepared).await;
             let signal = match failure {
                 0 => "execution.nested_custody_capacity",
                 1 => "execution.nested_custody_admission_closed",
                 2 => "execution.parent_custody_released",
                 _ => "execution.nested_task_owner_mismatch",
             };
-            assert!(matches!(result, Err(actual) if actual == signal));
+            assert!(matches!(result, Err(actual) if actual.signal == signal && actual.custody.is_none()));
             assert!(matches!(prepared.reject_until( tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             assert!(!child.inner.started.load(Ordering::Acquire));
