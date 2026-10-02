@@ -242,6 +242,61 @@ mod tests {
         ));
         assert!(temporary_core.closed.load(Ordering::Acquire));
     }
+    #[test]
+    fn concurrent_weak_clients_use_one_global_capacity_and_last_root_clone_closes_it() {
+        let root = CustodyStore::new(4);
+        let client = root.client();
+        let barrier = Arc::new(std::sync::Barrier::new(17));
+        let threads: Vec<_> = (0..16)
+            .map(|index| {
+                let client = client.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    client.reserve(Arc::new(index))
+                })
+            })
+            .collect();
+        barrier.wait();
+        let mut admitted = Vec::new();
+        for thread in threads {
+            match thread.join().unwrap() {
+                Ok(record) => admitted.push(record),
+                Err(signal) => assert_eq!(signal, "execution.nested_custody_capacity"),
+            }
+        }
+        assert_eq!(admitted.len(), 4);
+        let remaining_root = root.clone();
+        drop(root);
+        assert!(admitted.iter().all(|record| record.upgrade().is_some()));
+        drop(remaining_root);
+        assert!(admitted.iter().all(|record| record.upgrade().is_none()));
+        assert!(matches!(
+            client.reserve(Arc::new(())),
+            Err("execution.parent_custody_released")
+        ));
+    }
+    #[test]
+    fn weak_client_poison_is_unavailable_and_root_close_retires_records() {
+        let root = CustodyStore::new(1);
+        let client = root.client();
+        let record = root
+            .reserve(Arc::new(()))
+            .unwrap_or_else(|_| panic!("admission failed"));
+        let core = root.0 .0.clone();
+        assert!(std::thread::spawn(move || {
+            let _held = core.records.lock().unwrap();
+            panic!("fixture poison");
+        })
+        .join()
+        .is_err());
+        assert!(matches!(
+            client.reserve(Arc::new(())),
+            Err("execution.nested_custody_unavailable")
+        ));
+        drop(root);
+        assert!(record.upgrade().is_none());
+    }
     struct Probe {
         store: Weak<StoreInner>,
         released: Arc<std::sync::atomic::AtomicBool>,

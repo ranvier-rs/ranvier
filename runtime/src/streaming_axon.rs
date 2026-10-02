@@ -668,6 +668,26 @@ mod owned_context_tests {
         }
     }
     #[test]
+    fn expired_weak_parent_client_cannot_be_detached_as_a_fresh_context() {
+        let root = crate::nested_custody::CustodyStore::new(1);
+        let client = root.client();
+        drop(root);
+        let resources = Arc::new(MoveOnlyResource(23));
+        let mut bus = Bus::new();
+        bus.insert(client);
+        bus.set_access_policy("deny-expired-client", Some(ranvier_core::BusAccessPolicy::allow_only(Vec::new())));
+        let rejected = match OwnedStreamContext::try_new(resources.clone(), bus) {
+            Err(rejected) => rejected,
+            Ok(_) => panic!("expired client authority was detached"),
+        };
+        let (returned, mut bus) = rejected.into_parts();
+        assert!(Arc::ptr_eq(&resources, &returned));
+        assert!(bus.get::<crate::nested_custody::WeakCustodyClient>().is_err());
+        let access = bus.take_access_scope();
+        assert!(bus.has::<crate::nested_custody::WeakCustodyClient>());
+        bus.restore_access_scope(access);
+    }
+    #[test]
     fn rejected_recovery_keeps_exact_inputs_and_redacts_debug() {
         let resources = Arc::new(MoveOnlyResource(17));
         let mut bus = Bus::new();

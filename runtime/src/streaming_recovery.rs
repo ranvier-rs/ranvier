@@ -1862,6 +1862,29 @@ mod tests {
             ));
         }
     }
+    #[tokio::test]
+    async fn weak_parent_client_reuses_completed_slots_and_blocks_effects_after_parent_close() {
+        let root = crate::nested_custody::CustodyStore::new(1);
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let mut bus = Bus::new();
+        bus.insert(crate::nested_custody::RequiredOwnedCustody);
+        bus.insert(root.client());
+        bus.insert(crate::nested_custody::OwnedResources(resources.clone()));
+        let mut parent = crate::execution_observation::InvocationOwner::begin(&mut bus);
+        let graph = Axon::<u32, u32, String, Resources>::start("weak-client-child").then(Effect);
+        for input in [211, 212] {
+            assert!(matches!(graph.execute_owned_child(input, resources.clone(), parent.bus()).await,
+                crate::ExecutionReport::Unpersisted { result: Outcome::Next(_), .. }));
+        }
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+        drop(root);
+        assert!(matches!(graph.execute_owned_child(213, resources.clone(), parent.bus()).await,
+            crate::ExecutionReport::Unpersisted { result: Outcome::Emit(signal, _), .. }
+                if signal == "execution.parent_custody_released"));
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+        let report = parent.finish(());
+        assert!(report.cleanup().is_none());
+    }
     struct ExternalHook {
         mode: u8,
         calls: Arc<AtomicUsize>,
