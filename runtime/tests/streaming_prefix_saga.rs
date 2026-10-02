@@ -581,3 +581,47 @@ async fn initializer_factory_and_poll_panic_compensate_with_nonclone_resources()
         }
     }
 }
+
+struct PanicDebug;
+impl std::fmt::Debug for PanicDebug {
+    fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        panic!("synthetic initializer error formatter panic")
+    }
+}
+#[derive(Clone)]
+struct InitDebugFailure;
+#[async_trait::async_trait]
+impl StreamingTransition<()> for InitDebugFailure {
+    type Item = ();
+    type Error = PanicDebug;
+    type Resources = ();
+    async fn run_stream(
+        &self,
+        _: (),
+        _: &(),
+        _: &mut Bus,
+    ) -> Result<Pin<Box<dyn futures_util::Stream<Item = ()> + Send>>, PanicDebug> {
+        Err(PanicDebug)
+    }
+}
+#[tokio::test]
+async fn initializer_error_formatter_panic_retains_cleanup() {
+    let undo = Arc::new(AtomicUsize::new(0));
+    let report = Axon::<(), (), String>::start("initializer-debug-panic")
+        .with_saga_policy(SagaPolicy::Enabled)
+        .then_compensated(Effect(Arc::new(AtomicUsize::new(0))), Effect(undo.clone()))
+        .then_stream(InitDebugFailure)
+        .execute((), &(), &mut Bus::new())
+        .await;
+    let ranvier_runtime::StreamInitializationReport::Failed {
+        error,
+        initialization_cleanup: Some(cleanup),
+        ..
+    } = report
+    else {
+        panic!("formatter panic lost failure evidence")
+    };
+    assert_eq!(error.to_string(), "Stream initialization panicked");
+    assert!(cleanup.is_complete());
+    assert_eq!(undo.load(Ordering::SeqCst), 1);
+}

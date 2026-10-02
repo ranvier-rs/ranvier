@@ -223,12 +223,16 @@ where
             // owner still cannot await cleanup; panic hooks remain process policy.
             let initialization = async {
                 AssertUnwindSafe(async {
-                    streaming.run_stream(output, resources, owner.bus()).await
+                    streaming
+                        .run_stream(output, resources, owner.bus())
+                        .await
+                        .map_err(|error| {
+                            StreamInitializationError::Transition(format!("{error:?}"))
+                        })
                 })
                 .catch_unwind()
                 .await
-                .map_err(|_| StreamInitializationError::Panicked)?
-                .map_err(|error| StreamInitializationError::Transition(format!("{error:?}")))
+                .unwrap_or(Err(StreamInitializationError::Panicked))
             };
             tokio::pin!(initialization);
             match &cancellation {

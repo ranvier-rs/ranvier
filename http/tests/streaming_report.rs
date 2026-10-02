@@ -96,6 +96,9 @@ impl StreamingTransition<String> for Init {
         bus: &mut Bus,
     ) -> Result<Pin<Box<dyn futures_util::Stream<Item = String> + Send>>, String> {
         self.0.fetch_add(1, Ordering::SeqCst);
+        if self.1 == 8 {
+            panic!("private-init-panic");
+        }
         if self.1 == 5 {
             bus.cancellation_token()
                 .unwrap()
@@ -178,6 +181,7 @@ async fn prefix_durability_and_cleanup_precede_sse_success_without_private_resul
         assert!(!body.contains("private-compensation-error"));
         assert!(!body.contains("private-business-error"));
         assert!(!body.contains("private-init-error"));
+        assert!(!body.contains("private-init-panic"));
         if mode == 0 {
             assert!(body.contains("public-item"));
             assert_eq!(body.matches("data: [DONE]").count(), 1);
@@ -287,7 +291,7 @@ async fn late_timeout_and_cancellation_emit_error_without_done() {
 #[tokio::test]
 async fn initializer_cleanup_completion_is_explicit_without_private_values() {
     for complete in [false, true] {
-        for mode in [4, 5] {
+        for mode in [4, 5, 8] {
             let effects = Arc::new(AtomicUsize::new(0));
             let undo = Arc::new(AtomicUsize::new(0));
             let init = Arc::new(AtomicUsize::new(0));
@@ -319,13 +323,14 @@ async fn initializer_cleanup_completion_is_explicit_without_private_values() {
             .unwrap();
             assert_eq!(
                 response.status().as_u16(),
-                if mode == 4 { 500 } else { 503 }
+                if mode == 5 { 503 } else { 500 }
             );
             assert_eq!(response.header("cache-control").unwrap(), "no-store");
             let body = response.text().unwrap();
             assert!(!body.contains(PRIVATE));
             assert!(!body.contains("private-compensation-error"));
             assert!(!body.contains("private-init-error"));
+            assert!(!body.contains("private-init-panic"));
             assert!(!body.contains("[DONE]"));
             assert!(!body.contains("data:"));
             let report: serde_json::Value = response.json().unwrap();
