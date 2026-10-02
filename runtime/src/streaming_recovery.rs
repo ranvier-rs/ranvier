@@ -3261,37 +3261,56 @@ mod tests {
                 std::future::pending().await
             }
         }
-        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
-        let graph = Axon::<u32, u32, String, Resources>::start("gated-prefix-deadline")
-            .with_saga_policy(SagaPolicy::Enabled)
-            .then_compensated(Effect, Undo).then(PendingDeadlinePrefix);
-        let owner = OwnedStreamRecovery::try_new(graph,
-            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-            &StreamRecoveryAdmission::new(1), None).unwrap();
-        let mut prepared = owner.prepare_managed_controlled(137, Init,
-            std::time::Duration::from_secs(2), Some(std::time::Duration::from_secs(5)),
-            |_, _, _| async { panic!("rejected prefix must not consume"); #[allow(unreachable_code)] completed() });
-        let root = crate::nested_custody::CustodyStore::new(1);
-        let journal = crate::SagaRollbackJournal::new("gated-prefix-parent");
-        let control = CancellationToken::new();
-        let began = tokio::time::Instant::now();
-        owner.register_and_start(root.client(), &journal, control.clone(), &mut prepared).await
-            .unwrap_or_else(|error| panic!("{}", error.signal));
-        let holder = prepared.holder();
-        let report = holder.lock().await.join_until(began + std::time::Duration::from_secs(10)).await.unwrap().unwrap().unwrap().unwrap();
-        let StreamInitializationReport::Rejected { prefix } = report else { panic!("original rejection lost"); };
-        assert_eq!(tokio::time::Instant::now() - began, std::time::Duration::from_secs(5));
-        assert!(!control.is_cancelled());
-        assert!(prefix.cleanup().unwrap().is_complete());
-        assert_eq!(prefix.cleanup().unwrap().steps.len(), 1);
-        assert!(matches!(prefix, crate::ExecutionReport::Unpersisted {
-            result: crate::ExecutionTerminal::Cancelled(context), ..
-        } if context.reason == ranvier_core::CancellationReason::DeadlineExceeded));
-        assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
-        assert_eq!(owner.observe().borrow().disposition, Some(SupervisorDisposition::PrefixRejected));
-        let context = owner.inner.context.try_lock().unwrap();
-        assert!(Arc::ptr_eq(&context.0, &resources));
-        assert!(context.1.read::<SagaStack>().unwrap().is_empty());
+        for pending_undo in [false, true] {
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let prefix = Axon::<u32, u32, String, Resources>::start("gated-prefix-deadline")
+                .with_saga_policy(SagaPolicy::Enabled);
+            let graph = if pending_undo {
+                prefix.then_compensated(Effect, PendingUndo(Arc::new(Notify::new()), captured.clone()))
+            } else {
+                prefix.then_compensated(Effect, Undo)
+            }.then(PendingDeadlinePrefix);
+            let owner = OwnedStreamRecovery::try_new(graph,
+                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                &StreamRecoveryAdmission::new(1), None).unwrap();
+            let mut prepared = owner.prepare_managed_controlled(137, Init,
+                std::time::Duration::from_secs(2), Some(std::time::Duration::from_secs(5)),
+                |_, _, _| async { panic!("rejected prefix must not consume"); #[allow(unreachable_code)] completed() });
+            let root = crate::nested_custody::CustodyStore::new(1);
+            let journal = crate::SagaRollbackJournal::new("gated-prefix-parent");
+            let control = CancellationToken::new();
+            let began = tokio::time::Instant::now();
+            owner.register_and_start(root.client(), &journal, control.clone(), &mut prepared).await
+                .unwrap_or_else(|error| panic!("{}", error.signal));
+            let holder = prepared.holder();
+            let report = holder.lock().await.join_until(began + std::time::Duration::from_secs(10)).await.unwrap().unwrap().unwrap().unwrap();
+            let StreamInitializationReport::Rejected { prefix } = report else { panic!("original rejection lost"); };
+            assert_eq!(tokio::time::Instant::now() - began, std::time::Duration::from_secs(if pending_undo { 7 } else { 5 }));
+            assert!(!control.is_cancelled());
+            assert_eq!(prefix.cleanup().unwrap().is_complete(), !pending_undo);
+            if pending_undo {
+                assert!(!prefix.cleanup().unwrap().finished);
+                assert_eq!(prefix.cleanup().unwrap().steps[0].outcome, crate::SagaRollbackOutcome::InProgress);
+            }
+            assert_eq!(prefix.cleanup().unwrap().steps.len(), 1);
+            assert!(matches!(prefix, crate::ExecutionReport::Unpersisted {
+                result: crate::ExecutionTerminal::Cancelled(context), ..
+            } if context.reason == ranvier_core::CancellationReason::DeadlineExceeded));
+            assert_eq!(resources.effects.load(Ordering::SeqCst), if pending_undo { 1 } else { 2 });
+            assert_eq!(owner.observe().borrow().disposition, Some(SupervisorDisposition::PrefixRejected));
+            let context = owner.inner.context.try_lock().unwrap();
+            assert!(Arc::ptr_eq(&context.0, &resources));
+            assert!(context.1.read::<SagaStack>().unwrap().is_empty());
+            if pending_undo {
+                let retained = context.1.read::<crate::SagaRollbackJournal>().unwrap().unresolved_tasks();
+                assert_eq!(retained.len(), 1);
+                assert_eq!(retained[0].input_snapshot, b"137");
+                assert!(captured.lock().unwrap().is_some());
+                assert!(owner.observe().borrow().cleanup_timed_out);
+                assert_eq!(owner.observe().borrow().cleanup_complete, Some(false));
+            }
+        }
     }
 
     #[tokio::test]
