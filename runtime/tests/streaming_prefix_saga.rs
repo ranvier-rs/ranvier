@@ -398,6 +398,7 @@ impl Transition<(), ()> for GuardedPanic {
             "guarded-compensator",
             Some(ranvier_core::BusAccessPolicy::deny_only(vec![
                 ranvier_core::BusTypeRef::of::<ranvier_runtime::SagaRollbackReport>(),
+                ranvier_core::BusTypeRef::of::<ranvier_core::saga::SagaStack>(),
             ])),
         );
         panic!("synthetic compensation panic");
@@ -405,6 +406,11 @@ impl Transition<(), ()> for GuardedPanic {
 }
 #[tokio::test]
 async fn panicked_compensator_cannot_hide_initializer_cleanup_or_caller_guard() {
+    for panic_last in [true, false] {
+        assert_panic_guard(panic_last).await;
+    }
+}
+async fn assert_panic_guard(panic_last: bool) {
     use ranvier_runtime::{SagaRollbackOutcome, StreamInitializationReport};
     let effects = Arc::new(AtomicUsize::new(0));
     let normal_undo = Arc::new(AtomicUsize::new(0));
@@ -418,10 +424,18 @@ async fn panicked_compensator_cannot_hide_initializer_cleanup_or_caller_guard() 
             ranvier_core::BusTypeRef::of::<String>(),
         ])),
     );
-    let report = Axon::<(), (), String>::start("guarded-init-cleanup")
-        .with_saga_policy(SagaPolicy::Enabled)
-        .then_compensated(Effect(effects.clone()), GuardedPanic(panicked.clone()))
-        .then_compensated(Effect(effects.clone()), Effect(normal_undo.clone()))
+    let prefix =
+        Axon::<(), (), String>::start("guarded-init-cleanup").with_saga_policy(SagaPolicy::Enabled);
+    let prefix = if panic_last {
+        prefix
+            .then_compensated(Effect(effects.clone()), GuardedPanic(panicked.clone()))
+            .then_compensated(Effect(effects.clone()), Effect(normal_undo.clone()))
+    } else {
+        prefix
+            .then_compensated(Effect(effects.clone()), Effect(normal_undo.clone()))
+            .then_compensated(Effect(effects.clone()), GuardedPanic(panicked.clone()))
+    };
+    let report = prefix
         .then_stream(InitFail(init.clone()))
         .execute((), &(), &mut bus)
         .await;
@@ -445,17 +459,30 @@ async fn panicked_compensator_cannot_hide_initializer_cleanup_or_caller_guard() 
             .iter()
             .map(|step| step.outcome)
             .collect::<Vec<_>>(),
-        vec![
-            SagaRollbackOutcome::Completed,
-            SagaRollbackOutcome::Panicked
-        ]
+        if panic_last {
+            vec![
+                SagaRollbackOutcome::Completed,
+                SagaRollbackOutcome::Panicked,
+            ]
+        } else {
+            vec![
+                SagaRollbackOutcome::Panicked,
+                SagaRollbackOutcome::Completed,
+            ]
+        }
     );
     assert_eq!(effects.load(Ordering::SeqCst), 2);
     assert_eq!(normal_undo.load(Ordering::SeqCst), 1);
     assert_eq!(panicked.load(Ordering::SeqCst), 1);
     assert_eq!(init.load(Ordering::SeqCst), 1);
     assert!(
-        bus.get::<String>().is_err(),
-        "caller access policy must restore"
+        matches!(bus.get::<String>(), Err(ranvier_core::BusAccessError::Unauthorized { transition, .. }) if transition == "caller-guard")
     );
+    assert!(
+        bus.read::<ranvier_core::saga::SagaStack>()
+            .unwrap()
+            .is_empty()
+    );
+    bus.clear_access_policy();
+    assert_eq!(bus.read::<String>().unwrap(), "caller-value");
 }
