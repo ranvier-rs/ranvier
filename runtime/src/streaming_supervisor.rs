@@ -128,6 +128,7 @@ pub struct SupervisedStreamInvocation<Out, Item, E> {
     pub report: crate::streaming_report_handle::StreamReportHandle<Out, E>,
     control: ranvier_core::CancellationToken,
     _custody: crate::nested_custody::WeakCustody,
+    _journal: crate::SagaRollbackJournal,
 }
 impl<Out, Item, E> SupervisedStreamInvocation<Out, Item, E> {
     pub fn cancel(&self, reason: ranvier_core::CancellationReason) { self.control.cancel(reason); }
@@ -152,6 +153,9 @@ impl StreamReservation {
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
         Item: Send + 'static, Res: Send + Sync + 'static,
     {
+        if circuit.owned_definition.buffer_size == 0 {
+            return Err(StreamPrepareError::Setup { signal: "execution.stream_buffer_invalid", context, input });
+        }
         if let Err(signal) = self.slot.validate_open(&self.client) {
             return Err(StreamPrepareError::Setup { signal, context, input });
         }
@@ -188,16 +192,18 @@ where In: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static
 {
     pub async fn start(mut self, parent: ranvier_core::CancellationToken)
         -> Result<SupervisedStreamInvocation<Out, Item, E>, StreamStartRejected<Out, E>> {
-        let report = crate::streaming_report_handle::StreamReportHandle::new(
-            self.prepared.holder(), self.plan.owner.retention_capability());
         let control = parent.child_token();
         let journal = crate::SagaRollbackJournal::new("supervised-stream-root");
+        // Report leases retain both the exact recovery owner and its parent
+        // observation journal after the invocation transport is dropped.
+        let report = crate::streaming_report_handle::StreamReportHandle::new(
+            self.prepared.holder(), std::sync::Arc::new((self.plan.owner.retention_capability(), journal.clone())));
         let custody = match self.plan.owner.register_reserved_and_start(self.client, &mut self.slot,
             &journal, control.clone(), &mut self.prepared).await {
             Ok(custody) => custody,
             Err(error) => return Err(StreamStartRejected { signal: error.signal, report, _custody: error.custody }),
         };
-        Ok(SupervisedStreamInvocation { items: self.items, readiness: self.readiness, report, control, _custody: custody })
+        Ok(SupervisedStreamInvocation { items: self.items, readiness: self.readiness, report, control, _custody: custody, _journal: journal })
     }
 }
 
@@ -245,6 +251,102 @@ mod tests {
         assert!(supervisor.reserve().is_err());
         drop(invocation);
         assert!(!parent.is_cancelled());
+    }
+    #[tokio::test]
+    async fn public_start_rejection_and_setup_rejection_keep_original_custody() {
+        for closed_after_prepare in [false, true] {
+            let supervisor = StreamSupervisor::new(1);
+            let circuit = crate::Axon::<u32, u32, String>::start("public-rejected").then(Prefix).then_stream(Finite);
+            let (ticket, context) = supervisor.reserve().unwrap().with_context(|| {
+                let mut bus = ranvier_core::Bus::new(); bus.insert(239u32);
+                OwnedStreamContext::try_new(Arc::new(()), bus)
+            }).unwrap();
+            if !closed_after_prepare { supervisor.close().unwrap(); }
+            let prepared = match ticket.prepare(&circuit, context, 241, std::time::Duration::from_secs(1), None) {
+                Err(StreamPrepareError::Setup { input, context, .. }) if !closed_after_prepare => {
+                    assert_eq!(input, 241);
+                    assert_eq!(*context.into_parts().1.read::<u32>().unwrap(), 239);
+                    assert_eq!(supervisor.admission.in_use(), Ok(0));
+                    continue;
+                }
+                Ok(prepared) if closed_after_prepare => prepared,
+                _ => panic!("wrong setup disposition"),
+            };
+            supervisor.close().unwrap();
+            let rejected = match prepared.start(ranvier_core::CancellationToken::new()).await {
+                Err(rejected) => rejected, Ok(_) => panic!("closed root admitted"),
+            };
+            assert_eq!(rejected.signal, "execution.nested_custody_admission_closed");
+            let report = rejected.report.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+            assert!(matches!(report, crate::streaming_report_handle::SupervisedStreamCompletion::RejectedBeforeStart));
+            assert_eq!(supervisor.admission.in_use(), Ok(1));
+            drop(rejected);
+            assert_eq!(supervisor.admission.in_use(), Ok(0));
+        }
+    }
+    #[tokio::test]
+    async fn public_invocation_drop_cancels_actual_pending_stream_but_not_parent() {
+        #[derive(Clone)]
+        struct Pending;
+        #[async_trait::async_trait]
+        impl ranvier_core::streaming::StreamingTransition<u32> for Pending {
+            type Item = u32; type Error = String; type Resources = ();
+            async fn run_stream(&self, _: u32, _: &(), _: &mut ranvier_core::Bus)
+                -> Result<std::pin::Pin<Box<dyn futures_core::Stream<Item = u32> + Send>>, String> {
+                Ok(Box::pin(futures_util::stream::pending()))
+            }
+        }
+        let supervisor = StreamSupervisor::new(1);
+        let circuit = crate::Axon::<u32, u32, String>::start("public-drop").then(Prefix).then_stream(Pending);
+        let (ticket, context) = supervisor.reserve().unwrap().with_context(||
+            OwnedStreamContext::try_new(Arc::new(()), ranvier_core::Bus::new())).unwrap();
+        let prepared = match ticket.prepare(&circuit, context, 251, std::time::Duration::from_secs(1), None) {
+            Ok(prepared) => prepared, Err(_) => panic!("setup rejected"),
+        };
+        let parent = ranvier_core::CancellationToken::new();
+        let mut invocation = prepared.start(parent.clone()).await.unwrap_or_else(|e| panic!("{}", e.signal));
+        tokio::time::timeout(std::time::Duration::from_secs(5), invocation.readiness.initialized()).await.unwrap().unwrap();
+        let report = invocation.report.clone();
+        drop(invocation);
+        assert!(!parent.is_cancelled());
+        let terminal = report.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+        match terminal {
+            crate::streaming_report_handle::SupervisedStreamCompletion::Report(crate::StreamInitializationReport::Ready { value, .. }) => {
+                let context = match value.consumption {
+                    Ok(crate::StreamConsumptionTerminal::Cancelled(context)) |
+                    Err(crate::streaming_report_handle::SupervisedStreamFailure::Cancelled(context)) => context,
+                    _ => panic!("actual cancellation terminal lost"),
+                };
+                assert_eq!(context.reason, ranvier_core::CancellationReason::ClientDisconnected);
+            }
+            _ => panic!("original ready report lost"),
+        }
+        assert!(!parent.is_cancelled());
+        assert_eq!(supervisor.admission.in_use(), Ok(1));
+        let admission = supervisor.admission.clone();
+        drop(supervisor);
+        assert_eq!(admission.in_use(), Ok(1));
+        assert!(matches!(report.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await,
+            Err(crate::streaming_report_handle::StreamReportWaitError::AlreadyTaken)));
+        drop(report);
+        assert_eq!(admission.in_use(), Ok(0));
+    }
+    #[test]
+    fn invalid_public_buffer_returns_original_context_before_owner_creation() {
+        let supervisor = StreamSupervisor::new(1);
+        let circuit = crate::Axon::<u32, u32, String>::start("public-invalid-buffer").then(Prefix).then_stream(Finite).with_buffer_size(0);
+        let (ticket, context) = supervisor.reserve().unwrap().with_context(|| {
+            let mut bus = ranvier_core::Bus::new(); bus.insert(257u32);
+            OwnedStreamContext::try_new(Arc::new(()), bus)
+        }).unwrap();
+        match ticket.prepare(&circuit, context, 263, std::time::Duration::from_secs(1), None) {
+            Err(StreamPrepareError::Setup { input, context, .. }) => {
+                assert_eq!(input, 263); assert_eq!(*context.into_parts().1.read::<u32>().unwrap(), 257);
+            }
+            _ => panic!("invalid buffer created owner"),
+        }
+        assert_eq!(supervisor.admission.in_use(), Ok(0));
+        assert!(supervisor.reserve().is_ok());
     }
     #[test]
     fn paired_reservation_precedes_factory_and_refunds_failure() {
