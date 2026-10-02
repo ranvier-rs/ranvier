@@ -108,6 +108,23 @@ mod tests {
     use super::*;
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
     #[tokio::test]
+    async fn unavailable_start_preserves_cancelled_join_and_cannot_be_rejected_as_unstarted() {
+        let effects = Arc::new(AtomicUsize::new(0));
+        let observed = effects.clone();
+        let mut prepared = PreparedStreamTask::new(async move { observed.fetch_add(1, Ordering::SeqCst); });
+        let holder = prepared.holder();
+        {
+            let mut task = holder.lock().await;
+            task.handle.as_ref().unwrap().abort();
+            task.settle_until(Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+        }
+        assert_eq!(prepared.grant_start(), Err("execution.nested_task_start_unavailable"));
+        assert_eq!(prepared.grant_start(), Err("execution.nested_task_start_decided"));
+        assert!(matches!(prepared.reject_until(Instant::now()).await, Err(ManagedTaskWaitError::StartGrantDecided)));
+        assert!(holder.lock().await.take_joined().unwrap().unwrap_err().is_cancelled());
+        assert_eq!(effects.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
     async fn reject_after_grant_does_not_join_or_consume_original_output() {
         let mut prepared = PreparedStreamTask::new(async { Box::new(113u32) });
         let holder = prepared.holder();
