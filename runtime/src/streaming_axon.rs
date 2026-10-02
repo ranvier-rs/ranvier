@@ -553,3 +553,88 @@ mod timeout_wakeup_tests {
         }
     }
 }
+
+/// Request-owned inputs for supervised streaming admission. Construction executes
+/// no effects and does not itself start a supervisor or provide durable recovery.
+/// Existing recovery slots require explicit graph/handler reconciliation first.
+pub struct OwnedStreamContext<Res> {
+    resources: Arc<Res>,
+    bus: Bus,
+}
+
+/// Rejected admission retains the exact Bus and resource allocation for its caller.
+/// No payloads are exposed through Debug.
+pub struct OwnedStreamContextRejection<Res> {
+    resources: Arc<Res>,
+    bus: Bus,
+}
+impl<Res> std::fmt::Debug for OwnedStreamContextRejection<Res> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OwnedStreamContextRejection { reason: recovery_authority_present }")
+    }
+}
+impl<Res> OwnedStreamContext<Res> {
+    /// Accept a Bus with no active invocation or recovery slots. Even empty slots
+    /// are rejected because their writable/inherited graph provenance is unknown.
+    pub fn try_new(
+        resources: Arc<Res>,
+        mut bus: Bus,
+    ) -> Result<Self, OwnedStreamContextRejection<Res>> {
+        if crate::execution_observation::has_stream_recovery_authority(&mut bus) {
+            Err(OwnedStreamContextRejection { resources, bus })
+        } else {
+            Ok(Self { resources, bus })
+        }
+    }
+    /// Return ownership without cloning Bus, resources, or request capabilities.
+    pub fn into_parts(self) -> (Arc<Res>, Bus) {
+        (self.resources, self.bus)
+    }
+}
+impl<Res> OwnedStreamContextRejection<Res> {
+    pub fn into_parts(self) -> (Arc<Res>, Bus) {
+        (self.resources, self.bus)
+    }
+}
+
+#[cfg(test)]
+mod owned_context_tests {
+    use super::*;
+    use ranvier_core::saga::SagaStack;
+
+    struct MoveOnlyResource(u32);
+    #[test]
+    fn admission_preserves_move_only_resources_and_local_request_capabilities() {
+        let resources = Arc::new(MoveOnlyResource(17));
+        let mut bus = Bus::new();
+        bus.insert(String::from("private-request-capability"));
+        let context = OwnedStreamContext::try_new(resources.clone(), bus).unwrap();
+        let (returned, bus) = context.into_parts();
+        assert!(Arc::ptr_eq(&resources, &returned));
+        assert_eq!(returned.0, 17);
+        assert_eq!(bus.read::<String>().unwrap(), "private-request-capability");
+    }
+    #[test]
+    fn rejected_recovery_keeps_exact_inputs_and_redacts_debug() {
+        let resources = Arc::new(MoveOnlyResource(17));
+        let mut bus = Bus::new();
+        let mut stack = SagaStack::new();
+        stack.push(
+            "node".into(),
+            "secret-label".into(),
+            b"secret-input".to_vec(),
+        );
+        bus.insert(stack);
+        let rejected = match OwnedStreamContext::try_new(resources.clone(), bus) {
+            Err(rejected) => rejected,
+            Ok(_) => panic!("recovery authority must not be detached"),
+        };
+        assert!(!format!("{rejected:?}").contains("secret"));
+        let (returned, bus) = rejected.into_parts();
+        assert!(Arc::ptr_eq(&resources, &returned));
+        assert_eq!(
+            bus.read::<SagaStack>().unwrap().tasks[0].input_snapshot,
+            b"secret-input"
+        );
+    }
+}

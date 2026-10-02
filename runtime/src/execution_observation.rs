@@ -1066,3 +1066,17 @@ impl Drop for InvocationOwner<'_> {
         }
     }
 }
+
+/// Validate detached admission with framework visibility, then restore caller policy.
+#[cfg(feature = "streaming")]
+pub(crate) fn has_stream_recovery_authority(bus: &mut Bus) -> bool {
+    let access = bus.take_access_scope();
+    let occupied = bus.has::<ActiveObservation>()
+        || bus.has::<ActiveIamBoundary>()
+        || bus.has::<InvocationTrace>()
+        || bus.has::<ranvier_core::saga::SagaStack>()
+        || bus.has::<crate::SagaRollbackJournal>()
+        || bus.has::<crate::SagaRollbackReport>();
+    bus.restore_access_scope(access);
+    occupied
+}
