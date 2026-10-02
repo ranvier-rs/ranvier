@@ -841,7 +841,7 @@ where
                 }
             };
             if let Some(handler) = handler {
-                journal.push(task.node_id.clone(), SagaRollbackOutcome::InProgress);
+                journal.push_task(task.clone());
                 bus.insert(journal.clone());
                 use futures_util::FutureExt as _;
                 // Factory invocation can unwind before returning its future.

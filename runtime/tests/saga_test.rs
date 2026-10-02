@@ -620,6 +620,17 @@ async fn dropped_pending_rollback_retains_in_progress_without_completed_claim() 
     assert_eq!(report.steps.len(), 1);
     assert_eq!(report.steps[0].outcome, SagaRollbackOutcome::InProgress);
     assert_eq!(report.trace_id, "pending-rollback-owner");
+    let journal = bus.read::<ranvier_runtime::SagaRollbackJournal>().unwrap();
+    let retained = journal.unresolved_tasks();
+    assert_eq!(retained.len(), 1);
+    let input: SagaState = serde_json::from_slice(&retained[0].input_snapshot).unwrap();
+    assert_eq!(input.cnt, 0);
+    assert_eq!(retained[0].node_id, report.steps[0].node_id);
+    assert_eq!(
+        format!("{journal:?}"),
+        format!("SagaRollbackJournal {{ report: {:?} }}", journal.snapshot())
+    );
+
     assert!(Arc::ptr_eq(
         &original,
         &bus.read::<PersistenceHandle>().unwrap().store()

@@ -45,18 +45,56 @@ impl SagaRollbackReport {
 
 /// Invocation-owned cleanup journal. Cloning this handle does not copy steps.
 /// Call snapshot to obtain an owned serializable report, including partial work.
-#[derive(Debug, Clone)]
-pub struct SagaRollbackJournal(std::sync::Arc<std::sync::Mutex<SagaRollbackReport>>);
+#[derive(Clone)]
+pub struct SagaRollbackJournal(
+    std::sync::Arc<std::sync::Mutex<SagaRollbackReport>>,
+    std::sync::Arc<std::sync::Mutex<Vec<(usize, ranvier_core::saga::SagaTask)>>>,
+);
+impl std::fmt::Debug for SagaRollbackJournal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SagaRollbackJournal")
+            .field("report", &self.snapshot())
+            .finish()
+    }
+}
 
 impl SagaRollbackJournal {
     pub(crate) fn new(trace_id: &str) -> Self {
-        Self(std::sync::Arc::new(std::sync::Mutex::new(
-            SagaRollbackReport {
+        Self(
+            std::sync::Arc::new(std::sync::Mutex::new(SagaRollbackReport {
                 trace_id: trace_id.to_string(),
                 finished: false,
                 steps: Vec::new(),
-            },
-        )))
+            })),
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        )
+    }
+    /// Owned local reconciliation inputs. These may contain secrets: never expose
+    /// them as public responses/logs. Retention does not authorize replay or prove
+    /// durable recovery; typed resources and graph handler ownership are still needed.
+    pub fn unresolved_tasks(&self) -> Vec<ranvier_core::saga::SagaTask> {
+        self.1
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .map(|(_, task)| task.clone())
+            .collect()
+    }
+    pub(crate) fn push_task(&self, task: ranvier_core::saga::SagaTask) {
+        let mut report = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let index = report.steps.len();
+        report.finished = false;
+        report.steps.push(SagaRollbackStep {
+            node_id: task.node_id.clone(),
+            outcome: SagaRollbackOutcome::InProgress,
+        });
+        self.1
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((index, task));
     }
     pub fn snapshot(&self) -> SagaRollbackReport {
         self.0
@@ -86,6 +124,13 @@ impl SagaRollbackJournal {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(step) = report.steps.last_mut() {
             step.outcome = outcome;
+        }
+        if outcome == SagaRollbackOutcome::Completed {
+            let index = report.steps.len().saturating_sub(1);
+            self.1
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .retain(|(observed, _)| *observed != index);
         }
     }
     pub(crate) fn finish(&self) {
