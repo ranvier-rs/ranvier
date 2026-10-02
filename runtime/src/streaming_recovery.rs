@@ -1089,7 +1089,11 @@ mod tests {
                 assert_eq!(cleanup.steps.len(), 1);
                 assert_eq!(
                     cleanup.steps[0].outcome,
-                    crate::SagaRollbackOutcome::InProgress
+                    if grace == std::time::Duration::ZERO {
+                        crate::SagaRollbackOutcome::NotInvoked
+                    } else {
+                        crate::SagaRollbackOutcome::InProgress
+                    }
                 );
                 assert!(matches!(prefix, crate::ExecutionReport::Unpersisted {
                     result: crate::ExecutionTerminal::Outcome(Outcome::Fault(error)), ..
@@ -1143,6 +1147,58 @@ mod tests {
                 );
             }
         }
+    }
+    #[tokio::test]
+    async fn completed_direct_undo_releases_only_its_retained_input_and_preserves_fault() {
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let graph = Axon::<u32, u32, String, Resources>::start("completed-direct")
+            .then_compensated(FailingEffect, Undo);
+        let owner = OwnedStreamRecovery::try_new(
+            graph,
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1),
+            None,
+        )
+        .unwrap();
+        let report = owner
+            .initialize_and_drive(
+                113,
+                &Init,
+                None,
+                std::time::Duration::from_secs(1),
+                |_| async { completed() },
+            )
+            .await
+            .unwrap();
+        let StreamInitializationReport::Rejected { prefix } = report else {
+            panic!("expected original fault");
+        };
+        assert!(prefix.cleanup().unwrap().is_complete());
+        assert!(
+            matches!(prefix, crate::ExecutionReport::Unpersisted { result: crate::ExecutionTerminal::Outcome(Outcome::Fault(error)), .. } if error == "original direct fault")
+        );
+        assert!(
+            owner
+                .inner
+                .context
+                .lock()
+                .await
+                .1
+                .read::<crate::SagaRollbackJournal>()
+                .unwrap()
+                .unresolved_tasks()
+                .is_empty()
+        );
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+        let observer = owner.observe();
+        assert!(!observer.borrow().cleanup_timed_out);
+        drop(owner);
+        assert_eq!(
+            observer.borrow().custody,
+            RecoveryCustody::ReleasedWithoutRetainedTasks
+        );
     }
     #[derive(Clone)]
     struct StopPrefix(Option<CancellationToken>);

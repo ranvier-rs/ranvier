@@ -946,15 +946,18 @@ where
 
     // Reserve a recoverable input before this compensated transition can run.
     // A serialization error cannot be replaced with an empty rollback payload.
-    let recovery_input = match serde_json::to_vec(&state) {
-        Ok(snapshot) => snapshot,
-        Err(_) => {
-            if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>() {
-                active.0.block(crate::PersistenceOperation::RecoveryPayload);
+    let recovery_input =
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serde_json::to_vec(&state)))
+        {
+            Ok(Ok(snapshot)) => snapshot,
+            Ok(Err(_)) | Err(_) => {
+                if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>()
+                {
+                    active.0.block(crate::PersistenceOperation::RecoveryPayload);
+                }
+                return Outcome::emit("execution.compensation.input_encoding_failed", None);
             }
-            return Outcome::emit("execution.compensation.input_encoding_failed", None);
-        }
-    };
+        };
     let saga_snapshot = matches!(bus.read::<SagaPolicy>(), Some(SagaPolicy::Enabled))
         .then(|| recovery_input.clone());
 
@@ -1059,6 +1062,11 @@ where
             if deadline.is_some() {
                 bus.set_cancellation_token(ranvier_core::CancellationToken::new());
             }
+            #[cfg(feature = "streaming")]
+            let not_invoked =
+                deadline.is_some_and(|deadline| deadline <= tokio::time::Instant::now());
+            #[cfg(not(feature = "streaming"))]
+            let not_invoked = false;
             let compensation_result = {
                 let cleanup =
                     std::panic::AssertUnwindSafe(async { comp.run(state, res, bus).await })
@@ -1066,7 +1074,7 @@ where
                 #[cfg(feature = "streaming")]
                 {
                     match deadline {
-                        Some(deadline) if deadline <= tokio::time::Instant::now() => None,
+                        Some(_) if not_invoked => None,
                         Some(deadline) => tokio::time::timeout_at(deadline, cleanup).await.ok(),
                         None => Some(cleanup.await),
                     }
@@ -1084,6 +1092,7 @@ where
                 Some(Ok(Outcome::Branch(_, _))) => SagaRollbackOutcome::Branched,
                 Some(Ok(Outcome::Jump(_, _))) => SagaRollbackOutcome::Jumped,
                 Some(Err(_)) => SagaRollbackOutcome::Panicked,
+                None if not_invoked => SagaRollbackOutcome::NotInvoked,
                 None => SagaRollbackOutcome::InProgress,
             };
             journal.settle(observation);
@@ -1115,6 +1124,7 @@ where
                         match &compensation_result {
                             Some(Ok(outcome)) => outcome_type_name(outcome),
                             Some(Err(_)) => "Panicked".to_string(),
+                            None if not_invoked => "NotInvoked".to_string(),
                             None => "Interrupted".to_string(),
                         }
                     },
@@ -1148,7 +1158,7 @@ where
                         match &compensation_result {
                             Some(Ok(outcome)) => serde_json::to_value(outcome).map(Some),
                             Some(Err(_)) => Ok(Some(serde_json::json!({"status": "panicked"}))),
-                            None => Ok(Some(serde_json::json!({"status": "interrupted"}))),
+                            None => Ok(Some(serde_json::json!({"status": if not_invoked { "not_invoked" } else { "interrupted" }}))),
                         }
                     },
                     bus,

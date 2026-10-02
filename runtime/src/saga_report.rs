@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SagaRollbackOutcome {
+    /// Cleanup budget was exhausted before this handler was invoked.
+    NotInvoked,
     InProgress,
     Panicked,
     Completed,
