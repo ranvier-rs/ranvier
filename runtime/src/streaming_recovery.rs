@@ -1542,14 +1542,21 @@ mod tests {
             drop(held);
         }
     }
-    struct DistinctChildResources { effects: AtomicUsize }
+    struct DistinctChildResources {
+        effects: AtomicUsize,
+    }
     #[derive(Clone)]
     struct DistinctChildEffect;
     #[async_trait::async_trait]
     impl Transition<u32, u32> for DistinctChildEffect {
         type Error = String;
         type Resources = DistinctChildResources;
-        async fn run(&self, input: u32, resources: &DistinctChildResources, _: &mut Bus) -> Outcome<u32, String> {
+        async fn run(
+            &self,
+            input: u32,
+            resources: &DistinctChildResources,
+            _: &mut Bus,
+        ) -> Outcome<u32, String> {
             resources.effects.fetch_add(1, Ordering::SeqCst);
             Outcome::Next(input)
         }
@@ -1576,12 +1583,16 @@ mod tests {
             if let Some(token) = &self.0 {
                 token.cancel(ranvier_core::CancellationReason::Explicit);
                 std::future::pending().await
-            } else { Outcome::Fault("child fault".into()) }
+            } else {
+                Outcome::Fault("child fault".into())
+            }
         }
     }
     #[derive(Clone)]
     struct DistinctOwnedChild {
         cancellable: bool,
+        outer_abort: bool,
+        reached: Arc<Notify>,
         allocation: Arc<std::sync::Mutex<Option<std::sync::Weak<DistinctChildResources>>>>,
     }
     #[async_trait::async_trait]
@@ -1589,7 +1600,9 @@ mod tests {
         type Error = String;
         type Resources = Resources;
         async fn run(&self, input: u32, resources: &Resources, bus: &mut Bus) -> Outcome<u32, String> {
-            let allocation = Arc::new(DistinctChildResources { effects: AtomicUsize::new(0) });
+            let allocation = Arc::new(DistinctChildResources {
+                effects: AtomicUsize::new(0),
+            });
             *self.allocation.lock().unwrap() = Some(Arc::downgrade(&allocation));
             let entered = Arc::new(Notify::new());
             let token = CancellationToken::new();
@@ -1599,18 +1612,37 @@ mod tests {
                 .then(DistinctChildStop(self.cancellable.then_some(token.clone())));
             {
                 let execution = async {
-                    if self.cancellable { child.execute_owned_child_cancellable(input, allocation.clone(), bus, token).await; }
-                    else { child.execute_owned_child(input, allocation.clone(), bus).await; }
+                    if self.cancellable {
+                        let _unexpected_report = child
+                            .execute_owned_child_cancellable(input, allocation.clone(), bus, token)
+                            .await;
+                    } else {
+                        let _unexpected_report = child
+                            .execute_owned_child(input, allocation.clone(), bus)
+                            .await;
+                    }
+                    panic!("pending distinct child returned a report");
                 };
                 tokio::pin!(execution);
                 tokio::select! {
-                    _ = entered.notified() => {},
+                    _ = entered.notified() => {
+                        self.reached.notify_one();
+                        if self.outer_abort { std::future::pending::<()>().await; }
+                    },
                     _ = &mut execution => panic!("pending distinct child returned"),
                     _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => panic!("distinct child did not enter undo"),
                 }
             }
-            assert!(bus.read::<crate::nested_custody::OwnedResources<DistinctChildResources>>().is_none());
-            assert!(std::ptr::eq(bus.read::<crate::nested_custody::OwnedResources<Resources>>().unwrap().0.as_ref(), resources));
+            assert!(bus
+                .read::<crate::nested_custody::OwnedResources<DistinctChildResources>>()
+                .is_none());
+            assert!(std::ptr::eq(
+                bus.read::<crate::nested_custody::OwnedResources<Resources>>()
+                    .unwrap()
+                    .0
+                    .as_ref(),
+                resources
+            ));
             Outcome::Next(input)
         }
     }
@@ -1618,22 +1650,51 @@ mod tests {
     async fn distinct_owned_child_resource_and_handlers_survive_child_future_drop_and_owner_transfer() {
         for cancellable in [false, true] {
             let allocation = Arc::new(std::sync::Mutex::new(None));
-            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
             let store = StreamRecoveryStore::new(1, std::time::Duration::from_secs(60));
-            let (id, owner) = store.admit(
-                Axon::<u32, u32, String, Resources>::start("distinct-parent").then(DistinctOwnedChild { cancellable, allocation: allocation.clone() }),
-                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap()).unwrap();
-            let report = owner.initialize_and_drive(193, &Init, None, std::time::Duration::from_secs(5), |_| async {
-                panic!("pending owned child must reject streaming admission");
-                #[allow(unreachable_code)] completed()
-            }).await.unwrap();
-            assert!(matches!(report, StreamInitializationReport::Rejected { .. }));
+            let (id, owner) = store
+                .admit(
+                    Axon::<u32, u32, String, Resources>::start("distinct-parent").then(
+                        DistinctOwnedChild {
+                            cancellable,
+                            outer_abort: false,
+                            reached: Arc::new(Notify::new()),
+                            allocation: allocation.clone(),
+                        },
+                    ),
+                    OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                )
+                .unwrap();
+            let report = owner
+                .initialize_and_drive(
+                    193,
+                    &Init,
+                    None,
+                    std::time::Duration::from_secs(5),
+                    |_| async {
+                        panic!("pending owned child must reject streaming admission");
+                        #[allow(unreachable_code)]
+                        completed()
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                report,
+                StreamInitializationReport::Rejected { .. }
+            ));
             drop(owner);
             let retained = store.take_for_reconciliation(id).unwrap().unwrap();
             let weak = allocation.lock().unwrap().as_ref().unwrap().clone();
             {
                 let context = retained.inner.context.lock().await;
-                let children = context.1.read::<crate::SagaRollbackJournal>().unwrap().retained_children();
+                let children = context
+                    .1
+                    .read::<crate::SagaRollbackJournal>()
+                    .unwrap()
+                    .retained_children();
                 assert_eq!(children.len(), 1);
                 let child = &children[0].1;
                 let custody = child.retained_custody().unwrap().downcast::<crate::nested_custody::NestedSagaCustody<String, DistinctChildResources>>()
@@ -1644,14 +1705,161 @@ mod tests {
                 assert_eq!(tasks.len(), 1);
                 assert_eq!(tasks[0].input_snapshot, b"193");
                 assert!(custody.handlers.get(&tasks[0].node_id).is_some());
-                assert_eq!(child.snapshot().steps[0].outcome, crate::SagaRollbackOutcome::InProgress);
-                assert!(context.1.read::<crate::nested_custody::OwnedResources<DistinctChildResources>>().is_none());
+                assert_eq!(
+                    child.snapshot().steps[0].outcome,
+                    crate::SagaRollbackOutcome::InProgress
+                );
+                assert!(context
+                    .1
+                    .read::<crate::nested_custody::OwnedResources<DistinctChildResources>>()
+                    .is_none());
             }
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             let observer = retained.observe();
             drop(retained);
             assert!(weak.upgrade().is_none());
-            assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
+            assert_eq!(
+                observer.borrow().custody,
+                RecoveryCustody::ReleasedWithPendingTasks
+            );
+        }
+    }
+    #[tokio::test]
+    async fn actual_root_abort_retains_distinct_owned_child_until_root_store_transfer() {
+        for cancellable in [false, true] {
+            let allocation = Arc::new(std::sync::Mutex::new(None));
+            let reached = Arc::new(Notify::new());
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
+            let store = StreamRecoveryStore::new(1, std::time::Duration::from_secs(60));
+            let (id, owner) = store
+                .admit(
+                    Axon::<u32, u32, String, Resources>::start("distinct-abort-parent").then(
+                        DistinctOwnedChild {
+                            cancellable,
+                            outer_abort: true,
+                            reached: reached.clone(),
+                            allocation: allocation.clone(),
+                        },
+                    ),
+                    OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                )
+                .unwrap();
+            let observer = owner.observe();
+            let task = tokio::spawn(async move {
+                owner
+                    .initialize_and_drive(
+                        199,
+                        &Init,
+                        None,
+                        std::time::Duration::from_secs(30),
+                        |_| async {
+                            panic!("pending child must not start driver");
+                            #[allow(unreachable_code)]
+                            completed()
+                        },
+                    )
+                    .await
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), reached.notified())
+                .await
+                .unwrap();
+            task.abort();
+            assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+            assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
+            assert!(!observer.borrow().cleanup_timed_out);
+            assert_eq!(observer.borrow().cleanup_complete, None);
+            assert_eq!(observer.borrow().custody, RecoveryCustody::Held);
+            let retained = store.take_for_reconciliation(id).unwrap().unwrap();
+            let weak = allocation.lock().unwrap().as_ref().unwrap().clone();
+            {
+                let context = retained.inner.context.lock().await;
+                assert!(Arc::ptr_eq(&context.0, &resources));
+                assert!(Arc::ptr_eq(
+                    &context
+                        .1
+                        .read::<crate::nested_custody::OwnedResources<Resources>>()
+                        .unwrap()
+                        .0,
+                    &resources
+                ));
+                assert!(context
+                    .1
+                    .read::<crate::nested_custody::OwnedResources<DistinctChildResources>>()
+                    .is_none());
+                let journal = context.1.read::<crate::SagaRollbackJournal>().unwrap();
+                let children = journal.retained_children();
+                assert_eq!(children.len(), 1);
+                let child = &children[0].1;
+                assert_ne!(child.snapshot().trace_id, journal.snapshot().trace_id);
+                let custody = child.retained_custody().unwrap().downcast::<crate::nested_custody::NestedSagaCustody<String, DistinctChildResources>>()
+                    .unwrap_or_else(|_| panic!("wrong child resource type"));
+                assert!(Arc::ptr_eq(&custody.resources, &weak.upgrade().unwrap()));
+                assert_eq!(custody.resources.effects.load(Ordering::SeqCst), 1);
+                let tasks = child.unresolved_tasks();
+                assert_eq!(tasks[0].input_snapshot, b"199");
+                assert!(custody.handlers.get(&tasks[0].node_id).is_some());
+                assert_eq!(
+                    child.snapshot().steps[0].outcome,
+                    crate::SagaRollbackOutcome::InProgress
+                );
+            }
+            let before = observer.borrow().clone();
+            assert!(matches!(
+                retained
+                    .initialize_and_drive(
+                        200,
+                        &Init,
+                        None,
+                        std::time::Duration::from_secs(30),
+                        |_| async { completed() }
+                    )
+                    .await,
+                Err(StreamInvocationAlreadyStarted)
+            ));
+            assert_eq!(*observer.borrow(), before);
+            drop(retained);
+            assert!(weak.upgrade().is_none());
+            assert_eq!(
+                observer.borrow().custody,
+                RecoveryCustody::ReleasedWithPendingTasks
+            );
+        }
+    }
+    #[tokio::test]
+    async fn explicit_owned_child_without_supervisor_rejects_before_effects_and_restores_owner() {
+        for cancellable in [false, true] {
+            let parent = Arc::new(DistinctChildResources {
+                effects: AtomicUsize::new(0),
+            });
+            let child = Arc::new(DistinctChildResources {
+                effects: AtomicUsize::new(0),
+            });
+            let mut bus = Bus::new();
+            bus.insert(crate::nested_custody::OwnedResources(parent.clone()));
+            let graph = Axon::<u32, u32, String, DistinctChildResources>::start("no-supervisor")
+                .then(DistinctChildEffect);
+            if cancellable {
+                assert!(
+                    matches!(graph.execute_owned_child_cancellable(201, child.clone(), &mut bus, CancellationToken::new()).await,
+                    crate::ExecutionReport::Unpersisted { result: crate::ExecutionTerminal::Outcome(Outcome::Emit(signal, _)), .. }
+                        if signal == "execution.owned_child_requires_supervisor")
+                );
+            } else {
+                assert!(
+                    matches!(graph.execute_owned_child(201, child.clone(), &mut bus).await,
+                    crate::ExecutionReport::Unpersisted { result: Outcome::Emit(signal, _), .. }
+                        if signal == "execution.owned_child_requires_supervisor")
+                );
+            }
+            assert_eq!(child.effects.load(Ordering::SeqCst), 0);
+            assert!(Arc::ptr_eq(
+                &bus.read::<crate::nested_custody::OwnedResources<DistinctChildResources>>()
+                    .unwrap()
+                    .0,
+                &parent
+            ));
         }
     }
     struct ExternalHook {

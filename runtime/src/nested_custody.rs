@@ -115,6 +115,63 @@ impl WeakCustody {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn resource_scope_restores_exact_owned_shared_aliased_and_inherited_storage() {
+        struct NonClone(u32);
+        for role in 0..4 {
+            let original = Arc::new(NonClone(41));
+            let replacement = Arc::new(NonClone(42));
+            let mut bus = ranvier_core::Bus::new();
+            if role == 0 {
+                bus.insert(OwnedResources(original.clone()));
+            } else {
+                bus.insert_shared(OwnedResources(original.clone()));
+            }
+            let sibling = if role == 2 {
+                Some(bus.fork_for_parallel())
+            } else {
+                None
+            };
+            let source = if role == 3 {
+                Some(std::mem::replace(&mut bus, ranvier_core::Bus::new()))
+            } else {
+                None
+            };
+            if let Some(source) = &source {
+                bus = source.fork_for_parallel();
+            }
+            let address = bus.read::<OwnedResources<NonClone>>().unwrap() as *const _ as usize;
+            let writable = bus.read_mut::<OwnedResources<NonClone>>().is_some();
+            bus.set_access_policy(
+                "deny-resource-scope",
+                Some(ranvier_core::BusAccessPolicy::allow_only(Vec::new())),
+            );
+            {
+                let mut scope = OwnedResourceScope::begin(&mut bus, replacement.clone());
+                let access = scope.bus().take_access_scope();
+                let selected = scope.bus().read::<OwnedResources<NonClone>>().unwrap();
+                assert!(Arc::ptr_eq(&selected.0, &replacement));
+                assert_eq!(selected.0 .0, 42);
+                scope.bus().restore_access_scope(access);
+            }
+            assert!(bus.get::<OwnedResources<NonClone>>().is_err());
+            let access = bus.take_access_scope();
+            assert_eq!(
+                bus.read::<OwnedResources<NonClone>>().unwrap() as *const _ as usize,
+                address
+            );
+            assert!(Arc::ptr_eq(
+                &bus.read::<OwnedResources<NonClone>>().unwrap().0,
+                &original
+            ));
+            assert_eq!(
+                bus.read_mut::<OwnedResources<NonClone>>().is_some(),
+                writable
+            );
+            bus.restore_access_scope(access);
+            drop(sibling);
+        }
+    }
     struct Probe {
         store: Weak<StoreInner>,
         released: Arc<std::sync::atomic::AtomicBool>,

@@ -89,26 +89,38 @@ where
     /// Private explicit owned child entry. The active root store remains the owner;
     /// this scope supplies a distinct typed resource allocation without cloning it.
     pub(crate) async fn execute_owned_child(
-        &self, input: In, resources: std::sync::Arc<Res>, bus: &mut Bus,
+        &self,
+        input: In,
+        resources: std::sync::Arc<Res>,
+        bus: &mut Bus,
     ) -> crate::ExecutionReport<Outcome<Out, E>> {
         let mut scope = crate::nested_custody::OwnedResourceScope::begin(bus, resources.clone());
         if !scope.eligible {
-            return crate::execution_observation::InvocationOwner::begin(scope.bus())
-                .finish(Outcome::emit("execution.owned_child_requires_supervisor", None));
+            return crate::execution_observation::InvocationOwner::begin(scope.bus()).finish(
+                Outcome::emit("execution.owned_child_requires_supervisor", None),
+            );
         }
         self.execute(input, resources.as_ref(), scope.bus()).await
     }
     pub(crate) async fn execute_owned_child_cancellable(
-        &self, input: In, resources: std::sync::Arc<Res>, bus: &mut Bus, token: CancellationToken,
+        &self,
+        input: In,
+        resources: std::sync::Arc<Res>,
+        bus: &mut Bus,
+        token: CancellationToken,
     ) -> crate::ExecutionReport<ExecutionTerminal<Out, E>> {
         let mut scope = crate::nested_custody::OwnedResourceScope::begin(bus, resources.clone());
         if !scope.eligible {
             return crate::execution_observation::InvocationOwner::begin(scope.bus()).finish(
-                ExecutionTerminal::Outcome(Outcome::emit("execution.owned_child_requires_supervisor", None)));
+                ExecutionTerminal::Outcome(Outcome::emit(
+                    "execution.owned_child_requires_supervisor",
+                    None,
+                )),
+            );
         }
-        self.execute_cancellable(input, resources.as_ref(), scope.bus(), token).await
+        self.execute_cancellable(input, resources.as_ref(), scope.bus(), token)
+            .await
     }
-
     fn prepare_owned_child(
         &self, resources: &Res, bus: &Bus,
     ) -> Result<Option<(Self, crate::nested_custody::WeakCustody)>, &'static str> {
