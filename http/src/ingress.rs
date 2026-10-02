@@ -6798,6 +6798,27 @@ mod tests {
         assert!(registry.tasks.lock().await.is_empty());
     }
 
+    #[tokio::test]
+    async fn managed_task_closed_ws_route_rejects_before_user_callbacks() {
+        let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = callbacks.clone();
+        let app = Ranvier::http::<()>()
+            .bus_injector(move |_, _| { calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst); })
+            .ws("/closed", |_, _, _| async { panic!("closed route must not upgrade") });
+        let registry = ManagedTaskRegistry::default();
+        registry.drain_until(tokio::time::Instant::now()).await;
+        let (mut parts, _) = Request::builder().uri("/closed").body(()).unwrap().into_parts();
+        parts.extensions.insert(RequestTaskOwner(registry.clone()));
+        let response = (app.routes[0].handler)(parts, &()).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["reconciliation_required"], false);
+        assert_eq!(callbacks.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(registry.tasks.lock().await.is_empty());
+    }
+
     #[test]
     fn cancellation_http_status_is_shared_by_ordinary_and_streaming_routes() {
         let deadline = cancellation_http_response(&CancellationContext::new(
