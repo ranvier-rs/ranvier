@@ -454,6 +454,25 @@ mod tests {
         assert!(Arc::ptr_eq(&resources, &returned));
         assert_eq!(bus.read::<u32>(), Some(&139));
     }
+    #[tokio::test]
+    async fn prepared_plan_retains_recovery_permit_until_rejected_frame_join() {
+        let original = circuit(&["a"]);
+        let admission = crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1);
+        let plan = match original.owned_definition.try_plan::<Chunks, String>(
+            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(), &admission, None) {
+            Ok(plan) => plan, Err(_) => panic!("owned plan rejected"),
+        };
+        assert_eq!(admission.in_use().unwrap(), 1);
+        let mut prepared = plan.prepare("".into(), std::time::Duration::from_secs(5), |_| async {
+            panic!("rejected task cannot drive");
+            #[allow(unreachable_code)] crate::streaming_recovery::StreamDriveResult { value: (), terminal: crate::StreamConsumptionTerminal::Completed }
+        });
+        drop(plan);
+        assert_eq!(admission.in_use().unwrap(), 1);
+        assert!(matches!(prepared.reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+        assert_eq!(admission.in_use().unwrap(), 0);
+        assert!(admission.reserve().is_ok());
+    }
     #[test]
     fn owned_plan_capacity_rejection_returns_graph_and_original_context() {
         let original = circuit(&["a"]);
