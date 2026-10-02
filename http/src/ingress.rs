@@ -1353,6 +1353,8 @@ pub struct HttpIngress<R = ()> {
     on_shutdown: Option<LifecycleHook>,
     /// Maximum time to wait for in-flight requests to drain.
     graceful_shutdown_timeout: Duration,
+    /// Shared maximum tracked SSE/WebSocket task reservations.
+    managed_task_capacity: usize,
     /// Request-context to Bus injection hooks executed before each circuit run.
     bus_injectors: Vec<BusInjector>,
     /// Static asset serving configuration (serve_dir + SPA fallback).
@@ -1397,6 +1399,7 @@ where
             on_start: None,
             on_shutdown: None,
             graceful_shutdown_timeout: Duration::from_secs(30),
+            managed_task_capacity: 1024,
             bus_injectors: Vec::new(),
             static_assets: StaticAssetsConfig::default(),
             health: HealthConfig::default(),
@@ -1415,6 +1418,17 @@ where
             preflight_config: None,
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    /// Set the maximum live managed SSE/WebSocket task slots for this service.
+    ///
+    /// Default: 1024. Reservations are shared across service clones and count
+    /// initialization slots as well as active producers/sessions. Zero rejects
+    /// managed streaming/upgrade admission; ordinary HTTP routes remain available.
+    /// This limit is not a connection limit or durable recovery storage capacity.
+    pub fn managed_task_capacity(mut self, capacity: usize) -> Self {
+        self.managed_task_capacity = capacity;
+        self
     }
 
     // ── Server Configuration ─────────────────────────────────────────────
@@ -3895,6 +3909,7 @@ where
         let on_start = self.on_start;
         let on_shutdown = self.on_shutdown;
         let graceful_shutdown_timeout = self.graceful_shutdown_timeout;
+        let managed_task_capacity = self.managed_task_capacity;
         let resources = Arc::new(resources);
 
         let listener = TcpListener::bind(addr).await?;
@@ -3918,7 +3933,7 @@ where
 
         tokio::pin!(shutdown_signal);
         let mut connections = tokio::task::JoinSet::new();
-        let task_registry = ManagedTaskRegistry::default();
+        let task_registry = ManagedTaskRegistry { reservation_limit: managed_task_capacity, ..Default::default() };
 
         loop {
             tokio::select! {
@@ -4082,7 +4097,7 @@ where
             preflight_config,
             resources,
             root_cancellation: CancellationToken::new(),
-            task_registry: ManagedTaskRegistry::default(),
+            task_registry: ManagedTaskRegistry { reservation_limit: self.managed_task_capacity, ..Default::default() },
         }
     }
 
@@ -7006,6 +7021,19 @@ mod tests {
         let report = registry.drain_until(tokio::time::Instant::now() + Duration::from_secs(1)).await;
         assert_eq!(report.forced_aborts, 0);
         assert!(registry.tasks.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn managed_task_capacity_configuration_is_shared_by_raw_service_clones() {
+        let service = Ranvier::http::<()>().managed_task_capacity(1).into_raw_service(());
+        let cloned = service.clone();
+        let reservation = service.task_registry.reserve().await.unwrap();
+        assert!(matches!(cloned.task_registry.reserve().await, Err(TaskReservationError::Capacity)));
+        drop(reservation);
+        assert_eq!(service.drain_tasks(Duration::from_secs(1)).await.forced_aborts, 0);
+        assert!(matches!(cloned.task_registry.reserve().await, Err(TaskReservationError::Closed)));
+        let disabled = Ranvier::http::<()>().managed_task_capacity(0).into_raw_service(());
+        assert!(matches!(disabled.task_registry.reserve().await, Err(TaskReservationError::Capacity)));
     }
 
     #[test]
