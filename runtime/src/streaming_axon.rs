@@ -25,6 +25,61 @@ pub(crate) struct OwnedStreamDefinition<In, Out, Item, E, Res> {
     pub(crate) initializer: Arc<dyn std::any::Any + Send + Sync>,
     pub(crate) item_maps: Vec<Arc<dyn Fn(Item) -> Item + Send + Sync>>,
 }
+pub(crate) enum OwnedStreamPlanRejected<In, Out, E, Res> {
+    InitializerType { context: OwnedStreamContext<Res> },
+    Admission(crate::streaming_recovery::StreamRecoveryAdmissionRejected<In, Out, E, Res>),
+}
+pub(crate) struct OwnedStreamPlan<In, Out, Item, E, Res, S> {
+    pub(crate) owner: crate::streaming_recovery::OwnedStreamRecovery<In, Out, E, Res>,
+    initializer: S,
+    item_maps: Vec<Arc<dyn Fn(Item) -> Item + Send + Sync>>,
+}
+impl<In, Out, Item, E, Res> OwnedStreamDefinition<In, Out, Item, E, Res>
+where
+    In: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+    Out: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+    E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + Debug + 'static,
+    Res: Send + Sync + 'static,
+    Item: Send + 'static,
+{
+    pub(crate) fn try_plan<S, SErr>(&self, context: OwnedStreamContext<Res>,
+        admission: &crate::streaming_recovery_admission::StreamRecoveryAdmission,
+        expires: Option<std::time::Instant>)
+        -> Result<OwnedStreamPlan<In, Out, Item, E, Res, S>, OwnedStreamPlanRejected<In, Out, E, Res>>
+    where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
+        SErr: Send + Sync + Debug + 'static,
+    {
+        let initializer = match self.initializer.downcast_ref::<S>() {
+            Some(initializer) => initializer.clone(),
+            None => return Err(OwnedStreamPlanRejected::InitializerType { context }),
+        };
+        let owner = crate::streaming_recovery::OwnedStreamRecovery::try_new(self.prefix.clone(), context, admission, expires)
+            .map_err(OwnedStreamPlanRejected::Admission)?;
+        Ok(OwnedStreamPlan { owner, initializer, item_maps: self.item_maps.clone() })
+    }
+}
+impl<In, Out, Item, E, Res, S> OwnedStreamPlan<In, Out, Item, E, Res, S>
+where
+    In: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+    Out: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
+    E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + Debug + 'static,
+    Res: Send + Sync + 'static,
+    Item: Send + 'static,
+{
+    pub(crate) fn prepare<T, F, Fut, SErr>(&self, input: In, grace: std::time::Duration, drive: F)
+        -> crate::managed_stream_task::PreparedStreamTask<Result<StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult<T>, E>, crate::streaming_recovery::StreamInvocationAlreadyStarted>>
+    where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
+        SErr: Send + Sync + Debug + 'static, T: Send + 'static,
+        F: FnOnce(Pin<Box<dyn Stream<Item = Item> + Send>>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = crate::streaming_recovery::StreamDriveResult<T>> + Send + 'static,
+    {
+        let maps = self.item_maps.clone();
+        self.owner.prepare_managed(input, self.initializer.clone(), grace, move |stream| {
+            let mapped = stream.map(move |item| maps.iter().fold(item, |item, map| map(item)));
+            drive(Box::pin(mapped))
+        })
+    }
+}
 
 pub type StreamExecutorType<In, Out, Item, E, Res> = Arc<
     dyn for<'a> Fn(
