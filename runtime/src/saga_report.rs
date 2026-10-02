@@ -65,9 +65,90 @@ pub struct SagaRollbackJournal(
     std::sync::Arc<std::sync::Mutex<Option<crate::nested_custody::WeakCustody>>>,
     #[cfg(feature = "streaming")]
     std::sync::Arc<std::sync::Mutex<Vec<(usize, tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>)>>>,
+    #[cfg(feature = "streaming")]
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<usize, std::sync::Arc<()>>>>,
 );
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum JournalRetentionError { Unavailable, TraversalLimit }
+#[cfg(feature = "streaming")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalTaskClaimError { Unavailable, Missing, NotEligible, Claimed, IdentityMismatch, TimedOut }
+/// Framework-only exclusive lease; the journal retains the original bytes.
+/// This is not original owner, durable reconciliation or retirement authority.
+#[cfg(feature = "streaming")]
+pub(crate) struct LocalTaskClaim {
+    journal: SagaRollbackJournal,
+    index: usize,
+    task: std::sync::Arc<ranvier_core::saga::SagaTask>,
+    token: std::sync::Arc<()>,
+    invoked: bool,
+    settled: bool,
+}
+#[cfg(feature = "streaming")]
+impl LocalTaskClaim {
+    /// Caller must bind this operation to the joined original typed owner and
+    /// restore its Bus/control scope. No sync journal lock spans user code.
+    pub(crate) async fn invoke<E, Res>(mut self, handler: ranvier_core::saga::SagaCompensationFn<E, Res>,
+        resources: &Res, bus: &mut ranvier_core::Bus, deadline: tokio::time::Instant)
+        -> Result<SagaRollbackOutcome, LocalTaskClaimError> {
+        use futures_util::FutureExt as _;
+        if tokio::time::Instant::now() >= deadline { return Err(LocalTaskClaimError::TimedOut); }
+        self.invoked = true;
+        let observed = tokio::time::timeout_at(deadline,
+            std::panic::AssertUnwindSafe(async { handler(&self.task.input_snapshot, resources, bus).await }).catch_unwind())
+            .await.map_err(|_| LocalTaskClaimError::TimedOut)?;
+        let outcome = match observed {
+            Err(_) => SagaRollbackOutcome::Panicked,
+            Ok(ranvier_core::Outcome::Next(())) => SagaRollbackOutcome::Completed,
+            Ok(ranvier_core::Outcome::Fault(_)) => SagaRollbackOutcome::Fault,
+            Ok(ranvier_core::Outcome::Emit(_, _)) => SagaRollbackOutcome::Emitted,
+            Ok(ranvier_core::Outcome::Branch(_, _)) => SagaRollbackOutcome::Branched,
+            Ok(ranvier_core::Outcome::Jump(_, _)) => SagaRollbackOutcome::Jumped,
+        };
+        self.settle_original(outcome)?;
+        Ok(outcome)
+    }
+    fn settle_original(&mut self, outcome: SagaRollbackOutcome) -> Result<(), LocalTaskClaimError> {
+        let mut report = self.journal.0.try_lock().map_err(|_| LocalTaskClaimError::Unavailable)?;
+        let mut claims = self.journal.6.try_lock().map_err(|_| LocalTaskClaimError::Unavailable)?;
+        let mut tasks = self.journal.1.try_lock().map_err(|_| LocalTaskClaimError::Unavailable)?;
+        let position = tasks.iter().position(|(index, task)| *index == self.index && std::sync::Arc::ptr_eq(task, &self.task))
+            .ok_or(LocalTaskClaimError::IdentityMismatch)?;
+        if !claims.get(&self.index).is_some_and(|token| std::sync::Arc::ptr_eq(token, &self.token)) {
+            return Err(LocalTaskClaimError::IdentityMismatch);
+        }
+        let step = report.steps.get_mut(self.index).ok_or(LocalTaskClaimError::IdentityMismatch)?;
+        if step.node_id != self.task.node_id || step.outcome != SagaRollbackOutcome::InProgress {
+            return Err(LocalTaskClaimError::IdentityMismatch);
+        }
+        step.outcome = outcome;
+        report.finished = false; // A single hook cannot seal the whole journal.
+        if outcome == SagaRollbackOutcome::Completed {
+            tasks.swap_remove(position); claims.remove(&self.index);
+        }
+        self.settled = true;
+        Ok(())
+    }
+}
+#[cfg(feature = "streaming")]
+impl Drop for LocalTaskClaim {
+    fn drop(&mut self) {
+        if self.settled || self.invoked { return; }
+        // Before invocation only, restore exact eligibility if all metadata is
+        // available. Failure leaves InProgress, token and original bytes retained.
+        let Ok(mut report) = self.journal.0.try_lock() else { return; };
+        let Ok(mut claims) = self.journal.6.try_lock() else { return; };
+        let Ok(tasks) = self.journal.1.try_lock() else { return; };
+        if !claims.get(&self.index).is_some_and(|token| std::sync::Arc::ptr_eq(token, &self.token))
+            || !tasks.iter().any(|(index, task)| *index == self.index && std::sync::Arc::ptr_eq(task, &self.task)) { return; }
+        if let Some(step) = report.steps.get_mut(self.index) {
+            if step.node_id == self.task.node_id && step.outcome == SagaRollbackOutcome::InProgress {
+                step.outcome = SagaRollbackOutcome::NotInvoked;
+                claims.remove(&self.index);
+            }
+        }
+    }
+}
 impl std::fmt::Debug for SagaRollbackJournal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SagaRollbackJournal")
@@ -90,7 +171,25 @@ impl SagaRollbackJournal {
             std::sync::Arc::new(std::sync::Mutex::new(None)),
             #[cfg(feature = "streaming")]
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            #[cfg(feature = "streaming")]
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         )
+    }
+    #[cfg(feature = "streaming")]
+    pub(crate) fn claim_not_invoked(&self, index: usize) -> Result<LocalTaskClaim, LocalTaskClaimError> {
+        let mut report = self.0.try_lock().map_err(|_| LocalTaskClaimError::Unavailable)?;
+        let mut claims = self.6.try_lock().map_err(|_| LocalTaskClaimError::Unavailable)?;
+        let tasks = self.1.try_lock().map_err(|_| LocalTaskClaimError::Unavailable)?;
+        if claims.contains_key(&index) { return Err(LocalTaskClaimError::Claimed); }
+        let task = tasks.iter().find(|(observed, _)| *observed == index).map(|(_, task)| task.clone())
+            .ok_or(LocalTaskClaimError::Missing)?;
+        let step = report.steps.get_mut(index).ok_or(LocalTaskClaimError::IdentityMismatch)?;
+        if step.node_id != task.node_id { return Err(LocalTaskClaimError::IdentityMismatch); }
+        if step.outcome != SagaRollbackOutcome::NotInvoked { return Err(LocalTaskClaimError::NotEligible); }
+        let token = std::sync::Arc::new(());
+        claims.insert(index, token.clone());
+        step.outcome = SagaRollbackOutcome::InProgress; report.finished = false;
+        Ok(LocalTaskClaim { journal: self.clone(), index, task, token, invoked: false, settled: false })
     }
     /// Attach safe child observation at an actual parent-local report index.
     /// A returned stream is not automatically reconciled or removed: even EOF may
@@ -318,6 +417,11 @@ impl SagaRollbackJournal {
     pub(crate) fn settle_external(&self, index: usize, outcome: SagaRollbackOutcome) {
         {
             let mut report = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            #[cfg(feature = "streaming")]
+            let _claims = match self.6.try_lock() {
+                Ok(claims) if !claims.contains_key(&index) => claims,
+                _ => return,
+            };
             if let Some(step) = report.steps.get_mut(index) {
                 step.outcome = outcome;
             }
@@ -360,6 +464,11 @@ impl SagaRollbackJournal {
             .0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        #[cfg(feature = "streaming")]
+        let _claims = match self.6.try_lock() {
+            Ok(claims) if !claims.contains_key(&report.steps.len().saturating_sub(1)) => claims,
+            _ => return,
+        };
         if let Some(step) = report.steps.last_mut() {
             step.outcome = outcome;
         }
@@ -386,6 +495,80 @@ impl SagaRollbackJournal {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "streaming")]
+    fn claim_fixture() -> super::SagaRollbackJournal {
+        let journal = super::SagaRollbackJournal::new("claim original");
+        journal.push_uninvoked_task(ranvier_core::saga::SagaTask { node_id: "original".into(),
+            node_label: "private".into(), input_snapshot: vec![4, 2, 7] });
+        journal
+    }
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn claim_is_exclusive_and_uninvoked_drop_restores_original_entry() {
+        use super::{LocalTaskClaimError as Error, SagaRollbackOutcome as Outcome};
+        let journal = claim_fixture();
+        let address = journal.1.lock().unwrap()[0].1.input_snapshot.as_ptr() as usize;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let (send, receive) = std::sync::mpsc::channel();
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let journal = journal.clone(); let barrier = barrier.clone(); let send = send.clone();
+            workers.push(std::thread::spawn(move || { barrier.wait(); send.send(journal.claim_not_invoked(0)).unwrap(); }));
+        }
+        barrier.wait();
+        let results = [receive.recv().unwrap(), receive.recv().unwrap()];
+        for worker in workers { worker.join().unwrap(); }
+        let mut winners = Vec::new();
+        for result in results {
+            match result { Ok(claim) => winners.push(claim), Err(error) => assert!(matches!(error, Error::Claimed | Error::Unavailable)) }
+        }
+        assert_eq!(winners.len(), 1); assert!(journal.has_unresolved_tasks());
+        journal.settle(Outcome::Completed); journal.settle_external(0, Outcome::Completed);
+        assert_eq!(journal.snapshot().steps[0].outcome, Outcome::InProgress);
+        assert_eq!(journal.1.lock().unwrap()[0].1.input_snapshot.as_ptr() as usize, address);
+        drop(winners); assert_eq!(journal.snapshot().steps[0].outcome, Outcome::NotInvoked);
+        assert!(journal.claim_not_invoked(0).is_ok());
+    }
+    #[cfg(feature = "streaming")]
+    #[tokio::test(start_paused = true)]
+    async fn claim_timeout_and_pending_future_drop_hold_original_bytes_without_retry_permission() {
+        use super::{LocalTaskClaimError as Error, SagaRollbackOutcome as Outcome};
+        use futures_util::FutureExt as _;
+        for timeout in [false, true] {
+            let journal = claim_fixture();
+            let address = journal.1.lock().unwrap()[0].1.input_snapshot.as_ptr() as usize;
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)); let observed = calls.clone();
+            let handler: ranvier_core::saga::SagaCompensationFn<String, ()> = std::sync::Arc::new(move |input, _, _| {
+                assert_eq!(input.as_ptr() as usize, address); observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(std::future::pending())
+            });
+            let claim = journal.claim_not_invoked(0).unwrap(); let mut bus = ranvier_core::Bus::new();
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+            if timeout { assert_eq!(claim.invoke(handler, &(), &mut bus, deadline).await, Err(Error::TimedOut)); }
+            else { let future = claim.invoke(handler, &(), &mut bus, deadline); tokio::pin!(future); assert!(future.as_mut().now_or_never().is_none()); }
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert!(matches!(journal.claim_not_invoked(0), Err(Error::Claimed)));
+            journal.settle(Outcome::Completed);
+            assert_eq!(journal.snapshot().steps[0].outcome, Outcome::InProgress);
+            assert_eq!(journal.1.lock().unwrap()[0].1.input_snapshot.as_ptr() as usize, address);
+        }
+    }
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn claim_settles_exact_original_row_and_preserves_failed_hook_inputs() {
+        use super::SagaRollbackOutcome as Outcome;
+        for fail in [false, true] {
+            let journal = claim_fixture(); let claim = journal.claim_not_invoked(0).unwrap();
+            journal.push("later independent row".into(), Outcome::InProgress);
+            let handler: ranvier_core::saga::SagaCompensationFn<String, ()> = std::sync::Arc::new(move |_, _, _|
+                Box::pin(async move { if fail { panic!("claim hook panic fixture"); } ranvier_core::Outcome::Next(()) }));
+            let result = claim.invoke(handler, &(), &mut ranvier_core::Bus::new(), tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+            assert_eq!(result, if fail { Outcome::Panicked } else { Outcome::Completed });
+            let report = journal.snapshot(); assert_eq!(report.steps[0].outcome, result);
+            assert_eq!(report.steps[1].outcome, Outcome::InProgress); assert!(!report.finished);
+            assert_eq!(journal.1.lock().unwrap().len(), usize::from(fail));
+        }
+    }
     #[tokio::test]
     async fn borrowed_hook_drop_panic_and_completion_preserve_original_allocation() {
         use futures_util::FutureExt as _;
