@@ -82,7 +82,7 @@ impl StreamSupervisor {
 /// Neither settlement nor dropping this lease authorizes recovery retirement.
 pub struct StreamDrainLease { family: crate::nested_custody::ErasedTaskFamily }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamDrainStatus { Settled, TimedOut, ReportAlreadyTransferred, Unavailable }
+pub enum StreamDrainStatus { Pending, Settled, TimedOut, ReportAlreadyTransferred, Unavailable }
 impl StreamSupervisor {
     /// Close admissions and retain every registered managed task before waiting.
     /// An unfinalized reservation cannot attach a task after this snapshot.
@@ -101,12 +101,16 @@ impl StreamDrainLease {
     /// IDs are in-process correlation only, never persisted execution identity.
     pub fn statuses(&self) -> Vec<(uuid::Uuid, StreamDrainStatus)> {
         use crate::managed_stream_task::ManagedTaskWaitError as Error;
-        self.family.statuses.iter().map(|(id, status)| (*id, match status {
-            Ok(()) => StreamDrainStatus::Settled,
-            Err(Error::TimedOut) => StreamDrainStatus::TimedOut,
-            Err(Error::AlreadyJoined) => StreamDrainStatus::ReportAlreadyTransferred,
-            _ => StreamDrainStatus::Unavailable,
-        })).collect()
+        self.family.task_ids().into_iter().map(|id| {
+            let status = self.family.statuses.iter().find(|(candidate, _)| *candidate == id);
+            (id, match status.map(|(_, status)| status) {
+                None => StreamDrainStatus::Pending,
+                Some(Ok(())) => StreamDrainStatus::Settled,
+                Some(Err(Error::TimedOut)) => StreamDrainStatus::TimedOut,
+                Some(Err(Error::AlreadyJoined)) => StreamDrainStatus::ReportAlreadyTransferred,
+                _ => StreamDrainStatus::Unavailable,
+            })
+        }).collect()
     }
 }
 impl StreamReservation {
@@ -457,6 +461,73 @@ mod tests {
         assert_eq!(wrong_authority.retire_unstarted_until(deadline).await, Err(StreamRetirementError::RecoveryReviewRequired));
         assert_eq!(invocation.report.retirement_evidence(), StreamRetirementEvidence::RequiresRecoveryReview);
         assert!(supervisor.reserve().is_err());
+    }
+    #[tokio::test]
+    async fn public_drain_retains_transferred_report_status_and_blocks_reserved_late_start() {
+        let supervisor = StreamSupervisor::new(2);
+        let ticket = supervisor.reserve().unwrap();
+        let circuit = crate::Axon::<u32, u32, String>::start("drain-transferred").then(Prefix).then_stream(Finite);
+        let (active, context) = supervisor.reserve().unwrap().with_context(||
+            OwnedStreamContext::try_new(Arc::new(()), ranvier_core::Bus::new())).unwrap();
+        let prepared = match active.prepare(&circuit, context, 293, std::time::Duration::from_secs(1), None) {
+            Ok(prepared) => prepared, Err(_) => panic!("setup rejected"),
+        };
+        let mut invocation = prepared.start(ranvier_core::CancellationToken::new()).await.unwrap_or_else(|e| panic!("{}", e.signal));
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        assert_eq!(tokio::time::timeout_at(deadline, invocation.items.recv()).await.unwrap(), Some(293));
+        let original = invocation.report.take_report_until(deadline).await.unwrap();
+        assert!(matches!(original, crate::streaming_report_handle::SupervisedStreamCompletion::Report(_)));
+        let mut drain = supervisor.close_for_drain().unwrap();
+        assert_eq!(drain.unfinalized_reservations(), 1);
+        drain.settle_until(deadline).await;
+        assert_eq!(drain.statuses().len(), 1);
+        assert_eq!(drain.statuses()[0].1, StreamDrainStatus::ReportAlreadyTransferred);
+        let calls = AtomicUsize::new(0);
+        assert!(ticket.with_context(|| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            OwnedStreamContext::try_new(Arc::new(()), ranvier_core::Bus::new())
+        }).is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn public_drain_drop_timeout_retry_keeps_actual_report_and_owner() {
+        use futures_util::FutureExt;
+        #[derive(Clone)]
+        struct Pending;
+        #[async_trait::async_trait]
+        impl ranvier_core::streaming::StreamingTransition<u32> for Pending {
+            type Item = u32; type Error = String; type Resources = ();
+            async fn run_stream(&self, _: u32, _: &(), _: &mut ranvier_core::Bus)
+                -> Result<std::pin::Pin<Box<dyn futures_core::Stream<Item = u32> + Send>>, String> {
+                Ok(Box::pin(futures_util::stream::pending()))
+            }
+        }
+        let supervisor = StreamSupervisor::new(1);
+        let admission = supervisor.admission.clone();
+        let circuit = crate::Axon::<u32, u32, String>::start("drain-retry").then(Prefix).then_stream(Pending);
+        let (ticket, context) = supervisor.reserve().unwrap().with_context(||
+            OwnedStreamContext::try_new(Arc::new(()), ranvier_core::Bus::new())).unwrap();
+        let prepared = match ticket.prepare(&circuit, context, 307, std::time::Duration::from_secs(1), None) {
+            Ok(prepared) => prepared, Err(_) => panic!("setup rejected"),
+        };
+        let mut invocation = prepared.start(ranvier_core::CancellationToken::new()).await.unwrap_or_else(|e| panic!("{}", e.signal));
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        tokio::time::timeout_at(deadline, invocation.readiness.initialized()).await.unwrap().unwrap();
+        let mut drain = supervisor.close_for_drain().unwrap();
+        assert_eq!(drain.statuses()[0].1, StreamDrainStatus::Pending);
+        assert!(drain.settle_until(deadline).now_or_never().is_none());
+        assert_eq!(drain.statuses()[0].1, StreamDrainStatus::Pending);
+        drain.settle_until(tokio::time::Instant::now()).await;
+        assert_eq!(drain.statuses()[0].1, StreamDrainStatus::TimedOut);
+        invocation.cancel(ranvier_core::CancellationReason::Explicit);
+        drain.settle_until(deadline).await;
+        assert_eq!(drain.statuses()[0].1, StreamDrainStatus::Settled);
+        let original = invocation.report.take_report_until(deadline).await.unwrap();
+        assert!(matches!(original, crate::streaming_report_handle::SupervisedStreamCompletion::Report(_)));
+        drop(invocation); drop(supervisor);
+        assert_eq!(admission.in_use(), Ok(1));
+        drop(drain);
+        assert_eq!(admission.in_use(), Ok(0));
     }
     #[test]
     fn paired_reservation_precedes_factory_and_refunds_failure() {

@@ -63,6 +63,8 @@ struct CustodyRecord {
     task: Option<Capability>,
     #[cfg(feature = "streaming")]
     settlement: Option<crate::managed_stream_task::TaskSettlement>,
+    #[cfg(feature = "streaming")]
+    is_reservation: bool,
 }
 struct StoreInner {
     closed: AtomicBool,
@@ -134,7 +136,7 @@ impl CustodyReservation {
                 return Err("execution.nested_reservation_mismatch");
             }
             journal.retain_stream_child(observer);
-            std::mem::replace(record, CustodyRecord { owner: owner.clone(), task: Some(task), settlement: None })
+            std::mem::replace(record, CustodyRecord { owner: owner.clone(), task: Some(task), settlement: None, is_reservation: false })
         };
         let registered = WeakCustody { id: receipt.id, record: Arc::downgrade(&owner), store: receipt.store.clone() };
         self.receipt = None;
@@ -161,7 +163,7 @@ impl CustodyStore {
     #[cfg(feature = "streaming")]
     pub(crate) fn reserve_stream_slot(&self) -> Result<CustodyReservation, &'static str> {
         let marker: Capability = Arc::new(());
-        let receipt = reserve_in(&self.0 .0, marker.clone())?;
+        let receipt = reserve_in_with_kind(&self.0 .0, marker.clone(), None, || {}, true)?;
         Ok(CustodyReservation { receipt: Some(receipt), marker })
     }
     pub(crate) fn new(capacity: usize) -> Self {
@@ -216,7 +218,10 @@ impl CustodyStore {
         let mut tasks = Vec::new();
         let mut reserved = 0;
         for (id, record) in records.iter() {
-            if record.task.is_none() { reserved += 1; continue; }
+            if record.task.is_none() {
+                if !record.is_reservation { return Err("execution.nested_unmanaged_owner"); }
+                reserved += 1; continue;
+            }
             let settlement = record.settlement.clone().ok_or("execution.nested_task_settlement_missing")?;
             tasks.push((*id, record.owner.clone(), settlement));
         }
@@ -319,6 +324,12 @@ fn reserve_in(store: &Arc<StoreInner>, record: Capability) -> Result<WeakCustody
 fn reserve_in_with(
     store: &Arc<StoreInner>, record: Capability, task: Option<Capability>, register: impl FnOnce(),
 ) -> Result<WeakCustody, &'static str> {
+    reserve_in_with_kind(store, record, task, register, false)
+}
+fn reserve_in_with_kind(
+    store: &Arc<StoreInner>, record: Capability, task: Option<Capability>, register: impl FnOnce(), is_reservation: bool,
+) -> Result<WeakCustody, &'static str> {
+    let _ = is_reservation;
     let mut records = store
         .records
         .lock()
@@ -341,7 +352,7 @@ fn reserve_in_with(
         record: Arc::downgrade(&record),
         store: Arc::downgrade(store),
     };
-    records.insert(id, CustodyRecord { owner: record, task, #[cfg(feature = "streaming")] settlement: None });
+    records.insert(id, CustodyRecord { owner: record, task, #[cfg(feature = "streaming")] settlement: None, #[cfg(feature = "streaming")] is_reservation });
     register();
     Ok(weak)
 }
@@ -353,6 +364,7 @@ pub(crate) struct ErasedTaskFamily {
 }
 #[cfg(feature = "streaming")]
 impl ErasedTaskFamily {
+    pub(crate) fn task_ids(&self) -> Vec<uuid::Uuid> { self.tasks.iter().map(|(id, _, _)| *id).collect() }
     pub(crate) async fn settle_until(&mut self, deadline: tokio::time::Instant) {
         use futures_util::{stream::FuturesUnordered, StreamExt};
         let mut pending = FuturesUnordered::new();
@@ -424,6 +436,73 @@ mod tests {
             disposition: None, cleanup_complete: None, cleanup_timed_out: false,
             custody: crate::streaming_recovery::RecoveryCustody::Held,
         }).1
+    }
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn heterogeneous_snapshot_never_treats_live_unmanaged_owner_as_reservation() {
+        let root = CustodyStore::new(1);
+        let receipt = root.reserve(Arc::new(311u32)).unwrap();
+        assert!(matches!(root.close_and_erased_family(), Err("execution.nested_unmanaged_owner")));
+        assert!(receipt.upgrade().is_some());
+        assert!(root.reserve_stream_slot().is_err());
+        receipt.release();
+        let family = root.close_and_erased_family().unwrap();
+        assert_eq!(family.reserved, 0);
+        assert!(family.tasks.is_empty());
+    }
+    #[cfg(feature = "streaming")]
+    #[tokio::test(start_paused = true)]
+    async fn heterogeneous_family_settles_concurrently_and_retains_original_reports_after_root_drop() {
+        use crate::managed_stream_task::PreparedStreamTask;
+        let root = CustodyStore::new(2);
+        let owner: Capability = Arc::new(271u32);
+        let weak = Arc::downgrade(&owner);
+        let mut first = PreparedStreamTask::new_owned(owner.clone(), async {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await; 277u32
+        });
+        let mut second = PreparedStreamTask::new_owned(owner.clone(), async {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await; String::from("original second report")
+        });
+        let journal = crate::SagaRollbackJournal::new("heterogeneous-family");
+        let a = root.client().reserve_stream(owner.clone(), &journal, Some(first.holder()), slot_observer()).unwrap();
+        let b = root.client().reserve_stream(owner.clone(), &journal, Some(second.holder()), slot_observer()).unwrap();
+        a.attach_settlement(first.settlement()).unwrap(); b.attach_settlement(second.settlement()).unwrap();
+        first.grant_registered_start(&a).unwrap(); second.grant_registered_start(&b).unwrap();
+        let first_holder = first.holder(); let second_holder = second.holder();
+        let mut family = root.close_and_erased_family().unwrap();
+        drop(first); drop(second); drop(root); drop(owner);
+        assert!(weak.upgrade().is_some());
+        let started = tokio::time::Instant::now();
+        family.settle_until(started + std::time::Duration::from_secs(3)).await;
+        assert_eq!(tokio::time::Instant::now() - started, std::time::Duration::from_secs(2));
+        assert_eq!(family.statuses.len(), 2);
+        assert!(family.statuses.iter().all(|(_, result)| result.is_ok()));
+        assert!(matches!(first_holder.lock().await.take_joined(), Some(Ok(Some(277)))));
+        assert!(matches!(second_holder.lock().await.take_joined(), Some(Ok(Some(value))) if value == "original second report"));
+        assert!(weak.upgrade().is_some());
+        drop(family);
+        assert!(weak.upgrade().is_none());
+    }
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn heterogeneous_snapshot_rejects_missing_or_foreign_settlement_before_polling() {
+        use crate::managed_stream_task::PreparedStreamTask;
+        let root = CustodyStore::new(1);
+        let owner: Capability = Arc::new(281u32);
+        let mut prepared = PreparedStreamTask::new_owned(owner.clone(), async { 283u32 });
+        let mut other = PreparedStreamTask::new_owned(owner.clone(), async { String::from("foreign") });
+        let journal = crate::SagaRollbackJournal::new("missing-settlement");
+        let receipt = root.client().reserve_stream(owner, &journal, Some(prepared.holder()), slot_observer()).unwrap();
+        assert_eq!(receipt.attach_settlement(other.settlement()), Err("execution.nested_task_registration_mismatch"));
+        assert!(matches!(root.close_and_erased_family(), Err("execution.nested_task_settlement_missing")));
+        receipt.attach_settlement(prepared.settlement()).unwrap();
+        assert_eq!(receipt.attach_settlement(prepared.settlement()), Err("execution.nested_task_settlement_decided"));
+        prepared.grant_registered_start(&receipt).unwrap();
+        let mut family = root.close_and_erased_family().unwrap();
+        family.settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await;
+        assert!(family.statuses[0].1.is_ok());
+        assert!(matches!(prepared.holder().lock().await.take_joined(), Some(Ok(Some(283)))));
+        other.reject_start().unwrap();
     }
     #[cfg(feature = "streaming")]
     #[tokio::test]
