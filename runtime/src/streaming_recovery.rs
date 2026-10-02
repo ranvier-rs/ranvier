@@ -136,13 +136,34 @@ impl Drop for SupervisorObservationGuard {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct RecoveryAbandonment {
+    pub(crate) owner_id: uuid::Uuid,
+    pub(crate) operator_id: uuid::Uuid,
+    pub(crate) decision_id: uuid::Uuid,
+    pub(crate) prior: SupervisorObservation,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RecoveryDispositionFailure {
+    Missing,
+    NotExpired,
+    InUse,
+    RecordsFull,
+    Poisoned,
+}
+struct StoredRecovery<In, Out, E, Res> {
+    owner: OwnedStreamRecovery<In, Out, E, Res>,
+    expires: std::time::Instant,
+}
 /// External owner retention. Count is bounded by shared admission; payload/lifetime
 /// budgets and authorized operator disposition must be added before production use.
 pub(crate) struct StreamRecoveryStore<In, Out, E, Res> {
     admission: StreamRecoveryAdmission,
-    owners: std::sync::Mutex<
-        std::collections::HashMap<uuid::Uuid, OwnedStreamRecovery<In, Out, E, Res>>,
-    >,
+    retention: std::time::Duration,
+    record_capacity: usize,
+    records: std::sync::Mutex<Vec<RecoveryAbandonment>>,
+    owners:
+        std::sync::Mutex<std::collections::HashMap<uuid::Uuid, StoredRecovery<In, Out, E, Res>>>,
 }
 impl<In, Out, E, Res> StreamRecoveryStore<In, Out, E, Res>
 where
@@ -151,9 +172,12 @@ where
     E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
     Res: Send + Sync + 'static,
 {
-    pub(crate) fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: usize, retention: std::time::Duration) -> Self {
         Self {
             admission: StreamRecoveryAdmission::new(capacity),
+            retention,
+            record_capacity: capacity,
+            records: std::sync::Mutex::new(Vec::new()),
             owners: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
@@ -176,11 +200,21 @@ where
                 });
             }
         };
+        let Some(expires) = std::time::Instant::now().checked_add(self.retention) else {
+            return Err(StreamRecoveryAdmissionRejected {
+                graph,
+                context,
+                reason: RecoveryAdmissionFailure::InvalidRetention,
+            });
+        };
         let owner = OwnedStreamRecovery::try_new(graph, context, &self.admission)?;
         let id = loop {
             let id = uuid::Uuid::new_v4();
             if let std::collections::hash_map::Entry::Vacant(entry) = owners.entry(id) {
-                entry.insert(owner.clone());
+                entry.insert(StoredRecovery {
+                    owner: owner.clone(),
+                    expires,
+                });
                 break id;
             }
             // Never replace another request's recovery custody on key collision.
@@ -195,6 +229,53 @@ where
             .map_err(|_| RecoveryAdmissionFailure::Poisoned)?;
         self.admission.close()
     }
+    /// Explicit abandonment after expiry. Record loss before releasing sensitive
+    /// custody; never classify abandonment as cleanup success or authorize retry.
+    pub(crate) fn abandon_expired(
+        &self,
+        id: uuid::Uuid,
+        operator_id: uuid::Uuid,
+        decision_id: uuid::Uuid,
+    ) -> Result<(), RecoveryDispositionFailure> {
+        let mut owners = self
+            .owners
+            .lock()
+            .map_err(|_| RecoveryDispositionFailure::Poisoned)?;
+        let entry = owners.get(&id).ok_or(RecoveryDispositionFailure::Missing)?;
+        if std::time::Instant::now() < entry.expires {
+            return Err(RecoveryDispositionFailure::NotExpired);
+        }
+        if Arc::strong_count(&entry.owner.inner) != 1 {
+            return Err(RecoveryDispositionFailure::InUse);
+        }
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|_| RecoveryDispositionFailure::Poisoned)?;
+        if records.len() >= self.record_capacity {
+            return Err(RecoveryDispositionFailure::RecordsFull);
+        }
+        records.push(RecoveryAbandonment {
+            owner_id: id,
+            operator_id,
+            decision_id,
+            prior: entry.owner.inner.observation.borrow().clone(),
+        });
+        let removed = owners.remove(&id);
+        drop(records);
+        drop(owners);
+        drop(removed); // No user resource destructor under either store lock.
+        Ok(())
+    }
+    pub(crate) fn abandonment_records(
+        &self,
+    ) -> Result<Vec<RecoveryAbandonment>, RecoveryDispositionFailure> {
+        Ok(self
+            .records
+            .lock()
+            .map_err(|_| RecoveryDispositionFailure::Poisoned)?
+            .clone())
+    }
     /// Explicit ownership transfer only. Removing a map entry does not release its
     /// permit or authorize replay: the returned owner remains responsible for custody.
     pub(crate) fn take_for_reconciliation(
@@ -205,7 +286,8 @@ where
             .owners
             .lock()
             .map_err(|_| RecoveryAdmissionFailure::Poisoned)?
-            .remove(&id))
+            .remove(&id)
+            .map(|entry| entry.owner))
     }
 }
 
@@ -1153,7 +1235,7 @@ mod tests {
     }
     #[tokio::test]
     async fn external_store_retains_actual_aborted_context_until_explicit_transfer() {
-        let store = StreamRecoveryStore::new(1);
+        let store = StreamRecoveryStore::new(1, std::time::Duration::from_secs(60));
         let resources = Arc::new(Resources {
             effects: AtomicUsize::new(0),
         });
@@ -1224,7 +1306,10 @@ mod tests {
     }
     #[test]
     fn busy_registry_admission_is_prompt_and_does_not_consume_store_capacity() {
-        let store = Arc::new(StreamRecoveryStore::new(1));
+        let store = Arc::new(StreamRecoveryStore::new(
+            1,
+            std::time::Duration::from_secs(60),
+        ));
         let resources = Arc::new(Resources {
             effects: AtomicUsize::new(0),
         });
@@ -1263,7 +1348,7 @@ mod tests {
     }
     #[test]
     fn closed_store_rejects_before_effects_and_preserves_original_request() {
-        let store = StreamRecoveryStore::new(1);
+        let store = StreamRecoveryStore::new(1, std::time::Duration::from_secs(60));
         store.close().unwrap();
         let resources = Arc::new(Resources {
             effects: AtomicUsize::new(0),
@@ -1287,6 +1372,67 @@ mod tests {
         assert_eq!(bus.read::<String>().unwrap(), "private-request-capability");
         assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
         assert_eq!(store.admission.in_use(), Ok(0));
+    }
+    #[tokio::test]
+    async fn expired_abandonment_records_unknown_effect_loss_before_custody_release() {
+        let store = StreamRecoveryStore::new(1, std::time::Duration::ZERO);
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let graph = Axon::<u32, u32, String, Resources>::start("expired-owner")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Undo);
+        let (id, owner) = store
+            .admit(
+                graph,
+                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            )
+            .unwrap();
+        let observer = owner.observe();
+        let report = owner
+            .initialize_and_drive(71, &EndInit(true), None, |source| async move {
+                let observed = crate::ObservedStream::new(
+                    source,
+                    ranvier_core::streaming::StreamTimeoutConfig {
+                        init: None,
+                        idle: None,
+                        total: None,
+                    },
+                    None,
+                )
+                .collect_report()
+                .await;
+                StreamDriveResult {
+                    value: observed.items,
+                    terminal: observed.terminal,
+                }
+            })
+            .await;
+        assert!(matches!(
+            report,
+            Ok(StreamInitializationReport::Ready { .. })
+        ));
+        let operator = uuid::Uuid::new_v4();
+        let decision = uuid::Uuid::new_v4();
+        assert_eq!(
+            store.abandon_expired(id, operator, decision),
+            Err(RecoveryDispositionFailure::InUse)
+        );
+        drop(owner);
+        store.abandon_expired(id, operator, decision).unwrap();
+        let records = store.abandonment_records().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].owner_id, id);
+        assert_eq!(records[0].operator_id, operator);
+        assert_eq!(records[0].decision_id, decision);
+        assert_eq!(records[0].prior.cleanup_complete, None);
+        assert_eq!(
+            observer.borrow().custody,
+            RecoveryCustody::ReleasedWithPendingTasks
+        );
+        assert_eq!(store.admission.in_use(), Ok(0));
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
+        assert!(!format!("{records:?}").contains("input_snapshot"));
     }
     fn completed() -> StreamDriveResult<()> {
         StreamDriveResult {
