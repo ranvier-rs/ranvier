@@ -97,3 +97,128 @@ async fn configured_saga_survives_then_stream_conversion() {
         "converted prefix must compensate the already completed effect"
     );
 }
+
+#[derive(Clone)]
+struct InitFail(Arc<AtomicUsize>);
+#[async_trait::async_trait]
+impl StreamingTransition<()> for InitFail {
+    type Item = ();
+    type Error = String;
+    type Resources = ();
+    async fn run_stream(
+        &self,
+        _: (),
+        _: &(),
+        _: &mut Bus,
+    ) -> Result<Pin<Box<dyn futures_util::Stream<Item = ()> + Send>>, String> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err("initializer-fault".into())
+    }
+}
+/// Characterization of OPEN ownership loss, not an acceptance assertion that
+/// unperformed cleanup is safe. Replace with desired cleanup/recovery assertions
+/// when the owned initializer/consumption handoff is implemented.
+#[tokio::test]
+async fn initializer_failure_retains_root_stack_without_reporting_cleanup() {
+    use ranvier_runtime::{EffectBoundary, StreamInitializationReport};
+    let effects = Arc::new(AtomicUsize::new(0));
+    let undo = Arc::new(AtomicUsize::new(0));
+    let init = Arc::new(AtomicUsize::new(0));
+    let stream = Axon::<(), (), String>::start("initializer-saga-ownership")
+        .with_saga_policy(SagaPolicy::Enabled)
+        .then_compensated(Effect(effects.clone()), Effect(undo.clone()))
+        .then_stream(InitFail(init.clone()));
+    let mut bus = Bus::new();
+    let report = stream.execute((), &(), &mut bus).await;
+    assert!(matches!(
+        report,
+        StreamInitializationReport::Failed {
+            prefix: ExecutionReport::Unpersisted {
+                result: (),
+                cleanup: None
+            },
+            initialization: EffectBoundary::MayHaveRun,
+            ..
+        }
+    ));
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(init.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        undo.load(Ordering::SeqCst),
+        0,
+        "this exposes unperformed undo, not safety"
+    );
+    let stack = bus
+        .read::<ranvier_core::saga::SagaStack>()
+        .expect("root pending work remains in Bus");
+    assert_eq!(stack.tasks.len(), 1);
+    assert_eq!(stack.tasks[0].input_snapshot, b"null");
+}
+
+#[derive(Clone)]
+struct NestedInitFailure(Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicUsize>);
+#[async_trait::async_trait]
+impl Transition<(), ()> for NestedInitFailure {
+    type Error = String;
+    type Resources = ();
+    async fn run(&self, _: (), _: &(), bus: &mut Bus) -> Outcome<(), String> {
+        let parent = bus.read::<ranvier_core::saga::SagaStack>().unwrap().tasks[0]
+            .node_id
+            .clone();
+        let report = Axon::<(), (), String>::start("nested-init-failure")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect(self.0.clone()), Effect(self.1.clone()))
+            .then_stream(InitFail(self.2.clone()))
+            .execute((), &(), bus)
+            .await;
+        assert!(matches!(
+            report,
+            ranvier_runtime::StreamInitializationReport::Failed {
+                prefix: ExecutionReport::Unpersisted {
+                    result: (),
+                    cleanup: None
+                },
+                ..
+            }
+        ));
+        let restored = bus.read::<ranvier_core::saga::SagaStack>().unwrap();
+        assert_eq!(restored.tasks.len(), 1);
+        assert_eq!(restored.tasks[0].node_id, parent);
+        Outcome::Fault("outer-observation".into())
+    }
+}
+#[tokio::test]
+async fn nested_initializer_failure_restores_parent_but_exposes_unowned_child_cleanup() {
+    let parent = Arc::new(AtomicUsize::new(0));
+    let parent_undo = Arc::new(AtomicUsize::new(0));
+    let child = Arc::new(AtomicUsize::new(0));
+    let child_undo = Arc::new(AtomicUsize::new(0));
+    let init = Arc::new(AtomicUsize::new(0));
+    let report = Axon::<(), (), String>::start("parent-init-observation")
+        .with_saga_policy(SagaPolicy::Enabled)
+        .then_compensated(Effect(parent.clone()), Effect(parent_undo.clone()))
+        .then(NestedInitFailure(
+            child.clone(),
+            child_undo.clone(),
+            init.clone(),
+        ))
+        .execute((), &(), &mut Bus::new())
+        .await;
+    assert!(matches!(
+        report,
+        ExecutionReport::Unpersisted {
+            result: Outcome::Fault(_),
+            ..
+        }
+    ));
+    assert!(report.cleanup().unwrap().is_complete());
+    assert_eq!(parent.load(Ordering::SeqCst), 1);
+    assert_eq!(parent_undo.load(Ordering::SeqCst), 1);
+    assert_eq!(child.load(Ordering::SeqCst), 1);
+    assert_eq!(init.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        child_undo.load(Ordering::SeqCst),
+        0,
+        "OPEN: parent cleanup cannot substitute for missing child cleanup"
+    );
+}
