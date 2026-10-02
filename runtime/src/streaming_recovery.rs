@@ -551,6 +551,115 @@ mod tests {
             }
         }
     }
+    #[derive(Clone)]
+    struct AdvancingEffect;
+    #[async_trait::async_trait]
+    impl Transition<u32, u32> for AdvancingEffect {
+        type Error = String;
+        type Resources = Resources;
+        async fn run(
+            &self,
+            input: u32,
+            resources: &Resources,
+            _: &mut Bus,
+        ) -> Outcome<u32, String> {
+            resources.effects.fetch_add(1, Ordering::SeqCst);
+            Outcome::Next(input + 1)
+        }
+    }
+    #[derive(Clone)]
+    struct PendingUndo(Arc<Notify>);
+    #[async_trait::async_trait]
+    impl Transition<u32, ()> for PendingUndo {
+        type Error = String;
+        type Resources = Resources;
+        async fn run(&self, _: u32, _: &Resources, bus: &mut Bus) -> Outcome<(), String> {
+            assert!(!bus.cancellation_token().unwrap().is_cancelled());
+            self.0.notify_one();
+            std::future::pending().await
+        }
+    }
+    #[tokio::test]
+    async fn forced_abort_during_compensation_retains_popped_and_remaining_inputs() {
+        let entered = Arc::new(Notify::new());
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let graph = Axon::<u32, u32, String, Resources>::start("compensator-abort")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(AdvancingEffect, Undo)
+            .then_compensated(AdvancingEffect, PendingUndo(entered.clone()));
+        let owner = OwnedStreamRecovery::try_new(
+            graph,
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+        )
+        .unwrap();
+        let registry = Arc::downgrade(&owner.inner.graph.saga_compensation_registry);
+        let task_owner = owner.clone();
+        let task = tokio::spawn(async move {
+            task_owner
+                .initialize_and_drive(53, &Init, None, |source| async move {
+                    let observed = crate::ObservedStream::new(
+                        source,
+                        ranvier_core::streaming::StreamTimeoutConfig {
+                            init: None,
+                            idle: None,
+                            total: Some(std::time::Duration::ZERO),
+                        },
+                        None,
+                    )
+                    .collect_report()
+                    .await;
+                    StreamDriveResult {
+                        value: observed.items,
+                        terminal: observed.terminal,
+                    }
+                })
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        task.abort();
+        assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+        let context = owner.inner.context.lock().await;
+        assert!(Arc::ptr_eq(&resources, &context.0));
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+        let journal = context.1.read::<crate::SagaRollbackJournal>().unwrap();
+        let report = journal.snapshot();
+        assert!(!report.finished);
+        assert!(!report.is_complete());
+        assert_eq!(report.steps.len(), 1);
+        assert_eq!(
+            report.steps[0].outcome,
+            crate::SagaRollbackOutcome::InProgress
+        );
+        let popped = journal.unresolved_tasks();
+        assert_eq!(popped.len(), 1);
+        assert_eq!(popped[0].input_snapshot, b"54");
+        assert_eq!(popped[0].node_id, report.steps[0].node_id);
+        let remaining = &context.1.read::<SagaStack>().unwrap().tasks;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].input_snapshot, b"53");
+        assert_ne!(remaining[0].node_id, popped[0].node_id);
+        let registry_owner = registry.upgrade().unwrap();
+        for task in popped.iter().chain(remaining) {
+            assert!(registry_owner.read().unwrap().get(&task.node_id).is_some());
+        }
+        assert!(!format!("{journal:?}").contains("input_snapshot"));
+        drop(registry_owner);
+        drop(context);
+        assert!(matches!(
+            owner
+                .initialize_and_drive(99, &Init, None, |_| async { completed() })
+                .await,
+            Err(StreamInvocationAlreadyStarted)
+        ));
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+        drop(owner);
+        assert!(registry.upgrade().is_none());
+        assert_eq!(Arc::strong_count(&resources), 1);
+    }
     fn completed() -> StreamDriveResult<()> {
         StreamDriveResult {
             value: (),
