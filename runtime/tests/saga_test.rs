@@ -804,3 +804,56 @@ async fn saga_handler_factory_panic_keeps_remaining_rollback_and_business_fault(
         assert_eq!(results.lock().unwrap().len(), 1);
     }
 }
+
+#[tokio::test]
+async fn missing_registry_handler_retains_actual_input_without_invoking_undo() {
+    let undos = Arc::new(Mutex::new(Vec::new()));
+    let axon = Axon::<SagaState, SagaState, String>::start("missing-recovery")
+        .with_saga_policy(SagaPolicy::Enabled)
+        .then_compensated(
+            SuccStep { id: "one".into() },
+            CompStep {
+                id: "one".into(),
+                results: undos.clone(),
+            },
+        )
+        .then(FailStep);
+    axon.saga_compensation_registry
+        .write()
+        .unwrap()
+        .handlers
+        .clear();
+    let mut bus = Bus::new();
+    let report = axon
+        .execute(
+            SagaState {
+                cnt: 17,
+                log: vec!["private-retained-input".into()],
+            },
+            &(),
+            &mut bus,
+        )
+        .await;
+    let cleanup = report.cleanup().unwrap();
+    assert!(cleanup.finished);
+    assert!(!cleanup.is_complete());
+    assert_eq!(cleanup.steps.len(), 1);
+    assert_eq!(
+        cleanup.steps[0].outcome,
+        ranvier_runtime::SagaRollbackOutcome::MissingHandler
+    );
+    let journal = bus.read::<ranvier_runtime::SagaRollbackJournal>().unwrap();
+    let retained = journal.unresolved_tasks();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].node_id, cleanup.steps[0].node_id);
+    let input: SagaState = serde_json::from_slice(&retained[0].input_snapshot).unwrap();
+    assert_eq!(input.cnt, 17);
+    assert_eq!(input.log, vec!["private-retained-input"]);
+    assert!(undos.lock().unwrap().is_empty());
+    assert!(
+        !serde_json::to_string(cleanup)
+            .unwrap()
+            .contains("private-retained-input")
+    );
+    assert!(!format!("{journal:?}").contains("private-retained-input"));
+}
