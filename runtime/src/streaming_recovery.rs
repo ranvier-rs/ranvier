@@ -2265,24 +2265,29 @@ mod tests {
         task.abort();
         assert!(matches!(task.await, Err(error) if error.is_cancelled()));
         assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
-        assert!(tokio::time::timeout(std::time::Duration::from_millis(20), initialized.notified()).await.is_err());
+        // The cancelled task is terminal: no remaining producer can signal initializer entry.
+        assert!(futures_util::FutureExt::now_or_never(initialized.notified()).is_none());
         let inner = admission.upgrade().unwrap().downcast::<RecoveryInner<u32, u32, String, Resources>>()
             .unwrap_or_else(|_| panic!("wrong prefix child owner"));
         {
             let context = inner.context.lock().await;
             assert!(Arc::ptr_eq(&context.0, &resources));
             assert_eq!(context.1.read::<u64>(), Some(&9922));
+            assert!(context.1.has::<crate::nested_custody::WeakCustodyClient>());
+            assert!(!context.1.has::<crate::nested_custody::CustodyStore>());
             let stack = context.1.read::<SagaStack>().unwrap();
             assert_eq!(stack.tasks.len(), 1);
             assert_eq!(stack.tasks[0].input_snapshot, b"281");
             assert!(inner.graph.saga_compensation_registry.read().unwrap().get(&stack.tasks[0].node_id).is_some());
         }
         assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+        let registry = Arc::downgrade(&inner.graph.saga_compensation_registry);
         drop(inner);
         drop(resources);
         assert!(weak.upgrade().is_some());
         drop(parent);
         assert!(weak.upgrade().is_none());
+        assert!(registry.upgrade().is_none());
         assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
     }
     struct ExternalHook {
