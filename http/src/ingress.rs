@@ -6850,6 +6850,41 @@ mod tests {
         assert!(registry.tasks.lock().await.is_empty());
     }
 
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn managed_task_capacity_sse_route_rejects_before_user_callbacks() {
+        #[derive(Clone)]
+        struct Init;
+        #[async_trait::async_trait]
+        impl ranvier_core::streaming::StreamingTransition<()> for Init {
+            type Item = String;
+            type Error = String;
+            type Resources = ();
+            async fn run_stream(&self, _: (), _: &(), _: &mut Bus)
+                -> Result<Pin<Box<dyn futures_util::Stream<Item = String> + Send>>, String> {
+                panic!("closed route must not initialize")
+            }
+        }
+        let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = callbacks.clone();
+        let app = Ranvier::http::<()>()
+            .bus_injector(move |_, _| { calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst); })
+            .post_sse("/closed", Axon::<(), (), String>::start("closed-route").then_stream(Init));
+        let registry = ManagedTaskRegistry { reservation_limit: 0, ..Default::default() };
+        let (mut parts, _) = Request::builder().method("POST").uri("/closed").body(()).unwrap().into_parts();
+        parts.extensions.insert(RequestTaskOwner(registry.clone()));
+        let response = (app.routes[0].handler)(parts, &()).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["code"], "managed_task_capacity_exhausted");
+        assert_eq!(body["reconciliation_required"], false);
+        assert_eq!(callbacks.load(std::sync::atomic::Ordering::SeqCst), 0,
+            "closed task admission must precede user injectors");
+        assert!(registry.tasks.lock().await.is_empty());
+    }
+
     #[tokio::test]
     async fn managed_task_closed_ws_route_rejects_before_user_callbacks() {
         let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
