@@ -456,7 +456,7 @@ mod tests {
             self: Pin<&mut Self>,
             _: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Option<u32>> {
-            if self.0 == 1 {
+            if self.0 == 1 || self.0 == 4 {
                 panic!("private-source-poll-payload");
             }
             std::task::Poll::Ready(None)
@@ -485,13 +485,17 @@ mod tests {
     }
     #[tokio::test]
     async fn late_factory_poll_and_drop_panics_return_fixed_failure_and_actual_cleanup() {
-        for mode in 0..3 {
+        for mode in 0..5 {
             let resources = Arc::new(Resources {
                 effects: AtomicUsize::new(0),
             });
-            let graph = Axon::<u32, u32, String, Resources>::start("late-panic")
-                .with_saga_policy(SagaPolicy::Enabled)
-                .then_compensated(Effect, Undo);
+            let prefix = Axon::<u32, u32, String, Resources>::start("late-panic")
+                .with_saga_policy(SagaPolicy::Enabled);
+            let graph = if mode == 4 {
+                prefix.then_compensated(Effect, FaultUndo)
+            } else {
+                prefix.then_compensated(Effect, Undo)
+            };
             let owner = OwnedStreamRecovery::try_new(
                 graph,
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
@@ -503,16 +507,22 @@ mod tests {
                     if mode == 0 {
                         panic!("private-driver-factory-payload");
                     }
-                    produce_bounded(
-                        source,
-                        ranvier_core::streaming::StreamTimeoutConfig {
-                            init: None,
-                            idle: None,
-                            total: None,
-                        },
-                        CancellationToken::new(),
-                        sender,
-                    )
+                    async move {
+                        if mode == 3 {
+                            panic!("private-driver-poll-payload");
+                        }
+                        produce_bounded(
+                            source,
+                            ranvier_core::streaming::StreamTimeoutConfig {
+                                init: None,
+                                idle: None,
+                                total: None,
+                            },
+                            CancellationToken::new(),
+                            sender,
+                        )
+                        .await
+                    }
                 })
                 .await;
             let Ok(StreamInitializationReport::Ready { prefix, value }) = report else {
@@ -524,19 +534,21 @@ mod tests {
                 Err(StreamDriverError::Panicked)
             ));
             assert_eq!(format!("{:?}", StreamDriverError::Panicked), "Panicked");
-            assert!(value.cleanup.unwrap().is_complete());
+            let cleanup = value.cleanup.unwrap();
+            assert_eq!(cleanup.is_complete(), mode != 4);
             assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
-            assert!(
-                owner
-                    .inner
-                    .context
-                    .lock()
-                    .await
-                    .1
-                    .read::<SagaStack>()
-                    .unwrap()
-                    .is_empty()
-            );
+            let context = owner.inner.context.lock().await;
+            assert!(context.1.read::<SagaStack>().unwrap().is_empty());
+            let retained = context
+                .1
+                .read::<crate::SagaRollbackJournal>()
+                .unwrap()
+                .unresolved_tasks();
+            assert_eq!(retained.len(), usize::from(mode == 4));
+            if mode == 4 {
+                assert_eq!(retained[0].input_snapshot, b"47");
+                assert_eq!(retained[0].node_id, cleanup.steps[0].node_id);
+            }
         }
     }
     fn completed() -> StreamDriveResult<()> {
