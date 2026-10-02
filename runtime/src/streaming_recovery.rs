@@ -265,6 +265,110 @@ mod tests {
                 .is_empty()
         );
     }
+    #[derive(Clone)]
+    struct FaultUndo;
+    #[async_trait::async_trait]
+    impl Transition<u32, ()> for FaultUndo {
+        type Error = String;
+        type Resources = Resources;
+        async fn run(&self, _: u32, resources: &Resources, bus: &mut Bus) -> Outcome<(), String> {
+            assert!(!bus.cancellation_token().unwrap().is_cancelled());
+            resources.effects.fetch_add(1, Ordering::SeqCst);
+            Outcome::Fault("fixture undo fault".into())
+        }
+    }
+    struct EndInit(bool);
+    #[async_trait::async_trait]
+    impl StreamingTransition<u32> for EndInit {
+        type Item = u32;
+        type Error = String;
+        type Resources = Resources;
+        async fn run_stream(
+            &self,
+            _: u32,
+            _: &Resources,
+            _: &mut Bus,
+        ) -> Result<RawStream<u32>, String> {
+            if self.0 {
+                Ok(Box::pin(futures_util::stream::empty()))
+            } else {
+                Ok(Box::pin(futures_util::stream::pending()))
+            }
+        }
+    }
+    #[tokio::test]
+    async fn actual_source_end_timeout_and_fault_keep_independent_cleanup_and_inputs() {
+        for mode in 0..3 {
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
+            let prefix = Axon::<u32, u32, String, Resources>::start("terminal-matrix")
+                .with_saga_policy(SagaPolicy::Enabled);
+            let graph = if mode == 2 {
+                prefix.then_compensated(Effect, FaultUndo)
+            } else {
+                prefix.then_compensated(Effect, Undo)
+            };
+            let owner = OwnedStreamRecovery::try_new(
+                graph,
+                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            )
+            .unwrap();
+            let report = owner
+                .initialize_and_drive(41, &EndInit(mode == 0), None, move |source| async move {
+                    let observed = crate::ObservedStream::new(
+                        source,
+                        ranvier_core::streaming::StreamTimeoutConfig {
+                            init: None,
+                            idle: None,
+                            total: (mode != 0).then_some(std::time::Duration::ZERO),
+                        },
+                        None,
+                    )
+                    .collect_report()
+                    .await;
+                    StreamDriveResult {
+                        value: observed.items,
+                        terminal: observed.terminal,
+                    }
+                })
+                .await;
+            let Ok(StreamInitializationReport::Ready { value, .. }) = report else {
+                panic!("expected initialized consumption");
+            };
+            let context = owner.inner.context.lock().await;
+            assert!(value.consumption.value.is_empty());
+            if mode == 0 {
+                assert_eq!(
+                    value.consumption.terminal,
+                    crate::StreamConsumptionTerminal::Completed
+                );
+                assert!(value.cleanup.is_none());
+                assert_eq!(context.1.read::<SagaStack>().unwrap().tasks.len(), 1);
+                assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
+            } else {
+                assert_eq!(
+                    value.consumption.terminal,
+                    crate::StreamConsumptionTerminal::TimedOut(crate::StreamTimeoutKind::Total)
+                );
+                let cleanup = value.cleanup.unwrap();
+                assert_eq!(cleanup.is_complete(), mode == 1);
+                assert_eq!(cleanup.steps.len(), 1);
+                assert!(context.1.read::<SagaStack>().unwrap().is_empty());
+                assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+                let retained = context
+                    .1
+                    .read::<crate::SagaRollbackJournal>()
+                    .unwrap()
+                    .unresolved_tasks();
+                assert_eq!(retained.len(), usize::from(mode == 2));
+                if mode == 2 {
+                    assert_eq!(retained[0].input_snapshot, b"41");
+                    assert_eq!(retained[0].node_id, cleanup.steps[0].node_id);
+                }
+            }
+        }
+    }
     struct Resources {
         effects: AtomicUsize,
     }
@@ -290,7 +394,8 @@ mod tests {
     impl Transition<u32, ()> for Undo {
         type Error = String;
         type Resources = Resources;
-        async fn run(&self, _: u32, resources: &Resources, _: &mut Bus) -> Outcome<(), String> {
+        async fn run(&self, _: u32, resources: &Resources, bus: &mut Bus) -> Outcome<(), String> {
+            assert!(!bus.cancellation_token().unwrap().is_cancelled());
             resources.effects.fetch_add(1, Ordering::SeqCst);
             Outcome::Next(())
         }
