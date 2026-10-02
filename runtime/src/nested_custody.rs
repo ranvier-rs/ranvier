@@ -91,7 +91,62 @@ pub(crate) struct WeakCustody {
     record: Weak<dyn Any + Send + Sync>,
     store: Weak<StoreInner>,
 }
+/// One pre-context root slot. No user capability lives in its placeholder.
+/// Finalization is a single decision; Drop retires only an unfinalized marker.
+#[cfg(feature = "streaming")]
+pub(crate) struct CustodyReservation {
+    receipt: Option<WeakCustody>,
+    marker: Capability,
+}
+#[cfg(feature = "streaming")]
+impl CustodyReservation {
+    pub(crate) fn finalize_stream(&mut self, client: &WeakCustodyClient, owner: Capability,
+        task: Capability, journal: &crate::SagaRollbackJournal,
+        observer: tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>)
+        -> Result<WeakCustody, &'static str> {
+        let receipt = self.receipt.as_ref().ok_or("execution.nested_reservation_decided")?;
+        if !Weak::ptr_eq(&client.0, &receipt.store) { return Err("execution.nested_custody_mismatch"); }
+        let store = receipt.store.upgrade().ok_or("execution.parent_custody_released")?;
+        let released = {
+            let mut records = store.records.lock().map_err(|_| "execution.nested_custody_unavailable")?;
+            if store.closed.load(Ordering::Acquire) { return Err("execution.parent_custody_released"); }
+            // A closed drain snapshot must not miss a subsequently attached task.
+            if store.admission_closed.load(Ordering::Acquire) { return Err("execution.nested_custody_admission_closed"); }
+            let record = records.get_mut(&receipt.id).ok_or("execution.parent_custody_released")?;
+            if !Arc::ptr_eq(&record.owner, &self.marker) || record.task.is_some() {
+                return Err("execution.nested_reservation_mismatch");
+            }
+            journal.retain_stream_child(observer);
+            std::mem::replace(record, CustodyRecord { owner: owner.clone(), task: Some(task) })
+        };
+        let registered = WeakCustody { id: receipt.id, record: Arc::downgrade(&owner), store: receipt.store.clone() };
+        self.receipt = None;
+        drop(released);
+        Ok(registered)
+    }
+}
+#[cfg(feature = "streaming")]
+impl Drop for CustodyReservation {
+    fn drop(&mut self) {
+        let Some(receipt) = &self.receipt else { return; };
+        let Some(store) = receipt.store.upgrade() else { return; };
+        let released = {
+            let mut records = store.records.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if records.get(&receipt.id).is_some_and(|record| Arc::ptr_eq(&record.owner, &self.marker) && record.task.is_none()) {
+                records.remove(&receipt.id)
+            } else { None }
+        };
+        drop(released);
+    }
+}
+
 impl CustodyStore {
+    #[cfg(feature = "streaming")]
+    pub(crate) fn reserve_stream_slot(&self) -> Result<CustodyReservation, &'static str> {
+        let marker: Capability = Arc::new(());
+        let receipt = reserve_in(&self.0 .0, marker.clone())?;
+        Ok(CustodyReservation { receipt: Some(receipt), marker })
+    }
     pub(crate) fn new(capacity: usize) -> Self {
         Self(Arc::new(StoreOwner(Arc::new(StoreInner {
             closed: AtomicBool::new(false),
@@ -299,6 +354,42 @@ impl WeakCustody {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "streaming")]
+    fn slot_observer() -> tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation> {
+        tokio::sync::watch::channel(crate::streaming_recovery::SupervisorObservation {
+            phase: crate::streaming_recovery::SupervisorPhase::NotStarted,
+            disposition: None, cleanup_complete: None, cleanup_timed_out: false,
+            custody: crate::streaming_recovery::RecoveryCustody::Held,
+        }).1
+    }
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn reserved_root_slot_transfers_same_record_and_starts_exact_frame_once() {
+        use crate::managed_stream_task::PreparedStreamTask;
+        let root = CustodyStore::new(1);
+        let mut reservation = root.reserve_stream_slot().unwrap();
+        let id = reservation.receipt.as_ref().unwrap().id();
+        assert!(root.reserve_stream_slot().is_err());
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let owner: Capability = calls.clone();
+        let observed = calls.clone();
+        let mut prepared = PreparedStreamTask::new_owned(owner.clone(), async move {
+            observed.fetch_add(1, Ordering::SeqCst); 191u32
+        });
+        let journal = crate::SagaRollbackJournal::new("reserved-root");
+        let registered = reservation.finalize_stream(&root.client(), owner.clone(), prepared.holder(), &journal, slot_observer()).unwrap();
+        assert_eq!(registered.id(), id);
+        assert_eq!(root.0 .0.records.lock().unwrap().len(), 1);
+        assert_eq!(journal.retained_stream_observations().len(), 1);
+        assert!(matches!(reservation.finalize_stream(&root.client(), owner, prepared.holder(), &journal, slot_observer()),
+            Err("execution.nested_reservation_decided")));
+        drop(reservation);
+        assert!(registered.upgrade().is_some());
+        prepared.grant_registered_start(&registered).unwrap();
+        assert!(matches!(prepared.holder().lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(Some(191)))));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
     #[cfg(feature = "streaming")]
     #[tokio::test]
     async fn ordinary_owner_receipt_cannot_grant_prepared_task() {
