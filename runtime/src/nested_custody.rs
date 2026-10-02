@@ -301,6 +301,19 @@ mod tests {
     use super::*;
     #[cfg(feature = "streaming")]
     #[tokio::test]
+    async fn ordinary_owner_receipt_cannot_grant_prepared_task() {
+        use crate::managed_stream_task::PreparedStreamTask;
+        use tokio::time::Instant;
+        let root = CustodyStore::new(1);
+        let ordinary = root.reserve(Arc::new(127u32)).unwrap();
+        root.close_admission().unwrap();
+        let mut prepared = PreparedStreamTask::new(async { panic!("ordinary owner must not authorize start"); });
+        assert_eq!(prepared.grant_registered_start(&ordinary), Err("execution.nested_task_registration_mismatch"));
+        assert!(matches!(prepared.reject_until(Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+        assert!(ordinary.upgrade().is_some());
+    }
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
     async fn poisoned_registered_start_keeps_gate_rejectable_and_joinable() {
         use crate::managed_stream_task::PreparedStreamTask;
         use tokio::time::Instant;
