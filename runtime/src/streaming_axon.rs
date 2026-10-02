@@ -491,7 +491,7 @@ mod tests {
     }
     #[tokio::test]
     async fn owned_bounded_producer_preserves_eof_and_disconnect_reports() {
-        for disconnect in [false, true] {
+        for mode in 0..3 {
             let circuit = circuit(&["a", "b"]).with_buffer_size(1).map_items(|item| format!("{item}1"));
             let plan = match circuit.owned_definition.try_plan::<Chunks, String>(
                 OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
@@ -505,10 +505,12 @@ mod tests {
             assert_eq!(receiver.max_capacity(), 1);
             let root = crate::nested_custody::CustodyStore::new(1);
             let journal = crate::SagaRollbackJournal::new("bounded-plan-parent");
-            plan.owner.register_and_start(root.client(), &journal, control, &mut prepared).await
+            plan.owner.register_and_start(root.client(), &journal, control.clone(), &mut prepared).await
                 .unwrap_or_else(|error| panic!("{}", error.signal));
             assert_eq!(receiver.recv().await, Some("a1".to_string()));
-            if disconnect { drop(receiver); } else {
+            if mode == 1 { drop(receiver); } else if mode == 2 {
+                control.cancel(ranvier_core::CancellationReason::Explicit);
+            } else {
                 assert_eq!(receiver.recv().await, Some("b1".to_string()));
                 assert_eq!(receiver.recv().await, None);
             }
@@ -516,8 +518,14 @@ mod tests {
             let joined = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
             match joined {
                 Ok(StreamInitializationReport::Ready { value, .. }) => {
+                    if mode == 2 {
+                        assert!(matches!(value.consumption,
+                            Err(crate::streaming_recovery::StreamDriverError::Cancelled(context))
+                            if context.reason == ranvier_core::CancellationReason::Explicit));
+                        continue;
+                    }
                     let consumed = value.consumption.unwrap();
-                    if disconnect {
+                    if mode == 1 {
                         assert!(matches!(consumed.terminal, crate::StreamConsumptionTerminal::Cancelled(context)
                             if context.reason == ranvier_core::CancellationReason::ClientDisconnected));
                     } else { assert_eq!(consumed.terminal, crate::StreamConsumptionTerminal::Completed); }
