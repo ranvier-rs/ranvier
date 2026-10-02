@@ -414,6 +414,7 @@ impl<In, Out, E, Res> std::fmt::Debug for StreamRecoveryAdmissionRejected<In, Ou
     }
 }
 impl<In, Out, E, Res> StreamRecoveryAdmissionRejected<In, Out, E, Res> {
+    pub(crate) fn reason(&self) -> RecoveryAdmissionFailure { self.reason }
     pub(crate) fn into_parts(self) -> (Axon<In, Out, E, Res>, OwnedStreamContext<Res>) {
         (self.graph, self.context)
     }

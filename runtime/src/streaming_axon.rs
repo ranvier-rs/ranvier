@@ -606,30 +606,56 @@ mod tests {
     }
     #[tokio::test]
     async fn reserved_callable_plan_consumes_one_slot_and_runs_registered_frame() {
-        let circuit = circuit(&["reserved"]);
-        let admission = crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1);
-        let permit = admission.reserve().unwrap();
-        assert_eq!(admission.in_use().unwrap(), 1);
-        assert!(admission.reserve().is_err());
-        let mut plan = match circuit.owned_definition.try_callable_plan_reserved(
-            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(), &admission, None, permit) {
-            Ok(plan) => plan, Err(_) => panic!("reserved capacity must transfer without second reservation"),
+        for closed in [false, true] {
+            let circuit = circuit(&["reserved"]);
+            let admission = crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1);
+            let permit = admission.reserve().unwrap();
+            assert_eq!(admission.in_use().unwrap(), 1);
+            assert!(admission.reserve().is_err());
+            if closed { admission.close().unwrap(); }
+            let mut plan = match circuit.owned_definition.try_callable_plan_reserved(
+                OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(), &admission, None, permit) {
+                Ok(plan) => plan, Err(_) => panic!("reserved capacity must transfer without second reservation"),
+            };
+            assert_eq!(admission.in_use().unwrap(), 1);
+            let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+                Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
+            };
+            let report = plan.report_handle(&prepared).unwrap();
+            let root = crate::nested_custody::CustodyStore::new(1);
+            let journal = crate::SagaRollbackJournal::new("reserved-parent");
+            plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+                .unwrap_or_else(|error| panic!("{}", error.signal));
+            assert_eq!(receiver.recv().await, Some("reserved".to_string()));
+            assert_eq!(receiver.recv().await, None);
+            assert!(matches!(report.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await,
+                Ok(crate::streaming_report_handle::SupervisedStreamCompletion::Report(StreamInitializationReport::Ready { .. }))));
+            drop(plan); drop(prepared); drop(root); drop(report);
+            assert_eq!(admission.in_use().unwrap(), 0);
+            if closed { assert!(admission.reserve().is_err()); }
+        }
+    }
+
+    #[test]
+    fn reserved_callable_foreign_permit_rejects_and_preserves_original_context() {
+        let circuit = circuit(&["a"]);
+        let foreign = crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1);
+        let target = crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1);
+        let permit = foreign.reserve().unwrap();
+        let resources = Arc::new(());
+        let mut bus = Bus::new(); bus.insert(173u32);
+        let rejected = match circuit.owned_definition.try_callable_plan_reserved(
+            OwnedStreamContext::try_new(resources.clone(), bus).unwrap(), &target, None, permit) {
+            Err(OwnedStreamPlanRejected::Admission(rejected)) => rejected,
+            _ => panic!("foreign permit must reject before owner construction"),
         };
-        assert_eq!(admission.in_use().unwrap(), 1);
-        let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
-            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
-        };
-        let report = plan.report_handle(&prepared).unwrap();
-        let root = crate::nested_custody::CustodyStore::new(1);
-        let journal = crate::SagaRollbackJournal::new("reserved-parent");
-        plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
-            .unwrap_or_else(|error| panic!("{}", error.signal));
-        assert_eq!(receiver.recv().await, Some("reserved".to_string()));
-        assert_eq!(receiver.recv().await, None);
-        assert!(matches!(report.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await,
-            Ok(crate::streaming_report_handle::SupervisedStreamCompletion::Report(StreamInitializationReport::Ready { .. }))));
-        drop(plan); drop(prepared); drop(root); drop(report);
-        assert_eq!(admission.in_use().unwrap(), 0);
+        assert_eq!(rejected.reason(), crate::streaming_recovery_admission::RecoveryAdmissionFailure::PermitMismatch);
+        let (_graph, context) = rejected.into_parts();
+        let (returned, bus) = context.into_parts();
+        assert!(Arc::ptr_eq(&returned, &resources));
+        assert_eq!(bus.read::<u32>(), Some(&173));
+        assert_eq!(target.in_use().unwrap(), 0);
+        assert_eq!(foreign.in_use().unwrap(), 0);
     }
 
     #[tokio::test]

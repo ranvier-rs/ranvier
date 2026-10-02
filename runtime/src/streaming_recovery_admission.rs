@@ -82,6 +82,22 @@ impl Drop for RecoveryPermit {
 mod tests {
     use super::*;
     #[test]
+    fn reserved_permit_validation_fails_closed_after_poison() {
+        let admission = StreamRecoveryAdmission::new(1);
+        let permit = admission.reserve().unwrap();
+        let poisoned = admission.clone();
+        assert!(std::thread::spawn(move || {
+            let _state = poisoned.0.lock().unwrap();
+            panic!("fixture poison");
+        }).join().is_err());
+        assert_eq!(admission.validate_permit(&permit), Err(RecoveryAdmissionFailure::Poisoned));
+        drop(permit);
+        assert!(admission.reserve().is_err());
+        let state = admission.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(state.used, 0);
+    }
+
+    #[test]
     fn simultaneous_reservations_stay_bounded_and_close_cannot_reopen() {
         let admission = StreamRecoveryAdmission::new(4);
         let ready = Arc::new(std::sync::Barrier::new(17));
