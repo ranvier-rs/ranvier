@@ -102,3 +102,8 @@ pub use streaming_axon::{
 #[cfg(feature = "streaming")]
 pub use streaming_initialization::{StreamInitializationError, StreamInitializationReport};
 pub use testkit::AxonTestKit;
+
+#[cfg(feature = "streaming")]
+pub mod streaming_consumption;
+#[cfg(feature = "streaming")]
+pub use streaming_consumption::{ObservedStream, StreamConsumptionReport, StreamConsumptionTerminal};
