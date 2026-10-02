@@ -61,7 +61,6 @@ impl StreamingTransition<Owned> for Init {
 }
 #[tokio::test]
 async fn public_mapping_and_collection_preserve_move_only_rejection_without_initializing() {
-    use futures_util::StreamExt;
     for stored in [false, true] {
         for wrapper in 0..3 {
             let effects = Arc::new(AtomicUsize::new(0));
@@ -198,4 +197,105 @@ async fn acknowledged_prefix_completion_does_not_certify_failed_initializer() {
             .completion,
         Some(CompletionState::Success)
     );
+}
+
+#[derive(Clone)]
+struct PartialInit(Arc<AtomicUsize>, Option<ranvier_core::CancellationToken>);
+#[async_trait::async_trait]
+impl StreamingTransition<()> for PartialInit {
+    type Item = std::cell::Cell<usize>;
+    type Error = String;
+    type Resources = ();
+    async fn run_stream(
+        &self,
+        _: (),
+        _: &(),
+        _: &mut Bus,
+    ) -> Result<Pin<Box<dyn futures_util::Stream<Item = Self::Item> + Send>>, String> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        let token = self.1.clone();
+        let mut first = true;
+        Ok(Box::pin(futures_util::stream::poll_fn(move |_| {
+            if first {
+                first = false;
+                return std::task::Poll::Ready(Some(std::cell::Cell::new(7)));
+            }
+            if let Some(token) = &token {
+                token.cancel(ranvier_core::CancellationReason::Explicit);
+            }
+            std::task::Poll::Pending
+        })))
+    }
+}
+#[tokio::test]
+async fn public_collector_preserves_partial_timeout_cancel_and_precancel_rejection() {
+    use ranvier_runtime::StreamConsumptionTerminal;
+    for mode in 0..3 {
+        let init = Arc::new(AtomicUsize::new(0));
+        let token = ranvier_core::CancellationToken::new();
+        if mode == 2 {
+            token.cancel(ranvier_core::CancellationReason::Explicit);
+        }
+        let circuit = Axon::<(), (), String>::start("partial-collector")
+            .then_stream(PartialInit(
+                init.clone(),
+                (mode == 1).then_some(token.clone()),
+            ))
+            .with_timeout(ranvier_core::streaming::StreamTimeoutConfig {
+                init: None,
+                idle: Some(std::time::Duration::from_millis(20)),
+                total: None,
+            })
+            .collect_into_vec();
+        let mut bus = Bus::new();
+        let report = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            if mode == 0 {
+                circuit.execute((), &(), &mut bus).await
+            } else {
+                circuit.execute_cancellable((), &(), &mut bus, token).await
+            }
+        })
+        .await
+        .unwrap();
+        if mode == 2 {
+            assert!(matches!(
+                report,
+                StreamInitializationReport::Rejected {
+                    prefix: ExecutionReport::Unpersisted {
+                        result: ExecutionTerminal::Cancelled(_),
+                        cleanup: None
+                    }
+                }
+            ));
+            assert_eq!(init.load(Ordering::SeqCst), 0);
+        } else {
+            match report {
+                StreamInitializationReport::Ready {
+                    value,
+                    prefix:
+                        ExecutionReport::Unpersisted {
+                            result: (),
+                            cleanup: None,
+                        },
+                } => {
+                    assert_eq!(value.items.len(), 1);
+                    assert_eq!(value.items[0].get(), 7);
+                    if mode == 0 {
+                        assert_eq!(
+                            value.terminal,
+                            StreamConsumptionTerminal::TimedOut(
+                                ranvier_runtime::StreamTimeoutKind::Idle
+                            )
+                        );
+                    } else {
+                        assert!(
+                            matches!(value.terminal, StreamConsumptionTerminal::Cancelled(context) if context.reason == ranvier_core::CancellationReason::Explicit)
+                        );
+                    }
+                }
+                _ => panic!("partial collection lost its typed report"),
+            }
+            assert_eq!(init.load(Ordering::SeqCst), 1);
+        }
+    }
 }
