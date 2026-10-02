@@ -6862,6 +6862,25 @@ mod tests {
         assert!(registry.reserve().await.is_none());
     }
 
+    #[tokio::test]
+    async fn managed_task_reservation_drop_and_start_both_complete_drain() {
+        for start in [false, true] {
+            let registry = ManagedTaskRegistry::default();
+            let reservation = registry.reserve().await.unwrap();
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            if start {
+                let executed = calls.clone();
+                assert!(reservation.start(async move {
+                    executed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }).is_ok());
+            } else { drop(reservation); }
+            let report = registry.drain_until(tokio::time::Instant::now() + Duration::from_secs(1)).await;
+            assert_eq!(report.forced_aborts, 0);
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), usize::from(start));
+            assert!(registry.tasks.lock().await.is_empty());
+        }
+    }
+
     #[test]
     fn cancellation_http_status_is_shared_by_ordinary_and_streaming_routes() {
         let deadline = cancellation_http_response(&CancellationContext::new(
