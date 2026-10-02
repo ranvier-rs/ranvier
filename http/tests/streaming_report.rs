@@ -270,3 +270,67 @@ async fn late_timeout_and_cancellation_emit_error_without_done() {
         assert_eq!(initialized.load(Ordering::SeqCst), 1);
     }
 }
+
+#[tokio::test]
+async fn initializer_incomplete_cleanup_is_explicit_without_private_values() {
+    for mode in [4, 5] {
+        let effects = Arc::new(AtomicUsize::new(0));
+        let undo = Arc::new(AtomicUsize::new(0));
+        let init = Arc::new(AtomicUsize::new(0));
+        let backing = InMemoryPersistenceStore::new();
+        let store = backing.clone();
+        let stream = Axon::<(), (), String>::start("incomplete-init-cleanup")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect(effects.clone()), Comp(undo.clone()))
+            .then_stream(Init(init.clone(), mode));
+        let app = TestApp::new(
+            Ranvier::http::<()>()
+                .bus_injector(move |_, bus| {
+                    bus.insert(PersistenceHandle::from_store(store.clone()));
+                    bus.insert(PersistenceTraceId::new("incomplete-init-cleanup"));
+                })
+                .post_sse("/stream", stream),
+            (),
+        );
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            app.send(TestRequest::post("/stream")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            response.status().as_u16(),
+            if mode == 4 { 500 } else { 503 }
+        );
+        assert_eq!(response.header("cache-control").unwrap(), "no-store");
+        let body = response.text().unwrap();
+        assert!(!body.contains(PRIVATE));
+        assert!(!body.contains("private-compensation-error"));
+        assert!(!body.contains("private-init-error"));
+        assert!(!body.contains("[DONE]"));
+        assert!(!body.contains("data:"));
+        let report: serde_json::Value = response.json().unwrap();
+        assert_eq!(report["initialization_cleanup"]["finished"], true);
+        assert_eq!(
+            report["initialization_cleanup"]["steps"][0]["outcome"],
+            "fault"
+        );
+        assert_eq!(report["initialization_cleanup_complete"], false);
+        assert_eq!(report["reconciliation_required"], true);
+        assert_eq!(report["prefix"]["durability"], "recorded");
+        assert_eq!(report["prefix"]["completion"], "confirmed");
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert_eq!(undo.load(Ordering::SeqCst), 1);
+        assert_eq!(init.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            backing
+                .load("incomplete-init-cleanup")
+                .await
+                .unwrap()
+                .unwrap()
+                .completion,
+            Some(CompletionState::Success)
+        );
+    }
+}
