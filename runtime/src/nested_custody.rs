@@ -227,6 +227,24 @@ impl WeakCustody {
 mod tests {
     use super::*;
     #[test]
+    fn closed_task_snapshot_excludes_plain_owners_and_keeps_holder_after_record_release() {
+        let root = CustodyStore::new(2);
+        let ordinary = root.reserve(Arc::new(53u32)).unwrap();
+        let holder: Capability = Arc::new(59u32);
+        let weak = Arc::downgrade(&holder);
+        let managed = reserve_in_with(&root.0 .0, Arc::new(61u32), Some(holder), || {}).unwrap();
+        root.close_admission().unwrap();
+        let snapshot = root.closed_tasks().unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].0, managed.id);
+        managed.release();
+        ordinary.release();
+        assert!(root.closed_tasks().unwrap().is_empty());
+        assert!(weak.upgrade().is_some());
+        drop(snapshot);
+        assert!(weak.upgrade().is_none());
+    }
+    #[test]
     fn admission_closure_cannot_pass_framework_registration_gate() {
         let root = CustodyStore::new(1);
         let core = root.0 .0.clone();
