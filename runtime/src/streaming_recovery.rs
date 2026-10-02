@@ -1422,6 +1422,56 @@ mod tests {
             RecoveryCustody::ReleasedWithPendingTasks
         );
     }
+    #[derive(Clone)]
+    struct DropNestedSaga;
+    #[async_trait::async_trait]
+    impl Transition<u32, u32> for DropNestedSaga {
+        type Error = String;
+        type Resources = Resources;
+        async fn run(&self, input: u32, resources: &Resources, bus: &mut Bus) -> Outcome<u32, String> {
+            let entered = Arc::new(Notify::new());
+            let child = Axon::<u32, u32, String, Resources>::start("nested-saga-remaining")
+                .with_saga_policy(SagaPolicy::Enabled)
+                .then_compensated(AdvancingEffect, Undo)
+                .then_compensated(AdvancingEffect, PendingUndo(entered.clone(), Arc::new(std::sync::Mutex::new(None))))
+                .then(FailingEffect);
+            {
+                let execution = child.execute(input, resources, bus);
+                tokio::pin!(execution);
+                tokio::select! {
+                    _ = entered.notified() => {},
+                    _ = &mut execution => panic!("pending child undo returned"),
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => panic!("child undo did not start"),
+                }
+            }
+            Outcome::Next(input)
+        }
+    }
+    #[tokio::test]
+    async fn nested_pending_undo_retains_popped_and_remaining_child_inputs() {
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let owner = OwnedStreamRecovery::try_new(
+            Axon::<u32, u32, String, Resources>::start("parent-remaining").then(DropNestedSaga),
+            OwnedStreamContext::try_new(resources, Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1), None).unwrap();
+        let report = owner.initialize_and_drive(171, &Init, None, std::time::Duration::from_secs(5), |_| async {
+            panic!("interrupted child must reject admission");
+            #[allow(unreachable_code)] completed()
+        }).await.unwrap();
+        assert!(matches!(report, StreamInitializationReport::Rejected { .. }));
+        let context = owner.inner.context.lock().await;
+        let children = context.1.read::<crate::SagaRollbackJournal>().unwrap().retained_children();
+        assert_eq!(children.len(), 1);
+        let child = &children[0].1;
+        let pending = child.unresolved_tasks();
+        assert_eq!(pending.len(), 2, "remaining child stack must not be discarded");
+        assert_eq!(pending[0].input_snapshot, b"172");
+        assert_eq!(pending[1].input_snapshot, b"171");
+        let report = child.snapshot();
+        assert!(!report.finished);
+        assert_eq!(report.steps[0].outcome, crate::SagaRollbackOutcome::InProgress);
+        assert_eq!(report.steps[1].outcome, crate::SagaRollbackOutcome::NotInvoked);
+    }
     struct ExternalHook {
         mode: u8,
         calls: Arc<AtomicUsize>,
