@@ -6719,6 +6719,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_task_admission_rechecks_closure_after_waiting() {
+        let registry = ManagedTaskRegistry::default();
+        let held = registry.tasks.lock().await;
+        let mut attempt = Box::pin(registry.spawn(std::future::pending::<()>()));
+        assert!(futures_util::poll!(&mut attempt).is_pending());
+        registry.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(held);
+        assert!(attempt.await.is_err(), "closure during lock wait must reject ownership");
+        assert!(registry.tasks.lock().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn managed_task_rejection_returns_unpolled_future_ownership() {
         struct DropProbe(Arc<std::sync::atomic::AtomicUsize>);
         impl Drop for DropProbe {
