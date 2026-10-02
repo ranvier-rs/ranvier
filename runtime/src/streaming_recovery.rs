@@ -343,7 +343,7 @@ where
 }
 
 #[derive(Clone)]
-pub(crate) struct ParentStreamCustody(crate::nested_custody::WeakCustody);
+pub(crate) struct ParentStreamCustody(crate::nested_custody::WeakCustody, Option<CancellationToken>);
 
 /// A single invocation's exact graph, typed resources and request Bus. An external
 /// clone must outlive the supervisor, including forced task abort. No replay API.
@@ -487,6 +487,16 @@ where
     pub(crate) async fn admit_to_parent(
         &self, client: crate::nested_custody::WeakCustodyClient,
     ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
+        self.admit_to_parent_with_control(client, None).await
+    }
+
+    /// Freeze inherited control at admission. A descendant can cancel locally
+    /// without cancelling its parent; execution cannot replace this authority.
+    pub(crate) async fn admit_to_parent_with_control(
+        &self,
+        client: crate::nested_custody::WeakCustodyClient,
+        parent: Option<CancellationToken>,
+    ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
         if self.inner.started.load(Ordering::Acquire) {
             return Err("execution.nested_stream_already_started");
         }
@@ -506,7 +516,7 @@ where
             }
             let admission = client.reserve(self.inner.clone())?;
             bus.insert(client);
-            bus.insert(ParentStreamCustody(admission.clone()));
+            bus.insert(ParentStreamCustody(admission.clone(), parent.map(|token| token.child_token())));
             Ok(admission)
         })();
         bus.restore_access_scope(access);
@@ -551,12 +561,6 @@ where
         {
             return Err(StreamInvocationAlreadyStarted);
         }
-        let parent = token.unwrap_or_default();
-        let token = match self.inner.expires {
-            Some(expires) => parent
-                .child_with_deadline(expires.saturating_duration_since(std::time::Instant::now())),
-            None => parent,
-        };
         let observation = SupervisorObservationGuard {
             sender: self.inner.observation.clone(),
             armed: true,
@@ -567,16 +571,25 @@ where
         let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
         let parent_admission = owner.bus().read::<ParentStreamCustody>().cloned();
         let parent_client = owner.bus().read::<crate::nested_custody::WeakCustodyClient>().cloned();
-        let validation = match (parent_admission, parent_client) {
+        let inherited = parent_admission.as_ref().and_then(|admission| admission.1.clone());
+        let validation = if inherited.is_some() && token.is_some() {
+            Err("execution.nested_stream_control_override")
+        } else { match (parent_admission, parent_client) {
             (Some(admission), Some(client)) => client.validate_member(&admission.0, &(self.inner.clone() as Arc<dyn std::any::Any + Send + Sync>)),
             (None, None) => Ok(()),
             _ => Err("execution.nested_stream_custody_mismatch"),
-        };
+        } };
         if let Err(signal) = validation {
             let prefix = owner.finish(crate::ExecutionTerminal::Outcome(ranvier_core::Outcome::emit(signal, None)));
             observation.returned(SupervisorDisposition::PrefixRejected, None);
             return Ok(StreamInitializationReport::Rejected { prefix });
         }
+        let parent = inherited.or(token).unwrap_or_default();
+        let token = match self.inner.expires {
+            Some(expires) => parent.child_with_deadline(
+                expires.saturating_duration_since(std::time::Instant::now())),
+            None => parent,
+        };
         owner.bus().insert(crate::nested_custody::RequiredOwnedCustody);
         if !owner.bus().has::<crate::nested_custody::WeakCustodyClient>() {
             owner.bus().insert(crate::nested_custody::CustodyStore::new(128));
@@ -2389,6 +2402,45 @@ mod tests {
         assert!(journal.has_unresolved_tasks());
         assert!(!journal.snapshot().is_complete());
         assert_eq!(journal.retained_stream_observations()[0].1.custody, RecoveryCustody::ReleasedWithPendingTasks);
+    }
+    #[tokio::test]
+    async fn bound_parent_control_cancels_actual_child_initializer_and_rejects_override_before_effects() {
+        for override_control in [false, true] {
+            let parent = crate::nested_custody::CustodyStore::new(1);
+            let control = CancellationToken::new();
+            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let child = OwnedStreamRecovery::try_new(
+                Axon::<u32, u32, String, Resources>::start("inherited-child-control")
+                    .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                &StreamRecoveryAdmission::new(1), None).unwrap();
+            let admission = child.admit_to_parent_with_control(parent.client(), Some(control.clone())).await.unwrap();
+            let entered = Arc::new(Notify::new());
+            let signal = entered.clone();
+            let task = tokio::spawn(async move {
+                child.initialize_and_drive(307, &PendingInit(signal),
+                    override_control.then(CancellationToken::new), std::time::Duration::from_secs(5), |_| async {
+                        panic!("cancelled or rejected initializer cannot run driver");
+                        #[allow(unreachable_code)] completed()
+                    }).await
+            });
+            if !override_control {
+                tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+                control.cancel(ranvier_core::CancellationReason::OperatorShutdown);
+            }
+            let report = tokio::time::timeout(std::time::Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
+            if override_control {
+                assert!(matches!(report, StreamInitializationReport::Rejected { prefix:
+                    crate::ExecutionReport::Unpersisted { result: crate::ExecutionTerminal::Outcome(Outcome::Emit(signal, _)), .. } }
+                        if signal == "execution.nested_stream_control_override"));
+                assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+                assert!(!control.is_cancelled());
+            } else {
+                assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+                assert_eq!(control.context().unwrap().reason, ranvier_core::CancellationReason::OperatorShutdown);
+            }
+            admission.release();
+        }
     }
     struct ExternalHook {
         mode: u8,
