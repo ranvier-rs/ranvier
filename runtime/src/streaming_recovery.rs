@@ -1624,6 +1624,100 @@ mod tests {
                 .is_empty()
         );
     }
+    #[tokio::test]
+    async fn already_expired_store_owner_rejects_before_effect_and_driver() {
+        let store = StreamRecoveryStore::new(1, std::time::Duration::ZERO);
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let graph = Axon::<u32, u32, String, Resources>::start("expired-before-entry")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Undo);
+        let (_, owner) = store
+            .admit(
+                graph,
+                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            )
+            .unwrap();
+        let drivers = Arc::new(AtomicUsize::new(0));
+        let driver_calls = drivers.clone();
+        let report = owner
+            .initialize_and_drive(79, &Init, None, move |_| async move {
+                driver_calls.fetch_add(1, Ordering::SeqCst);
+                completed()
+            })
+            .await;
+        assert!(matches!(
+            report,
+            Ok(StreamInitializationReport::Rejected { .. })
+        ));
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+        assert_eq!(drivers.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            owner.observe().borrow().disposition,
+            Some(SupervisorDisposition::PrefixRejected)
+        );
+    }
+    #[tokio::test]
+    async fn retention_cancels_pending_initializer_without_cancelling_parent_token() {
+        let store = StreamRecoveryStore::new(1, std::time::Duration::from_millis(200));
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let graph = Axon::<u32, u32, String, Resources>::start("initializer-retention")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Undo);
+        let (_, owner) = store
+            .admit(
+                graph,
+                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            )
+            .unwrap();
+        let parent = CancellationToken::new();
+        let task_token = parent.clone();
+        let entered = Arc::new(Notify::new());
+        let task_entered = entered.clone();
+        let task_owner = owner.clone();
+        let drivers = Arc::new(AtomicUsize::new(0));
+        let driver_calls = drivers.clone();
+        let task = tokio::spawn(async move {
+            task_owner
+                .initialize_and_drive(
+                    83,
+                    &PendingInit(task_entered),
+                    Some(task_token),
+                    move |_| async move {
+                        driver_calls.fetch_add(1, Ordering::SeqCst);
+                        completed()
+                    },
+                )
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(3), entered.notified())
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), task)
+            .await
+            .unwrap()
+            .unwrap();
+        let Ok(StreamInitializationReport::Cancelled {
+            context,
+            initialization_cleanup,
+            ..
+        }) = result
+        else {
+            panic!("expected initializer deadline cancellation");
+        };
+        assert_eq!(
+            context.reason,
+            ranvier_core::CancellationReason::DeadlineExceeded
+        );
+        assert!(initialization_cleanup.unwrap().is_complete());
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+        assert_eq!(drivers.load(Ordering::SeqCst), 0);
+        assert!(!parent.is_cancelled());
+        assert_eq!(owner.observe().borrow().cleanup_complete, Some(true));
+    }
     fn completed() -> StreamDriveResult<()> {
         StreamDriveResult {
             value: (),
