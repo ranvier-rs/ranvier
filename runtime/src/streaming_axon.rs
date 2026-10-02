@@ -466,6 +466,30 @@ mod tests {
         assert!(Arc::ptr_eq(&resources, &returned));
         assert_eq!(bus.read::<u32>(), Some(&139));
     }
+    #[test]
+    fn owned_plan_configuration_tracks_modifiers_without_changing_original_clone() {
+        let original = circuit(&["a"]);
+        let configured = original.clone().with_buffer_size(11).map_items(|item| item)
+            .with_timeout(StreamTimeoutConfig {
+                init: Some(std::time::Duration::from_secs(3)),
+                idle: Some(std::time::Duration::from_secs(5)),
+                total: Some(std::time::Duration::from_secs(7)),
+            }).with_buffer_size(13);
+        assert_eq!(original.owned_definition.buffer_size, 64);
+        assert!(original.owned_definition.timeout_config.is_none());
+        assert!(Arc::ptr_eq(&original.owned_definition.initializer, &configured.owned_definition.initializer));
+        let plan = match configured.owned_definition.try_plan::<Chunks, String>(
+            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
+            Ok(plan) => plan, Err(_) => panic!("configured plan rejected"),
+        };
+        assert_eq!(plan.buffer_size, 13);
+        let timeout = plan.timeout_config.unwrap();
+        assert_eq!(timeout.init, Some(std::time::Duration::from_secs(3)));
+        assert_eq!(timeout.idle, Some(std::time::Duration::from_secs(5)));
+        assert_eq!(timeout.total, Some(std::time::Duration::from_secs(7)));
+        assert_eq!(plan.item_maps.len(), 1);
+    }
     #[tokio::test]
     async fn prepared_plan_retains_recovery_permit_until_rejected_frame_join() {
         let original = circuit(&["a"]);
