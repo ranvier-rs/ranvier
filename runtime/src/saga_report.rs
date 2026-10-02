@@ -165,6 +165,12 @@ impl SagaRollbackJournal {
     pub(crate) fn retained_custody(&self) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
         self.4.lock().unwrap_or_else(|p| p.into_inner()).as_ref().and_then(|record| record.upgrade())
     }
+    #[cfg(all(test, feature = "streaming"))]
+    pub(crate) fn poison_retention_for_test(&self) {
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = self.1.lock().unwrap(); panic!("retention poison fixture");
+        })).is_err());
+    }
     /// Owned local reconciliation inputs. These may contain secrets: never expose
     /// them as public responses/logs. Retention does not authorize replay or prove
     /// durable recovery; typed resources and graph handler ownership are still needed.
@@ -229,7 +235,7 @@ impl SagaRollbackJournal {
         }
         Ok(false)
     }
-    /// Conservative compatibility for retention callers: unknown means retain.
+    /// Retention callers treat any unknown state as unresolved.
     /// This is not report completeness, reconciliation or replay authority.
     pub(crate) fn has_unresolved_tasks(&self) -> bool {
         self.try_retained_work_pending(256).unwrap_or(true)
@@ -547,6 +553,31 @@ mod tests {
         assert!(std::thread::spawn(move || { let _held = poison.2.lock().unwrap(); panic!("retention poison fixture"); }).join().is_err());
         assert_eq!(child.try_retained_work_pending(4), Err(JournalRetentionError::Unavailable));
         assert!(child.has_unresolved_tasks());
+    }
+    #[test]
+    fn retained_work_scan_keeps_report_completeness_and_actual_inputs_separate() {
+        let root = SagaRollbackJournal::new("unfinished but no retained inputs");
+        assert!(!root.snapshot().is_complete());
+        assert_eq!(root.try_retained_work_pending(1), Ok(false));
+        assert_eq!(root.try_retained_work_pending(0), Err(JournalRetentionError::TraversalLimit));
+        let child = SagaRollbackJournal::new("original child input");
+        root.retain_child(child.clone());
+        child.push_uninvoked_task(ranvier_core::saga::SagaTask { node_id: "original".into(),
+            node_label: "private".into(), input_snapshot: vec![3, 7, 9] });
+        assert_eq!(root.try_retained_work_pending(2), Ok(true));
+        assert_eq!(child.1.lock().unwrap()[0].1.input_snapshot, [3, 7, 9]);
+    }
+    #[test]
+    fn repeated_child_identity_and_large_fanout_fail_closed() {
+        let root = SagaRollbackJournal::new("bounded child graph");
+        let child = SagaRollbackJournal::new("shared child");
+        root.retain_child(child.clone()); root.retain_child(child);
+        assert_eq!(root.try_retained_work_pending(4), Err(JournalRetentionError::TraversalLimit));
+        assert!(root.has_unresolved_tasks());
+        let wide = SagaRollbackJournal::new("wide graph");
+        for _ in 0..256 { wide.retain_child(SagaRollbackJournal::new("child")); }
+        assert_eq!(wide.try_retained_work_pending(256), Err(JournalRetentionError::TraversalLimit));
+        assert_eq!(wide.try_retained_work_pending(257), Ok(false));
     }
     #[cfg(feature = "streaming")]
     #[test]

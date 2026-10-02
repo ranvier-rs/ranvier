@@ -3404,6 +3404,27 @@ mod tests {
     }
     #[derive(Clone)]
     struct StopPrefix(Option<CancellationToken>);
+    #[tokio::test]
+    async fn final_owner_drop_preserves_unknown_journal_loss_and_original_observation() {
+        let admission = StreamRecoveryAdmission::new(1);
+        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let weak = Arc::downgrade(&resources);
+        let owner = OwnedStreamRecovery::try_new(Axon::<u32, u32, String, Resources>::start("unknown custody loss"),
+            OwnedStreamContext::try_new(resources, Bus::new()).unwrap(), &admission, None).unwrap();
+        let journal = crate::SagaRollbackJournal::new("private unknown journal");
+        journal.poison_retention_for_test();
+        owner.inner.context.lock().await.1.insert(journal.clone());
+        let observer = owner.observe();
+        let original = observer.borrow().clone();
+        drop(owner);
+        assert!(weak.upgrade().is_none()); assert_eq!(admission.in_use(), Ok(0));
+        let lost = observer.borrow().clone();
+        assert_eq!(lost.custody, RecoveryCustody::ReleasedWithUnknownState);
+        assert_eq!(lost.phase, original.phase); assert_eq!(lost.disposition, original.disposition);
+        assert_eq!(lost.cleanup_complete, original.cleanup_complete);
+        assert_eq!(lost.cleanup_timed_out, original.cleanup_timed_out);
+        assert_eq!(journal.try_retained_work_pending(256), Err(crate::saga_report::JournalRetentionError::Unavailable));
+    }
     #[tokio::test(start_paused = true)]
     async fn local_retirement_context_timeout_drop_and_changed_state_preserve_authority() {
         use crate::streaming_report_handle::{StreamReportHandle, StreamLocalRetirementError as Error, StreamReportWaitError};
