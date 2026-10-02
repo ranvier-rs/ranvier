@@ -23,6 +23,7 @@ pub struct StreamingAxon<In, Out, Item, E, Res = ()> {
 pub(crate) struct OwnedStreamDefinition<In, Out, Item, E, Res> {
     pub(crate) prefix: crate::Axon<In, Out, E, Res>,
     pub(crate) initializer: Arc<dyn std::any::Any + Send + Sync>,
+    pub(crate) callable_factory: OwnedPlanFactory<In, Out, Item, E, Res>,
     pub(crate) item_maps: Vec<Arc<dyn Fn(Item) -> Item + Send + Sync>>,
     pub(crate) timeout_config: Option<StreamTimeoutConfig>,
     pub(crate) buffer_size: usize,
@@ -38,6 +39,26 @@ pub(crate) struct OwnedStreamPlan<In, Out, Item, E, Res, S> {
     pub(crate) timeout_config: Option<StreamTimeoutConfig>,
     pub(crate) buffer_size: usize,
 }
+type BoundedFrame<Out, Item, E> = (
+    crate::managed_stream_task::PreparedStreamTask<Result<StreamInitializationReport<Out,
+        crate::streaming_recovery::StreamReadyResult<()>, E>, crate::streaming_recovery::StreamInvocationAlreadyStarted>>,
+    tokio::sync::mpsc::Receiver<Item>,
+);
+type OwnedPlanFactory<In, Out, Item, E, Res> = Arc<dyn Fn(
+    &OwnedStreamDefinition<In, Out, Item, E, Res>, OwnedStreamContext<Res>,
+    &crate::streaming_recovery_admission::StreamRecoveryAdmission, Option<std::time::Instant>,
+) -> Result<OwnedCallablePlan<In, Out, Item, E, Res>, OwnedStreamPlanRejected<In, Out, E, Res>> + Send + Sync>;
+/// Concrete initializer identity is hidden; original report and context types remain.
+pub(crate) struct OwnedCallablePlan<In, Out, Item, E, Res> {
+    pub(crate) owner: crate::streaming_recovery::OwnedStreamRecovery<In, Out, E, Res>,
+    prepare: Box<dyn Fn(In, std::time::Duration) -> Result<BoundedFrame<Out, Item, E>, BoundedPreparationRejected<In>> + Send + Sync>,
+}
+impl<In, Out, Item, E, Res> OwnedCallablePlan<In, Out, Item, E, Res> {
+    pub(crate) fn prepare_bounded(&self, input: In, grace: std::time::Duration)
+        -> Result<BoundedFrame<Out, Item, E>, BoundedPreparationRejected<In>> {
+        (self.prepare)(input, grace)
+    }
+}
 pub(crate) struct BoundedPreparationRejected<In> {
     pub(crate) signal: &'static str,
     pub(crate) input: In,
@@ -50,6 +71,26 @@ where
     Res: Send + Sync + 'static,
     Item: Send + 'static,
 {
+    /// Capture type selection at builder construction, while using current
+    /// definition settings at plan creation. No graph/context reconstruction.
+    pub(crate) fn factory<S, SErr>() -> OwnedPlanFactory<In, Out, Item, E, Res>
+    where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
+        SErr: Send + Sync + Debug + 'static,
+    {
+        Arc::new(|definition, context, admission, expires| {
+            let plan = definition.try_plan::<S, SErr>(context, admission, expires)?;
+            Ok(OwnedCallablePlan {
+                owner: plan.owner.clone(),
+                prepare: Box::new(move |input, grace| plan.prepare_bounded::<SErr>(input, grace)),
+            })
+        })
+    }
+    pub(crate) fn try_callable_plan(&self, context: OwnedStreamContext<Res>,
+        admission: &crate::streaming_recovery_admission::StreamRecoveryAdmission,
+        expires: Option<std::time::Instant>)
+        -> Result<OwnedCallablePlan<In, Out, Item, E, Res>, OwnedStreamPlanRejected<In, Out, E, Res>> {
+        (self.callable_factory)(self, context, admission, expires)
+    }
     pub(crate) fn try_plan<S, SErr>(&self, context: OwnedStreamContext<Res>,
         admission: &crate::streaming_recovery_admission::StreamRecoveryAdmission,
         expires: Option<std::time::Instant>)
@@ -200,6 +241,7 @@ where
     fn refresh_owned_config(&mut self) {
         self.owned_definition = Arc::new(OwnedStreamDefinition {
             prefix: self.owned_definition.prefix.clone(), initializer: self.owned_definition.initializer.clone(),
+            callable_factory: self.owned_definition.callable_factory.clone(),
             item_maps: self.owned_definition.item_maps.clone(), timeout_config: self.timeout_config.clone(), buffer_size: self.buffer_size,
         });
     }
@@ -219,6 +261,7 @@ where
         let owned_definition = Arc::new(OwnedStreamDefinition {
             prefix: self.owned_definition.prefix.clone(),
             initializer: self.owned_definition.initializer.clone(),
+            callable_factory: self.owned_definition.callable_factory.clone(),
             item_maps, timeout_config: self.timeout_config.clone(), buffer_size: self.buffer_size,
         });
         let executor: StreamExecutorType<In, Out, Item, E, Res> =
@@ -472,11 +515,40 @@ mod tests {
             _ => panic!("original report not ready"),
         }
     }
+    #[tokio::test]
+    async fn callable_owned_factory_runs_current_maps_without_initializer_type_at_call_site() {
+        let circuit = circuit(&["a"]).map_items(|item| format!("{item}1"))
+            .with_buffer_size(1).map_items(|item| format!("{item}2")).clone();
+        let plan = match circuit.owned_definition.try_callable_plan(
+            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
+            Ok(plan) => plan, Err(_) => panic!("callable plan rejected"),
+        };
+        let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
+        };
+        assert_eq!(receiver.max_capacity(), 1);
+        let root = crate::nested_custody::CustodyStore::new(1);
+        let journal = crate::SagaRollbackJournal::new("callable-parent");
+        plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+            .unwrap_or_else(|error| panic!("{}", error.signal));
+        assert_eq!(receiver.recv().await, Some("a12".to_string()));
+        assert_eq!(receiver.recv().await, None);
+        let holder = prepared.holder();
+        let report = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
+        match report {
+            Ok(StreamInitializationReport::Ready { value, .. }) => assert_eq!(
+                value.consumption.unwrap().terminal, crate::StreamConsumptionTerminal::Completed),
+            _ => panic!("original Ready report lost"),
+        }
+    }
+
     #[test]
     fn owned_plan_type_rejection_returns_original_context() {
         let original = circuit(&["a"]);
         let definition = OwnedStreamDefinition {
             prefix: original.owned_definition.prefix.clone(),
+            callable_factory: original.owned_definition.callable_factory.clone(),
             initializer: Arc::new(()), item_maps: Vec::new(), timeout_config: None, buffer_size: 64,
         };
         let resources = Arc::new(());
