@@ -497,6 +497,9 @@ mod tests {
         receipt.attach_settlement(prepared.settlement()).unwrap();
         let foreign_owner: Capability = Arc::new(347u32);
         let foreign_task: Capability = Arc::new(349u32);
+        let mut stale_receipt = receipt.clone();
+        stale_receipt.record = Arc::downgrade(&foreign_owner);
+        assert_eq!(stale_receipt.release_exact_task(&owner, &task), Err("execution.nested_task_registration_mismatch"));
         assert_eq!(receipt.release_exact_task(&foreign_owner, &task), Err("execution.nested_task_registration_mismatch"));
         assert_eq!(receipt.release_exact_task(&owner, &foreign_task), Err("execution.nested_task_registration_mismatch"));
         {
