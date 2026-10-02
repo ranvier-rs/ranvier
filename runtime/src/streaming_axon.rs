@@ -511,6 +511,36 @@ mod tests {
         assert_eq!(admission.in_use().unwrap(), 0);
     }
     #[tokio::test(start_paused = true)]
+    async fn owned_bounded_gate_wait_does_not_spend_invocation_total_budget() {
+        let circuit = circuit(&["first"]).with_timeout(StreamTimeoutConfig {
+            init: None, idle: None, total: Some(std::time::Duration::from_secs(5)),
+        });
+        let plan = match circuit.owned_definition.try_plan::<Chunks, String>(
+            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
+            Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+        };
+        let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
+        };
+        tokio::time::advance(std::time::Duration::from_secs(30)).await;
+        let root = crate::nested_custody::CustodyStore::new(1);
+        let journal = crate::SagaRollbackJournal::new("gate-budget-parent");
+        plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+            .unwrap_or_else(|error| panic!("{}", error.signal));
+        let holder = prepared.holder();
+        let joined = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
+        match joined {
+            Ok(StreamInitializationReport::Ready { value, .. }) => {
+                assert_eq!(value.consumption.unwrap().terminal, crate::StreamConsumptionTerminal::Completed);
+            }
+            _ => panic!("original report lost"),
+        }
+        assert_eq!(receiver.recv().await, Some("first".to_string()));
+        assert_eq!(receiver.recv().await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn owned_bounded_initializer_time_is_not_regranted_to_consumption() {
         #[derive(Clone)]
         struct DelayedChunks;
