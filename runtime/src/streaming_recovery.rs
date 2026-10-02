@@ -3329,16 +3329,84 @@ mod tests {
         let journal = crate::SagaRollbackJournal::new("reserved-recovery-parent");
         let receipt = plan.owner.register_reserved_and_start(root.client(), &mut slot, &journal,
             CancellationToken::new(), &mut prepared).await.unwrap_or_else(|e| panic!("{}", e.signal));
-        readiness.initialized().await.unwrap();
-        assert_eq!(receiver.recv().await, Some(197));
-        assert_eq!(receiver.recv().await, None);
+        tokio::time::timeout(std::time::Duration::from_secs(5), readiness.initialized()).await.unwrap().unwrap();
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.unwrap(), Some(197));
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.unwrap(), None);
         let report = handle.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
-        assert!(matches!(report, crate::streaming_report_handle::SupervisedStreamCompletion::Report(StreamInitializationReport::Ready { .. })));
+        match report {
+            crate::streaming_report_handle::SupervisedStreamCompletion::Report(StreamInitializationReport::Ready { value, .. }) => {
+                assert!(matches!(value.consumption, Ok(crate::StreamConsumptionTerminal::Completed)));
+                assert!(value.cleanup.is_none());
+            }
+            _ => panic!("original ready report lost"),
+        }
+        assert_eq!(journal.retained_stream_observations()[0].1.phase, SupervisorPhase::Returned);
         assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
         assert_eq!(journal.retained_stream_observations().len(), 1);
         assert!(root.reserve_stream_slot().is_err());
         receipt.release();
         assert!(root.reserve_stream_slot().is_ok());
+    }
+
+    #[tokio::test]
+    async fn reserved_recovery_rejections_keep_context_and_frame_without_effects() {
+        for mode in 0..5 {
+            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let root = crate::nested_custody::CustodyStore::new(1);
+            let foreign = crate::nested_custody::CustodyStore::new(1);
+            let mut slot = root.reserve_stream_slot().unwrap();
+            let client = if mode == 0 { foreign.client() } else { root.client() };
+            let admission = StreamRecoveryAdmission::new(2);
+            let circuit = Axon::<u32, u32, String, Resources>::start("reserved-rejection")
+                .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo).then_stream(Init);
+            let make = || {
+                let mut bus = Bus::new(); bus.insert(199u32);
+                match circuit.owned_definition.try_callable_plan(
+                    OwnedStreamContext::try_new(resources.clone(), bus).unwrap(), &admission, None) {
+                    Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+                }
+            };
+            let mut plan = make();
+            let other = if mode == 4 { Some(make()) } else { None };
+            let ((mut prepared, _receiver), mut readiness) = match plan.prepare_bounded_ready(199, std::time::Duration::from_secs(5)) {
+                Ok(frame) => frame, Err(_) => panic!("preparation rejected"),
+            };
+            let handle = plan.report_handle(&prepared).unwrap();
+            let journal = crate::SagaRollbackJournal::new("reserved-rejected-parent");
+            if mode == 1 { root.close_admission().unwrap(); }
+            let root = if mode == 2 { drop(root); None } else { Some(root) };
+            let guard = if mode == 3 { Some(plan.owner.inner.context.lock().await) } else { None };
+            let target = other.as_ref().map(|plan| &plan.owner).unwrap_or(&plan.owner);
+            let error = match target.register_reserved_and_start(client, &mut slot, &journal,
+                CancellationToken::new(), &mut prepared).await {
+                Err(error) => error, Ok(_) => panic!("invalid reservation admitted"),
+            };
+            assert_eq!(error.signal, match mode {
+                0 => "execution.nested_custody_mismatch",
+                1 => "execution.nested_custody_admission_closed",
+                2 => "execution.parent_custody_released",
+                3 => "execution.nested_stream_context_busy",
+                _ => "execution.nested_task_owner_mismatch",
+            });
+            assert!(error.custody.is_none());
+            drop(guard);
+            assert!(journal.retained_stream_observations().is_empty());
+            assert_eq!(plan.owner.observe().borrow().phase, SupervisorPhase::NotStarted);
+            let context = plan.owner.inner.context.lock().await;
+            assert!(Arc::ptr_eq(&context.0, &resources));
+            assert_eq!(*context.1.read::<u32>().unwrap(), 199);
+            assert!(!context.1.has::<ParentStreamCustody>());
+            drop(context);
+            let report = handle.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+            assert!(matches!(report, crate::streaming_report_handle::SupervisedStreamCompletion::RejectedBeforeStart));
+            assert!(tokio::time::timeout(std::time::Duration::from_secs(5), readiness.initialized()).await.unwrap().is_err());
+            assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+            drop(slot);
+            if let Some(root) = root {
+                if mode == 1 { assert!(root.reserve_stream_slot().is_err()); }
+                else { assert!(root.reserve_stream_slot().is_ok()); }
+            }
+        }
     }
 
     #[tokio::test]
