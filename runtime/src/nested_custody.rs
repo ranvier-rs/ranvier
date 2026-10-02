@@ -60,6 +60,7 @@ pub(crate) struct NestedSagaCustody<E, Res> {
 type Capability = Arc<dyn Any + Send + Sync>;
 struct StoreInner {
     closed: AtomicBool,
+    admission_closed: AtomicBool,
     capacity: usize,
     records: Mutex<HashMap<uuid::Uuid, Capability>>,
 }
@@ -90,9 +91,18 @@ impl CustodyStore {
     pub(crate) fn new(capacity: usize) -> Self {
         Self(Arc::new(StoreOwner(Arc::new(StoreInner {
             closed: AtomicBool::new(false),
+            admission_closed: AtomicBool::new(false),
             capacity,
             records: Mutex::new(HashMap::new()),
         }))))
+    }
+    /// Stop future admission while retaining existing recovery capabilities.
+    /// Serialize with reserve; final owner Drop remains a separate retirement.
+    pub(crate) fn close_admission(&self) -> Result<(), &'static str> {
+        let _records = self.0 .0.records.lock()
+            .map_err(|_| "execution.nested_custody_unavailable")?;
+        self.0 .0.admission_closed.store(true, Ordering::Release);
+        Ok(())
     }
     pub(crate) fn client(&self) -> WeakCustodyClient {
         WeakCustodyClient(Arc::downgrade(&self.0 .0))
@@ -144,6 +154,10 @@ fn reserve_in(store: &Arc<StoreInner>, record: Capability) -> Result<WeakCustody
         drop(records);
         return Err("execution.parent_custody_released");
     }
+    if store.admission_closed.load(Ordering::Acquire) {
+        drop(records);
+        return Err("execution.nested_custody_admission_closed");
+    }
     if records.len() >= store.capacity {
         drop(records);
         return Err("execution.nested_custody_capacity");
@@ -178,6 +192,23 @@ impl WeakCustody {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn admission_close_preserves_members_until_actual_owner_retirement() {
+        let root = CustodyStore::new(2);
+        let client = root.client();
+        let record: Capability = Arc::new(41u32);
+        let weak = Arc::downgrade(&record);
+        let admission = client.reserve(record.clone()).unwrap();
+        root.close_admission().unwrap();
+        root.close_admission().unwrap();
+        assert!(matches!(client.reserve(Arc::new(())), Err("execution.nested_custody_admission_closed")));
+        assert!(client.validate_member(&admission, &record).is_ok());
+        drop(record);
+        assert!(weak.upgrade().is_some());
+        drop(root);
+        assert!(weak.upgrade().is_none());
+        assert!(matches!(client.reserve(Arc::new(())), Err("execution.parent_custody_released")));
+    }
     #[test]
     fn resource_scope_restores_exact_owned_shared_aliased_and_inherited_storage() {
         struct NonClone(u32);
