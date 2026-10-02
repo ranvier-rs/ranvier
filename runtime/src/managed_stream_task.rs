@@ -1,4 +1,6 @@
-//! Private task-frame custody. Registration/root-family integration is separate.
+//! Private task-frame custody. Production preparation pairs the gate and holder;
+//! grant requires an exact live task registration. Child/future identity remains
+//! a supervisor factory obligation, separate from holder registration proof.
 //! No task output or panic payload is exposed through Debug or serialization.
 use std::future::Future;
 use tokio::{sync::oneshot, task::JoinHandle, time::Instant};
