@@ -7,24 +7,27 @@ use tokio::{sync::oneshot, task::JoinHandle, time::Instant};
 pub(crate) struct PreparedStreamTask<T> {
     task: std::sync::Arc<tokio::sync::Mutex<ManagedStreamTask<T>>>,
     permit: Option<oneshot::Sender<()>>,
+    grant_decided: bool,
 }
 impl<T: Send + 'static> PreparedStreamTask<T> {
     pub(crate) fn new<F: Future<Output = T> + Send + 'static>(future: F) -> Self {
         let (task, permit) = ManagedStreamTask::prepare(future);
-        Self { task: std::sync::Arc::new(tokio::sync::Mutex::new(task)), permit: Some(permit) }
+        Self { task: std::sync::Arc::new(tokio::sync::Mutex::new(task)), permit: Some(permit), grant_decided: false }
     }
     pub(crate) fn holder(&self) -> std::sync::Arc<tokio::sync::Mutex<ManagedStreamTask<T>>> {
         self.task.clone()
     }
     pub(crate) fn grant_start(&mut self) -> Result<(), &'static str> {
-        self.permit.take().ok_or("execution.nested_task_start_decided")?
-            .send(()).map_err(|_| "execution.nested_task_start_unavailable")
+        let permit = self.permit.take().ok_or("execution.nested_task_start_decided")?;
+        self.grant_decided = true;
+        permit.send(()).map_err(|_| "execution.nested_task_start_unavailable")
     }
     /// Reject synchronously, then borrow custody through lock/join deadline.
     pub(crate) fn reject_until(&mut self, deadline: Instant)
         -> impl Future<Output = Result<Result<Option<T>, tokio::task::JoinError>, ManagedTaskWaitError>> + '_ {
-        self.permit.take();
+        if !self.grant_decided { self.permit.take(); }
         async move {
+            if self.grant_decided { return Err(ManagedTaskWaitError::StartGrantDecided); }
             let mut task = tokio::time::timeout_at(deadline, self.task.lock()).await
                 .map_err(|_| ManagedTaskWaitError::TimedOut)?;
             task.join_until(deadline).await
@@ -38,7 +41,7 @@ pub(crate) struct ManagedStreamTask<T> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ManagedTaskWaitError { TimedOut, AlreadyJoined }
+pub(crate) enum ManagedTaskWaitError { TimedOut, AlreadyJoined, StartGrantDecided }
 
 impl<T: Send + 'static> ManagedStreamTask<T> {
     /// Reject the unopened start gate before returning the borrowed join wait.
@@ -104,6 +107,14 @@ impl<T> Drop for ManagedStreamTask<T> {
 mod tests {
     use super::*;
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    #[tokio::test]
+    async fn reject_after_grant_does_not_join_or_consume_original_output() {
+        let mut prepared = PreparedStreamTask::new(async { Box::new(113u32) });
+        let holder = prepared.holder();
+        prepared.grant_start().unwrap();
+        assert!(matches!(prepared.reject_until(Instant::now()).await, Err(ManagedTaskWaitError::StartGrantDecided)));
+        assert_eq!(*holder.lock().await.join_until(Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap(), 113);
+    }
     #[tokio::test]
     async fn prepared_task_rejects_before_unpolled_wait_and_cannot_grant_later() {
         let effects = Arc::new(AtomicUsize::new(0));
