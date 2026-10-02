@@ -45,10 +45,13 @@ pub enum StreamCleanupAssessment { NotReported, AllReportedComplete, Incomplete 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamConsumptionAssessment { Completed, Cancelled, TimedOut, InvalidDeadline, DriverPanicked, SupervisorCancelled }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamInitializationAssessment { NotObserved, Ready, PrefixRejected, TransitionFailed, Panicked, Cancelled }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamReportAssessment {
     pub frame: StreamFrameAssessment,
     pub prefix_durability: StreamPrefixDurability,
     pub cleanup: StreamCleanupAssessment,
+    pub initialization: StreamInitializationAssessment,
     pub initialization_effect: Option<crate::execution_report::EffectBoundary>,
     pub consumption: Option<StreamConsumptionAssessment>,
 }
@@ -76,7 +79,7 @@ fn assess_prefix<T>(prefix: &crate::ExecutionReport<T>, extra: Option<&crate::Sa
 fn assess_joined<Out, E>(joined: &Result<Option<Original<Out, E>>, tokio::task::JoinError>) -> StreamReportAssessment {
     let mut assessment = StreamReportAssessment { frame: StreamFrameAssessment::FrameFailed,
         prefix_durability: StreamPrefixDurability::NotObserved, cleanup: StreamCleanupAssessment::NotReported,
-        initialization_effect: None, consumption: None };
+        initialization: StreamInitializationAssessment::NotObserved, initialization_effect: None, consumption: None };
     let report = match joined {
         Ok(None) => { assessment.frame = StreamFrameAssessment::RejectedBeforeStart; return assessment; }
         Ok(Some(Err(_))) => { assessment.frame = StreamFrameAssessment::AlreadyStarted; return assessment; }
@@ -86,6 +89,7 @@ fn assess_joined<Out, E>(joined: &Result<Option<Original<Out, E>>, tokio::task::
     assessment.frame = StreamFrameAssessment::Reported;
     let (durability, cleanup) = match report {
         StreamInitializationReport::Ready { prefix, value } => {
+            assessment.initialization = StreamInitializationAssessment::Ready;
             assessment.initialization_effect = Some(crate::execution_report::EffectBoundary::MayHaveRun);
             assessment.consumption = Some(match &value.consumption {
                 Ok(result) => match result.terminal {
@@ -100,11 +104,20 @@ fn assess_joined<Out, E>(joined: &Result<Option<Original<Out, E>>, tokio::task::
             assess_prefix(prefix, value.cleanup.as_ref())
         }
         StreamInitializationReport::Rejected { prefix } => {
+            assessment.initialization = StreamInitializationAssessment::PrefixRejected;
             assessment.initialization_effect = Some(crate::execution_report::EffectBoundary::NotInvoked);
             assess_prefix(prefix, None)
         }
-        StreamInitializationReport::Failed { prefix, initialization, initialization_cleanup, .. } |
+        StreamInitializationReport::Failed { prefix, error, initialization, initialization_cleanup, .. } => {
+            assessment.initialization = match error {
+                crate::streaming_initialization::StreamInitializationError::Transition(_) => StreamInitializationAssessment::TransitionFailed,
+                crate::streaming_initialization::StreamInitializationError::Panicked => StreamInitializationAssessment::Panicked,
+            };
+            assessment.initialization_effect = Some(*initialization);
+            assess_prefix(prefix, initialization_cleanup.as_ref())
+        }
         StreamInitializationReport::Cancelled { prefix, initialization, initialization_cleanup, .. } => {
+            assessment.initialization = StreamInitializationAssessment::Cancelled;
             assessment.initialization_effect = Some(*initialization);
             assess_prefix(prefix, initialization_cleanup.as_ref())
         }
@@ -196,5 +209,85 @@ fn wait_error(error: crate::managed_stream_task::ManagedTaskWaitError) -> Stream
     match error {
         crate::managed_stream_task::ManagedTaskWaitError::TimedOut => StreamReportWaitError::TimedOut,
         _ => StreamReportWaitError::AlreadyTaken,
+    }
+}
+
+#[cfg(test)]
+mod assessment_tests {
+    use super::*;
+    fn cleanup(finished: bool) -> crate::SagaRollbackReport {
+        crate::SagaRollbackReport { trace_id: "private cleanup trace".into(), finished, steps: Vec::new() }
+    }
+    #[test]
+    fn assessment_preserves_unknown_durability_and_incomplete_cleanup_without_private_text() {
+        let original: Original<u32, String> = Ok(StreamInitializationReport::Failed {
+            prefix: crate::ExecutionReport::Unconfirmed { result: (),
+                operation: crate::execution_report::PersistenceOperation::Complete,
+                effect: crate::execution_report::EffectBoundary::MayHaveRun, cleanup: Some(cleanup(false)) },
+            error: crate::streaming_initialization::StreamInitializationError::Transition("private initializer secret".into()),
+            initialization: crate::execution_report::EffectBoundary::NotInvoked,
+            initialization_cleanup: Some(cleanup(true)),
+        });
+        let assessed = assess_joined(&Ok(Some(original)));
+        assert_eq!(assessed.prefix_durability, StreamPrefixDurability::Unconfirmed);
+        assert_eq!(assessed.cleanup, StreamCleanupAssessment::Incomplete);
+        assert_eq!(assessed.initialization, StreamInitializationAssessment::TransitionFailed);
+        assert_eq!(assessed.initialization_effect, Some(crate::execution_report::EffectBoundary::NotInvoked));
+        assert!(!format!("{assessed:?}").contains("private"));
+    }
+    #[test]
+    fn prefix_assessment_distinguishes_every_persistence_contract() {
+        use crate::ExecutionReport as Report;
+        let reports = [
+            (Report::Unpersisted { result: (), cleanup: None }, StreamPrefixDurability::Unpersisted),
+            (Report::NotRequested { result: (), cleanup: None }, StreamPrefixDurability::NotRequested),
+            (Report::Recorded { result: (), completion: crate::execution_report::CompletionConfirmation::Confirmed, cleanup: None }, StreamPrefixDurability::RecordedCompletionConfirmed),
+            (Report::Recorded { result: (), completion: crate::execution_report::CompletionConfirmation::NotRequested, cleanup: None }, StreamPrefixDurability::RecordedWithoutCompletion),
+            (Report::Unconfirmed { result: (), operation: crate::execution_report::PersistenceOperation::Complete, effect: crate::execution_report::EffectBoundary::MayHaveRun, cleanup: None }, StreamPrefixDurability::Unconfirmed),
+            (Report::BlockedBeforeEffect { operation: crate::execution_report::PersistenceOperation::Intent, effect: crate::execution_report::EffectBoundary::NotInvoked, cleanup: None }, StreamPrefixDurability::BlockedBeforeEffect),
+        ];
+        for (report, expected) in reports {
+            assert_eq!(assess_prefix(&report, None), (expected, StreamCleanupAssessment::NotReported));
+            assert_eq!(assess_prefix(&report, Some(&cleanup(true))), (expected, StreamCleanupAssessment::AllReportedComplete));
+            assert_eq!(assess_prefix(&report, Some(&cleanup(false))), (expected, StreamCleanupAssessment::Incomplete));
+        }
+    }
+    #[tokio::test]
+    async fn poisoned_assessment_fails_closed_without_losing_original_join_error() {
+        let prepared = crate::managed_stream_task::PreparedStreamTask::new(async {
+            Err::<StreamInitializationReport<u32, crate::streaming_recovery::StreamReadyResult<()>, String>, _>(crate::streaming_recovery::StreamInvocationAlreadyStarted)
+        });
+        prepared.holder().lock().await.abort_frame();
+        let handle = StreamReportHandle::new(prepared.holder(), Arc::new(()));
+        let cache = handle.assessment.clone();
+        assert!(std::thread::spawn(move || { let _lock = cache.lock().unwrap(); panic!("cache poison fixture"); }).join().is_err());
+        let report = handle.take_report_until(Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+        assert!(matches!(report, SupervisedStreamCompletion::FrameFailed(error) if error.is_cancelled()));
+        assert_eq!(handle.assessment(), Err(StreamAssessmentError::Unavailable));
+        assert_eq!(handle.retirement_evidence(), StreamRetirementEvidence::RequiresRecoveryReview);
+    }
+    #[tokio::test]
+    async fn assessment_survives_original_report_transfer_and_clone_without_authorizing_retirement() {
+        let original: Original<u32, String> = Ok(StreamInitializationReport::Ready {
+            prefix: crate::ExecutionReport::Recorded { result: (), completion: crate::execution_report::CompletionConfirmation::NotRequested,
+                cleanup: Some(cleanup(true)) },
+            value: crate::streaming_recovery::StreamReadyResult { consumption: Ok(crate::streaming_recovery::StreamDriveResult {
+                value: (), terminal: StreamConsumptionTerminal::Completed }), cleanup: None },
+        });
+        let prepared = crate::managed_stream_task::PreparedStreamTask::new(async move { original });
+        let holder = prepared.holder();
+        let handle = StreamReportHandle::new(holder, Arc::new(()));
+        let clone = handle.clone();
+        assert_eq!(clone.assessment().unwrap(), None);
+        // This fixture intentionally rejects the gate; original report must not
+        // be substituted for the actual joined no-start result.
+        drop(prepared);
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        assert!(matches!(handle.take_report_until(deadline).await.unwrap(), SupervisedStreamCompletion::RejectedBeforeStart));
+        let assessment = clone.assessment().unwrap().unwrap();
+        assert_eq!(assessment.frame, StreamFrameAssessment::RejectedBeforeStart);
+        assert_eq!(assessment.prefix_durability, StreamPrefixDurability::NotObserved);
+        assert_eq!(assessment.cleanup, StreamCleanupAssessment::NotReported);
+        assert_eq!(clone.assessment().unwrap(), Some(assessment));
     }
 }

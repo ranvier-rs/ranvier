@@ -163,12 +163,14 @@ pub struct PreparedSupervisedStream<In, Out, Item, E, Res> {
 pub struct SupervisedStreamInvocation<Out, Item, E> {
     pub items: tokio::sync::mpsc::Receiver<Item>,
     pub readiness: crate::streaming_axon::StreamReadiness,
-    pub report: crate::streaming_report_handle::StreamReportHandle<Out, E>,
+    report: crate::streaming_report_handle::StreamReportHandle<Out, E>,
     control: ranvier_core::CancellationToken,
     _custody: crate::nested_custody::WeakCustody,
     _journal: crate::SagaRollbackJournal,
 }
 impl<Out, Item, E> SupervisedStreamInvocation<Out, Item, E> {
+    /// Read/clone the original report lease; callers cannot replace its bound assessment.
+    pub fn report(&self) -> &crate::streaming_report_handle::StreamReportHandle<Out, E> { &self.report }
     pub fn cancel(&self, reason: ranvier_core::CancellationReason) { self.control.cancel(reason); }
 }
 impl<Out, Item, E> Drop for SupervisedStreamInvocation<Out, Item, E> {
@@ -309,10 +311,19 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), invocation.readiness.initialized()).await.unwrap().unwrap();
         assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), invocation.items.recv()).await.unwrap(), Some(233));
         assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), invocation.items.recv()).await.unwrap(), None);
-        let report = invocation.report.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+        let lease = invocation.report().clone();
+        let report = invocation.report().take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
         assert!(matches!(report, crate::streaming_report_handle::SupervisedStreamCompletion::Report(
             crate::StreamInitializationReport::Ready { value, .. })
             if matches!(value.consumption, Ok(crate::StreamConsumptionTerminal::Completed))));
+        let assessment = lease.assessment().unwrap().unwrap();
+        assert_eq!(assessment.frame, crate::streaming_report_handle::StreamFrameAssessment::Reported);
+        assert_eq!(assessment.initialization, crate::streaming_report_handle::StreamInitializationAssessment::Ready);
+        assert_eq!(assessment.consumption, Some(crate::streaming_report_handle::StreamConsumptionAssessment::Completed));
+        assert_eq!(assessment.prefix_durability, crate::streaming_report_handle::StreamPrefixDurability::Unpersisted);
+        assert_eq!(assessment.cleanup, crate::streaming_report_handle::StreamCleanupAssessment::NotReported);
+        assert_eq!(lease.retirement_evidence(), crate::streaming_report_handle::StreamRetirementEvidence::RequiresRecoveryReview);
+        assert_eq!(invocation.report().assessment().unwrap(), Some(assessment));
         assert!(supervisor.reserve().is_err());
         drop(invocation);
         assert!(!parent.is_cancelled());
@@ -374,7 +385,7 @@ mod tests {
         let parent = ranvier_core::CancellationToken::new();
         let mut invocation = prepared.start(parent.clone()).await.unwrap_or_else(|e| panic!("{}", e.signal));
         tokio::time::timeout(std::time::Duration::from_secs(5), invocation.readiness.initialized()).await.unwrap().unwrap();
-        let report = invocation.report.clone();
+        let report = invocation.report().clone();
         drop(invocation);
         assert!(!parent.is_cancelled());
         let terminal = report.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
@@ -466,11 +477,11 @@ mod tests {
         let mut invocation = prepared.start(ranvier_core::CancellationToken::new()).await.unwrap_or_else(|e| panic!("{}", e.signal));
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         assert_eq!(tokio::time::timeout_at(deadline, invocation.items.recv()).await.unwrap(), Some(269));
-        let original = invocation.report.take_report_until(deadline).await.unwrap();
+        let original = invocation.report().take_report_until(deadline).await.unwrap();
         assert!(matches!(original, crate::streaming_report_handle::SupervisedStreamCompletion::Report(_)));
-        let wrong_authority = StreamStartRejected { signal: "fixture.executed", report: invocation.report.clone(), _custody: Some(invocation._custody.clone()) };
+        let wrong_authority = StreamStartRejected { signal: "fixture.executed", report: invocation.report().clone(), _custody: Some(invocation._custody.clone()) };
         assert_eq!(wrong_authority.retire_unstarted_until(deadline).await, Err(StreamRetirementError::RecoveryReviewRequired));
-        assert_eq!(invocation.report.retirement_evidence(), StreamRetirementEvidence::RequiresRecoveryReview);
+        assert_eq!(invocation.report().retirement_evidence(), StreamRetirementEvidence::RequiresRecoveryReview);
         assert!(supervisor.reserve().is_err());
     }
     #[tokio::test]
@@ -486,7 +497,7 @@ mod tests {
         let mut invocation = prepared.start(ranvier_core::CancellationToken::new()).await.unwrap_or_else(|e| panic!("{}", e.signal));
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         assert_eq!(tokio::time::timeout_at(deadline, invocation.items.recv()).await.unwrap(), Some(293));
-        let original = invocation.report.take_report_until(deadline).await.unwrap();
+        let original = invocation.report().take_report_until(deadline).await.unwrap();
         assert!(matches!(original, crate::streaming_report_handle::SupervisedStreamCompletion::Report(_)));
         let mut drain = supervisor.close_for_drain().unwrap();
         assert_eq!(drain.unfinalized_reservations(), 1);
@@ -533,7 +544,7 @@ mod tests {
         invocation.cancel(ranvier_core::CancellationReason::Explicit);
         drain.settle_until(deadline).await;
         assert_eq!(drain.statuses()[0].1, StreamDrainStatus::Settled);
-        let original = invocation.report.take_report_until(deadline).await.unwrap();
+        let original = invocation.report().take_report_until(deadline).await.unwrap();
         assert!(matches!(original, crate::streaming_report_handle::SupervisedStreamCompletion::Report(_)));
         drop(invocation); drop(supervisor);
         assert_eq!(admission.in_use(), Ok(1));
