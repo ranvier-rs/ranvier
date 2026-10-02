@@ -142,14 +142,17 @@ impl ManagedTaskRegistry {
 }
 
 fn task_admission_closed_response(reconciliation_required: bool) -> HttpResponse {
-    let mut response = json_error_response(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "Managed task admission is closed",
-    );
-    response.headers_mut().insert("cache-control", http::HeaderValue::from_static("no-store"));
-    response.headers_mut().insert("x-ranvier-reconciliation-required",
-        http::HeaderValue::from_static(if reconciliation_required { "true" } else { "false" }));
-    response
+    build_response(
+        Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header("content-type", "application/json")
+            .header("cache-control", "no-store"),
+        boxed_body(serde_json::json!({
+            "error": "Managed task admission is closed",
+            "code": "managed_task_admission_closed",
+            "reconciliation_required": reconciliation_required,
+        }).to_string()),
+    )
 }
 
 fn install_request_cancellation(parts: &http::request::Parts, bus: &mut Bus) {
@@ -1755,6 +1758,9 @@ where
                         let mut bus = Bus::new();
                         install_request_cancellation(&parts, &mut bus);
                         let task_owner = request_task_owner(&parts);
+                        if task_owner.as_ref().is_some_and(ManagedTaskRegistry::is_closed) {
+                            return task_admission_closed_response(false);
+                        }
                         inject_query_params(&parts, &mut bus);
                         for injector in bus_injectors.iter() {
                             injector(&parts, &mut bus);
@@ -5121,7 +5127,8 @@ impl<R> RawIngressService<R> {
     ///
     /// The embedding runtime should stop routing new requests and cancel the
     /// root token before calling this method. Connection ownership remains
-    /// outside the raw service.
+    /// outside the raw service. Calling drain permanently closes managed task
+    /// admission on this service and its clones; reuse requires a new service.
     pub async fn drain_tasks(&self, timeout: Duration) -> HttpTaskDrainReport {
         let deadline = tokio::time::Instant::now()
             .checked_add(timeout)
@@ -6683,21 +6690,50 @@ mod tests {
                 tokio::task::yield_now().await;
             }
         }).await.unwrap();
-        let registered = registry.clone();
-        let late = tokio::spawn(async move {
-            assert!(registered.spawn(std::future::pending::<()>()).await.is_err());
-        });
-        tokio::task::yield_now().await;
+        let mut late = Box::pin(registry.spawn(std::future::pending::<()>()));
+        assert!(futures_util::poll!(&mut late).is_pending(), "registration must actually wait behind drain");
         release.notify_one();
         let report = tokio::time::timeout(Duration::from_secs(4), drain).await.unwrap().unwrap();
         assert_eq!(report.forced_aborts, 0);
-        tokio::time::timeout(Duration::from_secs(1), late).await.unwrap().unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(1), late).await.unwrap().is_err());
         let mut tasks = registry.tasks.lock().await;
         let remaining = tasks.len();
         // Fixture owns and always terminates the synthetic task before asserting.
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
         assert_eq!(remaining, 0, "drain returned success before a queued task registered");
+    }
+
+    #[tokio::test]
+    async fn managed_task_rejection_returns_unpolled_future_ownership() {
+        struct DropProbe(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for DropProbe {
+            fn drop(&mut self) { self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+        }
+        let registry = ManagedTaskRegistry::default();
+        assert_eq!(registry.drain_until(tokio::time::Instant::now()).await.forced_aborts, 0);
+        let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe = DropProbe(drops.clone());
+        let future = async move { let _probe = probe; std::future::pending::<()>().await; };
+        let Err(rejected) = registry.spawn(future).await else { panic!("closed admission accepted task") };
+        assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 0);
+        drop(rejected);
+        assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(registry.tasks.lock().await.is_empty());
+        assert_eq!(registry.drain_until(tokio::time::Instant::now()).await.forced_aborts, 0);
+    }
+
+    #[tokio::test]
+    async fn managed_task_closed_response_is_explicit_and_not_cacheable() {
+        for reconciliation in [false, true] {
+            let response = task_admission_closed_response(reconciliation);
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(response.headers()["cache-control"], "no-store");
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["code"], "managed_task_admission_closed");
+            assert_eq!(body["reconciliation_required"], reconciliation);
+        }
     }
 
     #[test]
