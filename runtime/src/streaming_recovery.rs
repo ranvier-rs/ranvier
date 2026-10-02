@@ -1956,6 +1956,8 @@ mod tests {
             Axon::<u32, u32, String, Resources>::start("full-owned-child").with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
             OwnedStreamContext::try_new(resources.clone(), bus).unwrap(), &StreamRecoveryAdmission::new(1), None).unwrap();
         let parent_journal = crate::SagaRollbackJournal::new("parent-stream-report");
+        parent_journal.push("prior-parent-hook".into(), crate::SagaRollbackOutcome::Completed);
+        let parent_clone = parent_journal.clone();
         let admission = child.admit_to_parent_journal(parent.client(), &parent_journal).await.unwrap();
         assert!(parent_journal.has_unresolved_tasks());
         assert!(!parent_journal.snapshot().is_complete());
@@ -1976,7 +1978,9 @@ mod tests {
         assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
         let observations = parent_journal.retained_stream_observations();
         assert_eq!(observations.len(), 1);
-        assert_eq!(observations[0].0, 0);
+        assert_eq!(observations[0].0, 1);
+        assert_eq!(parent_clone.retained_stream_observations()[0].0, 1);
+        assert_eq!(parent_journal.snapshot().steps[0].outcome, crate::SagaRollbackOutcome::Completed);
         assert_eq!(observations[0].1.phase, SupervisorPhase::Interrupted);
         assert_eq!(observer.borrow().custody, RecoveryCustody::Held);
         let inner = admission.upgrade().unwrap().downcast::<RecoveryInner<u32, u32, String, Resources>>()
@@ -1999,6 +2003,9 @@ mod tests {
         drop(parent);
         assert!(weak.upgrade().is_none());
         assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
+        assert_eq!(parent_clone.retained_stream_observations()[0].1.custody, RecoveryCustody::ReleasedWithPendingTasks);
+        assert!(parent_journal.has_unresolved_tasks());
+        assert!(!parent_journal.snapshot().is_complete());
     }
     #[tokio::test]
     async fn released_parent_admission_cannot_restart_stream_child_as_new_root() {
