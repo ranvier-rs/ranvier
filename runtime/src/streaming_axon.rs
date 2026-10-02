@@ -82,13 +82,13 @@ where
         if self.buffer_size == 0 {
             return Err(BoundedPreparationRejected { signal: "execution.stream_buffer_invalid", input });
         }
-        let (sender, receiver) = tokio::sync::mpsc::channel(self.buffer_size);
         let config = self.timeout_config.clone().unwrap_or(StreamTimeoutConfig {
             init: None, idle: Some(std::time::Duration::from_secs(30)), total: None,
         });
         if config.total.is_some_and(|duration| tokio::time::Instant::now().checked_add(duration).is_none()) {
             return Err(BoundedPreparationRejected { signal: "execution.stream_deadline_invalid", input });
         }
+        let (sender, receiver) = tokio::sync::mpsc::channel(self.buffer_size);
         let maps = self.item_maps.clone();
         let prepared = self.owner.prepare_managed_controlled(input, self.initializer.clone(), grace, config.total, move |stream, token, origin| async move {
             let mapped = stream.map(move |item| maps.iter().fold(item, |item, map| map(item)));
@@ -513,6 +513,24 @@ mod tests {
         drop(plan);
         assert_eq!(admission.in_use().unwrap(), 0);
     }
+    #[tokio::test]
+    async fn invalid_bounded_deadline_preserves_input_before_frame_creation() {
+        let circuit = circuit(&["a"]).with_timeout(StreamTimeoutConfig { init: None, idle: None, total: Some(std::time::Duration::MAX) });
+        let plan = match circuit.owned_definition.try_plan::<Chunks, String>(
+            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
+            Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+        };
+        let input = "original".repeat(20);
+        let pointer = input.as_ptr();
+        let error = match plan.prepare_bounded(input, std::time::Duration::from_secs(5)) {
+            Err(error) => error, Ok(_) => panic!("overflow must reject"),
+        };
+        assert_eq!(error.signal, "execution.stream_deadline_invalid");
+        assert_eq!(error.input.as_ptr(), pointer);
+        assert_eq!(plan.owner.observe().borrow().phase, crate::streaming_recovery::SupervisorPhase::NotStarted);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn owned_bounded_gate_wait_does_not_spend_invocation_total_budget() {
         let circuit = circuit(&["first"]).with_timeout(StreamTimeoutConfig {
@@ -553,8 +571,7 @@ mod tests {
             type Error = String;
             type Resources = ();
             async fn run_stream(&self, _: String, _: &(), _: &mut Bus) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, String> {
-                tokio::time::sleep(std::time::Duration::from_secs(8)).await;
-                Ok(Box::pin(futures_util::stream::iter(vec!["late".to_string()])))
+                std::future::pending().await
             }
         }
         let circuit = Axon::<String, String, String>::start("delayed-owned-total").then_stream(DelayedChunks)
@@ -569,7 +586,9 @@ mod tests {
         };
         let root = crate::nested_custody::CustodyStore::new(1);
         let journal = crate::SagaRollbackJournal::new("delayed-total-parent");
-        plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+        let control = CancellationToken::new();
+        let began = tokio::time::Instant::now();
+        plan.owner.register_and_start(root.client(), &journal, control.clone(), &mut prepared).await
             .unwrap_or_else(|error| panic!("{}", error.signal));
         let holder = prepared.holder();
         let joined = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(20)).await.unwrap().unwrap().unwrap();
@@ -579,6 +598,8 @@ mod tests {
             }
             _ => panic!("original report lost"),
         }
+        assert_eq!(tokio::time::Instant::now() - began, std::time::Duration::from_secs(5));
+        assert!(!control.is_cancelled());
         assert_eq!(receiver.recv().await, None);
     }
 

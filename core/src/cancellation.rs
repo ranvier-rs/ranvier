@@ -152,12 +152,15 @@ impl CancellationToken {
     /// Create a child with an absolute monotonic deadline. The deadline is not
     /// extended by phase transitions or time spent constructing the child.
     pub fn child_with_deadline_at(&self, deadline: Instant) -> Self {
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let now = Instant::now();
+        let wall_now = now_ms();
+        let unix_ms = if deadline >= now {
+            wall_now.saturating_add(duration_ms(deadline.duration_since(now)))
+        } else {
+            wall_now.saturating_sub(duration_ms(now.duration_since(deadline)))
+        };
         Self::from_parts(Some(self.clone()), self.inner.family.clone(),
-            Some(CancellationDeadline {
-                instant: deadline,
-                unix_ms: now_ms().saturating_add(duration_ms(remaining)),
-            }))
+            Some(CancellationDeadline { instant: deadline, unix_ms }))
     }
 
     /// Request cancellation with a fixed reason.
@@ -315,6 +318,20 @@ fn duration_ms(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn past_absolute_deadline_keeps_original_clock_and_does_not_cancel_parent() {
+        let root = CancellationToken::new();
+        let now = Instant::now();
+        let deadline = now - Duration::from_secs(5);
+        let before = now_ms();
+        let child = root.child_with_deadline_at(deadline);
+        assert_eq!(child.inner.deadline.unwrap().instant, deadline);
+        let context = child.cancelled().await;
+        assert_eq!(context.reason, CancellationReason::DeadlineExceeded);
+        assert!(context.deadline_ms.unwrap() <= before.saturating_sub(4900));
+        assert!(!root.is_cancelled());
+    }
 
     #[test]
     fn first_local_cancellation_wins_and_serializes_without_payloads() {
