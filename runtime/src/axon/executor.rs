@@ -1160,6 +1160,52 @@ mod scoped_stream_tests {
         }
     }
     #[tokio::test]
+    async fn scoped_child_cleanup_uses_live_registry_without_touching_parent_inputs() {
+        let resources = Resources(AtomicUsize::new(0));
+        let prefix = Axon::<(), (), String, Resources>::start("scoped-child")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Effect);
+        let mut bus = Bus::new();
+        let mut parent = crate::execution_observation::InvocationOwner::begin(&mut bus);
+        let mut parent_stack = SagaStack::new();
+        parent_stack.push(
+            "parent-node".into(),
+            "private-parent".into(),
+            b"private-parent-input".to_vec(),
+        );
+        parent.bus().insert(parent_stack);
+        let parent_trace = persistence_trace_id(parent.bus());
+        {
+            let mut child = crate::execution_observation::InvocationOwner::begin(parent.bus());
+            let child_trace = persistence_trace_id(child.bus());
+            assert_ne!(child_trace, parent_trace);
+            let report = prefix
+                .initialize_stream_in_scope((), &resources, &mut child, &Init, None)
+                .await;
+            assert!(matches!(
+                report,
+                crate::StreamInitializationReport::Ready { .. }
+            ));
+            let stack = child.bus().read::<SagaStack>().unwrap();
+            assert_eq!(stack.tasks.len(), 1);
+            assert_ne!(stack.tasks[0].node_id, "parent-node");
+            let cleanup = prefix
+                .cleanup_stream_initialization(&resources, child.bus(), true)
+                .await
+                .unwrap();
+            assert!(cleanup.is_complete());
+            assert_eq!(cleanup.steps.len(), 1);
+            assert_eq!(resources.0.load(Ordering::SeqCst), 2);
+            assert_eq!(persistence_trace_id(child.bus()), child_trace);
+            assert!(child.bus().read::<SagaStack>().unwrap().is_empty());
+        }
+        assert_eq!(persistence_trace_id(parent.bus()), parent_trace);
+        let stack = parent.bus().read::<SagaStack>().unwrap();
+        assert_eq!(stack.tasks.len(), 1);
+        assert_eq!(stack.tasks[0].node_id, "parent-node");
+        assert_eq!(stack.tasks[0].input_snapshot, b"private-parent-input");
+    }
+    #[tokio::test]
     async fn scoped_ready_keeps_original_invocation_and_pending_tasks_until_owner_drop() {
         let resources = Resources(AtomicUsize::new(0));
         let prefix = Axon::<(), (), String, Resources>::start("scoped-ready")
