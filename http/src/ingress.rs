@@ -83,6 +83,7 @@ struct RequestTaskOwner(ManagedTaskRegistry);
 #[derive(Clone, Default)]
 struct ManagedTaskRegistry {
     tasks: Arc<Mutex<tokio::task::JoinSet<()>>>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Result of draining HTTP adapter-owned SSE/WebSocket tasks.
@@ -93,15 +94,26 @@ pub struct HttpTaskDrainReport {
 }
 
 impl ManagedTaskRegistry {
-    async fn spawn<F>(&self, future: F)
+    /// Return ownership on rejection; never detach a task after drain begins.
+    async fn spawn<F>(&self, future: F) -> Result<(), F>
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        self.tasks.lock().await.spawn(future);
+        let mut tasks = self.tasks.lock().await;
+        if self.is_closed() {
+            return Err(future);
+        }
+        tasks.spawn(future);
+        Ok(())
+    }
+
+    fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     async fn drain_until(&self, deadline: tokio::time::Instant) -> HttpTaskDrainReport {
         let mut tasks = self.tasks.lock().await;
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
         loop {
             if tasks.is_empty() {
                 return HttpTaskDrainReport { forced_aborts: 0 };
@@ -127,6 +139,17 @@ impl ManagedTaskRegistry {
             }
         }
     }
+}
+
+fn task_admission_closed_response(reconciliation_required: bool) -> HttpResponse {
+    let mut response = json_error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Managed task admission is closed",
+    );
+    response.headers_mut().insert("cache-control", http::HeaderValue::from_static("no-store"));
+    response.headers_mut().insert("x-ranvier-reconciliation-required",
+        http::HeaderValue::from_static(if reconciliation_required { "true" } else { "false" }));
+    response
 }
 
 fn install_request_cancellation(parts: &http::request::Parts, bus: &mut Bus) {
@@ -1774,7 +1797,9 @@ where
                             }
                         };
                         if let Some(owner) = task_owner {
-                            owner.spawn(session_task).await;
+                            if owner.spawn(session_task).await.is_err() {
+                                return task_admission_closed_response(true);
+                            }
                         } else {
                             tokio::spawn(session_task);
                         }
@@ -3243,6 +3268,9 @@ where
                     }
 
                     let task_owner = request_task_owner(&parts);
+                    if task_owner.as_ref().is_some_and(ManagedTaskRegistry::is_closed) {
+                        return task_admission_closed_response(false);
+                    }
 
                     // Execute the streaming pipeline with the same request
                     // cancellation owner as ordinary Axons.
@@ -3354,7 +3382,10 @@ where
                         let _ = tx.send(Bytes::from_static(frame.as_bytes())).await;
                     };
                     if let Some(owner) = task_owner {
-                        owner.spawn(producer_task).await;
+                        if owner.spawn(producer_task).await.is_err() {
+                            // Prefix effects may have run. Source release is not compensation.
+                            return task_admission_closed_response(true);
+                        }
                     } else {
                         tokio::spawn(producer_task);
                     }
@@ -6626,13 +6657,47 @@ mod tests {
     #[tokio::test]
     async fn managed_task_registry_aborts_stuck_child_at_shared_deadline() {
         let registry = ManagedTaskRegistry::default();
-        registry
+        assert!(registry
             .spawn(async { std::future::pending::<()>().await })
-            .await;
+            .await.is_ok());
         let deadline = tokio::time::Instant::now() + Duration::from_millis(10);
         let report = registry.drain_until(deadline).await;
         assert_eq!(report.forced_aborts, 1);
         assert!(registry.tasks.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn managed_task_registration_queued_during_drain_is_not_lost() {
+        let registry = ManagedTaskRegistry::default();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let wait = release.clone();
+        assert!(registry.spawn(async move { wait.notified().await }).await.is_ok());
+        let draining = registry.clone();
+        let drain = tokio::spawn(async move {
+            draining.drain_until(tokio::time::Instant::now() + Duration::from_secs(3)).await
+        });
+        // Observe the actual registry lock held by drain, not elapsed time.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if registry.tasks.try_lock().is_err() { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        let registered = registry.clone();
+        let late = tokio::spawn(async move {
+            assert!(registered.spawn(std::future::pending::<()>()).await.is_err());
+        });
+        tokio::task::yield_now().await;
+        release.notify_one();
+        let report = tokio::time::timeout(Duration::from_secs(4), drain).await.unwrap().unwrap();
+        assert_eq!(report.forced_aborts, 0);
+        tokio::time::timeout(Duration::from_secs(1), late).await.unwrap().unwrap();
+        let mut tasks = registry.tasks.lock().await;
+        let remaining = tasks.len();
+        // Fixture owns and always terminates the synthetic task before asserting.
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        assert_eq!(remaining, 0, "drain returned success before a queued task registered");
     }
 
     #[test]
