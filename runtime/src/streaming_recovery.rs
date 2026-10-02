@@ -3250,6 +3250,54 @@ mod tests {
         }
     }
     #[tokio::test(start_paused = true)]
+    async fn gated_zero_total_rejects_before_effects_and_preserves_parent_cancellation() {
+        struct CountingInit;
+        #[async_trait::async_trait]
+        impl StreamingTransition<u32> for CountingInit {
+            type Item = u32;
+            type Error = String;
+            type Resources = Resources;
+            async fn run_stream(&self, _: u32, resources: &Resources, _: &mut Bus) -> Result<RawStream<u32>, String> {
+                resources.effects.fetch_add(100, Ordering::SeqCst);
+                Ok(Box::pin(futures_util::stream::empty()))
+            }
+        }
+        for reason in [None, Some(ranvier_core::CancellationReason::Explicit)] {
+            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let graph = Axon::<u32, u32, String, Resources>::start("zero-total-admission")
+                .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo);
+            let owner = OwnedStreamRecovery::try_new(graph,
+                OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+                &StreamRecoveryAdmission::new(1), None).unwrap();
+            let control = CancellationToken::new();
+            if let Some(reason) = reason { control.cancel(reason); }
+            let original = control.context();
+            let mut prepared = owner.prepare_managed_controlled(149, CountingInit,
+                std::time::Duration::from_secs(2), Some(std::time::Duration::ZERO),
+                |_, _, _| async { panic!("expired prefix must not consume"); #[allow(unreachable_code)] completed() });
+            let root = crate::nested_custody::CustodyStore::new(1);
+            let journal = crate::SagaRollbackJournal::new("zero-total-parent");
+            let began = tokio::time::Instant::now();
+            owner.register_and_start(root.client(), &journal, control.clone(), &mut prepared).await
+                .unwrap_or_else(|error| panic!("{}", error.signal));
+            let holder = prepared.holder();
+            let report = holder.lock().await.join_until(began + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap().unwrap();
+            let StreamInitializationReport::Rejected { prefix } = report else { panic!("original rejection lost"); };
+            match prefix {
+                crate::ExecutionReport::Unpersisted { result: crate::ExecutionTerminal::Cancelled(context), .. } => {
+                    if let Some(original) = original { assert_eq!(context, original); }
+                    else { assert_eq!(context.reason, ranvier_core::CancellationReason::DeadlineExceeded); }
+                }
+                _ => panic!("original terminal lost"),
+            }
+            assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
+            assert_eq!(tokio::time::Instant::now(), began);
+            assert_eq!(control.context().map(|context| context.reason), reason);
+            assert_eq!(owner.observe().borrow().disposition, Some(SupervisorDisposition::PrefixRejected));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn gated_total_deadline_preserves_prefix_effect_and_actual_undo_report() {
         #[derive(Clone)]
         struct PendingDeadlinePrefix;
