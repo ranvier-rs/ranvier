@@ -76,6 +76,55 @@ pub(crate) async fn produce_bounded<Item: Send + 'static>(
     }
 }
 
+/// Safe observation only: Returned means a local report exists, not durable success.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SupervisorPhase {
+    NotStarted,
+    Initializing,
+    Consuming,
+    CleaningUp,
+    Returned,
+    Interrupted,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SupervisorDisposition {
+    PrefixRejected,
+    InitializationFailed,
+    InitializationCancelled,
+    Consumption(crate::StreamConsumptionTerminal),
+    DriverPanicked,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SupervisorObservation {
+    pub(crate) phase: SupervisorPhase,
+    pub(crate) disposition: Option<SupervisorDisposition>,
+    pub(crate) cleanup_complete: Option<bool>,
+}
+struct SupervisorObservationGuard {
+    sender: tokio::sync::watch::Sender<SupervisorObservation>,
+    armed: bool,
+}
+impl SupervisorObservationGuard {
+    fn phase(&self, phase: SupervisorPhase) {
+        self.sender.send_modify(|state| state.phase = phase);
+    }
+    fn returned(mut self, disposition: SupervisorDisposition, cleanup_complete: Option<bool>) {
+        self.sender.send_modify(|state| {
+            state.phase = SupervisorPhase::Returned;
+            state.disposition = Some(disposition);
+            state.cleanup_complete = cleanup_complete;
+        });
+        self.armed = false;
+    }
+}
+impl Drop for SupervisorObservationGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.phase(SupervisorPhase::Interrupted);
+        }
+    }
+}
+
 /// A single invocation's exact graph, typed resources and request Bus. An external
 /// clone must outlive the supervisor, including forced task abort. No replay API.
 pub(crate) struct OwnedStreamRecovery<In, Out, E, Res> {
@@ -85,6 +134,7 @@ struct RecoveryInner<In, Out, E, Res> {
     graph: Axon<In, Out, E, Res>,
     context: Mutex<(Arc<Res>, Bus)>,
     started: AtomicBool,
+    observation: tokio::sync::watch::Sender<SupervisorObservation>,
 }
 impl<In, Out, E, Res> Clone for OwnedStreamRecovery<In, Out, E, Res> {
     fn clone(&self) -> Self {
@@ -140,8 +190,18 @@ where
                 graph,
                 context: Mutex::new(context.into_parts()),
                 started: AtomicBool::new(false),
+                observation: tokio::sync::watch::channel(SupervisorObservation {
+                    phase: SupervisorPhase::NotStarted,
+                    disposition: None,
+                    cleanup_complete: None,
+                })
+                .0,
             }),
         })
+    }
+    /// Independent of item queue/context lock; contains no request/input payloads.
+    pub(crate) fn observe(&self) -> tokio::sync::watch::Receiver<SupervisorObservation> {
+        self.inner.observation.subscribe()
     }
     /// Keeps InvocationOwner live until the Ready driver returns or is dropped.
     /// The internal driver must derive its terminal from actual source/control observations.
@@ -171,6 +231,11 @@ where
         {
             return Err(StreamInvocationAlreadyStarted);
         }
+        let observation = SupervisorObservationGuard {
+            sender: self.inner.observation.clone(),
+            armed: true,
+        };
+        observation.phase(SupervisorPhase::Initializing);
         let mut context = self.inner.context.lock().await;
         let (resources, bus) = &mut *context;
         let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
@@ -181,6 +246,7 @@ where
             .await;
         let mapped = match report {
             StreamInitializationReport::Ready { prefix, value } => {
+                observation.phase(SupervisorPhase::Consuming);
                 let saga_enabled = owner
                     .bus()
                     .read::<ranvier_core::saga::SagaPolicy>()
@@ -193,6 +259,7 @@ where
                     .map_err(|_| StreamDriverError::Panicked);
                 let cleanup = if !matches!(&consumption, Ok(observed) if observed.terminal == crate::StreamConsumptionTerminal::Completed)
                 {
+                    observation.phase(SupervisorPhase::CleaningUp);
                     self.inner
                         .graph
                         .cleanup_stream_initialization(
@@ -239,7 +306,43 @@ where
                 initialization_cleanup,
             },
         };
+        let (disposition, cleanup_complete) = match &mapped {
+            StreamInitializationReport::Ready { value, .. } => (
+                match &value.consumption {
+                    Ok(observed) => SupervisorDisposition::Consumption(observed.terminal.clone()),
+                    Err(StreamDriverError::Panicked) => SupervisorDisposition::DriverPanicked,
+                },
+                value
+                    .cleanup
+                    .as_ref()
+                    .map(crate::SagaRollbackReport::is_complete),
+            ),
+            StreamInitializationReport::Rejected { prefix } => (
+                SupervisorDisposition::PrefixRejected,
+                prefix.cleanup().map(crate::SagaRollbackReport::is_complete),
+            ),
+            StreamInitializationReport::Failed {
+                initialization_cleanup,
+                ..
+            } => (
+                SupervisorDisposition::InitializationFailed,
+                initialization_cleanup
+                    .as_ref()
+                    .map(crate::SagaRollbackReport::is_complete),
+            ),
+            StreamInitializationReport::Cancelled {
+                initialization_cleanup,
+                ..
+            } => (
+                SupervisorDisposition::InitializationCancelled,
+                initialization_cleanup
+                    .as_ref()
+                    .map(crate::SagaRollbackReport::is_complete),
+            ),
+        };
         drop(owner);
+        drop(context);
+        observation.returned(disposition, cleanup_complete);
         Ok(mapped)
     }
 }
@@ -400,6 +503,7 @@ mod tests {
         let token = CancellationToken::new();
         let driver_token = token.clone();
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let mut observer = owner.observe();
         let task_owner = owner.clone();
         let task = tokio::spawn(async move {
             task_owner
@@ -447,6 +551,17 @@ mod tests {
         );
         // Completion is observable without draining the already queued item.
         assert_eq!(receiver.len(), 1);
+        assert_eq!(
+            observer.borrow_and_update().phase,
+            SupervisorPhase::Returned
+        );
+        assert_eq!(observer.borrow().cleanup_complete, Some(true));
+        assert!(matches!(
+            &observer.borrow().disposition,
+            Some(SupervisorDisposition::Consumption(
+                crate::StreamConsumptionTerminal::Cancelled(_)
+            ))
+        ));
     }
     struct PanicInit(usize);
     struct PanicSource(usize);
@@ -609,6 +724,7 @@ mod tests {
             )
             .unwrap();
             let registry = Arc::downgrade(&owner.inner.graph.saga_compensation_registry);
+            let mut observer = owner.observe();
             let task_owner = owner.clone();
             let task = tokio::spawn(async move {
                 task_owner
@@ -642,8 +758,18 @@ mod tests {
                 crate::SagaRollbackOutcome::InProgress
             );
             assert!(owner.inner.context.try_lock().is_err());
+            assert_eq!(
+                observer.borrow_and_update().phase,
+                SupervisorPhase::CleaningUp
+            );
             task.abort();
             assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+            tokio::time::timeout(std::time::Duration::from_secs(1), observer.changed())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
+            assert_eq!(observer.borrow().cleanup_complete, None);
             let context = owner.inner.context.lock().await;
             assert!(Arc::ptr_eq(&resources, &context.0));
             assert_eq!(
