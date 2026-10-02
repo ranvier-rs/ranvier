@@ -313,6 +313,20 @@ mod tests {
             ranvier_core::Outcome::Next(())
         }
     }
+    #[derive(Clone)]
+    struct InjectedSagaState { node_id: String }
+    #[async_trait::async_trait]
+    impl ranvier_core::streaming::StreamingTransition<u32> for InjectedSagaState {
+        type Item = u32; type Error = String; type Resources = ();
+        async fn run_stream(&self, input: u32, _: &(), bus: &mut ranvier_core::Bus)
+            -> Result<std::pin::Pin<Box<dyn futures_core::Stream<Item = u32> + Send>>, String> {
+            bus.insert(ranvier_core::saga::SagaPolicy::Enabled);
+            let mut stack = ranvier_core::saga::SagaStack::new();
+            stack.push(self.node_id.clone(), "private-label".into(), serde_json::to_vec(&input).unwrap());
+            bus.insert(stack);
+            Ok(Box::pin(futures_util::stream::iter([input])))
+        }
+    }
     #[tokio::test]
     async fn public_invocation_transfers_original_item_and_report_at_capacity_one() {
         let supervisor = StreamSupervisor::new(1);
@@ -408,7 +422,7 @@ mod tests {
         }
         let supervisor = StreamSupervisor::new(1);
         let circuit = crate::Axon::<u32, u32, String>::start("missing-local-handler")
-            .then(Prefix).then_stream(PendingLocalTask);
+            .then(Prefix).with_saga_policy(ranvier_core::saga::SagaPolicy::Enabled).then_stream(PendingLocalTask);
         let (ticket, context) = supervisor.reserve().unwrap().with_context(||
             OwnedStreamContext::try_new(Arc::new(()), ranvier_core::Bus::new())).unwrap();
         let prepared = ticket.prepare(&circuit, context, 257, std::time::Duration::from_secs(1), None)
@@ -425,6 +439,61 @@ mod tests {
             Err(crate::streaming_report_handle::StreamLocalRecoveryError::RecoveryBlocked));
         let live = invocation.report().live_recovery_until(deadline).await.unwrap();
         assert!(!live.saga_stack_nonempty && live.journal_present && live.recovery_pending);
+    }
+    #[tokio::test]
+    async fn caller_bus_policy_mutation_cannot_authorize_original_graph_compensation() {
+        let supervisor = StreamSupervisor::new(1);
+        let compensations = Arc::new(AtomicUsize::new(0));
+        let prefix = crate::Axon::<u32, u32, String>::start("caller-policy-mutation")
+            .then_compensated(Prefix, CountUndo(compensations.clone()));
+        let node_id = prefix.schematic.nodes.iter().find(|node| node.compensation_node_id.is_some())
+            .expect("compensated node exists").id.clone();
+        // The original graph policy is Disabled. A streaming callback can alter
+        // its caller Bus after the prefix ran, but that cannot grant recovery.
+        let circuit = prefix.then_stream(InjectedSagaState { node_id });
+        let (ticket, context) = supervisor.reserve().unwrap().with_context(||
+            OwnedStreamContext::try_new(Arc::new(()), ranvier_core::Bus::new())).unwrap();
+        let prepared = ticket.prepare(&circuit, context, 251, std::time::Duration::from_secs(1), None)
+            .unwrap_or_else(|_| panic!("setup rejected"));
+        let mut invocation = prepared.start(ranvier_core::CancellationToken::new()).await
+            .unwrap_or_else(|error| panic!("{}", error.signal));
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        tokio::time::timeout_at(deadline, invocation.readiness.initialized()).await.unwrap().unwrap();
+        let _ = invocation.items.recv().await;
+        let _ = invocation.items.recv().await;
+        assert_eq!(invocation.report().reconcile_next_local_compensation_until(deadline).await,
+            Err(crate::streaming_report_handle::StreamLocalRecoveryError::RecoveryBlocked));
+        assert_eq!(compensations.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn dynamic_saga_policy_is_frozen_for_the_admitted_owner() {
+        let supervisor = StreamSupervisor::new(1);
+        let compensations = Arc::new(AtomicUsize::new(0));
+        let (updates, policy) = ranvier_core::prelude::DynamicPolicy::new(
+            ranvier_core::saga::SagaPolicy::Disabled,
+        );
+        let prefix = crate::Axon::<u32, u32, String>::start("frozen-dynamic-policy")
+            .then_compensated(Prefix, CountUndo(compensations.clone()))
+            .with_dynamic_saga_policy(policy);
+        let node_id = prefix.schematic.nodes.iter().find(|node| node.compensation_node_id.is_some())
+            .expect("compensated node exists").id.clone();
+        let circuit = prefix.then_stream(InjectedSagaState { node_id });
+        let (ticket, context) = supervisor.reserve().unwrap().with_context(||
+            OwnedStreamContext::try_new(Arc::new(()), ranvier_core::Bus::new())).unwrap();
+        let prepared = ticket.prepare(&circuit, context, 263, std::time::Duration::from_secs(1), None)
+            .unwrap_or_else(|_| panic!("setup rejected"));
+        // Owner admission captured Disabled. A later hot reload cannot grant
+        // the retained frame a handler authority it did not start with.
+        updates.send_replace(ranvier_core::saga::SagaPolicy::Enabled);
+        let mut invocation = prepared.start(ranvier_core::CancellationToken::new()).await
+            .unwrap_or_else(|error| panic!("{}", error.signal));
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        tokio::time::timeout_at(deadline, invocation.readiness.initialized()).await.unwrap().unwrap();
+        let _ = invocation.items.recv().await;
+        let _ = invocation.items.recv().await;
+        assert_eq!(invocation.report().reconcile_next_local_compensation_until(deadline).await,
+            Err(crate::streaming_report_handle::StreamLocalRecoveryError::RecoveryBlocked));
+        assert_eq!(compensations.load(Ordering::SeqCst), 0);
     }
     #[derive(Clone)]
     struct LocalState(Option<bool>);

@@ -488,6 +488,12 @@ where
         if let Err(reason) = admission.validate_permit(&permit) {
             return Err(StreamRecoveryAdmissionRejected { graph, context, reason });
         }
+        // An owned recovery owner freezes the policy selection beside its
+        // handler registry. A later Bus mutation or hot reload must not grant
+        // compensation authority to an invocation that started with it disabled.
+        if let Some(dynamic_policy) = graph.dynamic_saga_policy.take() {
+            graph.saga_policy = dynamic_policy.current();
+        }
         // Copy handler Arcs under the original read lock before any effects.
         // A poisoned registry has unknown authority: retain caller ownership.
         let handlers = graph
@@ -795,7 +801,8 @@ where
         let (resources, bus) = &mut *context;
         let mut scope = LocalCompensationBusScope::begin(bus);
         let bus = scope.bus();
-        if !bus.read::<ranvier_core::saga::SagaPolicy>()
+        if self.inner.graph.saga_policy != ranvier_core::saga::SagaPolicy::Enabled
+            || !bus.read::<ranvier_core::saga::SagaPolicy>()
             .is_some_and(|policy| *policy == ranvier_core::saga::SagaPolicy::Enabled) {
             return Err(Error::RecoveryBlocked);
         }
