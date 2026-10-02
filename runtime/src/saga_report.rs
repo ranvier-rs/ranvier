@@ -386,6 +386,54 @@ impl SagaRollbackJournal {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn borrowed_hook_drop_panic_and_completion_preserve_original_allocation() {
+        use futures_util::FutureExt as _;
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        for mode in 0..3 {
+            let journal = super::SagaRollbackJournal::new("borrowed original input");
+            let bytes = vec![3, 8, 1, 9];
+            let address = bytes.as_ptr() as usize;
+            let task = Arc::new(ranvier_core::saga::SagaTask { node_id: "original node".into(),
+                node_label: "private label".into(), input_snapshot: bytes });
+            let weak = Arc::downgrade(&task);
+            journal.push_task_shared(task.clone());
+            let seen = Arc::new(AtomicUsize::new(0)); let observed = seen.clone();
+            let handler: ranvier_core::saga::SagaCompensationFn<String, ()> = Arc::new(move |input, _, _| {
+                let observed = observed.clone();
+                Box::pin(async move {
+                    observed.store(input.as_ptr() as usize, Ordering::SeqCst);
+                    assert_eq!(input, [3, 8, 1, 9]);
+                    if mode == 1 { panic!("borrowed hook panic fixture"); }
+                    if mode == 2 { return ranvier_core::Outcome::Next(()); }
+                    std::future::pending::<ranvier_core::Outcome<(), String>>().await
+                })
+            });
+            let mut bus = ranvier_core::Bus::new();
+            {
+                let hook = std::panic::AssertUnwindSafe(handler(&task.input_snapshot, &(), &mut bus)).catch_unwind();
+                tokio::pin!(hook);
+                let result = hook.as_mut().now_or_never();
+                match mode {
+                    0 => assert!(result.is_none()),
+                    1 => assert!(matches!(result, Some(Err(_)))),
+                    _ => assert!(matches!(result, Some(Ok(ranvier_core::Outcome::Next(()))))),
+                }
+            }
+            assert_eq!(seen.load(Ordering::SeqCst), address);
+            if mode == 1 { journal.settle(super::SagaRollbackOutcome::Panicked); }
+            if mode == 2 { journal.settle(super::SagaRollbackOutcome::Completed); }
+            drop(task);
+            let retained = journal.1.lock().unwrap();
+            if mode == 2 {
+                assert!(retained.is_empty()); assert!(weak.upgrade().is_none());
+            } else {
+                assert_eq!(retained[0].1.input_snapshot.as_ptr() as usize, address);
+                assert_eq!(Arc::strong_count(&retained[0].1), 1);
+            }
+            drop(retained); drop(journal); assert!(weak.upgrade().is_none());
+        }
+    }
     #[test]
     fn uninvoked_task_retention_moves_bytes_and_preserves_prior_observation() {
         let journal = super::SagaRollbackJournal::new("move-input");

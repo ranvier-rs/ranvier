@@ -81,7 +81,8 @@ async fn malformed_compensation_input_redacts_logs_and_payload_and_keeps_rollbac
         .next()
         .unwrap()
         .clone();
-    let result = handler(serde_json::to_vec(SECRET).unwrap(), &(), &mut Bus::new()).await;
+    let malformed_snapshot = serde_json::to_vec(SECRET).unwrap();
+    let result = handler(&malformed_snapshot, &(), &mut Bus::new()).await;
     let Outcome::Emit(label, Some(payload)) = result else {
         panic!("invalid snapshot must emit an incomplete classification")
     };
@@ -95,7 +96,8 @@ async fn malformed_compensation_input_redacts_logs_and_payload_and_keeps_rollbac
         serde_json::json!({"error":"invalid_compensation_input"})
     );
     assert_eq!(undo.load(Ordering::SeqCst), 0);
-    let valid = handler(serde_json::to_vec(&7u32).unwrap(), &(), &mut Bus::new()).await;
+    let valid_snapshot = serde_json::to_vec(&7u32).unwrap();
+    let valid = handler(&valid_snapshot, &(), &mut Bus::new()).await;
     assert!(matches!(valid, Outcome::Next(())));
     assert_eq!(
         undo.load(Ordering::SeqCst),
