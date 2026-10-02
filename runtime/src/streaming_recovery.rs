@@ -2613,7 +2613,11 @@ mod tests {
                 tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
                 control.cancel(ranvier_core::CancellationReason::OperatorShutdown);
             } else { drop(permit); }
-            let joined = task.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap();
+            type ChildReport = Result<StreamInitializationReport<u32, StreamReadyResult<()>, String>, StreamInvocationAlreadyStarted>;
+            let settled = parent.settle_closed_tasks::<ChildReport>(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+            assert_eq!(settled.len(), 1);
+            assert_eq!(settled[0].1, Ok(()));
+            let joined = task.lock().await.take_joined().unwrap().unwrap();
             if grant_start {
                 assert!(matches!(joined, Some(Ok(StreamInitializationReport::Cancelled { context, .. }))
                     if context.reason == ranvier_core::CancellationReason::OperatorShutdown));

@@ -5,6 +5,7 @@ use tokio::{sync::oneshot, task::JoinHandle, time::Instant};
 
 pub(crate) struct ManagedStreamTask<T> {
     handle: Option<JoinHandle<Option<T>>>,
+    joined: Option<Result<Option<T>, tokio::task::JoinError>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -20,7 +21,7 @@ impl<T: Send + 'static> ManagedStreamTask<T> {
             if gate.await.is_err() { return None; }
             Some(future.await)
         });
-        (Self { handle: Some(handle) }, permit)
+        (Self { handle: Some(handle), joined: None }, permit)
     }
 
     /// Borrow the handle rather than moving it into the deadline future.
@@ -28,12 +29,29 @@ impl<T: Send + 'static> ManagedStreamTask<T> {
     pub(crate) async fn join_until(
         &mut self, deadline: Instant,
     ) -> Result<Result<Option<T>, tokio::task::JoinError>, ManagedTaskWaitError> {
+        self.settle_until(deadline).await?;
+        self.take_joined().ok_or(ManagedTaskWaitError::AlreadyJoined)
+    }
+
+    /// Collect frame termination without moving its original typed report out.
+    /// Completed results survive dropped family waits in this retained owner.
+    pub(crate) async fn settle_until(&mut self, deadline: Instant) -> Result<(), ManagedTaskWaitError> {
+        if self.joined.is_some() { return Ok(()); }
         let handle = self.handle.as_mut().ok_or(ManagedTaskWaitError::AlreadyJoined)?;
         match tokio::time::timeout_at(deadline, handle).await {
-            Ok(result) => { self.handle.take(); Ok(result) },
+            Ok(result) => {
+                self.handle.take();
+                self.joined = Some(result);
+                Ok(())
+            },
             Err(_) => Err(ManagedTaskWaitError::TimedOut),
         }
     }
+
+    pub(crate) fn take_joined(&mut self) -> Option<Result<Option<T>, tokio::task::JoinError>> {
+        self.joined.take()
+    }
+
 }
 
 impl<T> Drop for ManagedStreamTask<T> {

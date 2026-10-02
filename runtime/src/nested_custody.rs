@@ -119,6 +119,31 @@ impl CustodyStore {
         Ok(records.iter().filter_map(|(id, record)|
             record.task.as_ref().map(|task| (*id, task.clone()))).collect())
     }
+    /// Homogeneous typed family settlement. Validate every holder type before
+    /// polling any handle; original outputs stay stored in each task holder.
+    #[cfg(feature = "streaming")]
+    pub(crate) async fn settle_closed_tasks<T: Send + 'static>(
+        &self, deadline: tokio::time::Instant,
+    ) -> Result<Vec<(uuid::Uuid, Result<(), crate::managed_stream_task::ManagedTaskWaitError>)>, &'static str> {
+        use futures_util::{stream::FuturesUnordered, StreamExt};
+        let tasks = self.closed_tasks()?.into_iter().map(|(id, holder)| {
+            holder.downcast::<tokio::sync::Mutex<crate::managed_stream_task::ManagedStreamTask<T>>>()
+                .map(|task| (id, task)).map_err(|_| "execution.nested_task_type_mismatch")
+        }).collect::<Result<Vec<_>, _>>()?;
+        let mut pending = FuturesUnordered::new();
+        for (id, task) in tasks {
+            pending.push(async move {
+                let result = match tokio::time::timeout_at(deadline, task.lock()).await {
+                    Ok(mut task) => task.settle_until(deadline).await,
+                    Err(_) => Err(crate::managed_stream_task::ManagedTaskWaitError::TimedOut),
+                };
+                (id, result)
+            });
+        }
+        let mut settled = Vec::new();
+        while let Some(result) = pending.next().await { settled.push(result); }
+        Ok(settled)
+    }
     pub(crate) fn client(&self) -> WeakCustodyClient {
         WeakCustodyClient(Arc::downgrade(&self.0 .0))
     }
