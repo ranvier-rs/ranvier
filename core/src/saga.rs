@@ -7,9 +7,11 @@ use std::sync::Arc;
 
 /// A type-erased compensation handler for Saga rollbacks.
 ///
-/// Takes serialized input snapshot, resources, and bus.
+/// Borrows the retained serialized input snapshot, resources, and bus. The
+/// runtime keeps the original snapshot alive through cancellation and recovery;
+/// constructing or dropping a handler future never transfers those bytes.
 pub type SagaCompensationFn<E, Res> = Arc<
-    dyn for<'a> Fn(Vec<u8>, &'a Res, &'a mut Bus) -> BoxFuture<'a, Outcome<(), E>> + Send + Sync,
+    dyn for<'a> Fn(&'a [u8], &'a Res, &'a mut Bus) -> BoxFuture<'a, Outcome<(), E>> + Send + Sync,
 >;
 
 /// Registry for Saga compensation handlers, keyed by node ID.

@@ -1040,7 +1040,10 @@ where
         } {
             tracing::info!(trace_id = %trace_id, node_id = %task.node_id, "Compensating step: {}", task.node_label);
 
-            journal.push_task(task.clone());
+            // Journal and active hook share one immutable original allocation.
+            // Timeout/drop keeps its bytes in custody without cloning snapshots.
+            let task = std::sync::Arc::new(task);
+            journal.push_task_shared(task.clone());
             let handler = match self.saga_compensation_registry.read() {
                 Ok(registry) => registry.get(&task.node_id),
                 Err(poisoned) => {
@@ -1057,7 +1060,7 @@ where
                 use futures_util::FutureExt as _;
                 // Factory invocation can unwind before returning its future.
                 let result =
-                    AssertUnwindSafe(async { handler(task.input_snapshot, resources, bus).await })
+                    AssertUnwindSafe(async { handler(&task.input_snapshot, resources, bus).await })
                         .catch_unwind()
                         .await;
                 // A panicked handler bypasses its normal guard removal. Journal

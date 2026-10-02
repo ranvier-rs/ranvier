@@ -1160,7 +1160,7 @@ where
                     let comp = comp_fn.clone();
                     let bus_policy = transition_bus_policy.clone();
                     Box::pin(async move {
-                        let input: Out = match serde_json::from_slice(&input_data) {
+                        let input: Out = match serde_json::from_slice(input_data) {
                             Ok(input) => input,
                             Err(_) => {
                                 // Decoder diagnostics can include snapshot values.

@@ -59,7 +59,7 @@ pub(crate) struct ExternalCompensationRecovery {
 #[derive(Clone)]
 pub struct SagaRollbackJournal(
     std::sync::Arc<std::sync::Mutex<SagaRollbackReport>>,
-    std::sync::Arc<std::sync::Mutex<Vec<(usize, ranvier_core::saga::SagaTask)>>>,
+    std::sync::Arc<std::sync::Mutex<Vec<(usize, std::sync::Arc<ranvier_core::saga::SagaTask>)>>>,
     std::sync::Arc<std::sync::Mutex<Vec<(usize, ExternalCompensationRecovery)>>>,
     std::sync::Arc<std::sync::Mutex<Vec<(usize, SagaRollbackJournal)>>>,
     std::sync::Arc<std::sync::Mutex<Option<crate::nested_custody::WeakCustody>>>,
@@ -179,7 +179,7 @@ impl SagaRollbackJournal {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
-            .map(|(_, task)| task.clone())
+            .map(|(_, task)| task.as_ref().clone())
             .collect()
     }
     /// Bounded, fail-closed live check. Never clones retained input bytes and
@@ -264,12 +264,15 @@ impl SagaRollbackJournal {
         self.3.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
     pub(crate) fn push_uninvoked_task(&self, task: ranvier_core::saga::SagaTask) {
-        self.push_task_observed(task, SagaRollbackOutcome::NotInvoked);
+        self.push_task_observed(std::sync::Arc::new(task), SagaRollbackOutcome::NotInvoked);
     }
     pub(crate) fn push_task(&self, task: ranvier_core::saga::SagaTask) {
+        self.push_task_shared(std::sync::Arc::new(task));
+    }
+    pub(crate) fn push_task_shared(&self, task: std::sync::Arc<ranvier_core::saga::SagaTask>) {
         self.push_task_observed(task, SagaRollbackOutcome::InProgress);
     }
-    fn push_task_observed(&self, task: ranvier_core::saga::SagaTask, outcome: SagaRollbackOutcome) {
+    fn push_task_observed(&self, task: std::sync::Arc<ranvier_core::saga::SagaTask>, outcome: SagaRollbackOutcome) {
         let mut report = self
             .0
             .lock()
