@@ -94,6 +94,25 @@ impl StreamingTransition<String> for Init {
         if self.1 == 4 {
             return Err("private-init-error".into());
         }
+        if self.1 == 6 {
+            use futures_util::StreamExt;
+            return Ok(Box::pin(
+                futures_util::stream::iter(vec!["public-item".into()])
+                    .chain(futures_util::stream::pending()),
+            ));
+        }
+        if self.1 == 7 {
+            let token = bus.cancellation_token().unwrap().clone();
+            let mut first = true;
+            return Ok(Box::pin(futures_util::stream::poll_fn(move |_| {
+                if first {
+                    first = false;
+                    return std::task::Poll::Ready(Some("public-item".into()));
+                }
+                token.cancel(ranvier_core::CancellationReason::Explicit);
+                std::task::Poll::Pending
+            })));
+        }
         Ok(Box::pin(futures_util::stream::iter(vec![
             "public-item".into(),
         ])))
@@ -215,5 +234,39 @@ async fn prefix_durability_and_cleanup_precede_sse_success_without_private_resul
         }
         assert_eq!(effects.load(Ordering::SeqCst), usize::from(mode != 1));
         assert_eq!(compensations.load(Ordering::SeqCst), usize::from(mode == 3));
+    }
+}
+
+#[tokio::test]
+async fn late_timeout_and_cancellation_emit_error_without_done() {
+    for mode in [6, 7] {
+        let initialized = Arc::new(AtomicUsize::new(0));
+        let stream = Axon::<(), (), String>::start("late-terminal")
+            .then(Effect(Arc::new(AtomicUsize::new(0))))
+            .then_stream(Init(initialized.clone(), mode))
+            .with_timeout(ranvier_core::streaming::StreamTimeoutConfig {
+                init: None,
+                idle: Some(std::time::Duration::from_millis(20)),
+                total: None,
+            });
+        let app = TestApp::new(Ranvier::http::<()>().post_sse("/stream", stream), ());
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            app.send(TestRequest::post("/stream")),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = response.text().unwrap();
+        assert!(body.contains("public-item"));
+        assert_eq!(body.matches("event: error").count(), 1);
+        assert!(body.contains(if mode == 6 {
+            "stream_timeout"
+        } else {
+            "stream_cancelled"
+        }));
+        assert!(!body.contains("[DONE]"));
+        assert_eq!(initialized.load(Ordering::SeqCst), 1);
     }
 }
