@@ -534,6 +534,66 @@ mod timeout_wakeup_tests {
             this.0.fetch_add(1, Ordering::SeqCst);
         }
     }
+    #[tokio::test(start_paused = true)]
+    async fn earliest_deadline_and_idle_reset_preserve_total_origin() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let input = stream::poll_fn(move |cx| rx.poll_recv(cx));
+        let mut wrapped = Box::pin(TimeoutStream::new(
+            input,
+            StreamTimeoutConfig {
+                init: Some(Duration::from_secs(5)),
+                idle: Some(Duration::from_secs(4)),
+                total: Some(Duration::from_secs(10)),
+            },
+        ));
+        let counter = Arc::new(WakeCount(AtomicUsize::new(0)));
+        let task_waker = waker(counter.clone());
+        let mut cx = Context::from_waker(&task_waker);
+        assert_eq!(wrapped.as_mut().poll_next(&mut cx), Poll::Pending);
+        tokio::time::advance(Duration::from_secs(3)).await;
+        tx.send(1).unwrap();
+        assert_eq!(wrapped.as_mut().poll_next(&mut cx), Poll::Ready(Some(1)));
+        assert_eq!(wrapped.as_mut().poll_next(&mut cx), Poll::Pending);
+        tokio::time::advance(Duration::from_secs(3)).await;
+        // Past init deadline, but first item switched to idle (deadline 7).
+        assert_eq!(wrapped.as_mut().poll_next(&mut cx), Poll::Pending);
+        tx.send(2).unwrap();
+        assert_eq!(wrapped.as_mut().poll_next(&mut cx), Poll::Ready(Some(2)));
+        assert_eq!(wrapped.as_mut().poll_next(&mut cx), Poll::Pending);
+        tokio::time::advance(Duration::from_secs(3)).await;
+        tx.send(3).unwrap();
+        assert_eq!(wrapped.as_mut().poll_next(&mut cx), Poll::Ready(Some(3)));
+        assert_eq!(wrapped.as_mut().poll_next(&mut cx), Poll::Pending);
+        // Idle is now 13, but original total deadline remains 10.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_eq!(wrapped.as_mut().poll_next(&mut cx), Poll::Ready(None));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn zero_deadline_and_normal_eof_are_fused() {
+        let config = StreamTimeoutConfig {
+            init: Some(Duration::ZERO),
+            idle: None,
+            total: None,
+        };
+        let mut expired = Box::pin(TimeoutStream::new(stream::repeat(1), config));
+        let counter = Arc::new(WakeCount(AtomicUsize::new(0)));
+        let task_waker = waker(counter);
+        let mut cx = Context::from_waker(&task_waker);
+        assert_eq!(expired.as_mut().poll_next(&mut cx), Poll::Ready(None));
+        let mut ended = Box::pin(TimeoutStream::new(
+            stream::empty::<usize>(),
+            StreamTimeoutConfig {
+                init: None,
+                idle: None,
+                total: Some(Duration::from_secs(1)),
+            },
+        ));
+        assert_eq!(ended.as_mut().poll_next(&mut cx), Poll::Ready(None));
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert_eq!(ended.as_mut().poll_next(&mut cx), Poll::Ready(None));
+    }
+
     #[tokio::test]
     async fn deadline_wins_ready_items_and_dropped_timers_do_not_wake() {
         let delay = Duration::from_millis(20);
