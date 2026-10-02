@@ -662,6 +662,53 @@ where
         Ok(custody)
     }
 
+    /// Publish the exact unopened frame before preparation can be abandoned.
+    pub(crate) fn stage_reserved<T: Send + 'static>(&self, client: &crate::nested_custody::WeakCustodyClient,
+        slot: &mut crate::nested_custody::CustodyReservation, journal: &crate::SagaRollbackJournal,
+        prepared: &mut crate::managed_stream_task::PreparedStreamTask<T>,
+    ) -> Result<crate::nested_custody::WeakCustody, ManagedStreamStartError> {
+        if !prepared.matches_owner(&self.retention_capability()) || !prepared.has_open_start() {
+            let _ = prepared.reject_start();
+            return Err(ManagedStreamStartError { signal: "execution.nested_task_owner_mismatch", custody: None });
+        }
+        let custody = match slot.finalize_stream(client, self.inner.clone(), prepared.holder(), journal, self.observe()) {
+            Ok(custody) => custody,
+            Err(signal) => { let _ = prepared.reject_start(); return Err(ManagedStreamStartError { signal, custody: None }); }
+        };
+        if let Err(signal) = custody.attach_settlement(prepared.settlement()) {
+            let _ = prepared.reject_start();
+            return Err(ManagedStreamStartError { signal, custody: Some(custody) });
+        }
+        Ok(custody)
+    }
+    pub(crate) fn start_staged<T: Send + 'static>(&self, client: crate::nested_custody::WeakCustodyClient,
+        custody: &crate::nested_custody::WeakCustody, parent: CancellationToken,
+        prepared: &mut crate::managed_stream_task::PreparedStreamTask<T>,
+    ) -> Result<(), &'static str> {
+        let result = (|| {
+            if !prepared.has_open_start() || !prepared.matches_owner(&self.retention_capability()) {
+                return Err("execution.nested_task_start_decided");
+            }
+            let mut context = self.inner.context.try_lock().map_err(|_| "execution.nested_stream_context_busy")?;
+            if self.inner.started.load(Ordering::Acquire) { return Err("execution.nested_stream_already_started"); }
+            let bus = &mut context.1;
+            let access = bus.take_access_scope();
+            let bound = (|| {
+                if bus.has::<ParentStreamCustody>() || bus.has::<crate::nested_custody::WeakCustodyClient>() || bus.has::<crate::nested_custody::CustodyStore>() {
+                    return Err("execution.nested_stream_already_bound");
+                }
+                client.validate_staged_task(custody, &self.retention_capability(), &(prepared.holder() as crate::nested_custody::Capability))?;
+                bus.insert(client);
+                bus.insert(ParentStreamCustody(custody.clone(), Some(parent.child_token())));
+                prepared.grant_registered_start(custody)
+            })();
+            bus.restore_access_scope(access);
+            bound
+        })();
+        if result.is_err() { let _ = prepared.reject_start(); }
+        result
+    }
+
     /// Retain the exact graph/context owner through public report-handle waits.
     pub(crate) fn retention_capability(&self) -> crate::nested_custody::Capability {
         self.inner.clone()

@@ -308,6 +308,22 @@ impl WeakCustodyClient {
         }
         Ok(())
     }
+    #[cfg(feature = "streaming")]
+    pub(crate) fn validate_staged_task(&self, receipt: &WeakCustody, owner: &Capability, task: &Capability) -> Result<(), &'static str> {
+        if !Weak::ptr_eq(&self.0, &receipt.store) { return Err("execution.nested_custody_mismatch"); }
+        let store = self.0.upgrade().ok_or("execution.parent_custody_released")?;
+        let records = store.records.lock().map_err(|_| "execution.nested_custody_unavailable")?;
+        if store.closed.load(Ordering::Acquire) { return Err("execution.parent_custody_released"); }
+        if store.admission_closed.load(Ordering::Acquire) { return Err("execution.nested_custody_admission_closed"); }
+        let record = records.get(&receipt.id).ok_or("execution.parent_custody_released")?;
+        if !Arc::ptr_eq(&record.owner, owner) || !Weak::ptr_eq(&receipt.record, &Arc::downgrade(owner)) {
+            return Err("execution.nested_task_owner_mismatch");
+        }
+        if !record.task.as_ref().is_some_and(|registered| Arc::ptr_eq(registered, task)) || record.settlement.is_none() {
+            return Err("execution.nested_task_registration_mismatch");
+        }
+        Ok(())
+    }
     pub(crate) fn reserve(&self, record: Capability) -> Result<WeakCustody, &'static str> {
         let store = self
             .0

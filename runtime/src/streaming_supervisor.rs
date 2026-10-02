@@ -136,7 +136,8 @@ impl StreamReservation {
 
 /// Setup rejection preserves the original request context and input. Later
 /// preparation rejection retains an opaque recovery lease instead of discarding it.
-pub enum StreamPrepareError<In, Res> {
+pub enum StreamPrepareError<In, Out, E, Res> {
+    Staging(StreamStartRejected<Out, E>),
     Setup { signal: &'static str, input: In, context: OwnedStreamContext<Res> },
     Preparation { signal: &'static str, input: In, recovery: StreamRecoveryLease },
 }
@@ -149,7 +150,9 @@ type PreparedFrame<Out, E> = crate::managed_stream_task::PreparedStreamTask<Resu
 pub struct PreparedSupervisedStream<In, Out, Item, E, Res> {
     plan: crate::streaming_axon::OwnedCallablePlan<In, Out, Item, E, Res>,
     prepared: PreparedFrame<Out, E>,
-    slot: CustodyReservation,
+    custody: crate::nested_custody::WeakCustody,
+    journal: crate::SagaRollbackJournal,
+    report: crate::streaming_report_handle::StreamReportHandle<Out, E>,
     client: WeakCustodyClient,
     items: tokio::sync::mpsc::Receiver<Item>,
     readiness: crate::streaming_axon::StreamReadiness,
@@ -201,7 +204,7 @@ impl StreamReservation {
         circuit: &crate::streaming_axon::StreamingAxon<In, Out, Item, E, Res>,
         context: OwnedStreamContext<Res>, input: In, cleanup_grace: std::time::Duration,
         expires: Option<std::time::Instant>,
-    ) -> Result<PreparedSupervisedStream<In, Out, Item, E, Res>, StreamPrepareError<In, Res>>
+    ) -> Result<PreparedSupervisedStream<In, Out, Item, E, Res>, StreamPrepareError<In, Out, E, Res>>
     where In: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         Out: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
@@ -213,7 +216,7 @@ impl StreamReservation {
         if let Err(signal) = self.slot.validate_open(&self.client) {
             return Err(StreamPrepareError::Setup { signal, context, input });
         }
-        let Self { admission, permit, client, slot, .. } = self;
+        let Self { admission, permit, client, mut slot, .. } = self;
         let mut plan = match circuit.owned_definition.try_callable_plan_reserved(context, &admission, expires, permit) {
             Ok(plan) => plan,
             Err(error) => {
@@ -228,14 +231,21 @@ impl StreamReservation {
                 return Err(StreamPrepareError::Setup { signal, input, context });
             }
         };
-        let ((prepared, items), readiness) = match plan.prepare_bounded_ready(input, cleanup_grace) {
+        let ((mut prepared, items), readiness) = match plan.prepare_bounded_ready(input, cleanup_grace) {
             Ok(frame) => frame,
             Err(error) => return Err(StreamPrepareError::Preparation {
                 signal: error.signal, input: error.input,
                 recovery: StreamRecoveryLease { _owner: plan.owner.retention_capability() },
             }),
         };
-        Ok(PreparedSupervisedStream { plan, prepared, slot, client, items, readiness })
+        let journal = crate::SagaRollbackJournal::new("supervised-stream-root");
+        let report = crate::streaming_report_handle::StreamReportHandle::new(prepared.holder(),
+            std::sync::Arc::new((plan.owner.retention_capability(), journal.clone())));
+        let custody = match plan.owner.stage_reserved(&client, &mut slot, &journal, &mut prepared) {
+            Ok(custody) => custody,
+            Err(error) => return Err(StreamPrepareError::Staging(StreamStartRejected { signal: error.signal, report, _custody: error.custody })),
+        };
+        Ok(PreparedSupervisedStream { plan, prepared, custody, journal, report, client, items, readiness })
     }
 }
 impl<In, Out, Item, E, Res> PreparedSupervisedStream<In, Out, Item, E, Res>
@@ -244,20 +254,21 @@ where In: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static
     E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     Res: Send + Sync + 'static,
 {
+    /// Clone this lease before abandoning preparation if the caller needs the
+    /// original rejection report; the root also retains the exact staged frame.
+    pub fn report(&self) -> &crate::streaming_report_handle::StreamReportHandle<Out, E> { &self.report }
+    pub fn abandon(mut self) -> StreamStartRejected<Out, E> {
+        let _ = self.prepared.reject_start();
+        StreamStartRejected { signal: "execution.stream_preparation_abandoned", report: self.report, _custody: Some(self.custody) }
+    }
     pub async fn start(mut self, parent: ranvier_core::CancellationToken)
         -> Result<SupervisedStreamInvocation<Out, Item, E>, StreamStartRejected<Out, E>> {
         let control = parent.child_token();
-        let journal = crate::SagaRollbackJournal::new("supervised-stream-root");
-        // Report leases retain both the exact recovery owner and its parent
-        // observation journal after the invocation transport is dropped.
-        let report = crate::streaming_report_handle::StreamReportHandle::new(
-            self.prepared.holder(), std::sync::Arc::new((self.plan.owner.retention_capability(), journal.clone())));
-        let custody = match self.plan.owner.register_reserved_and_start(self.client, &mut self.slot,
-            &journal, control.clone(), &mut self.prepared).await {
-            Ok(custody) => custody,
-            Err(error) => return Err(StreamStartRejected { signal: error.signal, report, _custody: error.custody }),
-        };
-        Ok(SupervisedStreamInvocation { items: self.items, readiness: self.readiness, report, control, _custody: custody, _journal: journal })
+        if let Err(signal) = self.plan.owner.start_staged(self.client, &self.custody, control.clone(), &mut self.prepared) {
+            return Err(StreamStartRejected { signal, report: self.report, _custody: Some(self.custody) });
+        }
+        Ok(SupervisedStreamInvocation { items: self.items, readiness: self.readiness, report: self.report,
+            control, _custody: self.custody, _journal: self.journal })
     }
 }
 
@@ -528,6 +539,56 @@ mod tests {
         assert_eq!(admission.in_use(), Ok(1));
         drop(drain);
         assert_eq!(admission.in_use(), Ok(0));
+    }
+    #[tokio::test]
+    async fn staged_preparation_drop_unpolled_start_abandon_and_closed_start_are_joinable() {
+        #[derive(Clone)]
+        struct CountPrefix(Arc<AtomicUsize>);
+        #[async_trait::async_trait]
+        impl ranvier_core::Transition<u32, u32> for CountPrefix {
+            type Error = String; type Resources = ();
+            async fn run(&self, input: u32, _: &(), _: &mut ranvier_core::Bus) -> ranvier_core::Outcome<u32, String> {
+                self.0.fetch_add(1, Ordering::SeqCst); ranvier_core::Outcome::Next(input)
+            }
+        }
+        for mode in 0..5 {
+            let supervisor = StreamSupervisor::new(1);
+            let admission = supervisor.admission.clone();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let circuit = crate::Axon::<u32, u32, String>::start("staged-gate").then(CountPrefix(calls.clone())).then_stream(Finite);
+            let (ticket, context) = supervisor.reserve().unwrap().with_context(||
+                OwnedStreamContext::try_new(Arc::new(()), ranvier_core::Bus::new())).unwrap();
+            let prepared = match ticket.prepare(&circuit, context, 317, std::time::Duration::from_secs(1), None) {
+                Ok(prepared) => prepared, Err(_) => panic!("setup rejected"),
+            };
+            let report = prepared.report().clone();
+            let parent = ranvier_core::CancellationToken::new();
+            let mut drain = supervisor.close_for_drain().unwrap();
+            assert_eq!(drain.unfinalized_reservations(), 0);
+            assert_eq!(drain.statuses().len(), 1);
+            assert_eq!(drain.statuses()[0].1, StreamDrainStatus::Pending);
+            let supervisor = if mode == 4 { drop(supervisor); None } else { Some(supervisor) };
+            let rejected = match mode {
+                0 => { drop(prepared); None }
+                1 => { drop(prepared.start(parent.clone())); None }
+                2 => Some(prepared.abandon()),
+                _ => match prepared.start(parent.clone()).await {
+                    Err(rejected) => Some(rejected), Ok(_) => panic!("retired preparation started"),
+                },
+            };
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            drain.settle_until(deadline).await;
+            assert_eq!(drain.statuses()[0].1, StreamDrainStatus::Settled);
+            assert!(matches!(report.take_report_until(deadline).await.unwrap(),
+                crate::streaming_report_handle::SupervisedStreamCompletion::RejectedBeforeStart));
+            if let Some(rejected) = &rejected { rejected.retire_unstarted_until(deadline).await.unwrap(); }
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert!(!parent.is_cancelled());
+            drop(rejected); drop(report); drop(supervisor);
+            assert_eq!(admission.in_use(), Ok(1));
+            drop(drain);
+            assert_eq!(admission.in_use(), Ok(0));
+        }
     }
     #[test]
     fn paired_reservation_precedes_factory_and_refunds_failure() {
