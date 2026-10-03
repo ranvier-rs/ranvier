@@ -1411,6 +1411,57 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "persistence-postgres")]
+    #[tokio::test]
+    async fn invalid_postgres_relation_prefixes_fail_before_pool_use() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://user:password@127.0.0.1:1/ranvier_test")
+            .unwrap();
+        let prefix = "tenant; DROP TABLE unrelated;--";
+        let persistence = PostgresPersistenceStore::with_table_prefix(pool.clone(), prefix);
+
+        assert_invalid_postgres_prefix(persistence.ensure_schema().await.unwrap_err());
+        assert_invalid_postgres_prefix(persistence.append(envelope(1, "Next")).await.unwrap_err());
+        assert_invalid_postgres_prefix(persistence.load("trace").await.unwrap_err());
+        assert_invalid_postgres_prefix(persistence.resume("trace", 1).await.unwrap_err());
+        assert_invalid_postgres_prefix(
+            persistence
+                .complete("trace", CompletionState::Success)
+                .await
+                .unwrap_err(),
+        );
+        assert_invalid_postgres_prefix(
+            persistence
+                .save_intervention(
+                    "trace",
+                    Intervention {
+                        target_node: "node".into(),
+                        payload_override: None,
+                        timestamp_ms: 1,
+                    },
+                )
+                .await
+                .unwrap_err(),
+        );
+
+        let idempotency = PostgresCompensationIdempotencyStore::with_table_prefix(pool, prefix);
+        assert_invalid_postgres_prefix(idempotency.ensure_schema().await.unwrap_err());
+        assert_invalid_postgres_prefix(idempotency.purge_older_than_ms(1).await.unwrap_err());
+        assert_invalid_postgres_prefix(idempotency.was_compensated("key").await.unwrap_err());
+        assert_invalid_postgres_prefix(idempotency.mark_compensated("key").await.unwrap_err());
+    }
+
+    #[cfg(feature = "persistence-postgres")]
+    fn assert_invalid_postgres_prefix(error: anyhow::Error) {
+        assert!(
+            error
+                .to_string()
+                .contains("invalid PostgreSQL table prefix"),
+            "expected prefix error before DB I/O, got {error:#}"
+        );
+    }
+
     fn envelope(step: u64, outcome_kind: &str) -> PersistenceEnvelope {
         PersistenceEnvelope {
             trace_id: "trace-1".to_string(),
