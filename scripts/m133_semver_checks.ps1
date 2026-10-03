@@ -73,13 +73,38 @@ function Write-Log {
     $Message | Tee-Object -FilePath $logPath -Append | Out-Host
 }
 
-function Get-WorkspaceDriveInfo {
-    $workspaceRoot = (Get-Location).Path
-    $driveName = ([System.IO.Path]::GetPathRoot($workspaceRoot)).TrimEnd('\').TrimEnd(':')
-    if ([string]::IsNullOrWhiteSpace($driveName)) {
-        return $null
+function Get-CargoTargetDirectory {
+    $configuredTarget = $env:CARGO_TARGET_DIR
+    if ([string]::IsNullOrWhiteSpace($configuredTarget)) {
+        return [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path "target"))
     }
-    return Get-PSDrive -Name $driveName -ErrorAction SilentlyContinue
+
+    if ([System.IO.Path]::IsPathRooted($configuredTarget)) {
+        return [System.IO.Path]::GetFullPath($configuredTarget)
+    }
+
+    return [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $configuredTarget))
+}
+
+function Get-CargoTargetDriveInfo {
+    param([string]$TargetDirectory)
+
+    $driveRoot = [System.IO.Path]::GetPathRoot($TargetDirectory)
+    if ([string]::IsNullOrWhiteSpace($driveRoot)) {
+        throw "Cannot resolve a filesystem drive for Cargo target directory: $TargetDirectory"
+    }
+
+    $driveName = $driveRoot.TrimEnd('\').TrimEnd(':')
+    if ([string]::IsNullOrWhiteSpace($driveName)) {
+        throw "Cannot resolve a filesystem drive for Cargo target directory: $TargetDirectory"
+    }
+
+    $driveInfo = Get-PSDrive -Name $driveName -ErrorAction SilentlyContinue
+    if ($null -eq $driveInfo) {
+        throw "Cannot query filesystem drive '$driveName' for Cargo target directory: $TargetDirectory"
+    }
+
+    return $driveInfo
 }
 
 $rows = New-Object System.Collections.Generic.List[object]
@@ -95,14 +120,16 @@ try {
     Ensure-SemverTool
     $featureArgs = Resolve-FeatureArgs
 
-    $driveInfo = Get-WorkspaceDriveInfo
+    $cargoTargetDirectory = Get-CargoTargetDirectory
+    Write-Log "Cargo target directory: $cargoTargetDirectory"
+    $driveInfo = Get-CargoTargetDriveInfo -TargetDirectory $cargoTargetDirectory
     if ($null -ne $driveInfo) {
         $freeGb = [math]::Round($driveInfo.Free / 1GB, 2)
-        Write-Log "Workspace drive free space: ${freeGb}GB"
+        Write-Log "Cargo target drive free space: ${freeGb}GB"
 
         if ($freeGb -lt $MinFreeSpaceGB) {
             $failed = $true
-            $note = "insufficient disk space (${freeGb}GB < ${MinFreeSpaceGB}GB)"
+            $note = "insufficient Cargo target disk space (${freeGb}GB < ${MinFreeSpaceGB}GB)"
             Write-Log "[blocked_resource] $note"
 
             foreach ($pkg in $Packages) {
@@ -130,7 +157,7 @@ try {
             Write-Log ""
             Write-Log "Result JSON: $jsonPath"
             Write-Log "Log: $logPath"
-            throw "Insufficient disk space for cargo-semver-checks workspace (need >= ${MinFreeSpaceGB}GB)"
+            throw "Insufficient Cargo target disk space for cargo-semver-checks (need >= ${MinFreeSpaceGB}GB)"
         }
     }
 
