@@ -2843,13 +2843,15 @@ mod tests {
         bus.insert(CompensationIdempotencyHandle::from_store(idempotency));
 
         let axon = Axon::<i32, i32, String>::start("IdempotencyStoreFailure").then(AlwaysFault);
-        let outcome = axon.execute(9, &(), &mut bus).await;
+        let report = axon.execute(9, &(), &mut bus).await;
+        let serialized_report = serde_json::to_string(&report).unwrap();
+        assert!(!serialized_report.contains("forced idempotency read failure"));
         let crate::ExecutionReport::Unconfirmed {
             result: outcome,
             operation: crate::PersistenceOperation::CompensationRead,
             effect: crate::EffectBoundary::MayHaveRun,
             ..
-        } = outcome
+        } = report
         else {
             panic!("unexpected execution durability");
         };
