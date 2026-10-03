@@ -120,7 +120,10 @@ pub struct CompensationContext {
 /// Keep the current encoding until the separate durable key-version migration
 /// is approved; a missing marker never authorizes a retry by itself.
 pub(crate) fn compensation_idempotency_key(context: &CompensationContext) -> String {
-    format!("{}:{}:{}", context.trace_id, context.circuit, context.fault_kind)
+    format!(
+        "{}:{}:{}",
+        context.trace_id, context.circuit, context.fault_kind
+    )
 }
 
 /// Controls whether compensation hooks should run automatically on `Fault`.
@@ -1326,6 +1329,60 @@ mod tests {
         assert!(store.was_compensated(key).await.unwrap());
     }
 
+    fn compensation_context(fault_step: u64) -> CompensationContext {
+        CompensationContext {
+            trace_id: "trace-a".to_string(),
+            circuit: "OrderFlow".to_string(),
+            fault_kind: "Fault".to_string(),
+            fault_step,
+            timestamp_ms: 1_700_000_000_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_compensation_idempotency_key_aliases_fault_steps() {
+        // Preserve the existing persisted format until an owner-approved versioned
+        // migration can safely replace this characterization with non-collision proof.
+        let first = compensation_idempotency_key(&compensation_context(4));
+        let second = compensation_idempotency_key(&compensation_context(5));
+        let keys_alias = first == second;
+        let store = InMemoryCompensationIdempotencyStore::new();
+        let observations: anyhow::Result<(bool, bool)> = async {
+            let absent_before_write = !store.was_compensated(&first).await?;
+            store.mark_compensated(&first).await?;
+            let alias_reads_marker = store.was_compensated(&second).await?;
+            Ok((absent_before_write, alias_reads_marker))
+        }
+        .await;
+        let (absent_before_write, alias_reads_marker) = observations.unwrap();
+        assert!(keys_alias);
+        assert!(absent_before_write);
+        assert!(alias_reads_marker);
+    }
+
+    #[test]
+    fn legacy_compensation_idempotency_key_aliases_delimiter_partitions() {
+        let first = CompensationContext {
+            trace_id: "a:b".to_string(),
+            circuit: "c".to_string(),
+            fault_kind: "d".to_string(),
+            fault_step: 1,
+            timestamp_ms: 1,
+        };
+        let second = CompensationContext {
+            trace_id: "a".to_string(),
+            circuit: "b:c".to_string(),
+            fault_kind: "d".to_string(),
+            fault_step: 2,
+            timestamp_ms: 2,
+        };
+
+        assert_eq!(
+            compensation_idempotency_key(&first),
+            compensation_idempotency_key(&second)
+        );
+    }
+
     #[cfg(feature = "persistence-postgres")]
     #[tokio::test]
     #[ignore = "requires explicitly isolated backend fixture URL"]
@@ -1911,6 +1968,50 @@ mod tests {
     #[cfg(feature = "persistence-postgres")]
     #[tokio::test]
     #[ignore = "requires explicitly isolated backend fixture URL"]
+    async fn postgres_legacy_compensation_marker_aliases_fault_steps_when_configured() {
+        let url = std::env::var("RANVIER_PERSISTENCE_POSTGRES_URL")
+            .unwrap_or_else(|_| panic!("explicit isolated backend fixture URL required"));
+        assert!(
+            !url.trim().is_empty(),
+            "explicit backend fixture URL must not be empty"
+        );
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(3)
+            .connect(&url)
+            .await
+            .unwrap();
+        let table_prefix = format!(
+            "ranvier_compensation_collision_test_{}",
+            Uuid::new_v4().simple()
+        );
+        let store =
+            PostgresCompensationIdempotencyStore::with_table_prefix(pool.clone(), &table_prefix);
+        store.ensure_schema().await.unwrap();
+
+        let first = compensation_idempotency_key(&compensation_context(4));
+        let second = compensation_idempotency_key(&compensation_context(5));
+        let keys_alias = first == second;
+        let observations: anyhow::Result<(bool, bool)> = async {
+            let absent_before_write = !store.was_compensated(&first).await?;
+            store.mark_compensated(&first).await?;
+            let alias_reads_marker = store.was_compensated(&second).await?;
+            Ok((absent_before_write, alias_reads_marker))
+        }
+        .await;
+
+        let drop_table = format!("DROP TABLE IF EXISTS {}", store.table);
+        let cleanup = sqlx::query(&drop_table).execute(&pool).await;
+        let (absent_before_write, alias_reads_marker) = observations.unwrap();
+        cleanup.unwrap();
+        assert!(keys_alias);
+        assert!(absent_before_write);
+        assert!(alias_reads_marker);
+    }
+
+    #[cfg(feature = "persistence-postgres")]
+    #[tokio::test]
+    #[ignore = "requires explicitly isolated backend fixture URL"]
     async fn postgres_compensation_idempotency_purge_when_configured() {
         let url = std::env::var("RANVIER_PERSISTENCE_POSTGRES_URL")
             .unwrap_or_else(|_| panic!("explicit isolated backend fixture URL required"));
@@ -1988,6 +2089,47 @@ mod tests {
         use redis::AsyncCommands;
         let mut conn = store.manager.clone();
         let _: () = conn.del(store.key(&key)).await.unwrap();
+    }
+
+    #[cfg(feature = "persistence-redis")]
+    #[tokio::test]
+    #[ignore = "requires explicitly isolated backend fixture URL"]
+    async fn redis_legacy_compensation_marker_aliases_fault_steps_when_configured() {
+        let url = std::env::var("RANVIER_PERSISTENCE_REDIS_URL")
+            .unwrap_or_else(|_| panic!("explicit isolated backend fixture URL required"));
+        assert!(
+            !url.trim().is_empty(),
+            "explicit backend fixture URL must not be empty"
+        );
+
+        let base = RedisCompensationIdempotencyStore::connect(&url)
+            .await
+            .unwrap();
+        let prefix = format!(
+            "ranvier:compensation:idempotency:collision:test:{}",
+            Uuid::new_v4().simple()
+        );
+        let store = RedisCompensationIdempotencyStore::with_prefix(base.manager.clone(), prefix);
+
+        let first = compensation_idempotency_key(&compensation_context(4));
+        let second = compensation_idempotency_key(&compensation_context(5));
+        let keys_alias = first == second;
+        let observations: anyhow::Result<(bool, bool)> = async {
+            let absent_before_write = !store.was_compensated(&first).await?;
+            store.mark_compensated(&first).await?;
+            let alias_reads_marker = store.was_compensated(&second).await?;
+            Ok((absent_before_write, alias_reads_marker))
+        }
+        .await;
+
+        use redis::AsyncCommands;
+        let mut conn = store.manager.clone();
+        let cleanup: redis::RedisResult<usize> = conn.del(store.key(&first)).await;
+        let (absent_before_write, alias_reads_marker) = observations.unwrap();
+        cleanup.unwrap();
+        assert!(keys_alias);
+        assert!(absent_before_write);
+        assert!(alias_reads_marker);
     }
 
     #[cfg(feature = "persistence-redis")]
