@@ -9,7 +9,7 @@
   "baseline_ref": "v0.51.0",
   "baseline_commit": "3578799759da5d2fb3ad5742b67b7c281b726754",
   "cargo_semver_feature_mode": "all-features",
-  "stable_candidate_item_count": 183,
+  "stable_candidate_item_count": 186,
   "candidate_bearing_packages": [
     "ranvier",
     "ranvier-core",
@@ -260,6 +260,14 @@
           "boundary": "runtime-type-erased-resource"
         },
         {
+          "path": "ranvier_core::bus::Bus::replace_cancellation_token",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "owner": "runtime-core",
+          "boundary": "runtime-type-erased-resource"
+        },
+        {
           "path": "ranvier_core::bus::Bus::require",
           "kind": "function",
           "origin": "direct",
@@ -269,6 +277,22 @@
         },
         {
           "path": "ranvier_core::bus::Bus::set_access_policy",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "owner": "runtime-core",
+          "boundary": "runtime-type-erased-resource"
+        },
+        {
+          "path": "ranvier_core::bus::Bus::try_insert",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "owner": "runtime-core",
+          "boundary": "runtime-type-erased-resource"
+        },
+        {
+          "path": "ranvier_core::bus::Bus::try_insert_shared",
           "kind": "function",
           "origin": "direct",
           "target": null,

@@ -17,22 +17,22 @@
     "core/Cargo.toml": "4d84b4b6d2a3d5b159ca761860b88cfbbf08951ab4300c673898996a14cb6103",
     "extensions/audit/Cargo.toml": "6e09af66c9c4a531dc07b2ec8ff91254b668df48148f961e13b801f3a04a8cb4",
     "extensions/compliance/Cargo.toml": "f573800e854ed9ceb5c4a8b36e7047d9d6cdaed13e87f80bdf8fe7298a87f5da",
-    "extensions/inspector/Cargo.toml": "cd0a6867a31b3f16b309df1babe9a364e844b88ce318b04f5e9888472e1ceb54",
+    "extensions/inspector/Cargo.toml": "572eaf1cee37b8af22e201addf0c3c517d2efabb4a7a47abe8f7b4de52573b08",
     "extensions/openapi/Cargo.toml": "ea7ef84621076edbf7d28987186e7a799b77fed57744a86059ca350a751c5c6c",
     "guard/Cargo.toml": "ef7800a506abbb9c6415f5a6f56e25cac68c3065965deb774f7d51b07b593e34",
     "http/Cargo.toml": "11b4eb0c6cccef466a8c57415a12dee56ad4ef4f57032bebb6b3a6d839746ada",
     "kit/Cargo.toml": "45da8cf9b47f04d0b8e47620df42e724139d065f692383b0cd6b45a359c4c1e1",
     "macros/Cargo.toml": "1b947a14aab9f0e1d8d20a012c9d3b1421211a5e36662a4880dcc38eed54340d",
-    "runtime/Cargo.toml": "05a8f3fb172f2c0e0f918162a9f1b5708cbc12b81bae63f2ed5edd85ffb8e85a",
+    "runtime/Cargo.toml": "7b8a8027f7ebd3c93cef74e35f6794374c188073cf52c927807926315b7128c2",
     "std/Cargo.toml": "593d63ae77471e9e7a1af5dcc57f387c89a7347040008c18c038edf3f9deceaf",
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2605,
+  "public_item_count": 2877,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2414,
-    "Stable Candidate": 183
+    "Experimental": 2683,
+    "Stable Candidate": 186
   },
   "crates": [
     {
@@ -53,20 +53,20 @@
         "streaming",
         "validation"
       ],
-      "public_item_count": 43,
+      "public_item_count": 57,
       "counts_by_kind": {
-        "enum": 8,
+        "enum": 15,
         "function": 1,
         "module": 10,
         "proc_attribute": 4,
-        "struct": 16,
+        "struct": 23,
         "trait": 4
       },
       "counts_by_stability": {
-        "Experimental": 32,
+        "Experimental": 46,
         "Stable Candidate": 11
       },
-      "facade_reexport_count": 41,
+      "facade_reexport_count": 55,
       "boundary_item_count": 0,
       "items": [
         {
@@ -140,20 +140,6 @@
           }
         },
         {
-          "path": "ranvier::CancellableStreamingError",
-          "kind": "enum",
-          "origin": "facade-reexport",
-          "target": "ranvier_runtime::CancellableStreamingError",
-          "stability": "Experimental",
-          "owner": "developer-tooling",
-          "boundary": null,
-          "deprecated": false,
-          "deprecation": null,
-          "source": {
-            "file": "kit/src/lib.rs"
-          }
-        },
-        {
           "path": "ranvier::CancellationContext",
           "kind": "struct",
           "origin": "facade-reexport",
@@ -196,10 +182,66 @@
           }
         },
         {
+          "path": "ranvier::CollectedStreamingAxon",
+          "kind": "struct",
+          "origin": "facade-reexport",
+          "target": "ranvier_runtime::CollectedStreamingAxon",
+          "stability": "Experimental",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier::CompletionConfirmation",
+          "kind": "enum",
+          "origin": "facade-reexport",
+          "target": "ranvier_runtime::CompletionConfirmation",
+          "stability": "Experimental",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier::core",
           "kind": "module",
           "origin": "facade-reexport",
           "target": "ranvier_core",
+          "stability": "Experimental",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier::EffectBoundary",
+          "kind": "enum",
+          "origin": "facade-reexport",
+          "target": "ranvier_runtime::EffectBoundary",
+          "stability": "Experimental",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier::ExecutionReport",
+          "kind": "enum",
+          "origin": "facade-reexport",
+          "target": "ranvier_runtime::ExecutionReport",
           "stability": "Experimental",
           "owner": "developer-tooling",
           "boundary": null,
@@ -350,6 +392,20 @@
           }
         },
         {
+          "path": "ranvier::ObservedStream",
+          "kind": "struct",
+          "origin": "facade-reexport",
+          "target": "ranvier_runtime::ObservedStream",
+          "stability": "Experimental",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier::openapi",
           "kind": "module",
           "origin": "facade-reexport",
@@ -397,6 +453,20 @@
           "origin": "facade-reexport",
           "target": "ranvier_core::Outcome",
           "stability": "Stable Candidate",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier::PersistenceOperation",
+          "kind": "enum",
+          "origin": "facade-reexport",
+          "target": "ranvier_runtime::PersistenceOperation",
+          "stability": "Experimental",
           "owner": "developer-tooling",
           "boundary": null,
           "deprecated": false,
@@ -532,6 +602,62 @@
           }
         },
         {
+          "path": "ranvier::SagaRollbackJournal",
+          "kind": "struct",
+          "origin": "facade-reexport",
+          "target": "ranvier_runtime::SagaRollbackJournal",
+          "stability": "Experimental",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier::SagaRollbackOutcome",
+          "kind": "enum",
+          "origin": "facade-reexport",
+          "target": "ranvier_runtime::SagaRollbackOutcome",
+          "stability": "Experimental",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier::SagaRollbackReport",
+          "kind": "struct",
+          "origin": "facade-reexport",
+          "target": "ranvier_runtime::SagaRollbackReport",
+          "stability": "Experimental",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier::SagaRollbackStep",
+          "kind": "struct",
+          "origin": "facade-reexport",
+          "target": "ranvier_runtime::SagaRollbackStep",
+          "stability": "Experimental",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier::Schematic",
           "kind": "struct",
           "origin": "facade-reexport",
@@ -574,11 +700,81 @@
           }
         },
         {
+          "path": "ranvier::StreamConsumptionReport",
+          "kind": "struct",
+          "origin": "facade-reexport",
+          "target": "ranvier_runtime::StreamConsumptionReport",
+          "stability": "Experimental",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier::StreamConsumptionTerminal",
+          "kind": "enum",
+          "origin": "facade-reexport",
+          "target": "ranvier_runtime::StreamConsumptionTerminal",
+          "stability": "Experimental",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier::streaming_transition",
           "kind": "proc_attribute",
           "origin": "facade-reexport",
           "target": "ranvier_macros::streaming_transition",
           "stability": "Stable Candidate",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier::StreamingAxon",
+          "kind": "struct",
+          "origin": "facade-reexport",
+          "target": "ranvier_runtime::StreamingAxon",
+          "stability": "Experimental",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier::StreamInitializationError",
+          "kind": "enum",
+          "origin": "facade-reexport",
+          "target": "ranvier_runtime::StreamInitializationError",
+          "stability": "Experimental",
+          "owner": "developer-tooling",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "kit/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier::StreamInitializationReport",
+          "kind": "enum",
+          "origin": "facade-reexport",
+          "target": "ranvier_runtime::StreamInitializationReport",
+          "stability": "Experimental",
           "owner": "developer-tooling",
           "boundary": null,
           "deprecated": false,
@@ -3377,15 +3573,15 @@
         "schema",
         "streaming"
       ],
-      "public_item_count": 695,
+      "public_item_count": 700,
       "counts_by_kind": {
         "assoc_type": 11,
         "constant": 2,
         "enum": 56,
-        "function": 204,
+        "function": 208,
         "macro": 3,
         "module": 24,
-        "struct": 101,
+        "struct": 102,
         "struct_field": 147,
         "trait": 30,
         "type_alias": 5,
@@ -3393,11 +3589,11 @@
       },
       "counts_by_stability": {
         "Deprecated": 6,
-        "Experimental": 560,
-        "Stable Candidate": 129
+        "Experimental": 562,
+        "Stable Candidate": 132
       },
       "facade_reexport_count": 0,
-      "boundary_item_count": 49,
+      "boundary_item_count": 53,
       "items": [
         {
           "path": "ranvier_core",
@@ -3708,6 +3904,20 @@
           }
         },
         {
+          "path": "ranvier_core::bus::Bus::replace_cancellation_token",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Stable Candidate",
+          "owner": "runtime-core",
+          "boundary": "runtime-type-erased-resource",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/bus.rs"
+          }
+        },
+        {
           "path": "ranvier_core::bus::Bus::require",
           "kind": "function",
           "origin": "direct",
@@ -3741,6 +3951,34 @@
           "origin": "direct",
           "target": null,
           "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": "runtime-type-erased-resource",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/bus.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::bus::Bus::try_insert",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Stable Candidate",
+          "owner": "runtime-core",
+          "boundary": "runtime-type-erased-resource",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/bus.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::bus::Bus::try_insert_shared",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Stable Candidate",
           "owner": "runtime-core",
           "boundary": "runtime-type-erased-resource",
           "deprecated": false,
@@ -3867,6 +4105,20 @@
           "origin": "direct",
           "target": null,
           "stability": "Stable Candidate",
+          "owner": "runtime-core",
+          "boundary": "runtime-type-erased-resource",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/bus.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::bus::BusAccessScope",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": "runtime-type-erased-resource",
           "deprecated": false,
@@ -4325,6 +4577,20 @@
         },
         {
           "path": "ranvier_core::cancellation::CancellationToken::child_with_deadline",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/cancellation.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::cancellation::CancellationToken::child_with_deadline_at",
           "kind": "function",
           "origin": "direct",
           "target": null,
@@ -16939,12 +17205,12 @@
         "tls",
         "validation"
       ],
-      "public_item_count": 527,
+      "public_item_count": 528,
       "counts_by_kind": {
         "assoc_const": 2,
         "constant": 5,
         "enum": 18,
-        "function": 252,
+        "function": 253,
         "macro": 1,
         "module": 14,
         "struct": 112,
@@ -16954,11 +17220,11 @@
         "variant": 34
       },
       "counts_by_stability": {
-        "Experimental": 503,
+        "Experimental": 504,
         "Stable Candidate": 24
       },
       "facade_reexport_count": 0,
-      "boundary_item_count": 527,
+      "boundary_item_count": 528,
       "items": [
         {
           "path": "ranvier_http",
@@ -19608,6 +19874,20 @@
         },
         {
           "path": "ranvier_http::ingress::HttpIngress::into_raw_service_with_cancellation",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "http-adapters",
+          "boundary": "runtime-validated-protocol-boundary",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "http/src/ingress.rs"
+          }
+        },
+        {
+          "path": "ranvier_http::ingress::HttpIngress::managed_task_capacity",
           "kind": "function",
           "origin": "direct",
           "target": null,
@@ -29707,19 +29987,19 @@
         "schema",
         "streaming"
       ],
-      "public_item_count": 404,
+      "public_item_count": 656,
       "counts_by_kind": {
-        "enum": 35,
-        "function": 131,
-        "module": 12,
-        "struct": 96,
-        "struct_field": 67,
+        "enum": 74,
+        "function": 171,
+        "module": 18,
+        "struct": 126,
+        "struct_field": 88,
         "trait": 18,
         "type_alias": 10,
-        "variant": 35
+        "variant": 151
       },
       "counts_by_stability": {
-        "Experimental": 387,
+        "Experimental": 639,
         "Stable Candidate": 17
       },
       "facade_reexport_count": 0,
@@ -30846,20 +31126,6 @@
           }
         },
         {
-          "path": "ranvier_runtime::CancellableStreamingError",
-          "kind": "enum",
-          "origin": "reexport",
-          "target": "streaming_axon::CancellableStreamingError",
-          "stability": "Experimental",
-          "owner": "runtime-core",
-          "boundary": null,
-          "deprecated": false,
-          "deprecation": null,
-          "source": {
-            "file": "runtime/src/lib.rs"
-          }
-        },
-        {
           "path": "ranvier_runtime::closure_transition",
           "kind": "module",
           "origin": "direct",
@@ -31070,6 +31336,20 @@
           }
         },
         {
+          "path": "ranvier_runtime::CollectedStreamingAxon",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "streaming_axon::CollectedStreamingAxon",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier_runtime::CompensationAutoTrigger",
           "kind": "struct",
           "origin": "reexport",
@@ -31158,6 +31438,20 @@
           "kind": "struct",
           "origin": "reexport",
           "target": "persistence::CompensationRetryPolicy",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::CompletionConfirmation",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "execution_report::CompletionConfirmation",
           "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": null,
@@ -31494,6 +31788,426 @@
           "kind": "trait",
           "origin": "reexport",
           "target": "distributed::DistributedStore",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::EffectBoundary",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "execution_report::EffectBoundary",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report",
+          "kind": "module",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::CompletionConfirmation",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::CompletionConfirmation::Confirmed",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::CompletionConfirmation::NotRequested",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::EffectBoundary",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::EffectBoundary::MayHaveRun",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::EffectBoundary::NotInvoked",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::ExecutionReport",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::ExecutionReport::BlockedBeforeEffect",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::ExecutionReport::cleanup",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::ExecutionReport::map_result",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::ExecutionReport::NotRequested",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::ExecutionReport::Recorded",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::ExecutionReport::Unconfirmed",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::ExecutionReport::Unpersisted",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::PersistenceOperation",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::PersistenceOperation::CancellationCursor",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::PersistenceOperation::CompensationRead",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::PersistenceOperation::CompensationWrite",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::PersistenceOperation::Complete",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::PersistenceOperation::Intent",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::PersistenceOperation::Load",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::PersistenceOperation::RecoveryPayload",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::PersistenceOperation::Result",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::PersistenceOperation::Terminal",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::StoreConfirmation",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::StoreConfirmation::Confirmed",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::StoreConfirmation::Unconfirmed",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::ExecutionReport",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "execution_report::ExecutionReport",
           "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": null,
@@ -32138,6 +32852,20 @@
           "kind": "struct",
           "origin": "reexport",
           "target": "llm::MockLlmConfig",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::ObservedStream",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "streaming_consumption::ObservedStream",
           "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": null,
@@ -33492,6 +34220,20 @@
           }
         },
         {
+          "path": "ranvier_runtime::PersistenceOperation",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "execution_report::PersistenceOperation",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier_runtime::PersistenceStore",
           "kind": "trait",
           "origin": "reexport",
@@ -33618,10 +34360,10 @@
           }
         },
         {
-          "path": "ranvier_runtime::prelude::CancellableStreamingError",
-          "kind": "enum",
+          "path": "ranvier_runtime::prelude::ClusterManager",
+          "kind": "struct",
           "origin": "reexport",
-          "target": "crate::streaming_axon::CancellableStreamingError",
+          "target": "crate::cluster::ClusterManager",
           "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": null,
@@ -33632,10 +34374,10 @@
           }
         },
         {
-          "path": "ranvier_runtime::prelude::ClusterManager",
+          "path": "ranvier_runtime::prelude::CollectedStreamingAxon",
           "kind": "struct",
           "origin": "reexport",
-          "target": "crate::cluster::ClusterManager",
+          "target": "crate::streaming_axon::CollectedStreamingAxon",
           "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": null,
@@ -33744,6 +34486,20 @@
           }
         },
         {
+          "path": "ranvier_runtime::prelude::CompletionConfirmation",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "crate::execution_report::CompletionConfirmation",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier_runtime::prelude::CompletionState",
           "kind": "enum",
           "origin": "reexport",
@@ -33800,10 +34556,38 @@
           }
         },
         {
+          "path": "ranvier_runtime::prelude::EffectBoundary",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "crate::execution_report::EffectBoundary",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier_runtime::prelude::ExecutionMode",
           "kind": "enum",
           "origin": "reexport",
           "target": "crate::axon::ExecutionMode",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::prelude::ExecutionReport",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "crate::execution_report::ExecutionReport",
           "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": null,
@@ -34080,6 +34864,20 @@
           }
         },
         {
+          "path": "ranvier_runtime::prelude::PersistenceOperation",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "crate::execution_report::PersistenceOperation",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier_runtime::prelude::PersistenceStore",
           "kind": "trait",
           "origin": "reexport",
@@ -34206,6 +35004,62 @@
           }
         },
         {
+          "path": "ranvier_runtime::prelude::SagaRollbackJournal",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "crate::saga_report::SagaRollbackJournal",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::prelude::SagaRollbackOutcome",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "crate::saga_report::SagaRollbackOutcome",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::prelude::SagaRollbackReport",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "crate::saga_report::SagaRollbackReport",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::prelude::SagaRollbackStep",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "crate::saga_report::SagaRollbackStep",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier_runtime::prelude::SchematicExportRequest",
           "kind": "struct",
           "origin": "reexport",
@@ -34248,10 +35102,24 @@
           }
         },
         {
-          "path": "ranvier_runtime::prelude::StreamingAxonError",
+          "path": "ranvier_runtime::prelude::StreamInitializationError",
           "kind": "enum",
           "origin": "reexport",
-          "target": "crate::streaming_axon::StreamingAxonError",
+          "target": "crate::streaming_initialization::StreamInitializationError",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::prelude::StreamInitializationReport",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "crate::streaming_initialization::StreamInitializationReport",
           "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": null,
@@ -34794,6 +35662,370 @@
           }
         },
         {
+          "path": "ranvier_runtime::saga_report",
+          "kind": "module",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackJournal",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackJournal::snapshot",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackJournal::unresolved_tasks",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackOutcome",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackOutcome::Branched",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackOutcome::Completed",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackOutcome::Emitted",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackOutcome::Fault",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackOutcome::InProgress",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackOutcome::Jumped",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackOutcome::MissingHandler",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackOutcome::NotInvoked",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackOutcome::Panicked",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackReport",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackReport::finished",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackReport::is_complete",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackReport::steps",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackReport::trace_id",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackStep",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackStep::node_id",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::saga_report::SagaRollbackStep::outcome",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/saga_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::SagaRollbackJournal",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "saga_report::SagaRollbackJournal",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::SagaRollbackOutcome",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "saga_report::SagaRollbackOutcome",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::SagaRollbackReport",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "saga_report::SagaRollbackReport",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::SagaRollbackStep",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "saga_report::SagaRollbackStep",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier_runtime::SchematicExportRequest",
           "kind": "struct",
           "origin": "reexport",
@@ -34822,6 +36054,34 @@
           }
         },
         {
+          "path": "ranvier_runtime::StreamConsumptionReport",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "streaming_consumption::StreamConsumptionReport",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::StreamConsumptionTerminal",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "streaming_consumption::StreamConsumptionTerminal",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier_runtime::streaming_axon",
           "kind": "module",
           "origin": "direct",
@@ -34836,8 +36096,8 @@
           }
         },
         {
-          "path": "ranvier_runtime::streaming_axon::CancellableStreamingError",
-          "kind": "enum",
+          "path": "ranvier_runtime::streaming_axon::CollectedStreamingAxon",
+          "kind": "struct",
           "origin": "direct",
           "target": null,
           "stability": "Experimental",
@@ -34850,8 +36110,8 @@
           }
         },
         {
-          "path": "ranvier_runtime::streaming_axon::CancellableStreamingError::Cancelled",
-          "kind": "variant",
+          "path": "ranvier_runtime::streaming_axon::CollectedStreamingAxon::execute",
+          "kind": "function",
           "origin": "direct",
           "target": null,
           "stability": "Experimental",
@@ -34864,8 +36124,92 @@
           }
         },
         {
-          "path": "ranvier_runtime::streaming_axon::CancellableStreamingError::Stream",
-          "kind": "variant",
+          "path": "ranvier_runtime::streaming_axon::CollectedStreamingAxon::execute_cancellable",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_axon.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_axon::CollectedStreamingAxon::export_schematic",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_axon.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_axon::OwnedStreamContext",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_axon.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_axon::OwnedStreamContext::into_parts",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_axon.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_axon::OwnedStreamContext::try_new",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_axon.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_axon::OwnedStreamContextRejection",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_axon.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_axon::OwnedStreamContextRejection::into_parts",
+          "kind": "function",
           "origin": "direct",
           "target": null,
           "stability": "Experimental",
@@ -35046,7 +36390,35 @@
           }
         },
         {
-          "path": "ranvier_runtime::streaming_axon::StreamingAxonError",
+          "path": "ranvier_runtime::streaming_axon::StreamReadiness",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_axon.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_axon::StreamReadiness::initialized",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_axon.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_axon::StreamReadinessError",
           "kind": "enum",
           "origin": "direct",
           "target": null,
@@ -35060,49 +36432,7 @@
           }
         },
         {
-          "path": "ranvier_runtime::streaming_axon::StreamingAxonError::PipelineFault",
-          "kind": "variant",
-          "origin": "direct",
-          "target": null,
-          "stability": "Experimental",
-          "owner": "runtime-core",
-          "boundary": null,
-          "deprecated": false,
-          "deprecation": null,
-          "source": {
-            "file": "runtime/src/streaming_axon.rs"
-          }
-        },
-        {
-          "path": "ranvier_runtime::streaming_axon::StreamingAxonError::StreamInitError",
-          "kind": "variant",
-          "origin": "direct",
-          "target": null,
-          "stability": "Experimental",
-          "owner": "runtime-core",
-          "boundary": null,
-          "deprecated": false,
-          "deprecation": null,
-          "source": {
-            "file": "runtime/src/streaming_axon.rs"
-          }
-        },
-        {
-          "path": "ranvier_runtime::streaming_axon::StreamingAxonError::Timeout",
-          "kind": "variant",
-          "origin": "direct",
-          "target": null,
-          "stability": "Experimental",
-          "owner": "runtime-core",
-          "boundary": null,
-          "deprecated": false,
-          "deprecation": null,
-          "source": {
-            "file": "runtime/src/streaming_axon.rs"
-          }
-        },
-        {
-          "path": "ranvier_runtime::streaming_axon::StreamingAxonError::UnexpectedOutcome",
+          "path": "ranvier_runtime::streaming_axon::StreamReadinessError::Unavailable",
           "kind": "variant",
           "origin": "direct",
           "target": null,
@@ -35172,6 +36502,2470 @@
           }
         },
         {
+          "path": "ranvier_runtime::streaming_consumption",
+          "kind": "module",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_consumption.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_consumption::ObservedStream",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_consumption.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_consumption::ObservedStream::collect_report",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_consumption.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_consumption::ObservedStream::new",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_consumption.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_consumption::ObservedStream::terminal",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_consumption.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_consumption::StreamConsumptionReport",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_consumption.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_consumption::StreamConsumptionReport::items",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_consumption.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_consumption::StreamConsumptionReport::terminal",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_consumption.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_consumption::StreamConsumptionTerminal",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_consumption.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_consumption::StreamConsumptionTerminal::Cancelled",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_consumption.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_consumption::StreamConsumptionTerminal::Completed",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_consumption.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_consumption::StreamConsumptionTerminal::InvalidDeadline",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_consumption.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_consumption::StreamConsumptionTerminal::TimedOut",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_consumption.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_initialization",
+          "kind": "module",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_initialization.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_initialization::StreamInitializationError",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_initialization.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_initialization::StreamInitializationError::Panicked",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_initialization.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_initialization::StreamInitializationError::Transition",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_initialization.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_initialization::StreamInitializationReport",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_initialization.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_initialization::StreamInitializationReport::Cancelled",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_initialization.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_initialization::StreamInitializationReport::Failed",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_initialization.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_initialization::StreamInitializationReport::map_value",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_initialization.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_initialization::StreamInitializationReport::Ready",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_initialization.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_initialization::StreamInitializationReport::Rejected",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_initialization.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle",
+          "kind": "module",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamAssessmentError",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamAssessmentError::Unavailable",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamCleanupAssessment",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamCleanupAssessment::AllReportedComplete",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamCleanupAssessment::Incomplete",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamCleanupAssessment::NotReported",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamConsumptionAssessment",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamConsumptionAssessment::Cancelled",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamConsumptionAssessment::Completed",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamConsumptionAssessment::DriverPanicked",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamConsumptionAssessment::InvalidDeadline",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamConsumptionAssessment::SupervisorCancelled",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamConsumptionAssessment::TimedOut",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamExternalReadback",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamExternalReadback::MarkerAbsent",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamExternalReadback::MarkerPresent",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamExternalReadback::ReadUnavailable",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamExternalRecoveryError",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamExternalRecoveryError::FrameNotReported",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamExternalRecoveryError::JournalUnavailable",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamExternalRecoveryError::RecoveryBlocked",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamExternalRecoveryError::Unavailable",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamExternalRecoveryError::Wait",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamFrameAssessment",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamFrameAssessment::AlreadyStarted",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamFrameAssessment::FrameFailed",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamFrameAssessment::RejectedBeforeStart",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamFrameAssessment::Reported",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamInitializationAssessment",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamInitializationAssessment::Cancelled",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamInitializationAssessment::NotObserved",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamInitializationAssessment::Panicked",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamInitializationAssessment::PrefixRejected",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamInitializationAssessment::Ready",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamInitializationAssessment::TransitionFailed",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLiveRecoveryState",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLiveRecoveryState::journal_present",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLiveRecoveryState::recovery_pending",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLiveRecoveryState::saga_stack_nonempty",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLocalRecoveryError",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLocalRecoveryError::FrameNotReported",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLocalRecoveryError::HandlerRegistryUnavailable",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLocalRecoveryError::JournalUnavailable",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLocalRecoveryError::RecoveryBlocked",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLocalRecoveryError::Unavailable",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLocalRecoveryError::Wait",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLocalRetirementError",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLocalRetirementError::AssessmentUnavailable",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLocalRetirementError::CustodyMismatch",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLocalRetirementError::CustodyReleased",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLocalRetirementError::CustodyUnavailable",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLocalRetirementError::NotConfigured",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLocalRetirementError::RecoveryReviewRequired",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamLocalRetirementError::Wait",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamPrefixDurability",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamPrefixDurability::BlockedBeforeEffect",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamPrefixDurability::NotObserved",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamPrefixDurability::NotRequested",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamPrefixDurability::RecordedCompletionConfirmed",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamPrefixDurability::RecordedWithoutCompletion",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamPrefixDurability::Unconfirmed",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamPrefixDurability::Unpersisted",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamRecoveryProbeError",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamRecoveryProbeError::NotConfigured",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamRecoveryProbeError::TimedOut",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamRecoveryProbeError::TraversalLimit",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamRecoveryProbeError::Unavailable",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportAssessment",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportAssessment::cleanup",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportAssessment::consumption",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportAssessment::frame",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportAssessment::initialization",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportAssessment::initialization_effect",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportAssessment::prefix_durability",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportHandle",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportHandle::assessment",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportHandle::live_recovery_until",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportHandle::readback_next_external_compensation_until",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportHandle::reconcile_next_local_compensation_until",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportHandle::retire_completed_local_until",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportHandle::retirement_evidence",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportHandle::settle_until",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportHandle::take_report_until",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportWaitError",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportWaitError::AlreadyTaken",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportWaitError::TimedOut",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamRetirementEvidence",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamRetirementEvidence::NotObserved",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamRetirementEvidence::RejectedBeforeStart",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamRetirementEvidence::RequiresRecoveryReview",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::SupervisedStreamCompletion",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::SupervisedStreamCompletion::FrameFailed",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::SupervisedStreamCompletion::InvocationAlreadyStarted",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::SupervisedStreamCompletion::RejectedBeforeStart",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::SupervisedStreamCompletion::Report",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::SupervisedStreamFailure",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::SupervisedStreamFailure::Cancelled",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::SupervisedStreamFailure::DriverPanicked",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::SupervisedStreamReady",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::SupervisedStreamReady::cleanup",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::SupervisedStreamReady::consumption",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor",
+          "kind": "module",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::PreparedSupervisedStream",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::PreparedSupervisedStream::abandon",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::PreparedSupervisedStream::report",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::PreparedSupervisedStream::start",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamContextFactoryError",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamContextFactoryError::Admission",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamContextFactoryError::AlreadyCreated",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamContextFactoryError::Factory",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamDrainLease",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamDrainLease::settle_until",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamDrainLease::statuses",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamDrainLease::unfinalized_reservations",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamDrainStatus",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamDrainStatus::Pending",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamDrainStatus::ReportAlreadyTransferred",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamDrainStatus::Settled",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamDrainStatus::TimedOut",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamDrainStatus::Unavailable",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamPrepareError",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamPrepareError::Preparation",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamPrepareError::Setup",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamPrepareError::Staging",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamRecoveryLease",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamReservation",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamReservation::prepare",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamReservation::with_context",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamReservationError",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamReservationError::RecoveryCapacity",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamReservationError::RecoveryClosed",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamReservationError::RecoveryUnavailable",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamReservationError::RootCapacity",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamReservationError::RootClosed",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamReservationError::RootUnavailable",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamRetirementError",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamRetirementError::RecoveryReviewRequired",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamRetirementError::Wait",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamStartRejected",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamStartRejected::report",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamStartRejected::retire_unstarted_until",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamStartRejected::signal",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamSupervisor",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamSupervisor::close",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamSupervisor::close_for_drain",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamSupervisor::new",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::StreamSupervisor::reserve",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::SupervisedStreamInvocation",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::SupervisedStreamInvocation::cancel",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::SupervisedStreamInvocation::items",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::SupervisedStreamInvocation::readiness",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_supervisor::SupervisedStreamInvocation::report",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_supervisor.rs"
+          }
+        },
+        {
           "path": "ranvier_runtime::StreamingAxon",
           "kind": "struct",
           "origin": "reexport",
@@ -35186,10 +38980,24 @@
           }
         },
         {
-          "path": "ranvier_runtime::StreamingAxonError",
+          "path": "ranvier_runtime::StreamInitializationError",
           "kind": "enum",
           "origin": "reexport",
-          "target": "streaming_axon::StreamingAxonError",
+          "target": "streaming_initialization::StreamInitializationError",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::StreamInitializationReport",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "streaming_initialization::StreamInitializationReport",
           "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": null,
