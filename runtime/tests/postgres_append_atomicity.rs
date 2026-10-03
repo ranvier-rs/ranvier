@@ -200,6 +200,92 @@ async fn postgres_executor_terminal_step_collision_is_observable() {
     );
 }
 
+// Characterizes historical false-success rows written before completion was
+// gated on terminal persistence. This is a safety observation, not acceptance
+// that a missing terminal event should be treated as complete.
+#[tokio::test]
+#[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
+async fn postgres_completed_legacy_trace_bypasses_terminal_reconciliation() {
+    use ranvier_core::prelude::*;
+    use ranvier_runtime::persistence::{PersistenceHandle, PersistenceTraceId};
+    use ranvier_runtime::{Axon, ExecutionReport};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[derive(Clone)]
+    struct CountStep(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl Transition<u32, u32> for CountStep {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, input: u32, _: &(), _: &mut Bus) -> Outcome<u32, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Outcome::next(input + 1)
+        }
+    }
+
+    let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL")
+        .expect("explicit isolated database required");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .acquire_timeout(std::time::Duration::from_secs(3))
+        .connect(&url)
+        .await
+        .unwrap();
+    let prefix = format!("legacy_success_{}", uuid::Uuid::new_v4().simple());
+    let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
+    store.ensure_schema().await.unwrap();
+
+    let effects = Arc::new(AtomicUsize::new(0));
+    let axon = Axon::<u32, u32, String, ()>::new("LegacyTerminalFixture")
+        .then(CountStep(effects.clone()))
+        .then(CountStep(effects.clone()));
+    let trace_id = format!("legacy-success-{}", uuid::Uuid::new_v4().simple());
+    let version = &axon.schematic().schema_version;
+
+    let mut enter = event(&trace_id, 0, version);
+    enter.outcome_kind = "Enter".into();
+    store.append(enter).await.unwrap();
+    let mut result = event(&trace_id, 1, version);
+    result.payload = Some(Outcome::<u32, String>::next(1).to_json_value());
+    store.append(result).await.unwrap();
+    store
+        .complete(&trace_id, CompletionState::Success)
+        .await
+        .unwrap();
+    let before = store.load(&trace_id).await.unwrap().unwrap();
+    assert_eq!(before.events.len(), 2);
+    assert_eq!(
+        before
+            .events
+            .iter()
+            .map(|stored| stored.step)
+            .collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+    assert_eq!(before.events[0].outcome_kind, "Enter");
+    assert_eq!(before.events[1].outcome_kind, "Next");
+
+    let mut bus = Bus::new();
+    bus.insert(PersistenceHandle::from_store(store.clone()));
+    bus.insert(PersistenceTraceId::new(trace_id.clone()));
+    assert!(matches!(
+        axon.execute(0, &(), &mut bus).await,
+        ExecutionReport::NotRequested {
+            result: Outcome::Emit(signal, None),
+            ..
+        } if signal == "execution.resumption.completed_trace"
+    ));
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    assert_eq!(store.load(&trace_id).await.unwrap().unwrap(), before);
+    println!(
+        "POSTGRES_HISTORICAL_FALSE_SUCCESS_RETAINED completion-success terminal-event-missing effects=0 full-trace-unchanged"
+    );
+    pool.close().await;
+}
+
 // External owned-container rehearsal selects this worker in a new process per phase.
 #[tokio::test]
 async fn postgres_recovery_worker() {
