@@ -452,7 +452,9 @@ fn is_postgres_unquoted_identifier_start(character: char) -> bool {
 
 #[cfg(feature = "persistence-postgres")]
 fn is_postgres_unquoted_identifier_continue(character: char) -> bool {
-    is_postgres_unquoted_identifier_start(character) || character.is_ascii_digit()
+    is_postgres_unquoted_identifier_start(character)
+        || character.is_ascii_digit()
+        || character == '$'
 }
 
 #[cfg(feature = "persistence-postgres")]
@@ -472,11 +474,12 @@ impl PostgresCompensationIdempotencyStore {
     /// Create with a custom PostgreSQL relation prefix.
     ///
     /// The prefix must be a dot-separated identifier path. Unquoted components
-    /// start with a letter, underscore, or non-control Unicode character and may
-    /// continue with those characters or digits; quoted components use SQL double
-    /// quotes with doubled quotes for escaping. Invalid prefixes are rejected by
-    /// the first store operation. Treat the prefix as trusted configuration:
-    /// selecting a relation does not authorize access to a tenant.
+    /// start with an ASCII letter, underscore, or non-control Unicode code point
+    /// and may continue with those characters, digits, or `$`; quoted components
+    /// use SQL double quotes with doubled quotes for escaping. At most three
+    /// qualified components are accepted. Invalid prefixes are rejected by the
+    /// first store operation. Treat the prefix as trusted configuration: selecting
+    /// a relation does not authorize access to a tenant.
     pub fn with_table_prefix(pool: sqlx::Pool<sqlx::Postgres>, prefix: impl Into<String>) -> Self {
         let prefix = prefix.into();
         Self {
@@ -865,11 +868,12 @@ impl PostgresPersistenceStore {
     /// Create with a custom PostgreSQL relation prefix.
     ///
     /// The prefix must be a dot-separated identifier path. Unquoted components
-    /// start with a letter, underscore, or non-control Unicode character and may
-    /// continue with those characters or digits; quoted components use SQL double
-    /// quotes with doubled quotes for escaping. Invalid prefixes are rejected by
-    /// the first store operation. Treat the prefix as trusted configuration:
-    /// selecting a relation does not authorize access to a tenant.
+    /// start with an ASCII letter, underscore, or non-control Unicode code point
+    /// and may continue with those characters, digits, or `$`; quoted components
+    /// use SQL double quotes with doubled quotes for escaping. At most three
+    /// qualified components are accepted. Invalid prefixes are rejected by the
+    /// first store operation. Treat the prefix as trusted configuration: selecting
+    /// a relation does not authorize access to a tenant.
     pub fn with_table_prefix(pool: sqlx::Pool<sqlx::Postgres>, prefix: impl Into<String>) -> Self {
         let prefix = prefix.into();
         Self {
@@ -1352,6 +1356,8 @@ mod tests {
         let cases = [
             ("", "_state"),
             ("tenant_7", "tenant_7_state"),
+            ("tenant$1", "tenant$1_state"),
+            ("租户_7", "租户_7_state"),
             // PostgreSQL still receives unquoted text and retains its normal case folding.
             ("Tenant_7", "Tenant_7_state"),
             ("tenant_schema.tenant_7", "tenant_schema.tenant_7_state"),
@@ -1379,11 +1385,16 @@ mod tests {
             r#""tenant; DROP TABLE users;--_state""#
         );
 
+        let escaped_quote = PostgresRelation::from_prefix(r#""odd""tenant""#, "_state");
+        assert_eq!(escaped_quote.sql().unwrap(), r#""odd""tenant_state""#);
+
         for prefix in [
             "tenant; DROP TABLE users;--",
             "tenant--",
             "tenant/*comment*/",
-            "tenant$1",
+            "tenant$1; DROP TABLE users;--",
+            "tenant.$1",
+            "$1",
             "tenant..other",
             ".tenant",
             r#""tenant"; DROP TABLE users;--"#,
