@@ -1259,20 +1259,28 @@ async fn actual_execute_reports_completion_error_without_replaying_domain_effect
 }
 
 #[tokio::test]
-async fn actual_execute_distinguishes_no_store_and_app_owned_completion() {
+async fn actual_execute_reports_absent_persistence_and_unrequested_completion() {
     let effects = Arc::new(AtomicUsize::new(0));
-    let axon = Axon::<u32, u32, String, ()>::new("report-fixture").then(Count(effects));
-    let mut bus = Bus::new();
+    let axon = Axon::<u32, u32, String, ()>::new("report-fixture").then(Count(effects.clone()));
+    let mut unpersisted_bus = Bus::new();
     assert!(matches!(
-        axon.execute(0, &(), &mut bus).await,
+        axon.execute(0, &(), &mut unpersisted_bus).await,
         ExecutionReport::Unpersisted {
             result: Outcome::Next(1),
             ..
         }
     ));
-    bus.insert(PersistenceHandle::from_store(
-        InMemoryPersistenceStore::new(),
-    ));
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+
+    let backing = InMemoryPersistenceStore::new();
+    let store = Arc::new(CompleteErrorStore {
+        backing: backing.clone(),
+        apply_before_error: false,
+        operations: std::sync::Mutex::new(Vec::new()),
+    });
+    let mut bus = Bus::new();
+    bus.insert(PersistenceTraceId::new("auto-complete-not-requested"));
+    bus.insert(PersistenceHandle::from_arc(store.clone()));
     bus.insert(PersistenceAutoComplete(false));
     assert!(matches!(
         axon.execute(0, &(), &mut bus).await,
@@ -1282,6 +1290,19 @@ async fn actual_execute_distinguishes_no_store_and_app_owned_completion() {
             ..
         }
     ));
+    assert_eq!(effects.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        *store.operations.lock().unwrap(),
+        vec!["append:Enter", "append:Next", "append:Next"]
+    );
+
+    let trace = backing
+        .load("auto-complete-not-requested")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(trace.events.len(), 3);
+    assert_eq!(trace.completion, None);
 }
 
 #[derive(Clone)]
