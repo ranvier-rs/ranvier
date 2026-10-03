@@ -318,11 +318,26 @@ impl PostgresRelation {
 }
 
 #[cfg(feature = "persistence-postgres")]
+fn reject_postgres_relation_group_if_any_is_invalid(relations: &mut [PostgresRelation]) {
+    let reason = relations
+        .iter()
+        .find_map(|relation| relation.sql.as_ref().err().copied());
+    if let Some(reason) = reason {
+        for relation in relations {
+            relation.sql = Err(reason);
+        }
+    }
+}
+
+#[cfg(feature = "persistence-postgres")]
 #[derive(Debug)]
 enum PostgresIdentifierPart {
     Unquoted(String),
     Quoted(String),
 }
+
+#[cfg(feature = "persistence-postgres")]
+const POSTGRES_DEFAULT_MAX_IDENTIFIER_BYTES: usize = 63;
 
 #[cfg(feature = "persistence-postgres")]
 fn postgres_relation_sql(prefix: &str, suffix: &str) -> std::result::Result<String, &'static str> {
@@ -419,6 +434,17 @@ fn postgres_relation_sql(prefix: &str, suffix: &str) -> std::result::Result<Stri
         }
     }
 
+    if parts.iter().any(|part| {
+        let value = match part {
+            PostgresIdentifierPart::Unquoted(value) | PostgresIdentifierPart::Quoted(value) => {
+                value
+            }
+        };
+        value.len() > POSTGRES_DEFAULT_MAX_IDENTIFIER_BYTES
+    }) {
+        return Err("identifier component exceeds PostgreSQL's 63-byte default limit");
+    }
+
     Ok(parts
         .into_iter()
         .map(|part| match part {
@@ -477,9 +503,11 @@ impl PostgresCompensationIdempotencyStore {
     /// start with an ASCII letter, underscore, or non-control Unicode code point
     /// and may continue with those characters, digits, or `$`; quoted components
     /// use SQL double quotes with doubled quotes for escaping. At most three
-    /// qualified components are accepted. Invalid prefixes are rejected by the
-    /// first store operation. Treat the prefix as trusted configuration: selecting
-    /// a relation does not authorize access to a tenant.
+    /// qualified components are accepted, and every completed identifier must fit
+    /// PostgreSQL's default 63-byte limit after the relation suffix is appended.
+    /// Invalid prefixes are rejected by the first store operation. Treat the prefix
+    /// as trusted configuration: selecting a relation does not authorize access to
+    /// a tenant.
     pub fn with_table_prefix(pool: sqlx::Pool<sqlx::Postgres>, prefix: impl Into<String>) -> Self {
         let prefix = prefix.into();
         Self {
@@ -871,16 +899,25 @@ impl PostgresPersistenceStore {
     /// start with an ASCII letter, underscore, or non-control Unicode code point
     /// and may continue with those characters, digits, or `$`; quoted components
     /// use SQL double quotes with doubled quotes for escaping. At most three
-    /// qualified components are accepted. Invalid prefixes are rejected by the
-    /// first store operation. Treat the prefix as trusted configuration: selecting
-    /// a relation does not authorize access to a tenant.
+    /// qualified components are accepted, and every relation used by this store
+    /// must fit PostgreSQL's default 63-byte identifier limit after its suffix is
+    /// appended. Invalid prefixes are rejected by the first store operation. Treat
+    /// the prefix as trusted configuration: selecting a relation does not authorize
+    /// access to a tenant.
     pub fn with_table_prefix(pool: sqlx::Pool<sqlx::Postgres>, prefix: impl Into<String>) -> Self {
         let prefix = prefix.into();
+        let mut relations = [
+            PostgresRelation::from_prefix(&prefix, "_events"),
+            PostgresRelation::from_prefix(&prefix, "_state"),
+            PostgresRelation::from_prefix(&prefix, "_interventions"),
+        ];
+        reject_postgres_relation_group_if_any_is_invalid(&mut relations);
+        let [events_table, state_table, interventions_table] = relations;
         Self {
             pool,
-            events_table: PostgresRelation::from_prefix(&prefix, "_events"),
-            state_table: PostgresRelation::from_prefix(&prefix, "_state"),
-            interventions_table: PostgresRelation::from_prefix(&prefix, "_interventions"),
+            events_table,
+            state_table,
+            interventions_table,
         }
     }
 
@@ -1377,6 +1414,63 @@ mod tests {
 
     #[cfg(feature = "persistence-postgres")]
     #[test]
+    fn postgres_relation_prefix_rejects_components_postgres_would_truncate() {
+        let longest_suffix = "_compensation_idempotency";
+        let fitting_prefix =
+            "p".repeat(POSTGRES_DEFAULT_MAX_IDENTIFIER_BYTES - longest_suffix.len());
+        let fitting_relation = PostgresRelation::from_prefix(&fitting_prefix, longest_suffix);
+        assert_eq!(
+            fitting_relation.sql().unwrap(),
+            format!("{fitting_prefix}{longest_suffix}")
+        );
+
+        let oversized_prefix = format!("{fitting_prefix}p");
+        assert!(
+            PostgresRelation::from_prefix(&oversized_prefix, longest_suffix)
+                .sql()
+                .is_err()
+        );
+
+        // PostgreSQL's identifier limit counts encoded bytes, including for quoted names.
+        let multibyte_prefix = format!("{}界", "s".repeat(54));
+        assert_eq!(multibyte_prefix.len(), 57);
+        assert_eq!(
+            PostgresRelation::from_prefix(&multibyte_prefix, "_state")
+                .sql()
+                .unwrap(),
+            format!("{multibyte_prefix}_state")
+        );
+        let oversized_multibyte = format!("{multibyte_prefix}x");
+        assert!(
+            PostgresRelation::from_prefix(&oversized_multibyte, "_state")
+                .sql()
+                .is_err()
+        );
+
+        let oversized_schema = format!("{}.tenant", "s".repeat(64));
+        assert!(
+            PostgresRelation::from_prefix(&oversized_schema, "_state")
+                .sql()
+                .is_err()
+        );
+
+        let quoted_prefix = format!(r#""{}""#, "q".repeat(57));
+        assert_eq!(
+            PostgresRelation::from_prefix(&quoted_prefix, "_state")
+                .sql()
+                .unwrap(),
+            format!(r#""{}_state""#, "q".repeat(57))
+        );
+        let oversized_quoted_prefix = format!(r#""{}""#, "q".repeat(58));
+        assert!(
+            PostgresRelation::from_prefix(&oversized_quoted_prefix, "_state")
+                .sql()
+                .is_err()
+        );
+    }
+
+    #[cfg(feature = "persistence-postgres")]
+    #[test]
     fn postgres_relation_prefix_quotes_payload_and_rejects_sql_fragments() {
         let quoted_payload =
             PostgresRelation::from_prefix(r#""tenant; DROP TABLE users;--""#, "_state");
@@ -1450,6 +1544,21 @@ mod tests {
         assert_invalid_postgres_prefix(idempotency.purge_older_than_ms(1).await.unwrap_err());
         assert_invalid_postgres_prefix(idempotency.was_compensated("key").await.unwrap_err());
         assert_invalid_postgres_prefix(idempotency.mark_compensated("key").await.unwrap_err());
+    }
+
+    #[cfg(feature = "persistence-postgres")]
+    #[tokio::test]
+    async fn postgres_store_rejects_prefix_if_any_table_name_would_be_truncated_before_pool_use() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://user:password@127.0.0.1:1/ranvier_test")
+            .unwrap();
+        // `_events` fits exactly, but `_interventions` would be truncated. Reject the
+        // store as a whole so append/load cannot appear usable with an invalid prefix.
+        let prefix = "p".repeat(POSTGRES_DEFAULT_MAX_IDENTIFIER_BYTES - "_events".len());
+        let persistence = PostgresPersistenceStore::with_table_prefix(pool, prefix);
+
+        assert_invalid_postgres_prefix(persistence.append(envelope(1, "Next")).await.unwrap_err());
     }
 
     #[cfg(feature = "persistence-postgres")]
