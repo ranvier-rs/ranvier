@@ -17,6 +17,61 @@ fn event(trace: &str, step: u64, version: &str) -> PersistenceEnvelope {
     }
 }
 
+async fn postgres_proxy_drop_completion_ready_for_query(
+    client: tokio::net::TcpStream,
+    database: tokio::net::TcpStream,
+) -> anyhow::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (mut client_reader, mut client_writer) = client.into_split();
+    let (mut database_reader, mut database_writer) = database.into_split();
+
+    let client_to_database = tokio::io::copy(&mut client_reader, &mut database_writer);
+    let database_to_client = async {
+        let mut saw_completion_update = false;
+        loop {
+            let mut header = [0_u8; 5];
+            database_reader.read_exact(&mut header).await?;
+            let message_length =
+                u32::from_be_bytes(header[1..5].try_into().expect("fixed header")) as usize;
+            anyhow::ensure!(
+                (4..=16 * 1024 * 1024).contains(&message_length),
+                "PostgreSQL backend frame length is outside the fixture bound"
+            );
+            let mut payload = vec![0; message_length - 4];
+            database_reader.read_exact(&mut payload).await?;
+
+            if header[0] == b'C' && payload.as_slice() == b"UPDATE 1\0" {
+                saw_completion_update = true;
+            }
+            if header[0] == b'Z' {
+                let transaction_status = payload.first().copied();
+                if saw_completion_update && transaction_status == Some(b'I') {
+                    // PostgreSQL has sent CommandComplete for the update and
+                    // ReadyForQuery reports idle, so the autocommitted write
+                    // is complete. Drop this response to make the caller's
+                    // acknowledgement unknown.
+                    return Ok(());
+                }
+                // Do not mistake an UPDATE inside append's explicit
+                // transaction for completion. Its ReadyForQuery status is T;
+                // reset before forwarding and wait for the autocommit update.
+                saw_completion_update = false;
+            }
+
+            client_writer.write_all(&header).await?;
+            client_writer.write_all(&payload).await?;
+        }
+    };
+
+    tokio::select! {
+        result = client_to_database => {
+            Err(anyhow::anyhow!("client connection ended before the completion response was dropped: {result:?}"))
+        }
+        result = database_to_client => result,
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
 async fn postgres_legacy_null_blocks_execution_and_pre_cancelled_cleanup() {
@@ -473,6 +528,113 @@ async fn postgres_committed_completion_with_lost_store_ack_is_reported_unconfirm
     })
     .await
     .expect("isolated committed-completion acknowledgement fixture must finish within 15 seconds");
+}
+
+// Drops PostgreSQL's ReadyForQuery after the completion UPDATE has reached
+// CommandComplete. This exercises a real TCP/SQLx acknowledgement loss after
+// PostgreSQL has applied the autocommitted update.
+#[tokio::test]
+#[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
+async fn postgres_completion_ack_lost_on_tcp_after_commit_is_unconfirmed() {
+    use ranvier_core::prelude::*;
+    use ranvier_runtime::persistence::{
+        CompletionState, PersistenceHandle, PersistenceTraceId, PostgresPersistenceStore,
+    };
+    use ranvier_runtime::{EffectBoundary, ExecutionReport, PersistenceOperation};
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+    use tokio::net::{TcpListener, TcpStream};
+
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL")
+            .expect("explicit isolated database required");
+        let database_options = url.parse::<PgConnectOptions>().unwrap();
+        let upstream_host = database_options.get_host().to_owned();
+        let upstream_port = database_options.get_port();
+        let direct_pool = PgPoolOptions::new()
+            .max_connections(2)
+            .acquire_timeout(std::time::Duration::from_secs(3))
+            .connect(&url)
+            .await
+            .unwrap();
+        let prefix = format!("wire_ack_{}", uuid::Uuid::new_v4().simple());
+        let direct_store = PostgresPersistenceStore::with_table_prefix(direct_pool.clone(), &prefix);
+        direct_store.ensure_schema().await.unwrap();
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let proxy_address = listener.local_addr().unwrap();
+        let proxy_task = tokio::spawn(async move {
+            let (client, _) = listener.accept().await?;
+            let database = TcpStream::connect((upstream_host.as_str(), upstream_port)).await?;
+            postgres_proxy_drop_completion_ready_for_query(client, database).await
+        });
+        let proxy_options = database_options
+            .host("127.0.0.1")
+            .port(proxy_address.port())
+            .ssl_mode(PgSslMode::Disable);
+        let proxy_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(3))
+            .connect_with(proxy_options)
+            .await
+            .unwrap();
+        let proxy_store = PostgresPersistenceStore::with_table_prefix(proxy_pool.clone(), &prefix);
+        let axon = ranvier_runtime::Axon::<u32, u32, String, ()>::new(
+            "PostgresWireCompletionAckLossFixture",
+        );
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_store(proxy_store));
+        bus.insert(PersistenceTraceId::new("wire-completion-ack-loss"));
+
+        let report = axon.execute(7, &(), &mut bus).await;
+        assert!(matches!(
+            &report,
+            ExecutionReport::Unconfirmed {
+                result: Outcome::Next(7),
+                operation: PersistenceOperation::Complete,
+                effect: EffectBoundary::MayHaveRun,
+                ..
+            }
+        ));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            proxy_task,
+        )
+        .await
+        .expect("TCP proxy must observe the completion response")
+        .expect("TCP proxy task must not panic")
+        .expect("TCP proxy must relay and drop the intended backend frame");
+        proxy_pool.close().await;
+
+        let reader_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(3))
+            .connect(&url)
+            .await
+            .unwrap();
+        let reader = PostgresPersistenceStore::with_table_prefix(reader_pool.clone(), &prefix);
+        let trace = reader
+            .load("wire-completion-ack-loss")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(trace.events.len(), 2);
+        assert_eq!(trace.events[0].outcome_kind, "Enter");
+        assert_eq!(trace.events[0].step, 0);
+        assert_eq!(trace.events[1].outcome_kind, "Next");
+        assert_eq!(trace.events[1].step, 1);
+        assert_eq!(
+            trace.events[1].payload,
+            Some(Outcome::<u32, String>::next(7).to_json_value())
+        );
+        assert_eq!(trace.completion, Some(CompletionState::Success));
+        reader_pool.close().await;
+        direct_pool.close().await;
+        println!(
+            "POSTGRES_TCP_COMPLETION_ACK_LOST dropped=ReadyForQuery-after-UPDATE-1 caller=Unconfirmed stored=Success"
+        );
+    })
+    .await
+    .expect("isolated TCP completion acknowledgement fixture must finish within 15 seconds");
 }
 
 // Characterizes historical false-success rows written before completion was
