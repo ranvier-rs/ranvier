@@ -3436,6 +3436,150 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn external_compensation_does_not_reset_grace_after_saga_rollback_consumes_budget() {
+        use crate::persistence::{
+            CompensationHandle, CompensationIdempotencyHandle, InMemoryPersistenceStore,
+            PersistenceHandle, PersistenceStore, PersistenceTraceId,
+        };
+        use crate::saga_report::SagaRollbackOutcome;
+
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hook: Arc<dyn crate::persistence::CompensationHook> = Arc::new(ExternalHook {
+            mode: 0,
+            calls: calls.clone(),
+        });
+        let applied = Arc::new(AtomicBool::new(false));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let writes = Arc::new(AtomicUsize::new(0));
+        let marker: Arc<dyn crate::persistence::CompensationIdempotencyStore> =
+            Arc::new(ExternalMarker {
+                mode: 0,
+                applied: applied.clone(),
+                reads: reads.clone(),
+                writes: writes.clone(),
+            });
+        let store = Arc::new(InMemoryPersistenceStore::new());
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(store.clone()));
+        bus.insert(PersistenceTraceId::new("shared-cleanup-deadline"));
+        bus.insert(CompensationHandle::from_arc(hook.clone()));
+        bus.insert(CompensationIdempotencyHandle::from_arc(marker));
+
+        let undo_entered = Arc::new(Notify::new());
+        let undo_journal = Arc::new(std::sync::Mutex::new(None));
+        let graph = Axon::<u32, u32, String, Resources>::start("shared-cleanup-deadline")
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(
+                AdvancingEffect,
+                PendingUndo(undo_entered.clone(), undo_journal.clone()),
+            )
+            .then(FailingEffect);
+        let owner = OwnedStreamRecovery::try_new(
+            graph,
+            OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
+            &StreamRecoveryAdmission::new(1),
+            None,
+        )
+        .unwrap();
+        let report = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            owner.initialize_and_drive(
+                127,
+                &Init,
+                None,
+                std::time::Duration::from_millis(50),
+                |_| async {
+                    panic!("faulted prefix must not start the stream driver");
+                    #[allow(unreachable_code)]
+                    completed()
+                },
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let StreamInitializationReport::Rejected { prefix } = report else {
+            panic!("expected rejected prefix");
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            undo_entered.notified(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            &prefix,
+            crate::ExecutionReport::Recorded {
+                result: crate::ExecutionTerminal::Outcome(Outcome::Fault(error)),
+                ..
+            } | crate::ExecutionReport::Unconfirmed {
+                result: crate::ExecutionTerminal::Outcome(Outcome::Fault(error)),
+                ..
+            }
+                if error == "original direct fault"
+        ));
+
+        let cleanup = prefix.cleanup().unwrap();
+        assert!(!cleanup.finished);
+        assert!(!cleanup.is_complete());
+        assert_eq!(cleanup.steps.len(), 2);
+        assert_eq!(cleanup.steps[0].outcome, SagaRollbackOutcome::InProgress);
+        assert_eq!(cleanup.steps[1].outcome, SagaRollbackOutcome::NotInvoked);
+        assert!(undo_journal.lock().unwrap().is_some());
+        assert!(owner.observe().borrow().cleanup_timed_out);
+        assert_eq!(owner.observe().borrow().cleanup_complete, Some(false));
+        assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
+
+        let context = owner.inner.context.lock().await;
+        let journal = context.1.read::<crate::SagaRollbackJournal>().unwrap();
+        let retained_steps = journal.unresolved_tasks();
+        assert_eq!(retained_steps.len(), 1);
+        assert_eq!(retained_steps[0].input_snapshot, b"127");
+        assert_eq!(retained_steps[0].node_id, cleanup.steps[0].node_id);
+        let retained_external = journal.unresolved_external();
+        assert_eq!(retained_external.len(), 1);
+        assert_eq!(
+            retained_external[0].context.trace_id,
+            "shared-cleanup-deadline"
+        );
+        assert_eq!(retained_external[0].context.fault_kind, "Fault");
+        assert!(Arc::ptr_eq(&retained_external[0].handle.hook(), &hook));
+        assert!(retained_external[0].idempotency.is_some());
+        assert!(!retained_external[0].invoked.load(Ordering::SeqCst));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+        assert!(!applied.load(Ordering::SeqCst));
+        drop(retained_external);
+        drop(retained_steps);
+        drop(context);
+
+        let persisted = store
+            .load("shared-cleanup-deadline")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!persisted
+            .events
+            .iter()
+            .any(|event| event.outcome_kind == "Compensated"));
+        assert_eq!(
+            persisted.completion,
+            Some(crate::persistence::CompletionState::Fault)
+        );
+        let observer = owner.observe();
+        drop(owner);
+        assert_eq!(
+            observer.borrow().custody,
+            RecoveryCustody::ReleasedWithPendingTasks
+        );
+    }
+
     #[derive(Clone)]
     struct FailingEffect;
     #[async_trait::async_trait]
