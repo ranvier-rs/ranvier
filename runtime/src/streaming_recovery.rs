@@ -3506,12 +3506,9 @@ mod tests {
         let StreamInitializationReport::Rejected { prefix } = report else {
             panic!("expected rejected prefix");
         };
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            undo_entered.notified(),
-        )
-        .await
-        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), undo_entered.notified())
+            .await
+            .unwrap();
         assert!(matches!(
             &prefix,
             crate::ExecutionReport::Recorded {
@@ -3564,10 +3561,12 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(!persisted
-            .events
-            .iter()
-            .any(|event| event.outcome_kind == "Compensated"));
+        assert!(
+            !persisted
+                .events
+                .iter()
+                .any(|event| event.outcome_kind == "Compensated")
+        );
         assert_eq!(
             persisted.completion,
             Some(crate::persistence::CompletionState::Fault)
