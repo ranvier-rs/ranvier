@@ -74,6 +74,52 @@ impl CompensationIdempotencyStore for AppliedCompensationError {
     }
 }
 
+struct CompensationMarkerWriteFailure {
+    backing: InMemoryCompensationIdempotencyStore,
+    apply_before_error: bool,
+    reads: AtomicUsize,
+    writes: AtomicUsize,
+}
+
+#[async_trait]
+impl CompensationIdempotencyStore for CompensationMarkerWriteFailure {
+    async fn was_compensated(&self, key: &str) -> anyhow::Result<bool> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.backing.was_compensated(key).await
+    }
+
+    async fn mark_compensated(&self, key: &str) -> anyhow::Result<()> {
+        self.writes.fetch_add(1, Ordering::SeqCst);
+        if self.apply_before_error {
+            self.backing.mark_compensated(key).await?;
+        }
+        Err(anyhow::anyhow!("private-compensation-error"))
+    }
+}
+
+#[derive(Clone)]
+struct StartedEffectThenWait {
+    entered: Arc<Notify>,
+    effects: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Transition<i32, i32> for StartedEffectThenWait {
+    type Error = String;
+    type Resources = ();
+
+    fn bus_access_policy(&self) -> Option<BusAccessPolicy> {
+        Some(BusAccessPolicy::allow_only(Vec::new()))
+    }
+
+    async fn run(&self, state: i32, _resources: &(), _bus: &mut Bus) -> Outcome<i32, String> {
+        self.effects.fetch_add(1, Ordering::SeqCst);
+        self.entered.notify_one();
+        std::future::pending::<()>().await;
+        Outcome::Next(state)
+    }
+}
+
 #[tokio::test]
 async fn pre_cancelled_cleanup_reports_applied_compensation_without_ack() {
     for with_trace_store in [false, true] {
@@ -142,6 +188,96 @@ async fn pre_cancelled_cleanup_reports_applied_compensation_without_ack() {
             );
             assert!(!report.cleanup().unwrap().is_complete());
         }
+    }
+}
+
+#[tokio::test]
+async fn in_flight_cancellation_marker_write_failure_is_unknown_without_retry() {
+    for apply_before_error in [false, true] {
+        let trace_id = if apply_before_error {
+            "in-flight-marker-applied-ack-lost"
+        } else {
+            "in-flight-marker-not-applied"
+        };
+        let entered = Arc::new(Notify::new());
+        let effects = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let backing = InMemoryCompensationIdempotencyStore::new();
+        let failing_store = Arc::new(CompensationMarkerWriteFailure {
+            backing: backing.clone(),
+            apply_before_error,
+            reads: AtomicUsize::new(0),
+            writes: AtomicUsize::new(0),
+        });
+        let original: Arc<dyn CompensationIdempotencyStore> = failing_store.clone();
+        let trace_store = InMemoryPersistenceStore::new();
+        let token = CancellationToken::new();
+        let trigger = tokio::spawn(cancel_after_entry(entered.clone(), token.clone()));
+        let axon = Axon::<i32, i32, String>::start("InFlightCompensationMarkerFailure").then(
+            StartedEffectThenWait {
+                entered,
+                effects: effects.clone(),
+            },
+        );
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_store(trace_store.clone()));
+        bus.insert(PersistenceTraceId::new(trace_id));
+        bus.insert(CompensationIdempotencyHandle::from_arc(original.clone()));
+        bus.insert(CompensationHandle::from_hook(RecordingCompensation {
+            calls: calls.clone(),
+        }));
+
+        let report = tokio::time::timeout(
+            Duration::from_secs(2),
+            axon.execute_cancellable(1, &(), &mut bus, token),
+        )
+        .await
+        .expect("cancellation cleanup must terminate");
+        trigger.await.expect("cancellation trigger");
+
+        assert!(matches!(
+            &report,
+            ExecutionReport::Unconfirmed {
+                result: ExecutionTerminal::Cancelled(context),
+                operation: PersistenceOperation::CompensationWrite,
+                effect: EffectBoundary::MayHaveRun,
+                ..
+            } if context.reason == CancellationReason::OperatorShutdown
+        ));
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        let recorded = calls.lock().await;
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].fault_kind, "Cancelled");
+        let key = format!(
+            "{}:{}:{}",
+            recorded[0].trace_id, recorded[0].circuit, recorded[0].fault_kind
+        );
+        assert_eq!(
+            backing.was_compensated(&key).await.unwrap(),
+            apply_before_error
+        );
+        assert_eq!(failing_store.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(failing_store.writes.load(Ordering::SeqCst), 1);
+        assert!(
+            !serde_json::to_string(&report)
+                .unwrap()
+                .contains("private-compensation-error")
+        );
+        let restored = bus.read::<CompensationIdempotencyHandle>().unwrap().store();
+        assert!(Arc::ptr_eq(&restored, &original));
+        drop(recorded);
+
+        let trace = trace_store.load(trace_id).await.unwrap().unwrap();
+        assert_eq!(trace.completion, Some(CompletionState::Cancelled));
+        assert_eq!(
+            trace
+                .events
+                .iter()
+                .map(|event| event.outcome_kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Enter", "Cancelled"]
+        );
+        assert!(!report.cleanup().unwrap().is_complete());
     }
 }
 
