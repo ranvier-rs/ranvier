@@ -1743,6 +1743,152 @@ mod tests {
         sqlx::query(&drop_state).execute(&pool).await.unwrap();
     }
 
+    #[cfg(feature = "persistence-postgres")]
+    #[tokio::test]
+    #[ignore = "requires explicitly isolated backend fixture URL"]
+    async fn postgres_identifier_prefixes_execute_when_configured() -> anyhow::Result<()> {
+        let url = std::env::var("RANVIER_PERSISTENCE_POSTGRES_URL")
+            .map_err(|_| anyhow::anyhow!("explicit isolated backend fixture URL required"))?;
+        anyhow::ensure!(
+            !url.trim().is_empty(),
+            "explicit backend fixture URL must not be empty"
+        );
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&url)
+            .await?;
+        let suffix = Uuid::new_v4().simple().to_string();
+        let prefixes = [
+            format!("public.r$1{}", &suffix[..15]),
+            format!("public.\"q\"\"{}\"", &suffix[16..]),
+        ];
+        let guard = format!("ranvier_identifier_guard_{}", Uuid::new_v4().simple());
+
+        let mut cleanup_relations = vec![guard.clone()];
+        let fixture_result: anyhow::Result<()> = async {
+            for table_prefix in prefixes {
+                let store = PostgresPersistenceStore::with_table_prefix(
+                    pool.clone(),
+                    table_prefix.as_str(),
+                );
+                let idempotency = PostgresCompensationIdempotencyStore::with_table_prefix(
+                    pool.clone(),
+                    table_prefix.as_str(),
+                );
+                cleanup_relations.extend([
+                    store.interventions_table.sql()?.to_owned(),
+                    store.events_table.sql()?.to_owned(),
+                    store.state_table.sql()?.to_owned(),
+                    idempotency.table.sql()?.to_owned(),
+                ]);
+
+                store.ensure_schema().await?;
+                let trace_id = format!("prefix-{}", Uuid::new_v4().simple());
+                let mut event = envelope(1, "Next");
+                event.trace_id = trace_id.clone();
+                event.circuit = "IdentifierBoundary".to_string();
+                store.append(event).await?;
+                store
+                    .save_intervention(
+                        &trace_id,
+                        Intervention {
+                            target_node: "node".into(),
+                            payload_override: Some(serde_json::json!({"case": "identifier"})),
+                            timestamp_ms: 1,
+                        },
+                    )
+                    .await?;
+
+                let cursor = store.resume(&trace_id, 1).await?;
+                anyhow::ensure!(cursor.next_step == 2, "unexpected resume cursor");
+                let loaded = store
+                    .load(&trace_id)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("persisted trace was not found"))?;
+                anyhow::ensure!(loaded.trace_id == trace_id, "trace id did not round-trip");
+                anyhow::ensure!(loaded.events.len() == 1, "event did not round-trip");
+                anyhow::ensure!(
+                    loaded.interventions.len() == 1,
+                    "intervention did not round-trip"
+                );
+
+                store.complete(&trace_id, CompletionState::Success).await?;
+                let completed = store
+                    .load(&trace_id)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("completed trace was not found"))?;
+                anyhow::ensure!(
+                    completed.completion == Some(CompletionState::Success),
+                    "completion did not round-trip"
+                );
+
+                idempotency.ensure_schema().await?;
+                let key = format!("key-{}", Uuid::new_v4().simple());
+                anyhow::ensure!(
+                    !idempotency.was_compensated(&key).await?,
+                    "new idempotency key unexpectedly exists"
+                );
+                idempotency.mark_compensated(&key).await?;
+                anyhow::ensure!(
+                    idempotency.was_compensated(&key).await?,
+                    "idempotency marker did not round-trip"
+                );
+                let purged = idempotency.purge_older_than_ms(i64::MAX).await?;
+                anyhow::ensure!(purged >= 1, "idempotency marker was not purged");
+                anyhow::ensure!(
+                    !idempotency.was_compensated(&key).await?,
+                    "purged idempotency marker still exists"
+                );
+            }
+
+            sqlx::query(&format!("CREATE TABLE {guard} (id INTEGER PRIMARY KEY)"))
+                .execute(&pool)
+                .await?;
+            let hostile_prefix = format!("{guard}; DROP TABLE {guard};--");
+            let hostile_store =
+                PostgresPersistenceStore::with_table_prefix(pool.clone(), hostile_prefix);
+            let error = hostile_store.ensure_schema().await.err().ok_or_else(|| {
+                anyhow::anyhow!("hostile relation prefix unexpectedly reached PostgreSQL")
+            })?;
+            anyhow::ensure!(
+                error
+                    .to_string()
+                    .contains("invalid PostgreSQL table prefix"),
+                "hostile prefix failed for an unexpected reason: {error:#}"
+            );
+
+            let guard_exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+                .bind(&guard)
+                .fetch_one(&pool)
+                .await?;
+            anyhow::ensure!(guard_exists, "hostile prefix dropped the guard relation");
+            Ok(())
+        }
+        .await;
+
+        let mut cleanup_error = None;
+        for relation in cleanup_relations {
+            if let Err(error) = sqlx::query(&format!("DROP TABLE IF EXISTS {relation}"))
+                .execute(&pool)
+                .await
+            {
+                if cleanup_error.is_none() {
+                    cleanup_error = Some(anyhow::Error::from(error));
+                }
+            }
+        }
+        pool.close().await;
+        match (fixture_result, cleanup_error) {
+            (Ok(()), None) => Ok(()),
+            (Ok(()), Some(cleanup_error)) => Err(cleanup_error),
+            (Err(fixture_error), None) => Err(fixture_error),
+            (Err(fixture_error), Some(cleanup_error)) => Err(anyhow::anyhow!(
+                "fixture failed: {fixture_error:#}; cleanup also failed: {cleanup_error:#}"
+            )),
+        }
+    }
+
     #[cfg(feature = "persistence-redis")]
     #[tokio::test]
     #[ignore = "requires explicitly isolated Redis fixture URL"]
