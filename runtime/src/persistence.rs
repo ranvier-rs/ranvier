@@ -298,9 +298,168 @@ impl CompensationIdempotencyStore for InMemoryCompensationIdempotencyStore {
 
 #[cfg(feature = "persistence-postgres")]
 #[derive(Debug, Clone)]
+struct PostgresRelation {
+    sql: std::result::Result<String, &'static str>,
+}
+
+#[cfg(feature = "persistence-postgres")]
+impl PostgresRelation {
+    fn from_prefix(prefix: &str, suffix: &str) -> Self {
+        Self {
+            sql: postgres_relation_sql(prefix, suffix),
+        }
+    }
+
+    fn sql(&self) -> Result<&str> {
+        self.sql
+            .as_deref()
+            .map_err(|reason| anyhow!("invalid PostgreSQL table prefix: {reason}"))
+    }
+}
+
+#[cfg(feature = "persistence-postgres")]
+#[derive(Debug)]
+enum PostgresIdentifierPart {
+    Unquoted(String),
+    Quoted(String),
+}
+
+#[cfg(feature = "persistence-postgres")]
+fn postgres_relation_sql(prefix: &str, suffix: &str) -> std::result::Result<String, &'static str> {
+    let characters = prefix.chars().collect::<Vec<_>>();
+    let mut cursor = 0;
+    let mut parts = Vec::new();
+    skip_postgres_identifier_whitespace(&characters, &mut cursor);
+
+    if cursor == characters.len() {
+        return Ok(suffix.to_string());
+    }
+
+    loop {
+        if cursor >= characters.len() {
+            return Err("missing identifier component");
+        }
+
+        let part = if characters[cursor] == '"' {
+            cursor += 1;
+            let mut value = String::new();
+            let mut closed = false;
+
+            while cursor < characters.len() {
+                let character = characters[cursor];
+                if character == '\0' {
+                    return Err("NUL is not allowed in an identifier");
+                }
+                if character == '"' {
+                    if characters.get(cursor + 1) == Some(&'"') {
+                        value.push('"');
+                        cursor += 2;
+                    } else {
+                        cursor += 1;
+                        closed = true;
+                        break;
+                    }
+                } else {
+                    value.push(character);
+                    cursor += 1;
+                }
+            }
+
+            if !closed || value.is_empty() {
+                return Err("quoted identifier is empty or unterminated");
+            }
+            PostgresIdentifierPart::Quoted(value)
+        } else {
+            let first = characters[cursor];
+            if !is_postgres_unquoted_identifier_start(first) {
+                return Err("expected a PostgreSQL identifier component");
+            }
+
+            let mut value = String::new();
+            value.push(first);
+            cursor += 1;
+            while cursor < characters.len()
+                && is_postgres_unquoted_identifier_continue(characters[cursor])
+            {
+                value.push(characters[cursor]);
+                cursor += 1;
+            }
+            PostgresIdentifierPart::Unquoted(value)
+        };
+        parts.push(part);
+
+        skip_postgres_identifier_whitespace(&characters, &mut cursor);
+        if cursor == characters.len() {
+            break;
+        }
+        if characters[cursor] != '.' {
+            return Err("only dot-separated identifiers are allowed");
+        }
+
+        cursor += 1;
+        skip_postgres_identifier_whitespace(&characters, &mut cursor);
+        if cursor == characters.len() {
+            // A trailing dot was valid with the old suffix concatenation: `schema.`
+            // selected `schema._events` (or the matching relation suffix).
+            parts.push(PostgresIdentifierPart::Unquoted(String::new()));
+            break;
+        }
+    }
+
+    if parts.len() > 3 {
+        return Err("at most three qualified identifier components are allowed");
+    }
+
+    let Some(last) = parts.last_mut() else {
+        return Err("missing identifier component");
+    };
+    match last {
+        PostgresIdentifierPart::Unquoted(value) | PostgresIdentifierPart::Quoted(value) => {
+            value.push_str(suffix);
+        }
+    }
+
+    Ok(parts
+        .into_iter()
+        .map(|part| match part {
+            // Keep unquoted components unquoted so PostgreSQL applies exactly its normal
+            // case-folding rules, including database-specific folding of non-ASCII names.
+            PostgresIdentifierPart::Unquoted(value) => value,
+            PostgresIdentifierPart::Quoted(value) => {
+                format!("\"{}\"", value.replace('"', "\"\""))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("."))
+}
+
+#[cfg(feature = "persistence-postgres")]
+fn skip_postgres_identifier_whitespace(characters: &[char], cursor: &mut usize) {
+    while characters
+        .get(*cursor)
+        .is_some_and(|character| character.is_ascii_whitespace())
+    {
+        *cursor += 1;
+    }
+}
+
+#[cfg(feature = "persistence-postgres")]
+fn is_postgres_unquoted_identifier_start(character: char) -> bool {
+    character == '_'
+        || character.is_ascii_alphabetic()
+        || (!character.is_ascii() && !character.is_control())
+}
+
+#[cfg(feature = "persistence-postgres")]
+fn is_postgres_unquoted_identifier_continue(character: char) -> bool {
+    is_postgres_unquoted_identifier_start(character) || character.is_ascii_digit()
+}
+
+#[cfg(feature = "persistence-postgres")]
+#[derive(Debug, Clone)]
 pub struct PostgresCompensationIdempotencyStore {
     pool: sqlx::Pool<sqlx::Postgres>,
-    table: String,
+    table: PostgresRelation,
 }
 
 #[cfg(feature = "persistence-postgres")]
@@ -310,12 +469,19 @@ impl PostgresCompensationIdempotencyStore {
         Self::with_table_prefix(pool, "ranvier_persistence")
     }
 
-    /// Create with custom table prefix.
+    /// Create with a custom PostgreSQL relation prefix.
+    ///
+    /// The prefix must be a dot-separated identifier path. Unquoted components
+    /// start with a letter, underscore, or non-control Unicode character and may
+    /// continue with those characters or digits; quoted components use SQL double
+    /// quotes with doubled quotes for escaping. Invalid prefixes are rejected by
+    /// the first store operation. Treat the prefix as trusted configuration:
+    /// selecting a relation does not authorize access to a tenant.
     pub fn with_table_prefix(pool: sqlx::Pool<sqlx::Postgres>, prefix: impl Into<String>) -> Self {
         let prefix = prefix.into();
         Self {
             pool,
-            table: format!("{}_compensation_idempotency", prefix),
+            table: PostgresRelation::from_prefix(&prefix, "_compensation_idempotency"),
         }
     }
 
@@ -326,7 +492,7 @@ impl PostgresCompensationIdempotencyStore {
                 idempotency_key TEXT PRIMARY KEY,
                 created_at_ms BIGINT NOT NULL
             )",
-            self.table
+            self.table.sql()?
         );
         sqlx::query(&create).execute(&self.pool).await?;
         Ok(())
@@ -337,7 +503,7 @@ impl PostgresCompensationIdempotencyStore {
         let query = format!(
             "DELETE FROM {}
              WHERE created_at_ms < $1",
-            self.table
+            self.table.sql()?
         );
         let rows = sqlx::query(&query)
             .bind(cutoff_ms)
@@ -357,7 +523,7 @@ impl CompensationIdempotencyStore for PostgresCompensationIdempotencyStore {
              FROM {}
              WHERE idempotency_key = $1
              LIMIT 1",
-            self.table
+            self.table.sql()?
         );
         let row: Option<i32> = sqlx::query_scalar(&query)
             .bind(key)
@@ -371,7 +537,7 @@ impl CompensationIdempotencyStore for PostgresCompensationIdempotencyStore {
             "INSERT INTO {} (idempotency_key, created_at_ms)
              VALUES ($1, $2)
              ON CONFLICT (idempotency_key) DO NOTHING",
-            self.table
+            self.table.sql()?
         );
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -647,9 +813,9 @@ impl PersistenceStore for InMemoryPersistenceStore {
 #[derive(Debug, Clone)]
 pub struct PostgresPersistenceStore {
     pool: sqlx::Pool<sqlx::Postgres>,
-    events_table: String,
-    state_table: String,
-    interventions_table: String,
+    events_table: PostgresRelation,
+    state_table: PostgresRelation,
+    interventions_table: PostgresRelation,
 }
 
 #[cfg(feature = "persistence-postgres")]
@@ -696,19 +862,29 @@ impl PostgresPersistenceStore {
         Self::with_table_prefix(pool, "ranvier_persistence")
     }
 
-    /// Create with custom table prefix.
+    /// Create with a custom PostgreSQL relation prefix.
+    ///
+    /// The prefix must be a dot-separated identifier path. Unquoted components
+    /// start with a letter, underscore, or non-control Unicode character and may
+    /// continue with those characters or digits; quoted components use SQL double
+    /// quotes with doubled quotes for escaping. Invalid prefixes are rejected by
+    /// the first store operation. Treat the prefix as trusted configuration:
+    /// selecting a relation does not authorize access to a tenant.
     pub fn with_table_prefix(pool: sqlx::Pool<sqlx::Postgres>, prefix: impl Into<String>) -> Self {
         let prefix = prefix.into();
         Self {
             pool,
-            events_table: format!("{}_events", prefix),
-            state_table: format!("{}_state", prefix),
-            interventions_table: format!("{}_interventions", prefix),
+            events_table: PostgresRelation::from_prefix(&prefix, "_events"),
+            state_table: PostgresRelation::from_prefix(&prefix, "_state"),
+            interventions_table: PostgresRelation::from_prefix(&prefix, "_interventions"),
         }
     }
 
     /// Initialize adapter tables when absent.
     pub async fn ensure_schema(&self) -> Result<()> {
+        let state_table = self.state_table.sql()?;
+        let events_table = self.events_table.sql()?;
+        let interventions_table = self.interventions_table.sql()?;
         let create_state = format!(
             "CREATE TABLE IF NOT EXISTS {} (
                 trace_id TEXT PRIMARY KEY,
@@ -717,7 +893,7 @@ impl PostgresPersistenceStore {
                 resumed_from_step BIGINT NULL,
                 completion TEXT NULL
             )",
-            self.state_table
+            state_table
         );
         sqlx::query(&create_state).execute(&self.pool).await?;
 
@@ -733,7 +909,7 @@ impl PostgresPersistenceStore {
                 payload JSONB NULL,
                 PRIMARY KEY (trace_id, step)
             )",
-            self.events_table
+            events_table
         );
         sqlx::query(&create_events).execute(&self.pool).await?;
 
@@ -745,7 +921,7 @@ impl PostgresPersistenceStore {
                 timestamp_ms BIGINT NOT NULL,
                 FOREIGN KEY (trace_id) REFERENCES {} (trace_id)
             )",
-            self.interventions_table, self.state_table
+            interventions_table, state_table
         );
         sqlx::query(&create_interventions)
             .execute(&self.pool)
@@ -762,12 +938,14 @@ impl PersistenceStore for PostgresPersistenceStore {
         // Validate representability before creating any persistent state.
         let step_i64 = i64::try_from(envelope.step)?;
         let ts_i64 = i64::try_from(envelope.timestamp_ms)?;
+        let state_table = self.state_table.sql()?;
+        let events_table = self.events_table.sql()?;
         let mut transaction = self.pool.begin().await?;
         let insert_state = format!(
             "INSERT INTO {} (trace_id, circuit, schematic_version, resumed_from_step, completion)
              VALUES ($1, $2, $3, NULL, NULL)
              ON CONFLICT (trace_id) DO NOTHING",
-            self.state_table
+            state_table
         );
         sqlx::query(&insert_state)
             .bind(&envelope.trace_id)
@@ -777,7 +955,7 @@ impl PersistenceStore for PostgresPersistenceStore {
             .await?;
         let read_state = format!(
             "SELECT circuit, completion FROM {} WHERE trace_id = $1 FOR UPDATE",
-            self.state_table
+            state_table
         );
         let (circuit, completion): (String, Option<String>) = sqlx::query_as(&read_state)
             .bind(&envelope.trace_id)
@@ -797,7 +975,7 @@ impl PersistenceStore for PostgresPersistenceStore {
         }
         let update_state = format!(
             "UPDATE {} SET schematic_version = $2 WHERE trace_id = $1",
-            self.state_table
+            state_table
         );
         sqlx::query(&update_state)
             .bind(&envelope.trace_id)
@@ -807,7 +985,7 @@ impl PersistenceStore for PostgresPersistenceStore {
         let insert_event = format!(
             "INSERT INTO {} (trace_id, circuit, schematic_version, step, outcome_kind, timestamp_ms, payload_hash, payload)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-            self.events_table
+            events_table
         );
         sqlx::query(&insert_event)
             .bind(&envelope.trace_id)
@@ -826,6 +1004,9 @@ impl PersistenceStore for PostgresPersistenceStore {
 
     async fn load(&self, trace_id: &str) -> Result<Option<PersistedTrace>> {
         // State, events and interventions must represent the same MVCC snapshot.
+        let state_table = self.state_table.sql()?;
+        let events_table = self.events_table.sql()?;
+        let interventions_table = self.interventions_table.sql()?;
         let mut transaction = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *transaction)
@@ -834,7 +1015,7 @@ impl PersistenceStore for PostgresPersistenceStore {
             "SELECT trace_id, circuit, schematic_version, resumed_from_step, completion
              FROM {}
              WHERE trace_id = $1",
-            self.state_table
+            state_table
         );
         let Some(state): Option<PostgresStateRow> = sqlx::query_as(&state_query)
             .bind(trace_id)
@@ -850,7 +1031,7 @@ impl PersistenceStore for PostgresPersistenceStore {
              FROM {}
              WHERE trace_id = $1
              ORDER BY step ASC",
-            self.events_table
+            events_table
         );
         let rows: Vec<PostgresEventRow> = sqlx::query_as(&events_query)
             .bind(trace_id)
@@ -882,7 +1063,7 @@ impl PersistenceStore for PostgresPersistenceStore {
              FROM {}
              WHERE trace_id = $1
              ORDER BY timestamp_ms ASC",
-            self.interventions_table
+            interventions_table
         );
         let intervention_rows: Vec<PostgresInterventionRow> = sqlx::query_as(&interventions_query)
             .bind(trace_id)
@@ -916,7 +1097,7 @@ impl PersistenceStore for PostgresPersistenceStore {
             "UPDATE {}
              SET resumed_from_step = $2
              WHERE trace_id = $1 AND completion IS NULL",
-            self.state_table
+            self.state_table.sql()?
         );
         let rows = sqlx::query(&query)
             .bind(trace_id)
@@ -944,7 +1125,7 @@ impl PersistenceStore for PostgresPersistenceStore {
             "UPDATE {}
              SET completion = $2
              WHERE trace_id = $1",
-            self.state_table
+            self.state_table.sql()?
         );
         let rows = sqlx::query(&query)
             .bind(trace_id)
@@ -963,7 +1144,7 @@ impl PersistenceStore for PostgresPersistenceStore {
         let query = format!(
             "INSERT INTO {} (trace_id, target_node, payload_override, timestamp_ms)
              VALUES ($1, $2, $3, $4)",
-            self.interventions_table
+            self.interventions_table.sql()?
         );
         sqlx::query(&query)
             .bind(trace_id)
@@ -1164,6 +1345,60 @@ mod tests {
     use super::*;
     #[cfg(any(feature = "persistence-postgres", feature = "persistence-redis"))]
     use uuid::Uuid;
+
+    #[cfg(feature = "persistence-postgres")]
+    #[test]
+    fn postgres_relation_prefix_preserves_qualified_identifier_behavior() {
+        let cases = [
+            ("", "_state"),
+            ("tenant_7", "tenant_7_state"),
+            // PostgreSQL still receives unquoted text and retains its normal case folding.
+            ("Tenant_7", "Tenant_7_state"),
+            ("tenant_schema.tenant_7", "tenant_schema.tenant_7_state"),
+            ("tenant_schema . tenant_7", "tenant_schema.tenant_7_state"),
+            ("tenant_schema.", "tenant_schema._state"),
+            (
+                r#""Tenant Schema"."Tenant 7""#,
+                r#""Tenant Schema"."Tenant 7_state""#,
+            ),
+        ];
+
+        for (prefix, expected) in cases {
+            let relation = PostgresRelation::from_prefix(prefix, "_state");
+            assert_eq!(relation.sql().unwrap(), expected, "prefix {prefix:?}");
+        }
+    }
+
+    #[cfg(feature = "persistence-postgres")]
+    #[test]
+    fn postgres_relation_prefix_quotes_payload_and_rejects_sql_fragments() {
+        let quoted_payload =
+            PostgresRelation::from_prefix(r#""tenant; DROP TABLE users;--""#, "_state");
+        assert_eq!(
+            quoted_payload.sql().unwrap(),
+            r#""tenant; DROP TABLE users;--_state""#
+        );
+
+        for prefix in [
+            "tenant; DROP TABLE users;--",
+            "tenant--",
+            "tenant/*comment*/",
+            "tenant$1",
+            "tenant..other",
+            ".tenant",
+            r#""tenant"; DROP TABLE users;--"#,
+            r#""unterminated"#,
+            r#"""#,
+            "1tenant",
+            "one.two.three.four",
+        ] {
+            let relation = PostgresRelation::from_prefix(prefix, "_state");
+            assert!(
+                relation.sql().is_err(),
+                "prefix {prefix:?} should fail closed"
+            );
+        }
+    }
 
     fn envelope(step: u64, outcome_kind: &str) -> PersistenceEnvelope {
         PersistenceEnvelope {
@@ -1432,9 +1667,12 @@ mod tests {
         assert_eq!(loaded.resumed_from_step, Some(2));
         assert_eq!(loaded.completion, Some(CompletionState::Compensated));
 
-        let drop_interventions = format!("DROP TABLE IF EXISTS {}", store.interventions_table);
-        let drop_events = format!("DROP TABLE IF EXISTS {}", store.events_table);
-        let drop_state = format!("DROP TABLE IF EXISTS {}", store.state_table);
+        let drop_interventions = format!(
+            "DROP TABLE IF EXISTS {}",
+            store.interventions_table.sql().unwrap()
+        );
+        let drop_events = format!("DROP TABLE IF EXISTS {}", store.events_table.sql().unwrap());
+        let drop_state = format!("DROP TABLE IF EXISTS {}", store.state_table.sql().unwrap());
         sqlx::query(&drop_interventions)
             .execute(&pool)
             .await
@@ -1961,7 +2199,7 @@ mod tests {
         store.mark_compensated(&key).await.unwrap();
         assert!(store.was_compensated(&key).await.unwrap());
 
-        let drop_table = format!("DROP TABLE IF EXISTS {}", store.table);
+        let drop_table = format!("DROP TABLE IF EXISTS {}", store.table.sql().unwrap());
         sqlx::query(&drop_table).execute(&pool).await.unwrap();
     }
 
@@ -2000,7 +2238,7 @@ mod tests {
         }
         .await;
 
-        let drop_table = format!("DROP TABLE IF EXISTS {}", store.table);
+        let drop_table = format!("DROP TABLE IF EXISTS {}", store.table.sql().unwrap());
         let cleanup = sqlx::query(&drop_table).execute(&pool).await;
         let (absent_before_write, alias_reads_marker) = observations.unwrap();
         cleanup.unwrap();
@@ -2042,7 +2280,7 @@ mod tests {
             "UPDATE {}
              SET created_at_ms = 0
              WHERE idempotency_key = $1",
-            store.table
+            store.table.sql().unwrap()
         );
         sqlx::query(&force_stale_query)
             .bind(&stale_key)
@@ -2055,7 +2293,7 @@ mod tests {
         assert!(!store.was_compensated(&stale_key).await.unwrap());
         assert!(store.was_compensated(&fresh_key).await.unwrap());
 
-        let drop_table = format!("DROP TABLE IF EXISTS {}", store.table);
+        let drop_table = format!("DROP TABLE IF EXISTS {}", store.table.sql().unwrap());
         sqlx::query(&drop_table).execute(&pool).await.unwrap();
     }
 
