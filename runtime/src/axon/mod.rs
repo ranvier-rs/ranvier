@@ -2789,6 +2789,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compensation_idempotency_marker_skips_duplicate_hook_execution() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let compensation = RecordingCompensationHook {
+            calls: calls.clone(),
+            should_fail: false,
+        };
+        let idempotency = InMemoryCompensationIdempotencyStore::new();
+        let context = CompensationContext {
+            trace_id: "trace-idempotent".into(),
+            circuit: "CompensationIdempotency".into(),
+            fault_kind: "Fault".into(),
+            fault_step: 1,
+            timestamp_ms: 0,
+        };
+        let key = crate::persistence::compensation_idempotency_key(&context);
+        idempotency.mark_compensated(&key).await.unwrap();
+
+        let completed = run_compensation(
+            &CompensationHandle::from_hook(compensation),
+            context,
+            CompensationRetryPolicy::default(),
+            Some(CompensationIdempotencyHandle::from_store(idempotency)),
+            None,
+            None,
+        )
+        .await;
+
+        assert!(completed);
+        assert!(calls.lock().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn compensation_idempotency_read_failure_blocks_hook_without_success_claim() {
         let store_impl = Arc::new(InMemoryPersistenceStore::new());
         let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
