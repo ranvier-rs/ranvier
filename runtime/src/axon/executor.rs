@@ -588,6 +588,7 @@ where
                     return Outcome::emit("execution.persistence.load_unconfirmed", None);
                 }
             };
+            let has_persisted_trace = trace_version.is_some();
 
             // Migration and interventions do not create a new execution identity.
             // An authoritative terminal trace cannot authorize further effects.
@@ -790,6 +791,23 @@ where
                         );
                     }
                 }
+            }
+
+            // A cursor beyond the current graph has no node at which to resume.
+            // Falling through would replay the whole executor and may repeat
+            // effects after an unconfirmed terminal append. Preserve the trace
+            // for reconciliation until an explicit migration/intervention
+            // selects a valid checkpoint.
+            if has_persisted_trace
+                && usize::try_from(start_step)
+                    .map_or(true, |step| step >= self.schematic.nodes.len())
+            {
+                if let Some(active) =
+                    bus.read::<crate::execution_observation::ActiveObservation>()
+                {
+                    active.0.block(crate::PersistenceOperation::Terminal);
+                }
+                return Outcome::emit("execution.persistence.terminal_reconciliation_required", None);
             }
 
             let ingress_node_id = self.schematic.nodes.first().map(|n| n.id.clone());

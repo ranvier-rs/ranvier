@@ -1097,7 +1097,7 @@ async fn actual_execute_retains_first_failure_after_terminal_and_completion_succ
                 .load(trace_id)
                 .await
                 .unwrap(),
-            Some(trace)
+            Some(trace.clone())
         );
     }
 }
@@ -1157,8 +1157,20 @@ async fn actual_execute_reports_terminal_append_ack_loss_after_domain_result() {
                 .load(trace_id)
                 .await
                 .unwrap(),
-            Some(trace)
+            Some(trace.clone())
         );
+        let reentry = axon.execute(0, &(), &mut bus).await;
+        assert!(matches!(
+            reentry,
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Terminal,
+                effect: EffectBoundary::NotInvoked,
+                ..
+            }
+        ));
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert_eq!(writes.load(Ordering::SeqCst), 3);
+        assert_eq!(backing.load(trace_id).await.unwrap().unwrap(), trace);
     }
 }
 

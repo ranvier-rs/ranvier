@@ -2734,7 +2734,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compensation_idempotency_skips_duplicate_hook_execution() {
+    async fn exhausted_compensation_trace_blocks_duplicate_execution() {
         let store_impl = Arc::new(InMemoryPersistenceStore::new());
         let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -2764,29 +2764,25 @@ mod tests {
             panic!("unexpected execution durability");
         };
         let outcome2 = axon.execute(8, &(), &mut bus).await;
-        let crate::ExecutionReport::Recorded {
-            result: outcome2,
-            completion: crate::CompletionConfirmation::NotRequested,
-            ..
-        } = outcome2
-        else {
-            panic!("unexpected execution durability");
-        };
+        assert!(matches!(
+            outcome2,
+            crate::ExecutionReport::BlockedBeforeEffect {
+                operation: crate::PersistenceOperation::Terminal,
+                effect: crate::EffectBoundary::NotInvoked,
+                ..
+            }
+        ));
         assert!(matches!(outcome1, Outcome::Fault(msg) if msg == "boom"));
-        assert!(matches!(outcome2, Outcome::Fault(msg) if msg == "boom"));
 
         let persisted = store_impl.load("trace-idempotent").await.unwrap().unwrap();
         assert_eq!(persisted.completion, None);
-        // Verify that "Compensated" events are present for both executions
+        // The second invocation must not append to the exhausted trace.
         let compensated_count = persisted
             .events
             .iter()
             .filter(|e| e.outcome_kind == "Compensated")
             .count();
-        assert_eq!(
-            compensated_count, 2,
-            "Should have 2 Compensated events (one per execution)"
-        );
+        assert_eq!(compensated_count, 1);
 
         let recorded = calls.lock().await;
         assert_eq!(recorded.len(), 1);

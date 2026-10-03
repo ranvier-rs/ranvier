@@ -176,11 +176,16 @@ async fn postgres_executor_terminal_step_collision_is_observable() {
     assert_eq!(trace.events[1].outcome_kind, "Next");
     assert_eq!(trace.events[1].payload, Some(first));
     assert_eq!(trace.events[2].payload, Some(terminal));
-    // Completed readback must not replay the already invoked effects.
-    assert!(matches!(axon.execute(0, &(), &mut bus).await,
-        ranvier_runtime::ExecutionReport::NotRequested {
-            result: Outcome::Emit(event, None),
-         .. } if event == "execution.resumption.completed_trace"));
+    // An incomplete cursor beyond the graph must block rather than replay.
+    let reentry = axon.execute(0, &(), &mut bus).await;
+    assert!(matches!(
+        reentry,
+        ranvier_runtime::ExecutionReport::BlockedBeforeEffect {
+            operation: ranvier_runtime::PersistenceOperation::Terminal,
+            effect: ranvier_runtime::EffectBoundary::NotInvoked,
+            ..
+        }
+    ));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(
         store.load("terminal-collision").await.unwrap().unwrap(),
