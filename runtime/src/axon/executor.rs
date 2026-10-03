@@ -921,7 +921,7 @@ where
 
         if let Some(handle) = persistence_handle.as_ref() {
             let fault_step = persistence_start_step.map(|s| s + 1).unwrap_or(1);
-            persist_encoded_execution_event(
+            let mut terminal_event_confirmed = persist_encoded_execution_event(
                 handle,
                 &trace_id,
                 &label,
@@ -932,7 +932,8 @@ where
                 serde_json::to_value(&outcome).map(Some),
                 bus,
             )
-            .await;
+            .await
+                == crate::execution_report::StoreConfirmation::Confirmed;
 
             let mut completion = completion_from_outcome(&outcome);
             if matches!(outcome, Outcome::Fault(_))
@@ -959,7 +960,7 @@ where
                 )
                 .await
                 {
-                    persist_execution_event(
+                    let compensation_event_confirmed = persist_execution_event(
                         handle,
                         &trace_id,
                         &label,
@@ -969,12 +970,19 @@ where
                         "Compensated",
                         None,
                     )
-                    .await;
-                    completion = CompletionState::Compensated;
+                    .await
+                        == crate::execution_report::StoreConfirmation::Confirmed;
+                    terminal_event_confirmed &= compensation_event_confirmed;
+                    if compensation_event_confirmed {
+                        completion = CompletionState::Compensated;
+                    }
                 }
             }
 
-            if persistence_auto_complete(bus) && !persistence_encoding_failed(bus) {
+            if persistence_auto_complete(bus)
+                && terminal_event_confirmed
+                && !persistence_encoding_failed(bus)
+            {
                 persist_completion(handle, &trace_id, completion).await;
             }
         }
@@ -1125,6 +1133,7 @@ where
             .map(|policy| policy.current())
             .unwrap_or_else(|| self.saga_policy.clone());
 
+        let mut terminal_event_confirmed = false;
         let (cancellation_step, persistence_writable) = if let Some(handle) =
             persistence_handle.as_ref()
         {
@@ -1191,7 +1200,7 @@ where
                     .await;
                 }
                 let payload = serde_json::to_value(&context).ok();
-                persist_execution_event(
+                terminal_event_confirmed = persist_execution_event(
                     handle,
                     &trace_id,
                     &label,
@@ -1201,7 +1210,8 @@ where
                     "Cancelled",
                     payload,
                 )
-                .await;
+                .await
+                    == crate::execution_report::StoreConfirmation::Confirmed;
             }
             (next_step, writable)
         } else {
@@ -1239,7 +1249,7 @@ where
                 if let Some(handle) = persistence_handle.as_ref()
                     && persistence_writable
                 {
-                    persist_execution_event(
+                    let compensation_event_confirmed = persist_execution_event(
                         handle,
                         &trace_id,
                         &label,
@@ -1249,16 +1259,25 @@ where
                         "Compensated",
                         None,
                     )
-                    .await;
+                    .await
+                        == crate::execution_report::StoreConfirmation::Confirmed;
+                    terminal_event_confirmed &= compensation_event_confirmed;
+                    if compensation_event_confirmed {
+                        completion = CompletionState::Compensated;
+                    }
+                } else {
+                    terminal_event_confirmed = false;
                 }
-                completion = CompletionState::Compensated;
             }
         }
 
         if let Some(handle) = persistence_handle.as_ref()
             && persistence_writable
         {
-            if persistence_auto_complete(bus) && !persistence_encoding_failed(bus) {
+            if persistence_auto_complete(bus)
+                && terminal_event_confirmed
+                && !persistence_encoding_failed(bus)
+            {
                 persist_completion(handle, &trace_id, completion).await;
             }
         }

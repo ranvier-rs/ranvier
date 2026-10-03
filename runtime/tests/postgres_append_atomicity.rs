@@ -162,7 +162,7 @@ async fn postgres_executor_terminal_step_collision_is_observable() {
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     let trace = store.load("terminal-collision").await.unwrap().unwrap();
-    assert_eq!(trace.completion, Some(CompletionState::Success));
+    assert_eq!(trace.completion, None);
     assert_eq!(
         trace.events.iter().map(|e| e.step).collect::<Vec<_>>(),
         vec![0, 1, 2]
@@ -186,10 +186,12 @@ async fn postgres_executor_terminal_step_collision_is_observable() {
         store.load("terminal-collision").await.unwrap().unwrap(),
         trace
     );
-    println!("POSTGRES_COMPLETED_COLLISION_REENTRY_BLOCKED effects=2 full-trace-unchanged");
+    println!(
+        "POSTGRES_TERMINAL_COLLISION_REENTRY_BLOCKED effects=2 completion-unset full-trace-unchanged"
+    );
     pool.close().await;
     println!(
-        "POSTGRES_TERMINAL_COLLISION_REPRODUCED effects=2 caller-next=2 durability-unconfirmed-terminal completion-success terminal-event-missing"
+        "POSTGRES_TERMINAL_COLLISION_REPRODUCED effects=2 caller-next=2 durability-unconfirmed-terminal completion-unset terminal-event-missing"
     );
 }
 

@@ -909,7 +909,7 @@ async fn collected_stream_prefix_terminal_failure_blocks_initialization_and_reta
     let trace = backing.load("stream-report").await.unwrap().unwrap();
     assert_eq!(trace.events.len(), 1);
     assert_eq!(trace.events[0].outcome_kind, "Enter");
-    assert_eq!(trace.completion, Some(CompletionState::Success));
+    assert_eq!(trace.completion, None);
 }
 
 struct UnknownEntry {
@@ -1137,8 +1137,9 @@ async fn actual_execute_reports_terminal_append_ack_loss_after_domain_result() {
         assert_eq!(writes.load(Ordering::SeqCst), 3);
 
         let trace = backing.load(trace_id).await.unwrap().unwrap();
-        // One case lacks the terminal row; this observed Success is not acceptance.
-        assert_eq!(trace.completion, Some(CompletionState::Success));
+        // Neither a rejected append nor an applied-but-unacknowledged append
+        // may certify completion to a fresh reader.
+        assert_eq!(trace.completion, None);
         assert_eq!(trace.events.len(), if apply_failed_append { 3 } else { 2 });
         assert_eq!(
             trace
@@ -1158,6 +1159,52 @@ async fn actual_execute_reports_terminal_append_ack_loss_after_domain_result() {
                 .unwrap(),
             Some(trace)
         );
+    }
+}
+
+#[tokio::test]
+async fn actual_execute_does_not_complete_when_cancelled_terminal_ack_is_unconfirmed() {
+    use ranvier_core::cancellation::{CancellationReason, CancellationToken};
+    for (trace_id, apply_failed_append) in [
+        ("cancelled-terminal-not-applied", false),
+        ("cancelled-terminal-applied-lost-ack", true),
+    ] {
+        let backing = InMemoryPersistenceStore::new();
+        let writes = Arc::new(AtomicUsize::new(0));
+        let effects = Arc::new(AtomicUsize::new(0));
+        let mut bus = Bus::new();
+        bus.insert(PersistenceTraceId::new(trace_id));
+        bus.insert(PersistenceHandle::from_store(FailOnAppend {
+            backing: backing.clone(),
+            calls: writes.clone(),
+            fail_on_append: 2,
+            apply_failed_append,
+        }));
+        let axon = Axon::<u32, u32, String, ()>::new("cancelled-terminal-report")
+            .then(Count(effects.clone()));
+        let token = CancellationToken::new();
+        assert!(token.cancel(CancellationReason::Explicit));
+
+        let report = axon.execute_cancellable(0, &(), &mut bus, token).await;
+
+        assert!(matches!(
+            report,
+            ExecutionReport::Unconfirmed {
+                result: ranvier_runtime::ExecutionTerminal::Cancelled(_),
+                operation: PersistenceOperation::Terminal,
+                effect: EffectBoundary::NotInvoked,
+                ..
+            }
+        ));
+        assert_eq!(effects.load(Ordering::SeqCst), 0);
+        assert_eq!(writes.load(Ordering::SeqCst), 2);
+        let trace = backing.load(trace_id).await.unwrap().unwrap();
+        assert_eq!(trace.completion, None);
+        assert_eq!(trace.events.len(), if apply_failed_append { 2 } else { 1 });
+        assert_eq!(trace.events[0].outcome_kind, "Enter");
+        if apply_failed_append {
+            assert_eq!(trace.events[1].outcome_kind, "Cancelled");
+        }
     }
 }
 
