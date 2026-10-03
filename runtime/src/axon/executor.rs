@@ -802,12 +802,14 @@ where
                 && usize::try_from(start_step)
                     .map_or(true, |step| step >= self.schematic.nodes.len())
             {
-                if let Some(active) =
-                    bus.read::<crate::execution_observation::ActiveObservation>()
+                if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>()
                 {
                     active.0.block(crate::PersistenceOperation::Terminal);
                 }
-                return Outcome::emit("execution.persistence.terminal_reconciliation_required", None);
+                return Outcome::emit(
+                    "execution.persistence.terminal_reconciliation_required",
+                    None,
+                );
             }
 
             let ingress_node_id = self.schematic.nodes.first().map(|n| n.id.clone());
