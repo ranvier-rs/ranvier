@@ -277,7 +277,14 @@ async fn in_flight_cancellation_marker_write_failure_is_unknown_without_retry() 
                 .collect::<Vec<_>>(),
             vec!["Enter", "Cancelled"]
         );
-        assert!(!report.cleanup().unwrap().is_complete());
+        let cleanup = report.cleanup().unwrap();
+        assert!(cleanup.finished);
+        assert_eq!(cleanup.steps.len(), 1);
+        assert_eq!(
+            cleanup.steps[0].outcome,
+            ranvier_runtime::SagaRollbackOutcome::Fault
+        );
+        assert!(!cleanup.is_complete());
     }
 }
 
