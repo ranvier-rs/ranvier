@@ -200,6 +200,144 @@ async fn postgres_executor_terminal_step_collision_is_observable() {
     );
 }
 
+// Simulates loss of the acknowledgement after the actual PostgreSQL store has
+// returned success. This characterizes the PersistenceStore caller boundary;
+// it is not a SQLx/network proxy test and does not establish recovery policy.
+#[tokio::test]
+#[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
+async fn postgres_committed_result_with_lost_store_ack_is_reported_unconfirmed() {
+    use ranvier_core::prelude::*;
+    use ranvier_runtime::persistence::{
+        CompletionState, Intervention, PersistenceHandle, PersistenceTraceId,
+        PostgresPersistenceStore, ResumeCursor,
+    };
+    use ranvier_runtime::{EffectBoundary, ExecutionReport, PersistenceOperation};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    #[derive(Clone)]
+    struct CountEffect(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl Transition<u32, u32> for CountEffect {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, input: u32, _: &(), _: &mut Bus) -> Outcome<u32, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Outcome::next(input + 1)
+        }
+    }
+
+    #[derive(Clone)]
+    struct CommitThenLoseAck {
+        inner: PostgresPersistenceStore,
+        lost: Arc<AtomicBool>,
+    }
+    #[async_trait::async_trait]
+    impl PersistenceStore for CommitThenLoseAck {
+        async fn append(&self, envelope: PersistenceEnvelope) -> anyhow::Result<()> {
+            let is_result = envelope.outcome_kind == "Next" && envelope.step == 1;
+            let inject_loss = is_result && !self.lost.load(Ordering::SeqCst);
+            self.inner.append(envelope).await?;
+            if inject_loss && !self.lost.swap(true, Ordering::SeqCst) {
+                return Err(anyhow::anyhow!("private-committed-ack-loss-sentinel"));
+            }
+            Ok(())
+        }
+
+        async fn load(
+            &self,
+            trace_id: &str,
+        ) -> anyhow::Result<Option<ranvier_runtime::persistence::PersistedTrace>> {
+            self.inner.load(trace_id).await
+        }
+
+        async fn resume(&self, trace_id: &str, step: u64) -> anyhow::Result<ResumeCursor> {
+            self.inner.resume(trace_id, step).await
+        }
+
+        async fn complete(
+            &self,
+            trace_id: &str,
+            completion: CompletionState,
+        ) -> anyhow::Result<()> {
+            self.inner.complete(trace_id, completion).await
+        }
+
+        async fn save_intervention(
+            &self,
+            trace_id: &str,
+            intervention: Intervention,
+        ) -> anyhow::Result<()> {
+            self.inner.save_intervention(trace_id, intervention).await
+        }
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL")
+            .expect("explicit isolated database required");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .acquire_timeout(std::time::Duration::from_secs(3))
+            .connect(&url)
+            .await
+            .unwrap();
+        let prefix = format!("ack_loss_{}", uuid::Uuid::new_v4().simple());
+        let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
+        store.ensure_schema().await.unwrap();
+
+        let lost = Arc::new(AtomicBool::new(false));
+        let effects = Arc::new(AtomicUsize::new(0));
+        let axon = ranvier_runtime::Axon::<u32, u32, String, ()>::new("PostgresAckLossFixture")
+            .then(CountEffect(effects.clone()));
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_store(CommitThenLoseAck {
+            inner: store.clone(),
+            lost: lost.clone(),
+        }));
+        bus.insert(PersistenceTraceId::new("committed-result-ack-loss"));
+
+        let report = axon.execute(0, &(), &mut bus).await;
+        assert!(matches!(
+            &report,
+            ExecutionReport::Unconfirmed {
+                result: Outcome::Next(1),
+                operation: PersistenceOperation::Result,
+                effect: EffectBoundary::MayHaveRun,
+                ..
+            }
+        ));
+        assert!(!format!("{report:?}").contains("private-committed-ack-loss-sentinel"));
+        assert!(lost.load(Ordering::SeqCst));
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+
+        // Read through a fresh store handle to observe what PostgreSQL actually
+        // committed even though the caller received an error for that append.
+        let fresh_reader = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
+        let trace = fresh_reader
+            .load("committed-result-ack-loss")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(trace.events.len(), 2);
+        assert_eq!(trace.events[0].outcome_kind, "Enter");
+        assert_eq!(trace.events[1].outcome_kind, "Next");
+        assert_eq!(trace.events[1].step, 1);
+        assert_eq!(
+            trace.events[1].payload,
+            Some(Outcome::<u32, String>::next(1).to_json_value())
+        );
+        assert_eq!(trace.completion, None);
+        pool.close().await;
+        println!(
+            "POSTGRES_COMMITTED_RESULT_ACK_LOST result=Next(1) effect=1 stored-result-present completion=unset"
+        );
+    })
+    .await
+    .expect("isolated committed-write acknowledgement fixture must finish within 15 seconds");
+}
+
 // Characterizes historical false-success rows written before completion was
 // gated on terminal persistence. This is a safety observation, not acceptance
 // that a missing terminal event should be treated as complete.
