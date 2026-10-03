@@ -338,6 +338,143 @@ async fn postgres_committed_result_with_lost_store_ack_is_reported_unconfirmed()
     .expect("isolated committed-write acknowledgement fixture must finish within 15 seconds");
 }
 
+// Exercises the complete acknowledgement boundary after PostgreSQL has
+// durably stored the completion state. This remains a caller/store wrapper,
+// not a SQLx/network interruption or recovery-policy test.
+#[tokio::test]
+#[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
+async fn postgres_committed_completion_with_lost_store_ack_is_reported_unconfirmed() {
+    use ranvier_core::prelude::*;
+    use ranvier_runtime::persistence::{
+        CompletionState, Intervention, PersistenceHandle, PersistenceTraceId,
+        PostgresPersistenceStore, ResumeCursor,
+    };
+    use ranvier_runtime::{EffectBoundary, ExecutionReport, PersistenceOperation};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    #[derive(Clone)]
+    struct CommitThenLoseCompleteAck {
+        inner: PostgresPersistenceStore,
+        lost: Arc<AtomicBool>,
+        calls: Arc<AtomicUsize>,
+    }
+    #[async_trait::async_trait]
+    impl PersistenceStore for CommitThenLoseCompleteAck {
+        async fn append(&self, envelope: PersistenceEnvelope) -> anyhow::Result<()> {
+            self.inner.append(envelope).await
+        }
+
+        async fn load(
+            &self,
+            trace_id: &str,
+        ) -> anyhow::Result<Option<ranvier_runtime::persistence::PersistedTrace>> {
+            self.inner.load(trace_id).await
+        }
+
+        async fn resume(&self, trace_id: &str, step: u64) -> anyhow::Result<ResumeCursor> {
+            self.inner.resume(trace_id, step).await
+        }
+
+        async fn complete(
+            &self,
+            trace_id: &str,
+            completion: CompletionState,
+        ) -> anyhow::Result<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.complete(trace_id, completion).await?;
+            if !self.lost.swap(true, Ordering::SeqCst) {
+                return Err(anyhow::anyhow!(
+                    "private-committed-completion-ack-loss-sentinel"
+                ));
+            }
+            Ok(())
+        }
+
+        async fn save_intervention(
+            &self,
+            trace_id: &str,
+            intervention: Intervention,
+        ) -> anyhow::Result<()> {
+            self.inner.save_intervention(trace_id, intervention).await
+        }
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL")
+            .expect("explicit isolated database required");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .acquire_timeout(std::time::Duration::from_secs(3))
+            .connect(&url)
+            .await
+            .unwrap();
+        let prefix = format!("complete_ack_{}", uuid::Uuid::new_v4().simple());
+        let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
+        store.ensure_schema().await.unwrap();
+
+        let lost = Arc::new(AtomicBool::new(false));
+        let complete_calls = Arc::new(AtomicUsize::new(0));
+        let axon = ranvier_runtime::Axon::<u32, u32, String, ()>::new(
+            "PostgresCompleteAckLossFixture",
+        );
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_store(CommitThenLoseCompleteAck {
+            inner: store.clone(),
+            lost: lost.clone(),
+            calls: complete_calls.clone(),
+        }));
+        bus.insert(PersistenceTraceId::new("committed-completion-ack-loss"));
+
+        let report = axon.execute(7, &(), &mut bus).await;
+        assert!(matches!(
+            &report,
+            ExecutionReport::Unconfirmed {
+                result: Outcome::Next(7),
+                operation: PersistenceOperation::Complete,
+                effect: EffectBoundary::MayHaveRun,
+                ..
+            }
+        ));
+        assert!(!format!("{report:?}")
+            .contains("private-committed-completion-ack-loss-sentinel"));
+        assert!(lost.load(Ordering::SeqCst));
+        assert_eq!(complete_calls.load(Ordering::SeqCst), 1);
+
+        let reader_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(3))
+            .connect(&url)
+            .await
+            .unwrap();
+        let fresh_reader = PostgresPersistenceStore::with_table_prefix(reader_pool.clone(), &prefix);
+        let trace = fresh_reader
+            .load("committed-completion-ack-loss")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(trace.events.len(), 2);
+        assert_eq!(trace.events[0].outcome_kind, "Enter");
+        assert_eq!(trace.events[0].step, 0);
+        assert_eq!(trace.events[1].outcome_kind, "Next");
+        assert_eq!(trace.events[1].step, 1);
+        assert_eq!(
+            trace.events[1].payload,
+            Some(Outcome::<u32, String>::next(7).to_json_value())
+        );
+        assert_eq!(trace.completion, Some(CompletionState::Success));
+        reader_pool.close().await;
+        pool.close().await;
+        println!(
+            "POSTGRES_COMMITTED_COMPLETION_ACK_LOST result=Next(7) complete-calls=1 terminal-row-present completion=Success"
+        );
+    })
+    .await
+    .expect("isolated committed-completion acknowledgement fixture must finish within 15 seconds");
+}
+
 // Characterizes historical false-success rows written before completion was
 // gated on terminal persistence. This is a safety observation, not acceptance
 // that a missing terminal event should be treated as complete.
