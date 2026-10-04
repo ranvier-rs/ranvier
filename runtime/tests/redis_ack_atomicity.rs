@@ -350,9 +350,9 @@ async fn redis_result_append_ack_lost_after_tcp_eval_keeps_report_and_committed_
         let trace_id = format!("redis-result-ack-{}", uuid::Uuid::new_v4().simple());
         ensure!(reader.load(&trace_id).await?.is_none(), "unique trace id already exists");
 
-        // Execution sends EVAL #1 for Enter and EVAL #2 for this transition's
-        // Next result. Drop only the successful reply to EVAL #2.
-        let (proxy_url, mut dropped_reply, proxy) = start_proxy(backend_address, 2).await?;
+        // Execution sends EVAL #1 for Enter, #2 for the write-ahead Intent,
+        // and #3 for this transition's Next result. Drop the result reply.
+        let (proxy_url, mut dropped_reply, proxy) = start_proxy(backend_address, 3).await?;
         let execution_store = RedisPersistenceStore::connect(&proxy_url).await?;
         let effects = Arc::new(AtomicUsize::new(0));
         let axon = Axon::<u32, u32, String, ()>::new("RedisResultAckLossFixture")
@@ -366,7 +366,7 @@ async fn redis_result_append_ack_lost_after_tcp_eval_keeps_report_and_committed_
             .await?
             .context("Redis TCP proxy did not drop the targeted EVAL reply")?;
         ensure!(
-            observed_drop.command.eq_ignore_ascii_case("EVAL") && observed_drop.ordinal == 2,
+            observed_drop.command.eq_ignore_ascii_case("EVAL") && observed_drop.ordinal == 3,
             "proxy dropped a different Redis command"
         );
         ensure!(observed_drop.response == b":1\r\n", "Redis did not commit the targeted EVAL");
@@ -388,18 +388,19 @@ async fn redis_result_append_ack_lost_after_tcp_eval_keeps_report_and_committed_
             .load(&trace_id)
             .await?
             .context("fresh Redis client could not read the trace")?;
-        ensure!(trace.events.len() == 2, "unexpected persisted event count");
+        ensure!(trace.events.len() == 3, "unexpected persisted event count");
         ensure!(trace.events[0].outcome_kind == "Enter", "initial event was not retained");
-        ensure!(trace.events[1].outcome_kind == "Next", "committed result is missing");
-        ensure!(trace.events[1].step == 1, "result event has an unexpected step");
+        ensure!(trace.events[1].outcome_kind == "Intent", "write-ahead intent is missing");
+        ensure!(trace.events[2].outcome_kind == "Next", "committed result is missing");
+        ensure!(trace.events[2].step == 1, "result event has an unexpected step");
         ensure!(
-            trace.events[1].payload == Some(Outcome::<u32, String>::next(11).to_json_value()),
+            trace.events[2].payload == Some(Outcome::<u32, String>::next(11).to_json_value()),
             "committed result payload differs from the caller outcome"
         );
         ensure!(trace.completion.is_none(), "unconfirmed result was marked complete");
         proxy.stop().await?;
         println!(
-            "REDIS_TCP_RESULT_ACK_LOST eval={} reply=:1 effects=1 stored=[Enter,Next] completion=unset",
+            "REDIS_TCP_RESULT_ACK_LOST eval={} reply=:1 effects=1 stored=[Enter,Intent,Next] completion=unset",
             observed_drop.ordinal
         );
         Ok::<_, anyhow::Error>(())
@@ -429,9 +430,9 @@ async fn redis_terminal_ack_loss_over_tcp_blocks_reentry() -> Result<()> {
         let trace_id = format!("redis-terminal-ack-{}", uuid::Uuid::new_v4().simple());
         ensure!(reader.load(&trace_id).await?.is_none(), "unique trace id already exists");
 
-        // EVAL #1 appends Enter, #2 appends the transition result, and #3
-        // appends the terminal Next. Drop only the successful terminal reply.
-        let (proxy_url, mut dropped_reply, proxy) = start_proxy(backend_address, 3).await?;
+        // EVAL #1 appends Enter, #2 Intent, #3 the transition result, and #4
+        // the terminal Next. Drop only the successful terminal reply.
+        let (proxy_url, mut dropped_reply, proxy) = start_proxy(backend_address, 4).await?;
         let execution_store = RedisPersistenceStore::connect(&proxy_url).await?;
         let effects = Arc::new(AtomicUsize::new(0));
         let axon = Axon::<u32, u32, String, ()>::new("RedisTerminalAckLossFixture")
@@ -445,7 +446,7 @@ async fn redis_terminal_ack_loss_over_tcp_blocks_reentry() -> Result<()> {
             .await?
             .context("Redis TCP proxy did not drop the targeted EVAL reply")?;
         ensure!(
-            observed_drop.command.eq_ignore_ascii_case("EVAL") && observed_drop.ordinal == 3,
+            observed_drop.command.eq_ignore_ascii_case("EVAL") && observed_drop.ordinal == 4,
             "proxy dropped a different Redis command"
         );
         ensure!(observed_drop.response == b":1\r\n", "Redis did not commit the targeted EVAL");
@@ -467,12 +468,13 @@ async fn redis_terminal_ack_loss_over_tcp_blocks_reentry() -> Result<()> {
             .load(&trace_id)
             .await?
             .context("fresh Redis client could not read the trace")?;
-        ensure!(trace.events.len() == 3, "unexpected persisted event count");
+        ensure!(trace.events.len() == 4, "unexpected persisted event count");
         ensure!(trace.events[0].outcome_kind == "Enter", "initial event was not retained");
-        ensure!(trace.events[1].outcome_kind == "Next", "transition result is missing");
-        ensure!(trace.events[2].outcome_kind == "Next", "applied terminal event is missing");
-        ensure!(trace.events[1].step == 1, "transition result has an unexpected step");
-        ensure!(trace.events[2].step == 1, "terminal event has an unexpected step");
+        ensure!(trace.events[1].outcome_kind == "Intent", "write-ahead intent is missing");
+        ensure!(trace.events[2].outcome_kind == "Next", "transition result is missing");
+        ensure!(trace.events[3].outcome_kind == "Next", "applied terminal event is missing");
+        ensure!(trace.events[2].step == 1, "transition result has an unexpected step");
+        ensure!(trace.events[3].step == 2, "terminal event is not after the graph cursor");
         ensure!(trace.completion.is_none(), "unconfirmed terminal was marked complete");
         proxy.stop().await?;
 
@@ -498,7 +500,7 @@ async fn redis_terminal_ack_loss_over_tcp_blocks_reentry() -> Result<()> {
             .context("Redis trace disappeared after re-entry")?;
         ensure!(after_reentry == trace, "re-entry changed the persisted trace");
         println!(
-            "REDIS_TCP_TERMINAL_ACK_LOST eval={} reply=:1 effects=1 stored=[Enter,Next,Next] completion=unset reentry=blocked",
+            "REDIS_TCP_TERMINAL_ACK_LOST eval={} reply=:1 effects=1 stored=[Enter,Intent,Next,Next] completion=unset reentry=blocked",
             observed_drop.ordinal
         );
         Ok::<_, anyhow::Error>(())
@@ -528,9 +530,9 @@ async fn redis_complete_ack_loss_over_tcp_reports_uncertainty_after_apply() -> R
         let trace_id = format!("redis-complete-ack-{}", uuid::Uuid::new_v4().simple());
         ensure!(reader.load(&trace_id).await?.is_none(), "unique trace id already exists");
 
-        // EVAL #1 appends Enter, #2 the transition result, #3 the terminal
-        // Next, and #4 writes completion. Drop only the successful completion reply.
-        let (proxy_url, mut dropped_reply, proxy) = start_proxy(backend_address, 4).await?;
+        // EVAL #1 appends Enter, #2 Intent, #3 the transition result, #4 the
+        // terminal Next, and #5 writes completion. Drop the completion reply.
+        let (proxy_url, mut dropped_reply, proxy) = start_proxy(backend_address, 5).await?;
         let execution_store = RedisPersistenceStore::connect(&proxy_url).await?;
         let effects = Arc::new(AtomicUsize::new(0));
         let axon = Axon::<u32, u32, String, ()>::new("RedisCompleteAckLossFixture")
@@ -544,7 +546,7 @@ async fn redis_complete_ack_loss_over_tcp_reports_uncertainty_after_apply() -> R
             .await?
             .context("Redis TCP proxy did not drop the targeted EVAL reply")?;
         ensure!(
-            observed_drop.command.eq_ignore_ascii_case("EVAL") && observed_drop.ordinal == 4,
+            observed_drop.command.eq_ignore_ascii_case("EVAL") && observed_drop.ordinal == 5,
             "proxy dropped a different Redis command"
         );
         ensure!(observed_drop.response == b":1\r\n", "Redis did not apply completion");
@@ -566,19 +568,20 @@ async fn redis_complete_ack_loss_over_tcp_reports_uncertainty_after_apply() -> R
             .load(&trace_id)
             .await?
             .context("separate Redis client could not read the trace")?;
-        ensure!(trace.events.len() == 3, "unexpected persisted event count");
+        ensure!(trace.events.len() == 4, "unexpected persisted event count");
         ensure!(trace.events[0].outcome_kind == "Enter", "initial event was not retained");
-        ensure!(trace.events[1].outcome_kind == "Next", "transition result is missing");
-        ensure!(trace.events[2].outcome_kind == "Next", "terminal event is missing");
-        ensure!(trace.events[1].step == 1, "transition result has an unexpected step");
-        ensure!(trace.events[2].step == 1, "terminal event has an unexpected step");
+        ensure!(trace.events[1].outcome_kind == "Intent", "write-ahead intent is missing");
+        ensure!(trace.events[2].outcome_kind == "Next", "transition result is missing");
+        ensure!(trace.events[3].outcome_kind == "Next", "terminal event is missing");
+        ensure!(trace.events[2].step == 1, "transition result has an unexpected step");
+        ensure!(trace.events[3].step == 2, "terminal event is not after the graph cursor");
         ensure!(
             trace.completion == Some(CompletionState::Success),
             "successful completion was not applied before its reply was dropped"
         );
         proxy.stop().await?;
         println!(
-            "REDIS_TCP_COMPLETE_ACK_LOST eval={} reply=:1 effects=1 stored=[Enter,Next,Next] completion=Success",
+            "REDIS_TCP_COMPLETE_ACK_LOST eval={} reply=:1 effects=1 stored=[Enter,Intent,Next,Next] completion=Success",
             observed_drop.ordinal
         );
         Ok::<_, anyhow::Error>(())
@@ -1059,15 +1062,48 @@ async fn redis_compensation_marker_read_ack_loss_over_tcp_fails_closed() -> Resu
             .await?
             .context("business trace was not persisted")?;
         ensure!(
-            persisted.completion == Some(CompletionState::Fault),
-            "business Fault completion was lost after compensation read failure"
+            persisted.completion.is_none(),
+            "trace was marked complete while compensation reconciliation is required"
         );
         ensure!(
-            persisted.events.last().map(|event| event.outcome_kind.as_str()) == Some("Fault"),
+            persisted.events.iter().any(|event| event.outcome_kind == "Fault"),
             "business Fault event was lost after compensation read failure"
         );
+        let pending_intent = persisted.events.last().context("compensation intent is missing")?;
+        ensure!(
+            pending_intent.event_type == ranvier_runtime::persistence::PersistenceEventType::Intent
+                && pending_intent.node_id.as_deref() == Some("external-compensation"),
+            "compensation marker read uncertainty did not preserve its pending intent"
+        );
+        ensure!(
+            !persisted.events.iter().any(|event| {
+                event.event_type == ranvier_runtime::persistence::PersistenceEventType::Terminal
+            }),
+            "trace was marked terminal while compensation reconciliation is required"
+        );
+
+        let mut reentry_bus = Bus::new();
+        reentry_bus.insert(PersistenceHandle::from_store(trace_reader.clone()));
+        reentry_bus.insert(PersistenceTraceId::new(trace_id.clone()));
+        let reentry = axon.execute(7, &(), &mut reentry_bus).await;
+        ensure!(
+            matches!(
+                &reentry,
+                ExecutionReport::BlockedBeforeEffect {
+                    operation: PersistenceOperation::PendingIntent,
+                    effect: EffectBoundary::NotInvoked,
+                    ..
+                }
+            ),
+            "re-entry did not require reconciliation before replay: {reentry:?}"
+        );
+        ensure!(effects.load(Ordering::SeqCst) == 1, "re-entry repeated the business effect");
+        ensure!(
+            compensation_calls.load(Ordering::SeqCst) == 0,
+            "re-entry invoked compensation without operator reconciliation"
+        );
         println!(
-            "REDIS_TCP_COMPENSATION_MARKER_READ_ACK_LOST dropped=EXISTS-1 response=absent report=Unconfirmed/CompensationRead/MayHaveRun effects=1 hook_calls=0 marker_present=false cleanup=NotInvoked"
+            "REDIS_TCP_COMPENSATION_MARKER_READ_ACK_LOST dropped=EXISTS-1 response=absent report=Unconfirmed/CompensationRead/MayHaveRun effects=1 hook_calls=0 marker_present=false pending-intent=reentry-blocked"
         );
         Ok::<_, anyhow::Error>(())
     })
