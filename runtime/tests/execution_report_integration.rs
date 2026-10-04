@@ -1518,6 +1518,17 @@ impl CompensationHook for CountCompensation {
     }
 }
 
+#[derive(Clone)]
+struct FailingCompensation(Arc<AtomicUsize>);
+
+#[async_trait::async_trait]
+impl CompensationHook for FailingCompensation {
+    async fn compensate(&self, _: CompensationContext) -> anyhow::Result<()> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err(anyhow::anyhow!("private-hook-error-sentinel"))
+    }
+}
+
 #[tokio::test]
 async fn compensation_marker_write_ack_loss_preserves_fault_and_uncertainty() {
     for apply_before_error in [false, true] {
@@ -1626,6 +1637,53 @@ async fn compensation_marker_write_does_not_claim_execution_trace_recorded() {
     ));
     let marker_key = "trace-marker-only:compensation-marker-only:Fault";
     assert!(idempotency.was_compensated(marker_key).await.unwrap());
+}
+
+#[tokio::test]
+async fn compensation_hook_failure_without_trace_store_keeps_cleanup_incomplete() {
+    let marker_store = Arc::new(MarkerWriteAckFailure {
+        backing: InMemoryCompensationIdempotencyStore::new(),
+        apply_before_error: false,
+        reads: AtomicUsize::new(0),
+        writes: AtomicUsize::new(0),
+        last_key: std::sync::Mutex::new(None),
+    });
+    let effects = Arc::new(AtomicUsize::new(0));
+    let compensation_calls = Arc::new(AtomicUsize::new(0));
+    let mut bus = Bus::new();
+    bus.insert(PersistenceTraceId::new("hook-failure-without-trace"));
+    bus.insert(CompensationIdempotencyHandle::from_arc(
+        marker_store.clone(),
+    ));
+    bus.insert(CompensationHandle::from_hook(FailingCompensation(
+        compensation_calls.clone(),
+    )));
+    let axon = Axon::<u32, u32, String, ()>::new("compensation-hook-failure")
+        .then(CountFault(effects.clone()));
+
+    let report = axon.execute(7, &(), &mut bus).await;
+
+    assert!(matches!(
+        report,
+        ExecutionReport::Unpersisted {
+            result: Outcome::Fault(ref message),
+            ..
+        } if message == "business-fault"
+    ));
+    let serialized = serde_json::to_string(&report).unwrap();
+    assert!(!serialized.contains("private-hook-error-sentinel"));
+    let cleanup = report.cleanup().expect("external compensation is observed");
+    assert!(!cleanup.is_complete());
+    assert_eq!(cleanup.trace_id, "hook-failure-without-trace");
+    assert_eq!(cleanup.steps.len(), 1);
+    assert_eq!(
+        cleanup.steps[0].outcome,
+        ranvier_runtime::SagaRollbackOutcome::Fault
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(compensation_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(marker_store.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(marker_store.writes.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
