@@ -10,7 +10,7 @@ use ranvier_runtime::{
     },
 };
 use std::{
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -937,16 +937,44 @@ async fn redis_compensation_marker_read_ack_loss_over_tcp_fails_closed() -> Resu
     }
 
     timeout(Duration::from_secs(20), async {
+        ensure!(
+            std::env::var("RANVIER_ATOMICITY_REDIS_ISOLATED").as_deref() == Ok("1"),
+            "set RANVIER_ATOMICITY_REDIS_ISOLATED=1 only for a disposable isolated Redis fixture"
+        );
         let backend_url = std::env::var("RANVIER_ATOMICITY_REDIS_URL")
             .context("explicit isolated Redis URL required")?;
         ensure!(
             backend_url.starts_with("redis://") && !backend_url.contains('@'),
             "fixture supports only an isolated unauthenticated redis:// endpoint"
         );
+        let redis_url = redis::parse_redis_url(&backend_url)
+            .context("fixture Redis URL must be a valid redis:// URL")?;
+        ensure!(redis_url.scheme() == "redis", "fixture must not use a TLS or Unix URL");
+        let redis_host = redis_url
+            .host_str()
+            .context("fixture Redis URL must contain a host")?;
+        let redis_port = redis_url.port().unwrap_or(6379);
         let backend_endpoint = std::env::var("RANVIER_ATOMICITY_REDIS_ADDRESS")
             .context("explicit isolated Redis address required")?;
-        let backend_address = lookup_host(&backend_endpoint)
+        let url_addresses = lookup_host((redis_host, redis_port))
             .await?
+            .collect::<std::collections::HashSet<_>>();
+        let backend_addresses = lookup_host(&backend_endpoint)
+            .await?
+            .collect::<std::collections::HashSet<_>>();
+        ensure!(
+            !backend_addresses.is_empty() && backend_addresses == url_addresses,
+            "Redis URL and proxy backend must resolve to the same fixture addresses"
+        );
+        ensure!(
+            backend_addresses.iter().all(|address| match address.ip() {
+                IpAddr::V4(ip) => ip.is_private() || ip.is_loopback(),
+                IpAddr::V6(ip) => ip.is_unique_local() || ip.is_loopback(),
+            }),
+            "fixture Redis addresses must be private or loopback"
+        );
+        let backend_address = *backend_addresses
+            .iter()
             .next()
             .context("isolated Redis address did not resolve")?;
 
