@@ -33,6 +33,13 @@ fn parse_backend(value: &str) -> anyhow::Result<Backend> {
     }
 }
 
+fn parse_postgres_prefix(value: &str) -> anyhow::Result<&str> {
+    match value {
+        "compat_old" | "compat_current" => Ok(value),
+        _ => anyhow::bail!("explicit fixture prefix required"),
+    }
+}
+
 fn expected_trace(trace_id: &str, backend: Backend) -> PersistedTrace {
     let node_id = (backend == Backend::Redis).then(|| "synthetic-node".to_string());
     let events = [1_u64, 2]
@@ -112,12 +119,14 @@ async fn storage_compatibility_worker() {
         match backend {
             Backend::Postgres => {
                 let url = std::env::var("RANVIER_STORAGE_COMPAT_POSTGRES_URL").unwrap();
+                let prefix = std::env::var("RANVIER_STORAGE_COMPAT_POSTGRES_PREFIX").unwrap();
+                let prefix = parse_postgres_prefix(&prefix).unwrap();
                 let pool = sqlx::postgres::PgPoolOptions::new()
                     .max_connections(2)
                     .connect(&url)
                     .await
                     .unwrap();
-                let store = PostgresPersistenceStore::new(pool);
+                let store = PostgresPersistenceStore::with_table_prefix(pool, prefix);
                 store.ensure_schema().await.unwrap();
                 exercise(&store, role, expected).await;
             }
@@ -148,4 +157,11 @@ fn compatibility_worker_requires_explicit_role_and_backend() {
     assert_eq!(parse_backend("redis").unwrap(), Backend::Redis);
     assert!(parse_backend("").is_err());
     assert!(parse_backend("all").is_err());
+
+    assert_eq!(parse_postgres_prefix("compat_old").unwrap(), "compat_old");
+    assert_eq!(
+        parse_postgres_prefix("compat_current").unwrap(),
+        "compat_current"
+    );
+    assert!(parse_postgres_prefix("compat; DROP TABLE fixture").is_err());
 }
