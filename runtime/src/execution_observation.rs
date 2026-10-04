@@ -15,6 +15,7 @@ pub(crate) struct Observation {
     attempted_write: AtomicBool,
     completed: AtomicBool,
     blocked: AtomicBool,
+    unconfirmed_result_write: AtomicBool,
     encoding_failed: AtomicBool,
     #[cfg(feature = "streaming")]
     cleanup_budget: Mutex<Option<CleanupBudget>>,
@@ -679,7 +680,13 @@ impl Observation {
     }
     fn observe<T>(&self, operation: PersistenceOperation, result: &anyhow::Result<T>) {
         if result.is_err() {
-            self.failed(operation);
+            self.failed_store_operation(operation);
+        }
+    }
+    fn failed_store_operation(&self, operation: PersistenceOperation) {
+        self.failed(operation);
+        if matches!(operation, PersistenceOperation::Result) {
+            self.unconfirmed_result_write.store(true, Ordering::SeqCst);
         }
     }
     pub(crate) fn effect(&self) {
@@ -691,6 +698,9 @@ impl Observation {
     }
     pub(crate) fn is_blocked(&self) -> bool {
         self.blocked.load(Ordering::SeqCst)
+    }
+    pub(crate) fn has_unconfirmed_result_write(&self) -> bool {
+        self.unconfirmed_result_write.load(Ordering::SeqCst)
     }
     fn report<T>(&self, result: T) -> ExecutionReport<T> {
         let operation = *self
@@ -760,7 +770,7 @@ impl<'a> ObservedCall<'a> {
 impl Drop for ObservedCall<'_> {
     fn drop(&mut self) {
         if !self.settled {
-            self.observation.failed(self.operation);
+            self.observation.failed_store_operation(self.operation);
         }
     }
 }

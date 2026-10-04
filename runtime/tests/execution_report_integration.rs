@@ -1050,7 +1050,7 @@ impl PersistenceStore for FailOnAppend {
 }
 
 #[tokio::test]
-async fn actual_execute_retains_first_failure_after_terminal_and_completion_succeed() {
+async fn actual_execute_stops_after_unconfirmed_result_append() {
     for (trace_id, apply_failed_append) in [("not-applied", false), ("applied-lost-ack", true)] {
         let backing = InMemoryPersistenceStore::new();
         let writes = Arc::new(AtomicUsize::new(0));
@@ -1076,20 +1076,23 @@ async fn actual_execute_retains_first_failure_after_terminal_and_completion_succ
         ));
         assert!(!format!("{report:?}").contains("secret-backend-sentinel"));
         assert_eq!(effects.load(Ordering::SeqCst), 1);
-        assert_eq!(writes.load(Ordering::SeqCst), 3);
+        assert_eq!(writes.load(Ordering::SeqCst), 2);
 
         let trace = backing.load(trace_id).await.unwrap().unwrap();
-        assert_eq!(trace.completion, Some(CompletionState::Success));
-        assert_eq!(trace.events.len(), if apply_failed_append { 3 } else { 2 });
+        assert_eq!(trace.completion, None);
+        assert_eq!(trace.events.len(), if apply_failed_append { 2 } else { 1 });
         assert_eq!(
             trace
                 .events
                 .iter()
                 .filter(|event| event.outcome_kind == "Next")
                 .count(),
-            if apply_failed_append { 2 } else { 1 }
+            usize::from(apply_failed_append)
         );
         assert_eq!(trace.events[0].outcome_kind, "Enter");
+        if apply_failed_append {
+            assert_eq!(trace.events[1].outcome_kind, "Next");
+        }
         assert_eq!(
             bus.read::<PersistenceHandle>()
                 .unwrap()

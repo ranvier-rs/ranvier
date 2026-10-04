@@ -939,6 +939,16 @@ where
             return outcome;
         }
 
+        // A transition-result write can fail after the domain effect ran. Do
+        // not append a terminal row or certify completion over that unknown
+        // checkpoint; preserve the domain outcome for the invocation report.
+        if bus
+            .read::<crate::execution_observation::ActiveObservation>()
+            .is_some_and(|active| active.0.has_unconfirmed_result_write())
+        {
+            return outcome;
+        }
+
         if let Some(handle) = persistence_handle.as_ref() {
             let fault_step = persistence_start_step.map(|s| s + 1).unwrap_or(1);
             let mut terminal_event_confirmed = persist_encoded_execution_event(
