@@ -7,23 +7,23 @@ pub mod distributed;
 mod execution_observation;
 pub mod execution_report;
 pub mod llm;
+mod nested_custody;
 pub mod persistence;
 pub mod replay;
 pub mod retry;
 pub mod saga_report;
-mod nested_custody;
 #[cfg(feature = "streaming")]
 pub mod streaming_axon;
-#[cfg(feature = "streaming")]
-pub mod streaming_report_handle;
-#[cfg(feature = "streaming")]
-pub mod streaming_supervisor;
 #[cfg(feature = "streaming")]
 pub mod streaming_initialization;
 #[cfg(feature = "streaming")]
 mod streaming_recovery;
 #[cfg(feature = "streaming")]
 mod streaming_recovery_admission;
+#[cfg(feature = "streaming")]
+pub mod streaming_report_handle;
+#[cfg(feature = "streaming")]
+pub mod streaming_supervisor;
 pub mod testkit;
 
 pub mod prelude {
@@ -43,8 +43,9 @@ pub mod prelude {
         CompensationAutoTrigger, CompensationContext, CompensationHandle, CompensationHook,
         CompensationIdempotencyHandle, CompensationIdempotencyStore, CompensationRetryPolicy,
         CompletionState, InMemoryCompensationIdempotencyStore, InMemoryPersistenceStore,
-        PersistedTrace, PersistenceAutoComplete, PersistenceEnvelope, PersistenceHandle,
-        PersistenceStore, PersistenceTraceId, ResumeCursor,
+        PERSISTENCE_FORMAT_VERSION, PersistedTrace, PersistenceAutoComplete, PersistenceEnvelope,
+        PersistenceEventType, PersistenceHandle, PersistenceStore, PersistenceTraceId,
+        ResumeCursor,
     };
     #[cfg(feature = "persistence-postgres")]
     pub use crate::persistence::{PostgresCompensationIdempotencyStore, PostgresPersistenceStore};
@@ -56,11 +57,11 @@ pub mod prelude {
         SagaRollbackJournal, SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep,
     };
     #[cfg(feature = "streaming")]
-    pub use crate::streaming_axon::{
-        CollectedStreamingAxon, StreamTimeoutKind, StreamingAxon,
-    };
+    pub use crate::streaming_axon::{CollectedStreamingAxon, StreamTimeoutKind, StreamingAxon};
     #[cfg(feature = "streaming")]
-    pub use crate::streaming_initialization::{StreamInitializationError, StreamInitializationReport};
+    pub use crate::streaming_initialization::{
+        StreamInitializationError, StreamInitializationReport,
+    };
     pub use crate::testkit::AxonTestKit;
     pub use crate::{InfallibleAxon, SimpleAxon, TypedAxon};
 }
@@ -92,8 +93,8 @@ pub use persistence::{
     CompensationAutoTrigger, CompensationContext, CompensationHandle, CompensationHook,
     CompensationIdempotencyHandle, CompensationIdempotencyStore, CompensationRetryPolicy,
     CompletionState, InMemoryCompensationIdempotencyStore, InMemoryPersistenceStore,
-    PersistedTrace, PersistenceAutoComplete, PersistenceEnvelope, PersistenceHandle,
-    PersistenceStore, PersistenceTraceId, ResumeCursor,
+    PERSISTENCE_FORMAT_VERSION, PersistedTrace, PersistenceAutoComplete, PersistenceEnvelope,
+    PersistenceEventType, PersistenceHandle, PersistenceStore, PersistenceTraceId, ResumeCursor,
 };
 #[cfg(feature = "persistence-postgres")]
 pub use persistence::{PostgresCompensationIdempotencyStore, PostgresPersistenceStore};
@@ -105,9 +106,7 @@ pub use saga_report::{
     SagaRollbackJournal, SagaRollbackOutcome, SagaRollbackReport, SagaRollbackStep,
 };
 #[cfg(feature = "streaming")]
-pub use streaming_axon::{
-    CollectedStreamingAxon, StreamTimeoutKind, StreamingAxon,
-};
+pub use streaming_axon::{CollectedStreamingAxon, StreamTimeoutKind, StreamingAxon};
 #[cfg(feature = "streaming")]
 pub use streaming_initialization::{StreamInitializationError, StreamInitializationReport};
 pub use testkit::AxonTestKit;
@@ -115,7 +114,9 @@ pub use testkit::AxonTestKit;
 #[cfg(feature = "streaming")]
 pub mod streaming_consumption;
 #[cfg(feature = "streaming")]
-pub use streaming_consumption::{ObservedStream, StreamConsumptionReport, StreamConsumptionTerminal};
+pub use streaming_consumption::{
+    ObservedStream, StreamConsumptionReport, StreamConsumptionTerminal,
+};
 
 #[cfg(feature = "streaming")]
 mod managed_stream_task;

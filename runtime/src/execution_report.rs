@@ -23,9 +23,17 @@ pub enum PersistenceOperation {
     Load,
     /// Loaded history contains an unusable recovery payload; operator reconciliation is required.
     RecoveryPayload,
+    /// The stored format or event sequence is not valid for this release.
+    UnsupportedFormat,
+    /// This effect has no event-journal contract in the configured persistence mode.
+    UnsupportedEffect,
+    /// A confirmed intent has no confirmed matching result; never replay it automatically.
+    PendingIntent,
     Intent,
     Result,
     Terminal,
+    /// The execution trace's compensation event, separate from marker-store writes.
+    CompensationEvent,
     Complete,
     CompensationRead,
     CompensationWrite,

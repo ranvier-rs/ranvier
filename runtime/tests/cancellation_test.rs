@@ -309,6 +309,8 @@ async fn completed_trace_blocks_normal_and_cancellation_effects_for_all_terminal
                     trace_id: "completed".into(),
                     circuit: "CompletedGuard".into(),
                     schematic_version: axon.schematic().schema_version.clone(),
+                    event_sequence: 0,
+                    event_type: ranvier_runtime::PersistenceEventType::Enter,
                     step: 0,
                     node_id: None,
                     outcome_kind: "Enter".into(),

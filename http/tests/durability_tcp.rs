@@ -394,6 +394,8 @@ async fn legacy_null_trace_is_blocked_over_tcp_without_effect_or_store_mutation(
             trace_id: "http-report-fixture".into(),
             circuit: schematic.name.clone(),
             schematic_version: schematic.schema_version.clone(),
+            event_sequence: 0,
+            event_type: ranvier_runtime::PersistenceEventType::Result,
             step: 1,
             node_id: Some(schematic.nodes[1].id.to_string()),
             outcome_kind: "Next".into(),

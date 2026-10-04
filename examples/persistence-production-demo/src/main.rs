@@ -39,6 +39,8 @@ fn envelope(trace_id: &str, circuit: &str, step: u64, kind: &str) -> Persistence
         trace_id: trace_id.to_string(),
         circuit: circuit.to_string(),
         schematic_version: "1.0".to_string(),
+        event_sequence: step,
+        event_type: ranvier_runtime::PersistenceEventType::Result,
         step,
         node_id: None,
         outcome_kind: kind.to_string(),

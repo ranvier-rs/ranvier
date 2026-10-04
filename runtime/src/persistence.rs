@@ -2,8 +2,226 @@ use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use tokio::sync::RwLock;
+
+/// Current persisted execution-trace format. It is independent of the
+/// user-authored schematic version stored on each trace and event.
+pub const PERSISTENCE_FORMAT_VERSION: u16 = 2;
+
+/// Role of an event in the persisted execution protocol.
+///
+/// `step` remains the logical schematic step. `event_sequence` provides a
+/// unique, ordered identity when several protocol events belong to one step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PersistenceEventType {
+    Enter,
+    Intent,
+    Result,
+    /// A pure orchestration checkpoint that does not invoke a transition.
+    Checkpoint,
+    Terminal,
+    Compensation,
+    /// Used only when decoding an unversioned legacy Redis value. Such a trace
+    /// is rejected by the v2 runtime before recovery or effects.
+    LegacyUnknown,
+}
+
+impl Default for PersistenceEventType {
+    fn default() -> Self {
+        Self::LegacyUnknown
+    }
+}
+
+pub(crate) fn persistence_event_type_for(
+    outcome_kind: &str,
+    node_id: Option<&str>,
+) -> PersistenceEventType {
+    match outcome_kind {
+        "Enter" => PersistenceEventType::Enter,
+        "Intent" => PersistenceEventType::Intent,
+        "Checkpoint" => PersistenceEventType::Checkpoint,
+        "Compensated" | "CompensationIncomplete" | "SagaCompensation" => {
+            PersistenceEventType::Compensation
+        }
+        _ if node_id.is_some() => PersistenceEventType::Result,
+        _ => PersistenceEventType::Terminal,
+    }
+}
+
+/// Fail-closed validation for the new event journal. A dangling intent means
+/// the associated effect may have run and must be reconciled before resuming.
+pub(crate) fn validate_persisted_trace(trace: &PersistedTrace) -> Result<(), TraceValidationError> {
+    if trace.format_version != PERSISTENCE_FORMAT_VERSION {
+        return Err(TraceValidationError::UnsupportedFormat);
+    }
+
+    validate_event_sequence(&trace.events, true)?;
+    if trace.completion.is_some()
+        && !trace
+            .events
+            .iter()
+            .any(|event| event.event_type == PersistenceEventType::Terminal)
+    {
+        return Err(TraceValidationError::MissingTerminal);
+    }
+    Ok(())
+}
+
+fn ensure_trace_lifecycle_safe(trace: &PersistedTrace, operation: &str) -> Result<()> {
+    validate_persisted_trace(trace).map_err(|error| {
+        anyhow!(
+            "cannot {operation} trace_id {} with invalid v2 event history: {error:?}",
+            trace.trace_id
+        )
+    })
+}
+
+fn ensure_completion_safe(trace: &PersistedTrace, completion: &CompletionState) -> Result<()> {
+    let mut candidate = trace.clone();
+    candidate.completion = Some(completion.clone());
+    ensure_trace_lifecycle_safe(&candidate, "complete")
+}
+
+#[cfg(feature = "persistence-postgres")]
+fn ensure_terminal_event(events: &[PersistenceEnvelope]) -> Result<()> {
+    if events
+        .iter()
+        .any(|event| event.event_type == PersistenceEventType::Terminal)
+    {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "cannot complete persistence trace without a terminal event"
+        ))
+    }
+}
+
+fn completion_already_set(
+    existing: Option<&CompletionState>,
+    requested: &CompletionState,
+    trace_id: &str,
+) -> Result<bool> {
+    match existing {
+        None => Ok(false),
+        Some(current) if current == requested => Ok(true),
+        Some(_) => Err(anyhow!(
+            "trace_id {trace_id} already has a different completion state"
+        )),
+    }
+}
+
+/// Validate an append against the current journal. An Intent is allowed to be
+/// the final event; its matching result is required before another intent or a
+/// terminal event can be recorded.
+pub(crate) fn validate_persistence_append(
+    previous: &[PersistenceEnvelope],
+    incoming: &PersistenceEnvelope,
+) -> Result<()> {
+    if previous
+        .iter()
+        .any(|event| event.event_type == PersistenceEventType::Terminal)
+    {
+        return Err(anyhow!("cannot append an event after a terminal event"));
+    }
+    let expected = u64::try_from(previous.len())?;
+    if incoming.event_sequence != expected {
+        return Err(anyhow!(
+            "expected event sequence {expected}, got {}",
+            incoming.event_sequence
+        ));
+    }
+    let mut pending = validate_event_sequence(previous, false)
+        .map_err(|error| anyhow!("invalid existing persistence event stream: {error:?}"))?;
+    apply_event_to_pending(incoming, &mut pending)
+        .map_err(|error| anyhow!("invalid persistence event append: {error:?}"))
+}
+
+fn validate_event_sequence(
+    events: &[PersistenceEnvelope],
+    require_settled: bool,
+) -> Result<HashSet<(u64, String)>, TraceValidationError> {
+    let mut pending_intents = HashSet::new();
+    let mut terminal_seen = false;
+    for (expected_sequence, event) in events.iter().enumerate() {
+        if terminal_seen {
+            return Err(TraceValidationError::UnsupportedFormat);
+        }
+        if event.event_sequence != expected_sequence as u64 {
+            return Err(TraceValidationError::UnsupportedFormat);
+        }
+        apply_event_to_pending(event, &mut pending_intents)?;
+        terminal_seen = event.event_type == PersistenceEventType::Terminal;
+    }
+    if require_settled && !pending_intents.is_empty() {
+        return Err(TraceValidationError::PendingIntent);
+    }
+    Ok(pending_intents)
+}
+
+fn apply_event_to_pending(
+    event: &PersistenceEnvelope,
+    pending_intents: &mut HashSet<(u64, String)>,
+) -> Result<(), TraceValidationError> {
+    if event.event_type == PersistenceEventType::LegacyUnknown {
+        return Err(TraceValidationError::UnsupportedFormat);
+    }
+    match event.event_type {
+        PersistenceEventType::Enter => {
+            if !pending_intents.is_empty() {
+                return Err(TraceValidationError::PendingIntent);
+            }
+        }
+        PersistenceEventType::Intent => {
+            let Some(node_id) = event.node_id.clone() else {
+                return Err(TraceValidationError::UnsupportedFormat);
+            };
+            if !pending_intents.insert((event.step, node_id)) {
+                return Err(TraceValidationError::UnsupportedFormat);
+            }
+        }
+        PersistenceEventType::Result | PersistenceEventType::Compensation => {
+            let Some(node_id) = event.node_id.as_ref() else {
+                return Err(TraceValidationError::UnsupportedFormat);
+            };
+            if !pending_intents.remove(&(event.step, node_id.clone())) {
+                return Err(TraceValidationError::UnsupportedFormat);
+            }
+        }
+        PersistenceEventType::Checkpoint => {
+            if event.node_id.is_none() || !pending_intents.is_empty() {
+                return Err(if pending_intents.is_empty() {
+                    TraceValidationError::UnsupportedFormat
+                } else {
+                    TraceValidationError::PendingIntent
+                });
+            }
+        }
+        PersistenceEventType::Terminal => {
+            if event.node_id.is_some() {
+                return Err(TraceValidationError::UnsupportedFormat);
+            }
+            if !pending_intents.is_empty() {
+                return Err(TraceValidationError::PendingIntent);
+            }
+        }
+        PersistenceEventType::LegacyUnknown => {
+            return Err(TraceValidationError::UnsupportedFormat);
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TraceValidationError {
+    UnsupportedFormat,
+    PendingIntent,
+    MissingTerminal,
+}
 
 /// Minimal persisted envelope for Axon execution checkpoints.
 ///
@@ -19,6 +237,13 @@ pub struct PersistenceEnvelope {
     pub trace_id: String,
     pub circuit: String,
     pub schematic_version: String,
+    /// Monotonic, zero-based identity within the trace. Unlike `step`, this is
+    /// unique when a step has both an intent and a result event.
+    #[serde(default)]
+    pub event_sequence: u64,
+    /// Protocol role, kept separate from the domain `outcome_kind`.
+    #[serde(default)]
+    pub event_type: PersistenceEventType,
     pub step: u64,
     pub node_id: Option<String>,
     pub outcome_kind: String,
@@ -65,17 +290,51 @@ fn completion_state_from_wire(value: &str) -> Result<CompletionState> {
     }
 }
 
+#[cfg(feature = "persistence-postgres")]
+fn persistence_event_type_to_db(event_type: PersistenceEventType) -> &'static str {
+    match event_type {
+        PersistenceEventType::Enter => "enter",
+        PersistenceEventType::Intent => "intent",
+        PersistenceEventType::Result => "result",
+        PersistenceEventType::Checkpoint => "checkpoint",
+        PersistenceEventType::Terminal => "terminal",
+        PersistenceEventType::Compensation => "compensation",
+        PersistenceEventType::LegacyUnknown => "legacy_unknown",
+    }
+}
+
+#[cfg(feature = "persistence-postgres")]
+fn persistence_event_type_from_db(value: &str) -> Result<PersistenceEventType> {
+    match value {
+        "enter" => Ok(PersistenceEventType::Enter),
+        "intent" => Ok(PersistenceEventType::Intent),
+        "result" => Ok(PersistenceEventType::Result),
+        "checkpoint" => Ok(PersistenceEventType::Checkpoint),
+        "terminal" => Ok(PersistenceEventType::Terminal),
+        "compensation" => Ok(PersistenceEventType::Compensation),
+        other => Err(anyhow!("unknown persistence event type value: {other}")),
+    }
+}
+
 /// Stored trace state returned from [`PersistenceStore::load`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedTrace {
     pub trace_id: String,
     pub circuit: String,
+    /// Storage format version, not the user-authored schematic version.
+    /// Missing versions decode as legacy v1 so callers fail closed.
+    #[serde(default = "legacy_persistence_format_version")]
+    pub format_version: u16,
     /// The schematic version of the last appended event.
     pub schematic_version: String,
     pub events: Vec<PersistenceEnvelope>,
     pub interventions: Vec<Intervention>,
     pub resumed_from_step: Option<u64>,
     pub completion: Option<CompletionState>,
+}
+
+fn legacy_persistence_format_version() -> u16 {
+    1
 }
 
 /// Resume cursor returned from [`PersistenceStore::resume`].
@@ -702,6 +961,7 @@ pub trait PersistenceStore: Send + Sync {
 pub struct PersistenceHandle {
     inner: Arc<dyn PersistenceStore>,
     observation: Option<Arc<crate::execution_observation::Observation>>,
+    next_event_sequence: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for PersistenceHandle {
@@ -719,6 +979,7 @@ impl PersistenceHandle {
         Self {
             inner: Arc::new(store),
             observation: None,
+            next_event_sequence: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -727,6 +988,7 @@ impl PersistenceHandle {
         Self {
             inner: store,
             observation: None,
+            next_event_sequence: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -747,7 +1009,16 @@ impl PersistenceHandle {
         Self {
             inner: self.inner.clone(),
             observation: Some(observation),
+            next_event_sequence: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    pub(crate) fn allocate_event_sequence(&self) -> u64 {
+        self.next_event_sequence.fetch_add(1, Ordering::SeqCst)
+    }
+
+    pub(crate) fn set_next_event_sequence(&self, sequence: u64) {
+        self.next_event_sequence.store(sequence, Ordering::SeqCst);
     }
 }
 
@@ -767,17 +1038,36 @@ impl InMemoryPersistenceStore {
 impl PersistenceStore for InMemoryPersistenceStore {
     async fn append(&self, envelope: PersistenceEnvelope) -> Result<()> {
         let mut guard = self.inner.write().await;
-        let entry = guard
-            .entry(envelope.trace_id.clone())
-            .or_insert_with(|| PersistedTrace {
-                trace_id: envelope.trace_id.clone(),
-                circuit: envelope.circuit.clone(),
-                schematic_version: envelope.schematic_version.clone(),
-                events: Vec::new(),
-                interventions: Vec::new(),
-                resumed_from_step: None,
-                completion: None,
-            });
+        if !guard.contains_key(&envelope.trace_id) {
+            if envelope.event_sequence != 0 {
+                return Err(anyhow!(
+                    "trace_id {} expected event sequence 0, got {}",
+                    envelope.trace_id,
+                    envelope.event_sequence
+                ));
+            }
+            if envelope.event_type == PersistenceEventType::LegacyUnknown {
+                return Err(anyhow!(
+                    "legacy event type cannot be appended to a v2 trace"
+                ));
+            }
+            validate_persistence_append(&[], &envelope)?;
+            guard.insert(
+                envelope.trace_id.clone(),
+                PersistedTrace {
+                    trace_id: envelope.trace_id.clone(),
+                    circuit: envelope.circuit.clone(),
+                    format_version: PERSISTENCE_FORMAT_VERSION,
+                    schematic_version: envelope.schematic_version.clone(),
+                    events: vec![envelope],
+                    interventions: Vec::new(),
+                    resumed_from_step: None,
+                    completion: None,
+                },
+            );
+            return Ok(());
+        }
+        let entry = guard.get_mut(&envelope.trace_id).expect("checked above");
 
         if entry.circuit != envelope.circuit {
             return Err(anyhow!(
@@ -793,9 +1083,31 @@ impl PersistenceStore for InMemoryPersistenceStore {
                 envelope.trace_id
             ));
         }
+        if entry.format_version != PERSISTENCE_FORMAT_VERSION {
+            return Err(anyhow!(
+                "trace_id {} uses unsupported persistence format {}",
+                envelope.trace_id,
+                entry.format_version
+            ));
+        }
+        let expected_sequence = u64::try_from(entry.events.len())?;
+        if envelope.event_sequence != expected_sequence {
+            return Err(anyhow!(
+                "trace_id {} expected event sequence {}, got {}",
+                envelope.trace_id,
+                expected_sequence,
+                envelope.event_sequence
+            ));
+        }
+        if envelope.event_type == PersistenceEventType::LegacyUnknown {
+            return Err(anyhow!(
+                "legacy event type cannot be appended to a v2 trace"
+            ));
+        }
+        validate_persistence_append(&entry.events, &envelope)?;
         entry.schematic_version = envelope.schematic_version.clone();
         entry.events.push(envelope);
-        entry.events.sort_by_key(|e| e.step);
+        entry.events.sort_by_key(|e| e.event_sequence);
         Ok(())
     }
 
@@ -815,6 +1127,7 @@ impl PersistenceStore for InMemoryPersistenceStore {
                 trace_id
             ));
         }
+        ensure_trace_lifecycle_safe(trace, "resume")?;
         trace.resumed_from_step = Some(resume_from_step);
         Ok(ResumeCursor {
             trace_id: trace_id.to_string(),
@@ -827,6 +1140,11 @@ impl PersistenceStore for InMemoryPersistenceStore {
         let trace = guard
             .get_mut(trace_id)
             .ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
+        ensure_trace_lifecycle_safe(trace, "complete")?;
+        if completion_already_set(trace.completion.as_ref(), &completion, trace_id)? {
+            return Ok(());
+        }
+        ensure_completion_safe(trace, &completion)?;
         trace.completion = Some(completion);
         Ok(())
     }
@@ -851,6 +1169,9 @@ pub struct PostgresPersistenceStore {
     events_table: PostgresRelation,
     state_table: PostgresRelation,
     interventions_table: PostgresRelation,
+    legacy_events_table: PostgresRelation,
+    legacy_state_table: PostgresRelation,
+    legacy_interventions_table: PostgresRelation,
 }
 
 #[cfg(feature = "persistence-postgres")]
@@ -859,7 +1180,10 @@ struct PostgresEventRow {
     trace_id: String,
     circuit: String,
     schematic_version: String,
+    event_sequence: i64,
+    event_type: String,
     step: i64,
+    node_id: Option<String>,
     outcome_kind: String,
     timestamp_ms: i64,
     payload_hash: Option<String>,
@@ -872,6 +1196,7 @@ struct PostgresStateRow {
     trace_id: String,
     circuit: String,
     schematic_version: String,
+    format_version: i32,
     resumed_from_step: Option<i64>,
     completion: Option<String>,
 }
@@ -911,18 +1236,63 @@ impl PostgresPersistenceStore {
     pub fn with_table_prefix(pool: sqlx::Pool<sqlx::Postgres>, prefix: impl Into<String>) -> Self {
         let prefix = prefix.into();
         let mut relations = [
+            PostgresRelation::from_prefix(&prefix, "_v2_events"),
+            PostgresRelation::from_prefix(&prefix, "_v2_state"),
+            PostgresRelation::from_prefix(&prefix, "_v2_interventions"),
             PostgresRelation::from_prefix(&prefix, "_events"),
             PostgresRelation::from_prefix(&prefix, "_state"),
             PostgresRelation::from_prefix(&prefix, "_interventions"),
         ];
         reject_postgres_relation_group_if_any_is_invalid(&mut relations);
-        let [events_table, state_table, interventions_table] = relations;
+        let [
+            events_table,
+            state_table,
+            interventions_table,
+            legacy_events_table,
+            legacy_state_table,
+            legacy_interventions_table,
+        ] = relations;
         Self {
             pool,
             events_table,
             state_table,
             interventions_table,
+            legacy_events_table,
+            legacy_state_table,
+            legacy_interventions_table,
         }
+    }
+
+    async fn reject_legacy_trace(&self, trace_id: &str) -> Result<()> {
+        for relation in [
+            &self.legacy_state_table,
+            &self.legacy_events_table,
+            &self.legacy_interventions_table,
+        ] {
+            let query = format!(
+                "SELECT EXISTS (SELECT 1 FROM {} WHERE trace_id = $1)",
+                relation.sql()?
+            );
+            let found = match sqlx::query_scalar::<_, bool>(&query)
+                .bind(trace_id)
+                .fetch_one(&self.pool)
+                .await
+            {
+                Ok(found) => found,
+                // A new installation has no v1 relations. Missing legacy tables
+                // are distinct from all other query errors and are safe to ignore.
+                Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("42P01") => {
+                    false
+                }
+                Err(error) => return Err(error.into()),
+            };
+            if found {
+                return Err(anyhow!(
+                    "trace_id {trace_id} exists in the legacy v1 persistence namespace; reconcile it before v2 use"
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Initialize adapter tables when absent.
@@ -935,6 +1305,7 @@ impl PostgresPersistenceStore {
                 trace_id TEXT PRIMARY KEY,
                 circuit TEXT NOT NULL,
                 schematic_version TEXT NOT NULL,
+                format_version INTEGER NOT NULL,
                 resumed_from_step BIGINT NULL,
                 completion TEXT NULL
             )",
@@ -947,12 +1318,15 @@ impl PostgresPersistenceStore {
                 trace_id TEXT NOT NULL,
                 circuit TEXT NOT NULL,
                 schematic_version TEXT NOT NULL,
+                event_sequence BIGINT NOT NULL,
+                event_type TEXT NOT NULL,
                 step BIGINT NOT NULL,
+                node_id TEXT NULL,
                 outcome_kind TEXT NOT NULL,
                 timestamp_ms BIGINT NOT NULL,
                 payload_hash TEXT NULL,
                 payload JSONB NULL,
-                PRIMARY KEY (trace_id, step)
+                PRIMARY KEY (trace_id, event_sequence)
             )",
             events_table
         );
@@ -981,14 +1355,21 @@ impl PostgresPersistenceStore {
 impl PersistenceStore for PostgresPersistenceStore {
     async fn append(&self, envelope: PersistenceEnvelope) -> Result<()> {
         // Validate representability before creating any persistent state.
+        self.reject_legacy_trace(&envelope.trace_id).await?;
+        if envelope.event_type == PersistenceEventType::LegacyUnknown {
+            return Err(anyhow!(
+                "legacy event type cannot be appended to a v2 trace"
+            ));
+        }
+        let event_sequence_i64 = i64::try_from(envelope.event_sequence)?;
         let step_i64 = i64::try_from(envelope.step)?;
         let ts_i64 = i64::try_from(envelope.timestamp_ms)?;
         let state_table = self.state_table.sql()?;
         let events_table = self.events_table.sql()?;
         let mut transaction = self.pool.begin().await?;
         let insert_state = format!(
-            "INSERT INTO {} (trace_id, circuit, schematic_version, resumed_from_step, completion)
-             VALUES ($1, $2, $3, NULL, NULL)
+            "INSERT INTO {} (trace_id, circuit, schematic_version, format_version, resumed_from_step, completion)
+             VALUES ($1, $2, $3, $4, NULL, NULL)
              ON CONFLICT (trace_id) DO NOTHING",
             state_table
         );
@@ -996,16 +1377,18 @@ impl PersistenceStore for PostgresPersistenceStore {
             .bind(&envelope.trace_id)
             .bind(&envelope.circuit)
             .bind(&envelope.schematic_version)
+            .bind(i32::from(PERSISTENCE_FORMAT_VERSION))
             .execute(&mut *transaction)
             .await?;
         let read_state = format!(
-            "SELECT circuit, completion FROM {} WHERE trace_id = $1 FOR UPDATE",
+            "SELECT circuit, format_version, completion FROM {} WHERE trace_id = $1 FOR UPDATE",
             state_table
         );
-        let (circuit, completion): (String, Option<String>) = sqlx::query_as(&read_state)
-            .bind(&envelope.trace_id)
-            .fetch_one(&mut *transaction)
-            .await?;
+        let (circuit, format_version, completion): (String, i32, Option<String>) =
+            sqlx::query_as(&read_state)
+                .bind(&envelope.trace_id)
+                .fetch_one(&mut *transaction)
+                .await?;
         if circuit != envelope.circuit {
             return Err(anyhow!(
                 "trace_id {} already exists for another circuit",
@@ -1018,6 +1401,65 @@ impl PersistenceStore for PostgresPersistenceStore {
                 envelope.trace_id
             ));
         }
+        if format_version != i32::from(PERSISTENCE_FORMAT_VERSION) {
+            return Err(anyhow!(
+                "trace_id {} has unsupported v2 namespace format {}",
+                envelope.trace_id,
+                format_version
+            ));
+        }
+        let event_state: (i64, Option<i64>) = sqlx::query_as(&format!(
+            "SELECT COUNT(*)::BIGINT, MAX(event_sequence) FROM {} WHERE trace_id = $1",
+            events_table
+        ))
+        .bind(&envelope.trace_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        let expected_sequence = u64::try_from(event_state.0)?;
+        if event_state.1.map(u64::try_from).transpose()?
+            != event_state.0.checked_sub(1).map(|v| v as u64)
+        {
+            return Err(anyhow!(
+                "trace_id {} has a non-contiguous v2 event sequence",
+                envelope.trace_id
+            ));
+        }
+        if envelope.event_sequence != expected_sequence {
+            return Err(anyhow!(
+                "trace_id {} expected event sequence {}, got {}",
+                envelope.trace_id,
+                expected_sequence,
+                envelope.event_sequence
+            ));
+        }
+        let existing_query = format!(
+            "SELECT trace_id, circuit, schematic_version, event_sequence, event_type, step, node_id, outcome_kind, timestamp_ms, payload_hash, payload
+             FROM {}
+             WHERE trace_id = $1
+             ORDER BY event_sequence ASC",
+            events_table
+        );
+        let rows: Vec<PostgresEventRow> = sqlx::query_as(&existing_query)
+            .bind(&envelope.trace_id)
+            .fetch_all(&mut *transaction)
+            .await?;
+        let mut previous = Vec::with_capacity(rows.len());
+        for row in rows {
+            previous.push(PersistenceEnvelope {
+                trace_id: row.trace_id,
+                circuit: row.circuit,
+                schematic_version: row.schematic_version,
+                event_sequence: u64::try_from(row.event_sequence)?,
+                event_type: persistence_event_type_from_db(&row.event_type)?,
+                step: u64::try_from(row.step)?,
+                node_id: row.node_id,
+                outcome_kind: row.outcome_kind,
+                timestamp_ms: u64::try_from(row.timestamp_ms)?,
+                payload_hash: row.payload_hash,
+                payload: row.payload,
+            });
+        }
+        validate_persistence_append(&previous, &envelope)?;
         let update_state = format!(
             "UPDATE {} SET schematic_version = $2 WHERE trace_id = $1",
             state_table
@@ -1028,15 +1470,18 @@ impl PersistenceStore for PostgresPersistenceStore {
             .execute(&mut *transaction)
             .await?;
         let insert_event = format!(
-            "INSERT INTO {} (trace_id, circuit, schematic_version, step, outcome_kind, timestamp_ms, payload_hash, payload)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            "INSERT INTO {} (trace_id, circuit, schematic_version, event_sequence, event_type, step, node_id, outcome_kind, timestamp_ms, payload_hash, payload)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
             events_table
         );
         sqlx::query(&insert_event)
             .bind(&envelope.trace_id)
             .bind(&envelope.circuit)
             .bind(&envelope.schematic_version)
+            .bind(event_sequence_i64)
+            .bind(persistence_event_type_to_db(envelope.event_type))
             .bind(step_i64)
+            .bind(&envelope.node_id)
             .bind(&envelope.outcome_kind)
             .bind(ts_i64)
             .bind(&envelope.payload_hash)
@@ -1048,6 +1493,7 @@ impl PersistenceStore for PostgresPersistenceStore {
     }
 
     async fn load(&self, trace_id: &str) -> Result<Option<PersistedTrace>> {
+        self.reject_legacy_trace(trace_id).await?;
         // State, events and interventions must represent the same MVCC snapshot.
         let state_table = self.state_table.sql()?;
         let events_table = self.events_table.sql()?;
@@ -1057,7 +1503,7 @@ impl PersistenceStore for PostgresPersistenceStore {
             .execute(&mut *transaction)
             .await?;
         let state_query = format!(
-            "SELECT trace_id, circuit, schematic_version, resumed_from_step, completion
+            "SELECT trace_id, circuit, schematic_version, format_version, resumed_from_step, completion
              FROM {}
              WHERE trace_id = $1",
             state_table
@@ -1070,12 +1516,18 @@ impl PersistenceStore for PostgresPersistenceStore {
             transaction.commit().await?;
             return Ok(None);
         };
+        if state.format_version != i32::from(PERSISTENCE_FORMAT_VERSION) {
+            return Err(anyhow!(
+                "trace_id {trace_id} has unsupported persistence format {}",
+                state.format_version
+            ));
+        }
 
         let events_query = format!(
-            "SELECT trace_id, circuit, schematic_version, step, outcome_kind, timestamp_ms, payload_hash, payload
+            "SELECT trace_id, circuit, schematic_version, event_sequence, event_type, step, node_id, outcome_kind, timestamp_ms, payload_hash, payload
              FROM {}
              WHERE trace_id = $1
-             ORDER BY step ASC",
+             ORDER BY event_sequence ASC",
             events_table
         );
         let rows: Vec<PostgresEventRow> = sqlx::query_as(&events_query)
@@ -1089,8 +1541,10 @@ impl PersistenceStore for PostgresPersistenceStore {
                 trace_id: row.trace_id,
                 circuit: row.circuit,
                 schematic_version: row.schematic_version,
+                event_sequence: u64::try_from(row.event_sequence)?,
+                event_type: persistence_event_type_from_db(&row.event_type)?,
                 step: u64::try_from(row.step)?,
-                node_id: None,
+                node_id: row.node_id,
                 outcome_kind: row.outcome_kind,
                 timestamp_ms: u64::try_from(row.timestamp_ms)?,
                 payload_hash: row.payload_hash,
@@ -1127,6 +1581,7 @@ impl PersistenceStore for PostgresPersistenceStore {
         let trace = PersistedTrace {
             trace_id: state.trace_id,
             circuit: state.circuit,
+            format_version: u16::try_from(state.format_version)?,
             schematic_version: state.schematic_version,
             events,
             interventions,
@@ -1138,27 +1593,75 @@ impl PersistenceStore for PostgresPersistenceStore {
     }
 
     async fn resume(&self, trace_id: &str, resume_from_step: u64) -> Result<ResumeCursor> {
-        let query = format!(
-            "UPDATE {}
-             SET resumed_from_step = $2
-             WHERE trace_id = $1 AND completion IS NULL",
-            self.state_table.sql()?
+        self.reject_legacy_trace(trace_id).await?;
+        let state_table = self.state_table.sql()?;
+        let events_table = self.events_table.sql()?;
+        let mut transaction = self.pool.begin().await?;
+        let state_query = format!(
+            "SELECT format_version, completion FROM {} WHERE trace_id = $1 FOR UPDATE",
+            state_table
         );
-        let rows = sqlx::query(&query)
+        let Some((format_version, completion)): Option<(i32, Option<String>)> =
+            sqlx::query_as(&state_query)
+                .bind(trace_id)
+                .fetch_optional(&mut *transaction)
+                .await?
+        else {
+            return Err(anyhow!("trace_id {} not found", trace_id));
+        };
+        if format_version != i32::from(PERSISTENCE_FORMAT_VERSION) {
+            return Err(anyhow!(
+                "trace_id {trace_id} has unsupported persistence format {format_version}"
+            ));
+        }
+        if completion.is_some() {
+            return Err(anyhow!(
+                "trace_id {} is already completed and cannot be resumed",
+                trace_id
+            ));
+        }
+        let events_query = format!(
+            "SELECT trace_id, circuit, schematic_version, event_sequence, event_type, step, node_id, outcome_kind, timestamp_ms, payload_hash, payload
+             FROM {} WHERE trace_id = $1 ORDER BY event_sequence ASC",
+            events_table
+        );
+        let rows: Vec<PostgresEventRow> = sqlx::query_as(&events_query)
+            .bind(trace_id)
+            .fetch_all(&mut *transaction)
+            .await?;
+        let mut events = Vec::with_capacity(rows.len());
+        for row in rows {
+            events.push(PersistenceEnvelope {
+                trace_id: row.trace_id,
+                circuit: row.circuit,
+                schematic_version: row.schematic_version,
+                event_sequence: u64::try_from(row.event_sequence)?,
+                event_type: persistence_event_type_from_db(&row.event_type)?,
+                step: u64::try_from(row.step)?,
+                node_id: row.node_id,
+                outcome_kind: row.outcome_kind,
+                timestamp_ms: u64::try_from(row.timestamp_ms)?,
+                payload_hash: row.payload_hash,
+                payload: row.payload,
+            });
+        }
+        validate_event_sequence(&events, true).map_err(|error| {
+            anyhow!("cannot resume trace_id {trace_id} with invalid v2 event history: {error:?}")
+        })?;
+        let update_query = format!(
+            "UPDATE {} SET resumed_from_step = $2 WHERE trace_id = $1 AND completion IS NULL",
+            state_table
+        );
+        let rows = sqlx::query(&update_query)
             .bind(trace_id)
             .bind(i64::try_from(resume_from_step)?)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?
             .rows_affected();
-        if rows == 0 {
-            return match self.load(trace_id).await? {
-                Some(_) => Err(anyhow!(
-                    "trace_id {} is already completed and cannot be resumed",
-                    trace_id
-                )),
-                None => Err(anyhow!("trace_id {} not found", trace_id)),
-            };
+        if rows != 1 {
+            return Err(anyhow!("trace_id {} could not be resumed", trace_id));
         }
+        transaction.commit().await?;
         Ok(ResumeCursor {
             trace_id: trace_id.to_string(),
             next_step: resume_from_step.saturating_add(1),
@@ -1166,21 +1669,78 @@ impl PersistenceStore for PostgresPersistenceStore {
     }
 
     async fn complete(&self, trace_id: &str, completion: CompletionState) -> Result<()> {
-        let query = format!(
-            "UPDATE {}
-             SET completion = $2
-             WHERE trace_id = $1",
-            self.state_table.sql()?
+        self.reject_legacy_trace(trace_id).await?;
+        let state_table = self.state_table.sql()?;
+        let events_table = self.events_table.sql()?;
+        let mut transaction = self.pool.begin().await?;
+        let state_query = format!(
+            "SELECT format_version, completion FROM {} WHERE trace_id = $1 FOR UPDATE",
+            state_table
         );
-        let rows = sqlx::query(&query)
+        let Some((format_version, current_completion)): Option<(i32, Option<String>)> =
+            sqlx::query_as(&state_query)
+                .bind(trace_id)
+                .fetch_optional(&mut *transaction)
+                .await?
+        else {
+            return Err(anyhow!("trace_id {} not found", trace_id));
+        };
+        if format_version != i32::from(PERSISTENCE_FORMAT_VERSION) {
+            return Err(anyhow!(
+                "trace_id {trace_id} has unsupported persistence format {format_version}"
+            ));
+        }
+        let current_completion = current_completion
+            .as_deref()
+            .map(completion_state_from_wire)
+            .transpose()?;
+        let events_query = format!(
+            "SELECT trace_id, circuit, schematic_version, event_sequence, event_type, step, node_id, outcome_kind, timestamp_ms, payload_hash, payload
+             FROM {} WHERE trace_id = $1 ORDER BY event_sequence ASC",
+            events_table
+        );
+        let rows: Vec<PostgresEventRow> = sqlx::query_as(&events_query)
+            .bind(trace_id)
+            .fetch_all(&mut *transaction)
+            .await?;
+        let mut events = Vec::with_capacity(rows.len());
+        for row in rows {
+            events.push(PersistenceEnvelope {
+                trace_id: row.trace_id,
+                circuit: row.circuit,
+                schematic_version: row.schematic_version,
+                event_sequence: u64::try_from(row.event_sequence)?,
+                event_type: persistence_event_type_from_db(&row.event_type)?,
+                step: u64::try_from(row.step)?,
+                node_id: row.node_id,
+                outcome_kind: row.outcome_kind,
+                timestamp_ms: u64::try_from(row.timestamp_ms)?,
+                payload_hash: row.payload_hash,
+                payload: row.payload,
+            });
+        }
+        validate_event_sequence(&events, true).map_err(|error| {
+            anyhow!("cannot complete trace_id {trace_id} with invalid v2 event history: {error:?}")
+        })?;
+        ensure_terminal_event(&events)?;
+        if completion_already_set(current_completion.as_ref(), &completion, trace_id)? {
+            transaction.commit().await?;
+            return Ok(());
+        }
+        let update_query = format!(
+            "UPDATE {} SET completion = $2 WHERE trace_id = $1",
+            state_table
+        );
+        let rows = sqlx::query(&update_query)
             .bind(trace_id)
             .bind(completion_state_to_wire(&completion))
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?
             .rows_affected();
         if rows == 0 {
             return Err(anyhow!("trace_id {} not found", trace_id));
         }
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -1256,6 +1816,10 @@ impl RedisPersistenceStore {
     }
 
     fn key(&self, trace_id: &str) -> String {
+        format!("{}:v2:{}", self.key_prefix, trace_id)
+    }
+
+    fn legacy_key(&self, trace_id: &str) -> String {
         format!("{}:{}", self.key_prefix, trace_id)
     }
 
@@ -1263,6 +1827,14 @@ impl RedisPersistenceStore {
         use redis::AsyncCommands;
         let mut conn = self.manager.clone();
         let payload: Option<String> = conn.get(self.key(trace_id)).await?;
+        if payload.is_none() {
+            let legacy: Option<String> = conn.get(self.legacy_key(trace_id)).await?;
+            if legacy.is_some() {
+                return Err(anyhow!(
+                    "trace_id {trace_id} exists in the legacy v1 persistence namespace; reconcile it before v2 use"
+                ));
+            }
+        }
         let trace = payload
             .as_deref()
             .map(serde_json::from_str::<PersistedTrace>)
@@ -1272,6 +1844,14 @@ impl RedisPersistenceStore {
             .is_some_and(|value| value.trace_id != trace_id)
         {
             return Err(anyhow!("persisted trace_id does not match requested key"));
+        }
+        if let Some(trace) = trace.as_ref()
+            && trace.format_version != PERSISTENCE_FORMAT_VERSION
+        {
+            return Err(anyhow!(
+                "trace_id {trace_id} has unsupported persistence format {}",
+                trace.format_version
+            ));
         }
         Ok((payload, trace))
     }
@@ -1314,6 +1894,7 @@ impl PersistenceStore for RedisPersistenceStore {
         let mut trace = loaded.unwrap_or_else(|| PersistedTrace {
             trace_id: envelope.trace_id.clone(),
             circuit: envelope.circuit.clone(),
+            format_version: PERSISTENCE_FORMAT_VERSION,
             schematic_version: envelope.schematic_version.clone(),
             events: Vec::new(),
             interventions: Vec::new(),
@@ -1336,9 +1917,32 @@ impl PersistenceStore for RedisPersistenceStore {
             ));
         }
 
+        if trace.format_version != PERSISTENCE_FORMAT_VERSION {
+            return Err(anyhow!(
+                "trace_id {} has unsupported persistence format {}",
+                envelope.trace_id,
+                trace.format_version
+            ));
+        }
+        let expected_sequence = u64::try_from(trace.events.len())?;
+        if envelope.event_sequence != expected_sequence {
+            return Err(anyhow!(
+                "trace_id {} expected event sequence {}, got {}",
+                envelope.trace_id,
+                expected_sequence,
+                envelope.event_sequence
+            ));
+        }
+        if envelope.event_type == PersistenceEventType::LegacyUnknown {
+            return Err(anyhow!(
+                "legacy event type cannot be appended to a v2 trace"
+            ));
+        }
+        validate_persistence_append(&trace.events, &envelope)?;
+
         trace.schematic_version = envelope.schematic_version.clone();
         trace.events.push(envelope);
-        trace.events.sort_by_key(|event| event.step);
+        trace.events.sort_by_key(|event| event.event_sequence);
         self.write_trace(&trace, previous.as_deref()).await?;
         Ok(())
     }
@@ -1356,6 +1960,7 @@ impl PersistenceStore for RedisPersistenceStore {
                 trace_id
             ));
         }
+        ensure_trace_lifecycle_safe(&trace, "resume")?;
         trace.resumed_from_step = Some(resume_from_step);
         self.write_trace(&trace, previous.as_deref()).await?;
         Ok(ResumeCursor {
@@ -1367,6 +1972,11 @@ impl PersistenceStore for RedisPersistenceStore {
     async fn complete(&self, trace_id: &str, completion: CompletionState) -> Result<()> {
         let (previous, loaded) = self.read_trace(trace_id).await?;
         let mut trace = loaded.ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
+        ensure_trace_lifecycle_safe(&trace, "complete")?;
+        if completion_already_set(trace.completion.as_ref(), &completion, trace_id)? {
+            return Ok(());
+        }
+        ensure_completion_safe(&trace, &completion)?;
         trace.completion = Some(completion);
         self.write_trace(&trace, previous.as_deref()).await?;
         Ok(())
@@ -1580,6 +2190,8 @@ mod tests {
             trace_id: "trace-1".to_string(),
             circuit: "OrderCircuit".to_string(),
             schematic_version: "1.0".to_string(),
+            event_sequence: step,
+            event_type: persistence_event_type_for(outcome_kind, None),
             step,
             node_id: None,
             outcome_kind: outcome_kind.to_string(),
@@ -1589,40 +2201,179 @@ mod tests {
         }
     }
 
+    fn journal_event(
+        sequence: u64,
+        step: u64,
+        node_id: Option<&str>,
+        event_type: PersistenceEventType,
+        outcome_kind: &str,
+    ) -> PersistenceEnvelope {
+        PersistenceEnvelope {
+            trace_id: "trace-1".into(),
+            circuit: "OrderCircuit".into(),
+            schematic_version: "2".into(),
+            event_sequence: sequence,
+            event_type,
+            step,
+            node_id: node_id.map(str::to_owned),
+            outcome_kind: outcome_kind.into(),
+            timestamp_ms: 1_700_000_000_000 + sequence,
+            payload_hash: None,
+            payload: Some(serde_json::json!({"sequence": sequence})),
+        }
+    }
+
+    #[tokio::test]
+    async fn journal_pairs_intent_and_result_at_the_same_workflow_step() {
+        let store = InMemoryPersistenceStore::new();
+        store.append(envelope(0, "Enter")).await.unwrap();
+        store
+            .append(journal_event(
+                1,
+                0,
+                Some("charge-card"),
+                PersistenceEventType::Intent,
+                "Intent",
+            ))
+            .await
+            .unwrap();
+        store
+            .append(journal_event(
+                2,
+                0,
+                Some("charge-card"),
+                PersistenceEventType::Result,
+                "Next",
+            ))
+            .await
+            .unwrap();
+
+        let trace = store.load("trace-1").await.unwrap().unwrap();
+        assert_eq!(trace.events[1].step, trace.events[2].step);
+        assert_eq!(trace.events[1].event_sequence, 1);
+        assert_eq!(trace.events[2].event_sequence, 2);
+        assert_eq!(validate_persisted_trace(&trace), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn unresolved_intent_is_quarantined_and_cannot_be_followed_by_terminal() {
+        let store = InMemoryPersistenceStore::new();
+        store.append(envelope(0, "Enter")).await.unwrap();
+        store
+            .append(journal_event(
+                1,
+                0,
+                Some("charge-card"),
+                PersistenceEventType::Intent,
+                "Intent",
+            ))
+            .await
+            .unwrap();
+        let trace = store.load("trace-1").await.unwrap().unwrap();
+        assert_eq!(
+            validate_persisted_trace(&trace),
+            Err(TraceValidationError::PendingIntent)
+        );
+
+        assert!(store.resume("trace-1", 0).await.is_err());
+        assert!(
+            store
+                .complete("trace-1", CompletionState::Success)
+                .await
+                .is_err()
+        );
+        assert_eq!(store.load("trace-1").await.unwrap(), Some(trace.clone()));
+
+        let mut terminal = envelope(2, "Fault");
+        terminal.event_type = PersistenceEventType::Terminal;
+        assert!(store.append(terminal).await.is_err());
+        assert_eq!(
+            store.load("trace-1").await.unwrap().unwrap().events.len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_requires_a_confirmed_terminal_event() {
+        let store = InMemoryPersistenceStore::new();
+        store.append(envelope(0, "Enter")).await.unwrap();
+        let before = store.load("trace-1").await.unwrap().unwrap();
+
+        assert!(
+            store
+                .complete("trace-1", CompletionState::Success)
+                .await
+                .is_err()
+        );
+        assert_eq!(store.load("trace-1").await.unwrap(), Some(before.clone()));
+
+        let mut completed_without_terminal = before;
+        completed_without_terminal.completion = Some(CompletionState::Success);
+        assert_eq!(
+            validate_persisted_trace(&completed_without_terminal),
+            Err(TraceValidationError::MissingTerminal)
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_event_is_final_and_unique() {
+        let store = InMemoryPersistenceStore::new();
+        store.append(envelope(0, "Enter")).await.unwrap();
+        let mut terminal = envelope(1, "Success");
+        terminal.event_type = PersistenceEventType::Terminal;
+        store.append(terminal).await.unwrap();
+        let before = store.load("trace-1").await.unwrap().unwrap();
+
+        let mut event_after_terminal = journal_event(
+            2,
+            1,
+            Some("charge-card"),
+            PersistenceEventType::Intent,
+            "Intent",
+        );
+        event_after_terminal.trace_id = "trace-1".into();
+        assert!(store.append(event_after_terminal).await.is_err());
+
+        let mut duplicate_terminal = envelope(2, "Success");
+        duplicate_terminal.event_type = PersistenceEventType::Terminal;
+        assert!(store.append(duplicate_terminal).await.is_err());
+        assert_eq!(store.load("trace-1").await.unwrap(), Some(before));
+    }
+
     #[tokio::test]
     async fn rejected_append_preserves_existing_trace_snapshot() {
         let store = InMemoryPersistenceStore::new();
-        store.append(envelope(1, "Next")).await.unwrap();
+        store.append(envelope(0, "Enter")).await.unwrap();
         let before = store.load("trace-1").await.unwrap();
-        let mut wrong_circuit = envelope(2, "Next");
+        let mut wrong_circuit = envelope(1, "Next");
         wrong_circuit.circuit = "AnotherCircuit".into();
         wrong_circuit.schematic_version = "rejected-version".into();
         assert!(store.append(wrong_circuit).await.is_err());
         assert_eq!(store.load("trace-1").await.unwrap(), before);
-        let mut accepted = envelope(2, "Next");
+        let mut accepted = envelope(1, "Next");
         accepted.schematic_version = "accepted-version".into();
         store.append(accepted.clone()).await.unwrap();
         let updated = store.load("trace-1").await.unwrap().unwrap();
         assert_eq!(updated.schematic_version, "accepted-version");
-        assert_eq!(updated.events, vec![envelope(1, "Next"), accepted]);
+        assert_eq!(updated.events, vec![envelope(0, "Enter"), accepted]);
         store
             .complete("trace-1", CompletionState::Success)
             .await
             .unwrap();
         let completed = store.load("trace-1").await.unwrap();
-        let mut late = envelope(3, "Next");
+        let mut late = envelope(2, "Next");
         late.schematic_version = "late-rejected-version".into();
         assert!(store.append(late).await.is_err());
         assert_eq!(store.load("trace-1").await.unwrap(), completed);
     }
 
     #[tokio::test]
-    async fn barrier_concurrent_memory_appends_preserve_both_events() {
+    async fn barrier_concurrent_memory_appends_reject_stale_sequence() {
         let store = InMemoryPersistenceStore::new();
         store.append(envelope(0, "Enter")).await.unwrap();
         let barrier = Arc::new(tokio::sync::Barrier::new(2));
         let mut tasks = Vec::new();
-        for step in [1, 2] {
+        for step in [1, 1] {
             let store = store.clone();
             let barrier = barrier.clone();
             tasks.push(tokio::spawn(async move {
@@ -1643,56 +2394,57 @@ mod tests {
             }
             results.push(result);
         }
+        let mut succeeded = 0;
         for result in results {
-            result.expect("bounded writer completion").unwrap().unwrap();
+            if result.expect("bounded writer completion").unwrap().is_ok() {
+                succeeded += 1;
+            }
         }
+        assert_eq!(succeeded, 1);
         let trace = store.load("trace-1").await.unwrap().unwrap();
-        assert_eq!(
-            trace.events,
-            vec![
-                envelope(0, "Enter"),
-                envelope(1, "Next"),
-                envelope(2, "Next")
-            ]
-        );
+        assert_eq!(trace.events.len(), 2);
+        assert_eq!(trace.events[0], envelope(0, "Enter"));
+        assert_eq!(trace.events[1].event_sequence, 1);
     }
 
     #[tokio::test]
     async fn append_and_load_roundtrip() {
         let store = InMemoryPersistenceStore::new();
+        store.append(envelope(0, "Enter")).await.unwrap();
         store.append(envelope(1, "Next")).await.unwrap();
-        store.append(envelope(2, "Branch")).await.unwrap();
 
         let loaded = store.load("trace-1").await.unwrap().unwrap();
         assert_eq!(loaded.trace_id, "trace-1");
         assert_eq!(loaded.circuit, "OrderCircuit");
         assert_eq!(loaded.events.len(), 2);
-        assert_eq!(loaded.events[0].step, 1);
-        assert_eq!(loaded.events[1].outcome_kind, "Branch");
+        assert_eq!(loaded.events[0].step, 0);
+        assert_eq!(loaded.events[1].outcome_kind, "Next");
         assert_eq!(loaded.completion, None);
     }
 
     #[tokio::test]
     async fn resume_records_cursor() {
         let store = InMemoryPersistenceStore::new();
-        store.append(envelope(3, "Fault")).await.unwrap();
+        store.append(envelope(0, "Enter")).await.unwrap();
+        store.append(envelope(1, "Fault")).await.unwrap();
 
-        let cursor = store.resume("trace-1", 3).await.unwrap();
+        let cursor = store.resume("trace-1", 1).await.unwrap();
         assert_eq!(
             cursor,
             ResumeCursor {
                 trace_id: "trace-1".to_string(),
-                next_step: 4
+                next_step: 2
             }
         );
 
         let loaded = store.load("trace-1").await.unwrap().unwrap();
-        assert_eq!(loaded.resumed_from_step, Some(3));
+        assert_eq!(loaded.resumed_from_step, Some(1));
     }
 
     #[tokio::test]
     async fn complete_marks_trace_and_blocks_append() {
         let store = InMemoryPersistenceStore::new();
+        store.append(envelope(0, "Enter")).await.unwrap();
         store.append(envelope(1, "Next")).await.unwrap();
         store
             .complete("trace-1", CompletionState::Success)
@@ -1701,6 +2453,17 @@ mod tests {
 
         let loaded = store.load("trace-1").await.unwrap().unwrap();
         assert_eq!(loaded.completion, Some(CompletionState::Success));
+        store
+            .complete("trace-1", CompletionState::Success)
+            .await
+            .unwrap();
+        assert!(
+            store
+                .complete("trace-1", CompletionState::Fault)
+                .await
+                .is_err()
+        );
+        assert_eq!(store.load("trace-1").await.unwrap(), Some(loaded.clone()));
 
         let err = store.append(envelope(2, "Next")).await.unwrap_err();
         assert!(
@@ -1718,9 +2481,9 @@ mod tests {
     #[tokio::test]
     async fn append_rejects_cross_circuit_trace_reuse() {
         let store = InMemoryPersistenceStore::new();
-        store.append(envelope(1, "Next")).await.unwrap();
+        store.append(envelope(0, "Enter")).await.unwrap();
 
-        let mut invalid = envelope(2, "Next");
+        let mut invalid = envelope(1, "Next");
         invalid.circuit = "AnotherCircuit".to_string();
         let err = store.append(invalid).await.unwrap_err();
         assert!(

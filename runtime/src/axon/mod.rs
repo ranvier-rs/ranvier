@@ -468,6 +468,33 @@ impl std::fmt::Display for RecoveryPayloadUnavailable {
 }
 impl std::error::Error for RecoveryPayloadUnavailable {}
 
+#[derive(Debug)]
+struct UnsupportedPersistenceFormat;
+impl std::fmt::Display for UnsupportedPersistenceFormat {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("unsupported persistence format or event sequence")
+    }
+}
+impl std::error::Error for UnsupportedPersistenceFormat {}
+
+#[derive(Debug)]
+struct PendingPersistenceIntent;
+impl std::fmt::Display for PendingPersistenceIntent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("persistence trace contains an unresolved effect intent")
+    }
+}
+impl std::error::Error for PendingPersistenceIntent {}
+
+#[derive(Debug)]
+struct MissingPersistenceTerminal;
+impl std::fmt::Display for MissingPersistenceTerminal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("completed persistence trace has no terminal event")
+    }
+}
+impl std::error::Error for MissingPersistenceTerminal {}
+
 fn has_unusable_recovery_payload(trace: &crate::persistence::PersistedTrace) -> bool {
     trace.events.iter().any(|event| {
         event.outcome_kind == "Next"
@@ -492,6 +519,20 @@ async fn load_persistence_version(
     let store = handle.store();
     match store.load(trace_id).await {
         Ok(Some(trace)) => {
+            if let Err(validation) = crate::persistence::validate_persisted_trace(&trace) {
+                return Err(match validation {
+                    crate::persistence::TraceValidationError::UnsupportedFormat => {
+                        UnsupportedPersistenceFormat.into()
+                    }
+                    crate::persistence::TraceValidationError::PendingIntent => {
+                        PendingPersistenceIntent.into()
+                    }
+                    crate::persistence::TraceValidationError::MissingTerminal => {
+                        MissingPersistenceTerminal.into()
+                    }
+                });
+            }
+            handle.set_next_event_sequence(u64::try_from(trace.events.len())?);
             // The historical serialization-error fallback stored bare null,
             // whereas a valid nullable Next is encoded as {"Next": null}.
             // No automatic resume can infer the lost typed result. Preserve
@@ -550,7 +591,10 @@ async fn load_persistence_version(
                 trace.completion,
             ))
         }
-        Ok(None) => Ok((0, None, None, None, None, None)),
+        Ok(None) => {
+            handle.set_next_event_sequence(0);
+            Ok((0, None, None, None, None, None))
+        }
         Err(_) => {
             tracing::warn!(
                 trace_id = %trace_id,
@@ -572,6 +616,54 @@ enum NodeRetryOwner {
     },
 }
 
+/// Record and confirm the input to one effectful transition before invoking it.
+/// No configured store preserves legacy execution behavior, but a configured
+/// store is a hard precondition for the effect.
+async fn persist_effect_intent<In: serde::Serialize>(
+    state: &In,
+    bus: &Bus,
+    node_id: &str,
+    step_idx: u64,
+) -> bool {
+    let Some(handle) = bus.read::<PersistenceHandle>() else {
+        return true;
+    };
+    let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>() else {
+        return false;
+    };
+    let payload = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        serde_json::to_value(state)
+    })) {
+        Ok(Ok(payload)) => payload,
+        Ok(Err(_)) | Err(_) => {
+            active.0.block(crate::PersistenceOperation::Intent);
+            return false;
+        }
+    };
+    let (circuit, version) = bus
+        .read::<ranvier_core::schematic::Schematic>()
+        .map(|schematic| (schematic.name.clone(), schematic.schema_version.clone()))
+        .unwrap_or_default();
+    let trace_id = persistence_trace_id(bus);
+    let confirmation = persist_execution_event(
+        handle,
+        &trace_id,
+        &circuit,
+        &version,
+        step_idx,
+        Some(node_id.to_string()),
+        "Intent",
+        Some(payload),
+    )
+    .await;
+    if confirmation == crate::execution_report::StoreConfirmation::Confirmed {
+        true
+    } else {
+        active.0.block(crate::PersistenceOperation::Intent);
+        false
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_this_step<In, Out, E, Res>(
     trans: &(impl Transition<In, Out, Resources = Res, Error = E> + Clone + 'static),
@@ -590,6 +682,14 @@ where
     E: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + Send + Sync + 'static,
     Res: Send + Sync + 'static,
 {
+    if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>() {
+        if active.0.is_blocked() {
+            return Outcome::emit("execution.persistence.effect_blocked", None);
+        }
+        if active.0.has_unconfirmed_result_write() {
+            return Outcome::emit("execution.persistence.result_unconfirmed", None);
+        }
+    }
     let label = trans.label();
     let res_type = std::any::type_name::<Res>()
         .split("::")
@@ -669,6 +769,9 @@ where
         ranvier.outcome_target = tracing::field::Empty
     );
     let started = std::time::Instant::now();
+    if !persist_effect_intent(&state, bus, node_id, step_idx).await {
+        return Outcome::emit("execution.persistence.intent_unconfirmed", None);
+    }
     if let Some(observation) = bus.read::<crate::execution_observation::ActiveObservation>() {
         observation.0.effect();
     }
@@ -825,6 +928,15 @@ where
         .await;
     }
 
+    // An unconfirmed result cannot authorize follow-up work such as DLQ
+    // persistence or compensation. Reconciliation owns the next action.
+    if bus
+        .read::<crate::execution_observation::ActiveObservation>()
+        .is_some_and(|active| active.0.has_failure())
+    {
+        return result;
+    }
+
     // DLQ reporting — only fires after all retries are exhausted (RetryThenDlq)
     // or immediately (SendToDlq). Drop policy skips entirely.
     if let Outcome::Fault(f) = &result
@@ -905,6 +1017,14 @@ where
     Res: Send + Sync + 'static,
     Comp: Transition<Out, (), Resources = Res, Error = E> + Clone + Send + Sync + 'static,
 {
+    if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>() {
+        if active.0.is_blocked() {
+            return Outcome::emit("execution.persistence.effect_blocked", None);
+        }
+        if active.0.has_unconfirmed_result_write() {
+            return Outcome::emit("execution.persistence.result_unconfirmed", None);
+        }
+    }
     let label = trans.label();
 
     // Debug pausing
@@ -961,6 +1081,9 @@ where
     let saga_snapshot = matches!(bus.read::<SagaPolicy>(), Some(SagaPolicy::Enabled))
         .then(|| recovery_input.clone());
 
+    if !persist_effect_intent(&state, bus, node_id, step_idx).await {
+        return Outcome::emit("execution.persistence.intent_unconfirmed", None);
+    }
     if let Some(observation) = bus.read::<crate::execution_observation::ActiveObservation>() {
         observation.0.effect();
     }
@@ -1017,6 +1140,15 @@ where
         .await;
     }
 
+    // The transition result must be durable before its compensation hook can
+    // run. An unknown result write is reconciled, never automatically undone.
+    if bus
+        .read::<crate::execution_observation::ActiveObservation>()
+        .is_some_and(|active| active.0.has_failure())
+    {
+        return result;
+    }
+
     // Automated Compensation Trigger
     if let Outcome::Fault(ref err) = result {
         if compensation_auto_trigger(bus) {
@@ -1048,9 +1180,12 @@ where
             journal.push_task(ranvier_core::saga::SagaTask {
                 node_id: comp_node_id.to_string(),
                 node_label: comp.label(),
-                input_snapshot: recovery_input,
+                input_snapshot: recovery_input.clone(),
             });
             bus.insert(journal.clone());
+            if !persist_effect_intent(&state, bus, comp_node_id, step_idx.saturating_add(1)).await {
+                return result;
+            }
             use futures_util::FutureExt as _;
             #[cfg(feature = "streaming")]
             let active = bus
@@ -1144,7 +1279,7 @@ where
                     .map(|s| s.schema_version.clone())
                     .unwrap_or_default();
 
-                persist_encoded_execution_event(
+                let confirmation = persist_encoded_execution_event(
                     handle,
                     &trace_id,
                     &circuit,
@@ -1164,6 +1299,14 @@ where
                     bus,
                 )
                 .await;
+                if confirmation == crate::execution_report::StoreConfirmation::Unconfirmed
+                    && let Some(active) =
+                        bus.read::<crate::execution_observation::ActiveObservation>()
+                {
+                    active
+                        .0
+                        .block(crate::execution_report::PersistenceOperation::CompensationEvent);
+                }
             }
         }
     }
@@ -1207,15 +1350,94 @@ async fn persist_encoded_execution_event(
     payload: Result<Option<serde_json::Value>, serde_json::Error>,
     bus: &Bus,
 ) -> crate::execution_report::StoreConfirmation {
+    let event_type =
+        crate::persistence::persistence_event_type_for(outcome_kind, node_id.as_deref());
+    persist_encoded_execution_event_with_type(
+        handle,
+        trace_id,
+        circuit,
+        schematic_version,
+        step,
+        node_id,
+        outcome_kind,
+        payload,
+        bus,
+        event_type,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn persist_encoded_execution_checkpoint_event(
+    handle: &PersistenceHandle,
+    trace_id: &str,
+    circuit: &str,
+    schematic_version: &str,
+    step: u64,
+    node_id: String,
+    outcome_kind: &str,
+    payload: Result<Option<serde_json::Value>, serde_json::Error>,
+    bus: &Bus,
+) -> crate::execution_report::StoreConfirmation {
+    persist_encoded_execution_event_with_type(
+        handle,
+        trace_id,
+        circuit,
+        schematic_version,
+        step,
+        Some(node_id),
+        outcome_kind,
+        payload,
+        bus,
+        crate::PersistenceEventType::Checkpoint,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn persist_encoded_execution_event_with_type(
+    handle: &PersistenceHandle,
+    trace_id: &str,
+    circuit: &str,
+    schematic_version: &str,
+    step: u64,
+    node_id: Option<String>,
+    outcome_kind: &str,
+    payload: Result<Option<serde_json::Value>, serde_json::Error>,
+    bus: &Bus,
+    event_type: crate::PersistenceEventType,
+) -> crate::execution_report::StoreConfirmation {
     let payload = match payload {
         Ok(payload) => payload,
         Err(_) => {
             if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>() {
-                active.0.encoding_failed(if node_id.is_none() {
-                    crate::execution_report::PersistenceOperation::Terminal
-                } else {
-                    crate::execution_report::PersistenceOperation::Result
-                });
+                let operation = match event_type {
+                    crate::PersistenceEventType::Enter | crate::PersistenceEventType::Intent => {
+                        crate::execution_report::PersistenceOperation::Intent
+                    }
+                    crate::PersistenceEventType::Result => {
+                        crate::execution_report::PersistenceOperation::Result
+                    }
+                    crate::PersistenceEventType::Checkpoint => {
+                        crate::execution_report::PersistenceOperation::Result
+                    }
+                    crate::PersistenceEventType::Terminal => {
+                        crate::execution_report::PersistenceOperation::Terminal
+                    }
+                    crate::PersistenceEventType::Compensation => {
+                        crate::execution_report::PersistenceOperation::CompensationEvent
+                    }
+                    crate::PersistenceEventType::LegacyUnknown => {
+                        crate::execution_report::PersistenceOperation::UnsupportedFormat
+                    }
+                };
+                active.0.encoding_failed(operation);
+                if matches!(
+                    operation,
+                    crate::execution_report::PersistenceOperation::Intent
+                ) {
+                    active.0.block(operation);
+                }
             }
             // No append was attempted. Do not fabricate a null recovery value
             // or expose the serializer's private error text.
@@ -1251,11 +1473,41 @@ pub async fn persist_execution_event(
     outcome_kind: &str,
     payload: Option<serde_json::Value>,
 ) -> crate::execution_report::StoreConfirmation {
+    let event_type =
+        crate::persistence::persistence_event_type_for(outcome_kind, node_id.as_deref());
+    persist_execution_event_with_type(
+        handle,
+        trace_id,
+        circuit,
+        schematic_version,
+        step,
+        node_id,
+        outcome_kind,
+        payload,
+        event_type,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn persist_execution_event_with_type(
+    handle: &PersistenceHandle,
+    trace_id: &str,
+    circuit: &str,
+    schematic_version: &str,
+    step: u64,
+    node_id: Option<String>,
+    outcome_kind: &str,
+    payload: Option<serde_json::Value>,
+    event_type: crate::PersistenceEventType,
+) -> crate::execution_report::StoreConfirmation {
     let store = handle.store();
     let envelope = PersistenceEnvelope {
         trace_id: trace_id.to_string(),
         circuit: circuit.to_string(),
         schematic_version: schematic_version.to_string(),
+        event_sequence: handle.allocate_event_sequence(),
+        event_type,
         step,
         node_id,
         outcome_kind: outcome_kind.to_string(),
@@ -1774,6 +2026,30 @@ mod tests {
         ] {
             let store = InMemoryPersistenceStore::new();
             let handle = PersistenceHandle::from_store(store.clone());
+            for (step, node_id, outcome_kind, value) in [
+                (0, None, "Enter", None),
+                (
+                    1,
+                    Some("node".to_string()),
+                    "Intent",
+                    Some(serde_json::json!({"input": 7})),
+                ),
+            ] {
+                assert_eq!(
+                    persist_execution_event(
+                        &handle,
+                        "nullable",
+                        "fixture",
+                        "1",
+                        step,
+                        node_id,
+                        outcome_kind,
+                        value,
+                    )
+                    .await,
+                    crate::execution_report::StoreConfirmation::Confirmed
+                );
+            }
             assert_eq!(
                 persist_execution_event(
                     &handle,
@@ -1867,12 +2143,33 @@ mod tests {
         let appended = store.load("lost-ack").await.unwrap().unwrap();
         assert_eq!(appended.events.len(), 1);
         assert_eq!(appended.completion, None);
+        store
+            .append(crate::PersistenceEnvelope {
+                trace_id: "lost-ack".into(),
+                circuit: "fixture".into(),
+                schematic_version: "1".into(),
+                event_sequence: 1,
+                event_type: crate::PersistenceEventType::Terminal,
+                step: 1,
+                node_id: None,
+                outcome_kind: "Next".into(),
+                timestamp_ms: 1_700_000_000_001,
+                payload_hash: None,
+                payload: Some(serde_json::json!({"Next": 1})),
+            })
+            .await
+            .unwrap();
         assert_eq!(
             persist_completion(&handle, "lost-ack", CompletionState::Success).await,
             StoreConfirmation::Unconfirmed
         );
         let completed = store.load("lost-ack").await.unwrap().unwrap();
-        assert_eq!(completed.events, appended.events);
+        assert_eq!(completed.events.len(), 2);
+        assert_eq!(completed.events[0], appended.events[0]);
+        assert_eq!(
+            completed.events[1].event_type,
+            crate::PersistenceEventType::Terminal
+        );
         assert_eq!(completed.completion, Some(CompletionState::Success));
     }
 
@@ -1886,8 +2183,22 @@ mod tests {
                 .await,
             StoreConfirmation::Confirmed
         );
+        assert_eq!(
+            persist_execution_event(
+                &handle,
+                "confirmed",
+                "fixture",
+                "1",
+                1,
+                None,
+                "Next",
+                Some(serde_json::json!({"Next": 7})),
+            )
+            .await,
+            StoreConfirmation::Confirmed
+        );
         let before = store.load("confirmed").await.unwrap().unwrap();
-        assert_eq!(before.events.len(), 1);
+        assert_eq!(before.events.len(), 2);
         assert_eq!(before.completion, None);
         assert_eq!(
             persist_completion(&handle, "confirmed", CompletionState::Success).await,
@@ -2081,6 +2392,8 @@ mod tests {
                 trace_id: "stored-jump".into(),
                 circuit: axon.schematic.name.clone(),
                 schematic_version: axon.schematic.schema_version.clone(),
+                event_sequence: 0,
+                event_type: crate::PersistenceEventType::Enter,
                 step: 0,
                 node_id: None,
                 outcome_kind: "Enter".into(),
@@ -2116,7 +2429,7 @@ mod tests {
                     .await,
                     crate::ExecutionReport::BlockedBeforeEffect {
                         operation: crate::PersistenceOperation::RecoveryPayload,
-                        effect: crate::EffectBoundary::MayHaveRun,
+                        effect: crate::EffectBoundary::NotInvoked,
                         ..
                     }
                 )
@@ -2125,7 +2438,7 @@ mod tests {
                     axon.execute(PrivateJumpInput, &(), &mut bus).await,
                     crate::ExecutionReport::BlockedBeforeEffect {
                         operation: crate::PersistenceOperation::RecoveryPayload,
-                        effect: crate::EffectBoundary::MayHaveRun,
+                        effect: crate::EffectBoundary::NotInvoked,
                         ..
                     }
                 )
@@ -2276,6 +2589,8 @@ mod tests {
                     trace_id: trace_id.to_string(),
                     circuit: "AuditTest".to_string(),
                     schematic_version: axon.schematic.schema_version.clone(),
+                    event_sequence: 0,
+                    event_type: crate::persistence::persistence_event_type_for(&outcome_kind, None),
                     step: 0,
                     node_id: None,
                     outcome_kind: outcome_kind.to_string(),
@@ -2543,10 +2858,14 @@ mod tests {
         assert!(matches!(outcome, Outcome::Next(42)));
 
         let persisted = store_impl.load("trace-success").await.unwrap().unwrap();
-        assert_eq!(persisted.events.len(), 3); // Enter + step-level Next + final Next
+        assert_eq!(persisted.events.len(), 4); // Enter + intent + step-level Next + final Next
         assert_eq!(persisted.events[0].outcome_kind, "Enter");
-        assert_eq!(persisted.events[1].outcome_kind, "Next"); // step-level
-        assert_eq!(persisted.events[2].outcome_kind, "Next"); // final
+        assert_eq!(
+            persisted.events[1].event_type,
+            crate::PersistenceEventType::Intent
+        );
+        assert_eq!(persisted.events[2].outcome_kind, "Next"); // step-level
+        assert_eq!(persisted.events[3].outcome_kind, "Next"); // final
         assert_eq!(persisted.completion, Some(CompletionState::Success));
     }
 
@@ -2572,9 +2891,9 @@ mod tests {
         assert!(matches!(outcome, Outcome::Fault(msg) if msg == "boom"));
 
         let persisted = store_impl.load("trace-fault").await.unwrap().unwrap();
-        assert_eq!(persisted.events.len(), 3); // Enter + step-level Fault + final Fault
-        assert_eq!(persisted.events[1].outcome_kind, "Fault"); // step-level
-        assert_eq!(persisted.events[2].outcome_kind, "Fault"); // final
+        assert_eq!(persisted.events.len(), 4); // Enter + intent + step Fault + final Fault
+        assert_eq!(persisted.events[2].outcome_kind, "Fault"); // step-level
+        assert_eq!(persisted.events[3].outcome_kind, "Fault"); // final
         assert_eq!(persisted.completion, Some(CompletionState::Fault));
     }
 
@@ -2601,7 +2920,7 @@ mod tests {
         assert!(matches!(outcome, Outcome::Next(2)));
 
         let persisted = store_impl.load("trace-no-complete").await.unwrap().unwrap();
-        assert_eq!(persisted.events.len(), 3); // Enter + step-level Next + final Next
+        assert_eq!(persisted.events.len(), 4); // Enter + intent + step-level Next + final Next
         assert_eq!(persisted.completion, None);
     }
 
@@ -2633,11 +2952,26 @@ mod tests {
         assert!(matches!(outcome, Outcome::Fault(msg) if msg == "boom"));
 
         let persisted = store_impl.load("trace-compensated").await.unwrap().unwrap();
-        assert_eq!(persisted.events.len(), 4); // Enter + step-level Fault + final Fault + Compensated
+        assert_eq!(persisted.events.len(), 6); // Enter + transition pair + compensation pair + terminal
         assert_eq!(persisted.events[0].outcome_kind, "Enter");
-        assert_eq!(persisted.events[1].outcome_kind, "Fault"); // step-level
-        assert_eq!(persisted.events[2].outcome_kind, "Fault"); // final
-        assert_eq!(persisted.events[3].outcome_kind, "Compensated");
+        assert_eq!(
+            persisted.events[1].event_type,
+            crate::PersistenceEventType::Intent
+        );
+        assert_eq!(persisted.events[2].outcome_kind, "Fault"); // step-level
+        assert_eq!(
+            persisted.events[3].event_type,
+            crate::PersistenceEventType::Intent
+        );
+        assert_eq!(
+            persisted.events[4].event_type,
+            crate::PersistenceEventType::Compensation
+        );
+        assert_eq!(persisted.events[5].outcome_kind, "Fault"); // final terminal
+        assert_eq!(
+            persisted.events[5].event_type,
+            crate::PersistenceEventType::Terminal
+        );
         assert_eq!(persisted.completion, Some(CompletionState::Compensated));
 
         let recorded = calls.lock().await;
@@ -2647,7 +2981,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_compensation_keeps_fault_completion() {
+    async fn failed_compensation_keeps_fault_result_unconfirmed() {
         let store_impl = Arc::new(InMemoryPersistenceStore::new());
         let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -2663,24 +2997,31 @@ mod tests {
 
         let axon = Axon::<i32, i32, String>::start("CompensationFails").then(AlwaysFault);
         let outcome = axon.execute(7, &(), &mut bus).await;
-        let crate::ExecutionReport::Recorded {
-            result: outcome,
-            completion: crate::CompletionConfirmation::Confirmed,
-            ..
-        } = outcome
-        else {
-            panic!("unexpected execution durability");
-        };
-        assert!(matches!(outcome, Outcome::Fault(msg) if msg == "boom"));
+        assert!(
+            matches!(
+                outcome,
+                crate::ExecutionReport::Unconfirmed {
+                    result: Outcome::Fault(ref message),
+                    operation: crate::PersistenceOperation::PendingIntent,
+                    effect: crate::EffectBoundary::MayHaveRun,
+                    ..
+                }
+                if message == "boom"
+            ),
+            "unexpected execution report: {outcome:?}"
+        );
 
         let persisted = store_impl
             .load("trace-compensation-failed")
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(persisted.events.len(), 3); // Enter + step-level Fault + final Fault
-        assert_eq!(persisted.events[2].outcome_kind, "Fault"); // final
-        assert_eq!(persisted.completion, Some(CompletionState::Fault));
+        assert_eq!(persisted.events.len(), 4); // transition result, then unresolved compensation intent
+        assert_eq!(
+            persisted.events[3].event_type,
+            crate::PersistenceEventType::Intent
+        );
+        assert_eq!(persisted.completion, None);
 
         let recorded = calls.lock().await;
         assert_eq!(recorded.len(), 1);
@@ -2725,8 +3066,14 @@ mod tests {
             .unwrap();
         assert_eq!(persisted.completion, Some(CompletionState::Compensated));
         assert_eq!(
-            persisted.events.last().map(|e| e.outcome_kind.as_str()),
-            Some("Compensated")
+            persisted.events[persisted.events.len() - 2]
+                .outcome_kind
+                .as_str(),
+            "Compensated"
+        );
+        assert_eq!(
+            persisted.events.last().map(|event| event.event_type),
+            Some(crate::PersistenceEventType::Terminal)
         );
 
         let attempt_count = calls.lock().await;
@@ -2846,26 +3193,29 @@ mod tests {
         let report = axon.execute(9, &(), &mut bus).await;
         let serialized_report = serde_json::to_string(&report).unwrap();
         assert!(!serialized_report.contains("forced idempotency read failure"));
-        let crate::ExecutionReport::Unconfirmed {
-            result: outcome,
-            operation: crate::PersistenceOperation::CompensationRead,
-            effect: crate::EffectBoundary::MayHaveRun,
-            ..
-        } = report
-        else {
-            panic!("unexpected execution durability");
-        };
-        assert!(matches!(outcome, Outcome::Fault(msg) if msg == "boom"));
+        assert!(
+            matches!(
+                report,
+                crate::ExecutionReport::Unconfirmed {
+                    result: Outcome::Fault(ref message),
+                    operation: crate::PersistenceOperation::CompensationRead,
+                    effect: crate::EffectBoundary::MayHaveRun,
+                    ..
+                }
+                if message == "boom"
+            ),
+            "unexpected execution report: {report:?}"
+        );
 
         let persisted = store_impl
             .load("trace-idempotency-store-failure")
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(persisted.completion, Some(CompletionState::Fault));
+        assert_eq!(persisted.completion, None);
         assert_eq!(
             persisted.events.last().map(|e| e.outcome_kind.as_str()),
-            Some("Fault")
+            Some("Intent")
         );
 
         let recorded = calls.lock().await;
@@ -2910,6 +3260,8 @@ mod tests {
             trace_id: trace_id.to_string(),
             circuit: "TestCircuit".to_string(),
             schematic_version: "0.9".to_string(),
+            event_sequence: 0,
+            event_type: crate::PersistenceEventType::Enter,
             step: 0,
             node_id: None,
             outcome_kind: "Enter".to_string(),
@@ -2948,18 +3300,52 @@ mod tests {
         let trace_id = "v-migration";
         // Migration restarts from caller input despite a valid older result.
         // Missing results require reconciliation before migration is considered.
-        let old_envelope = crate::persistence::PersistenceEnvelope {
-            trace_id: trace_id.to_string(),
-            circuit: "TestCircuit".to_string(),
-            schematic_version: "0.9".to_string(),
-            step: 5,
-            node_id: None,
-            outcome_kind: "Next".to_string(),
-            timestamp_ms: 0,
-            payload_hash: None,
-            payload: Some(serde_json::json!({"Next": 99})),
-        };
-        store_impl.append(old_envelope).await.unwrap();
+        let axon = Axon::<i32, i32, TestInfallible>::new("TestCircuit").then(AddOne);
+        let node_id = axon.schematic.nodes[0].id.clone();
+        let old_events = [
+            crate::persistence::PersistenceEnvelope {
+                trace_id: trace_id.to_string(),
+                circuit: "TestCircuit".to_string(),
+                schematic_version: "0.9".to_string(),
+                event_sequence: 0,
+                event_type: crate::PersistenceEventType::Enter,
+                step: 0,
+                node_id: None,
+                outcome_kind: "Enter".to_string(),
+                timestamp_ms: 0,
+                payload_hash: None,
+                payload: None,
+            },
+            crate::persistence::PersistenceEnvelope {
+                trace_id: trace_id.to_string(),
+                circuit: "TestCircuit".to_string(),
+                schematic_version: "0.9".to_string(),
+                event_sequence: 1,
+                event_type: crate::PersistenceEventType::Intent,
+                step: 5,
+                node_id: Some(node_id.clone()),
+                outcome_kind: "Intent".to_string(),
+                timestamp_ms: 1,
+                payload_hash: None,
+                payload: Some(serde_json::json!({"input": 10})),
+            },
+            crate::persistence::PersistenceEnvelope {
+                trace_id: trace_id.to_string(),
+                circuit: "TestCircuit".to_string(),
+                schematic_version: "0.9".to_string(),
+                event_sequence: 2,
+                event_type: crate::PersistenceEventType::Result,
+                step: 5,
+                node_id: Some(node_id),
+                outcome_kind: "Next".to_string(),
+                timestamp_ms: 2,
+                payload_hash: None,
+                payload: Some(serde_json::json!({"Next": 99})),
+            },
+        ];
+        for event in old_events {
+            store_impl.append(event).await.unwrap();
+        }
 
         let mut registry = ranvier_core::schematic::MigrationRegistry::new("TestCircuit");
         registry.register(ranvier_core::schematic::SnapshotMigration {
@@ -2976,7 +3362,6 @@ mod tests {
         bus.insert(PersistenceTraceId::new(trace_id));
         bus.insert(registry);
 
-        let axon = Axon::<i32, i32, TestInfallible>::new("TestCircuit").then(AddOne);
         let outcome = axon.execute(10, &(), &mut bus).await;
         let crate::ExecutionReport::Recorded {
             result: outcome,
@@ -3024,6 +3409,8 @@ mod tests {
                 trace_id: trace_id.to_string(),
                 circuit: "TestCircuit".to_string(),
                 schematic_version: "1.0".to_string(),
+                event_sequence: 0,
+                event_type: crate::PersistenceEventType::Enter,
                 step: 0,
                 node_id: None,
                 outcome_kind: "Enter".to_string(),

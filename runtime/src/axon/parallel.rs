@@ -231,6 +231,16 @@ where
         let fanout_node_id = fanout_id.clone();
         let fanin_node_id = fanin_id.clone();
         let branch_ids_for_exec = branch_node_ids.clone();
+        let branch_steps_for_exec = branch_node_ids
+            .iter()
+            .map(|branch_id| {
+                schematic
+                    .nodes
+                    .iter()
+                    .position(|node| node.id == *branch_id)
+                    .expect("parallel branch node was just added") as u64
+            })
+            .collect::<Vec<_>>();
         let step_idx = schematic.nodes.len() as u64 - 1;
 
         let next_executor: Executor<In, Out, E, Res> = Arc::new(
@@ -240,6 +250,7 @@ where
                 let fanout_id = fanout_node_id.clone();
                 let fanin_id = fanin_node_id.clone();
                 let branch_ids = branch_ids_for_exec.clone();
+                let branch_steps = branch_steps_for_exec.clone();
                 let bus_policy = bus_policy;
 
                 Box::pin(async move {
@@ -249,6 +260,31 @@ where
                         Outcome::Next(t) => t,
                         other => return other.map(|_| unreachable!()),
                     };
+
+                    if let Some(active) =
+                        bus.read::<crate::execution_observation::ActiveObservation>()
+                    {
+                        if active.0.is_blocked() {
+                            return Outcome::emit("execution.persistence.effect_blocked", None);
+                        }
+                        if active.0.has_unconfirmed_result_write() {
+                            return Outcome::emit("execution.persistence.result_unconfirmed", None);
+                        }
+                    }
+                    // Persist every branch input before any branch begins. If
+                    // one ACK is uncertain, no parallel effect is admitted.
+                    for (index, branch_node_id) in branch_ids.iter().enumerate() {
+                        if !super::persist_effect_intent(
+                            &state,
+                            bus,
+                            branch_node_id,
+                            branch_steps[index],
+                        )
+                        .await
+                        {
+                            return Outcome::emit("execution.persistence.intent_unconfirmed", None);
+                        }
+                    }
 
                     // Timeline: FanOut enter
                     let fanout_started = Instant::now();
@@ -266,6 +302,9 @@ where
                     // without &mut Bus aliasing. Only the explicit policy can
                     // add read-only inherited context.
                     let cancellation_token = bus.cancellation_token().cloned();
+                    let observation = bus
+                        .read::<crate::execution_observation::ActiveObservation>()
+                        .cloned();
                     let futs: Vec<_> = branches
                         .iter()
                         .enumerate()
@@ -273,6 +312,7 @@ where
                             let branch_state = state.clone();
                             let branch_node_id = branch_ids[i].clone();
                             let trans = trans.clone();
+                            let observation = observation.clone();
                             let mut branch_bus = match bus_policy {
                                 ParallelBusPolicy::Isolated => Bus::new(),
                                 ParallelBusPolicy::InheritShared => bus.fork_for_parallel(),
@@ -289,6 +329,9 @@ where
                                 branch_bus.set_access_policy(label.clone(), bus_policy);
                                 let entered_at_ms = now_ms();
                                 let started = Instant::now();
+                                if let Some(active) = observation {
+                                    active.0.effect();
+                                }
                                 let result = trans.run(branch_state, res, &mut branch_bus).await;
                                 let duration_ms = started.elapsed().as_millis() as u64;
                                 let exited_at_ms = now_ms().max(entered_at_ms);
@@ -310,6 +353,30 @@ where
                     // Run all branches concurrently within the current task
                     let results: Vec<ParallelBranchResult<Out, E>> =
                         futures_util::future::join_all(futs).await;
+
+                    if let Some(handle) = bus.read::<PersistenceHandle>().cloned() {
+                        let trace_id = persistence_trace_id(bus);
+                        let (circuit, version) = bus
+                            .read::<ranvier_core::schematic::Schematic>()
+                            .map(|schematic| {
+                                (schematic.name.clone(), schematic.schema_version.clone())
+                            })
+                            .unwrap_or_default();
+                        for result in &results {
+                            super::persist_encoded_execution_event(
+                                &handle,
+                                &trace_id,
+                                &circuit,
+                                &version,
+                                branch_steps[result.index],
+                                Some(result.node_id.clone()),
+                                outcome_kind_name(&result.outcome),
+                                serde_json::to_value(&result.outcome).map(Some),
+                                bus,
+                            )
+                            .await;
+                        }
+                    }
 
                     // Timeline: branch timestamps are captured inside each
                     // future, then emitted deterministically. Enter precedes
@@ -439,7 +506,10 @@ where
                     }
 
                     // Persistence
-                    if let Some(handle) = bus.read::<PersistenceHandle>() {
+                    let persistence_clear = bus
+                        .read::<crate::execution_observation::ActiveObservation>()
+                        .is_none_or(|active| !active.0.has_failure());
+                    if persistence_clear && let Some(handle) = bus.read::<PersistenceHandle>() {
                         let trace_id = persistence_trace_id(bus);
                         let circuit = bus
                             .read::<ranvier_core::schematic::Schematic>()
@@ -450,13 +520,13 @@ where
                             .map(|s| s.schema_version.clone())
                             .unwrap_or_default();
 
-                        persist_encoded_execution_event(
+                        persist_encoded_execution_checkpoint_event(
                             handle,
                             &trace_id,
                             &circuit,
                             &version,
                             step_idx,
-                            Some(fanin_id.clone()),
+                            fanin_id.clone(),
                             outcome_kind_name(&combined),
                             serde_json::to_value(&combined).map(Some),
                             bus,

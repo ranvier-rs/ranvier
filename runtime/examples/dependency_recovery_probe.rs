@@ -26,6 +26,13 @@ fn envelope(trace_id: &str, step: u64, outcome_kind: &str) -> PersistenceEnvelop
         trace_id: trace_id.to_string(),
         circuit: "Rq8RecoveryProbe".to_string(),
         schematic_version: "rq8-v1".to_string(),
+        event_sequence: step,
+        event_type: match outcome_kind {
+            "Enter" => ranvier_runtime::PersistenceEventType::Enter,
+            "Intent" => ranvier_runtime::PersistenceEventType::Intent,
+            "Compensated" => ranvier_runtime::PersistenceEventType::Compensation,
+            _ => ranvier_runtime::PersistenceEventType::Result,
+        },
         step,
         node_id: Some(format!("step-{step}")),
         outcome_kind: outcome_kind.to_string(),

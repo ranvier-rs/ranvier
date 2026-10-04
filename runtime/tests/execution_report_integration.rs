@@ -224,7 +224,7 @@ impl Transition<EncodingOutput, EncodingOutput> for EncodingBranch {
 }
 
 #[tokio::test]
-async fn parallel_encoding_failure_observes_branch_effects_and_skips_completion() {
+async fn parallel_intent_encoding_failure_blocks_every_branch_before_effect() {
     let backing = InMemoryPersistenceStore::new();
     let effects = Arc::new(AtomicUsize::new(0));
     let mut bus = Bus::new();
@@ -249,18 +249,18 @@ async fn parallel_encoding_failure_observes_branch_effects_and_skips_completion(
         .await;
     assert!(matches!(
         report,
-        ExecutionReport::Unconfirmed {
-            result: Outcome::Next(_),
-            operation: PersistenceOperation::Result,
-            effect: EffectBoundary::MayHaveRun,
+        ExecutionReport::BlockedBeforeEffect {
+            operation: PersistenceOperation::Intent,
+            effect: EffectBoundary::NotInvoked,
             ..
         }
     ));
-    assert_eq!(effects.load(Ordering::SeqCst), 2);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
     let trace = backing.load("parallel-encoding").await.unwrap().unwrap();
     assert_eq!(trace.completion, None);
-    assert_eq!(trace.events.len(), 1);
+    assert_eq!(trace.events.len(), 2);
     assert_eq!(trace.events[0].outcome_kind, "Enter");
+    assert_eq!(trace.events[1].outcome_kind, "Intent");
 }
 
 #[derive(Clone)]
@@ -287,7 +287,7 @@ impl Transition<EncodingOutput, ()> for FaultAfterEncoding {
 }
 
 #[tokio::test]
-async fn compensated_result_encoding_failure_keeps_undo_and_original_fault() {
+async fn compensated_result_encoding_failure_blocks_following_effect_and_compensation() {
     let backing = InMemoryPersistenceStore::new();
     let effects = Arc::new(AtomicUsize::new(0));
     let undos = Arc::new(AtomicUsize::new(0));
@@ -305,33 +305,18 @@ async fn compensated_result_encoding_failure_keeps_undo_and_original_fault() {
         )
         .then(FaultAfterEncoding);
     let report = axon.execute((), &(), &mut bus).await;
-    assert!(report.cleanup().unwrap().is_complete());
+    assert!(report.cleanup().is_none());
     assert!(matches!(report, ExecutionReport::Unconfirmed {
-        result: Outcome::Fault(ref fault), operation: PersistenceOperation::Result,
+        result: Outcome::Emit(ref signal, _), operation: PersistenceOperation::Result,
         effect: EffectBoundary::MayHaveRun, ..
-    } if fault == "original-business-fault"));
+    } if signal == "execution.persistence.result_unconfirmed"));
     assert_eq!(effects.load(Ordering::SeqCst), 1);
-    assert_eq!(undos.load(Ordering::SeqCst), 1);
+    assert_eq!(undos.load(Ordering::SeqCst), 0);
     let trace = backing.load("compensated-encoding").await.unwrap().unwrap();
     assert_eq!(trace.completion, None);
-    assert!(
-        trace
-            .events
-            .iter()
-            .all(|event| event.outcome_kind != "Next")
-    );
-    assert!(
-        trace
-            .events
-            .iter()
-            .any(|event| event.outcome_kind == "Fault" && event.node_id.is_none())
-    );
-    assert!(
-        trace
-            .events
-            .iter()
-            .all(|event| event.payload != Some(serde_json::Value::Null))
-    );
+    assert_eq!(trace.events.len(), 2);
+    assert_eq!(trace.events[0].outcome_kind, "Enter");
+    assert_eq!(trace.events[1].outcome_kind, "Intent");
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -386,7 +371,7 @@ async fn direct_compensation_encoding_failure_preserves_cleanup_and_domain_fault
         report,
         ExecutionReport::Unconfirmed {
             result: Outcome::Fault(EncodingFault { private: false }),
-            operation: PersistenceOperation::Result,
+            operation: PersistenceOperation::CompensationEvent,
             effect: EffectBoundary::MayHaveRun,
             ..
         }
@@ -395,7 +380,7 @@ async fn direct_compensation_encoding_failure_preserves_cleanup_and_domain_fault
     assert_eq!(undos.load(Ordering::SeqCst), 1);
     let trace = backing.load("undo-encoding").await.unwrap().unwrap();
     assert_eq!(trace.completion, None);
-    assert_eq!(trace.events.len(), 3);
+    assert_eq!(trace.events.len(), 4);
     assert!(
         trace
             .events
@@ -407,18 +392,15 @@ async fn direct_compensation_encoding_failure_preserves_cleanup_and_domain_fault
         .iter()
         .filter(|event| event.outcome_kind == "Fault")
         .collect();
-    assert_eq!(faults.len(), 2);
+    assert_eq!(faults.len(), 1);
     assert!(faults.iter().any(|event| event.node_id.is_some()));
-    assert!(faults.iter().any(|event| event.node_id.is_none()));
     assert!(faults.iter().all(
         |event| event.payload == Some(serde_json::json!({"Fault": "original-business-fault"}))
     ));
-    assert!(
-        trace
-            .events
-            .iter()
-            .all(|event| event.payload != Some(serde_json::Value::Null))
-    );
+    assert!(trace.events.iter().any(|event| {
+        event.event_type == PersistenceEventType::Intent
+            && event.payload == Some(serde_json::Value::Null)
+    }));
     assert!(
         !serde_json::to_string(&trace)
             .unwrap()
@@ -473,16 +455,12 @@ async fn result_and_terminal_encoding_failures_preserve_result_without_false_com
         assert_eq!(effects.load(Ordering::SeqCst), 1);
         let trace = backing.load("encoding-failure").await.unwrap().unwrap();
         assert_eq!(trace.completion, None);
-        assert_eq!(trace.events.len(), if terminal_only { 2 } else { 1 });
-        assert!(
-            trace
-                .events
-                .iter()
-                .all(|event| event.payload != Some(serde_json::Value::Null))
-        );
+        assert_eq!(trace.events.len(), if terminal_only { 3 } else { 2 });
+        assert_eq!(trace.events[1].event_type, PersistenceEventType::Intent);
+        assert_eq!(trace.events[1].payload, Some(serde_json::Value::Null));
         if terminal_only {
             assert_eq!(
-                trace.events[1].payload,
+                trace.events[2].payload,
                 Some(serde_json::json!({"Next": 7}))
             );
         }
@@ -520,7 +498,7 @@ struct AppliedAwaitingAck {
 #[tokio::test]
 async fn dropped_persistence_ack_restores_owner_without_rewriting_history() {
     use futures_util::FutureExt;
-    for block_at in [0, 1, 2, 3, 4] {
+    for block_at in [0, 1, 2, 3, 4, 5] {
         for applied in [false, true] {
             for cancellable in [false, true] {
                 let backing = InMemoryPersistenceStore::new();
@@ -551,9 +529,9 @@ async fn dropped_persistence_ack_restores_owner_without_rewriting_history() {
                 } else {
                     assert!(axon.execute(1, &(), &mut bus).now_or_never().is_none());
                 }
-                assert_eq!(store.calls.load(Ordering::SeqCst), block_at.min(3));
+                assert_eq!(store.calls.load(Ordering::SeqCst), block_at.min(4));
                 assert_eq!(bus.read::<PersistenceTraceId>().unwrap().0, "drop-ack");
-                assert_eq!(effects.load(Ordering::SeqCst), usize::from(block_at > 1));
+                assert_eq!(effects.load(Ordering::SeqCst), usize::from(block_at > 2));
                 assert!(Arc::ptr_eq(
                     &original,
                     &bus.read::<PersistenceHandle>().unwrap().store()
@@ -562,7 +540,7 @@ async fn dropped_persistence_ack_restores_owner_without_rewriting_history() {
                 let trace = backing.load("drop-ack").await.unwrap();
                 let expected = match block_at {
                     0 => 0,
-                    4 => 3,
+                    5 => 4,
                     _ => block_at - 1 + usize::from(applied),
                 };
                 if expected == 0 {
@@ -578,7 +556,7 @@ async fn dropped_persistence_ack_restores_owner_without_rewriting_history() {
                     );
                     assert_eq!(
                         trace.completion,
-                        if block_at == 4 && applied {
+                        if block_at == 5 && applied {
                             Some(CompletionState::Success)
                         } else {
                             None
@@ -613,7 +591,7 @@ impl PersistenceStore for AppliedAwaitingAck {
         self.backing.resume(trace, step).await
     }
     async fn complete(&self, trace: &str, completion: CompletionState) -> anyhow::Result<()> {
-        if self.block_at == 4 {
+        if self.block_at == 5 {
             if self.apply_blocked {
                 self.backing.complete(trace, completion.clone()).await?;
             }
@@ -633,7 +611,7 @@ impl PersistenceStore for AppliedAwaitingAck {
 #[tokio::test]
 async fn cancelled_applied_write_is_unconfirmed_without_invoking_transition() {
     verify_cancelled_write(
-        1,
+        2,
         PersistenceOperation::Intent,
         EffectBoundary::NotInvoked,
         0,
@@ -644,7 +622,7 @@ async fn cancelled_applied_write_is_unconfirmed_without_invoking_transition() {
 #[tokio::test]
 async fn cancelled_result_write_preserves_already_invoked_effect_boundary() {
     verify_cancelled_write(
-        2,
+        3,
         PersistenceOperation::Result,
         EffectBoundary::MayHaveRun,
         1,
@@ -686,19 +664,43 @@ async fn verify_cancelled_write(
     let report = tokio::time::timeout(std::time::Duration::from_secs(5), execution)
         .await
         .unwrap();
-    assert!(matches!(
-        report,
+    match report {
+        ExecutionReport::BlockedBeforeEffect {
+            operation, effect, ..
+        } => {
+            assert_eq!(block_at, 2);
+            assert_eq!(operation, expected_operation);
+            assert_eq!(effect, expected_effect);
+        }
         ExecutionReport::Unconfirmed {
             result: ranvier_runtime::ExecutionTerminal::Cancelled(_),
             operation,
-            effect
-        , .. } if operation == expected_operation && effect == expected_effect
-    ));
+            effect,
+            ..
+        } => {
+            assert_eq!(block_at, 3);
+            assert_eq!(operation, expected_operation);
+            assert_eq!(effect, expected_effect);
+        }
+        other => panic!("unexpected cancellation persistence report: {other:#?}"),
+    }
     assert_eq!(effects.load(Ordering::SeqCst), effect_count);
     let persisted = backing.load("cancelled-ack").await.unwrap().unwrap();
     assert_eq!(persisted.events[0].outcome_kind, "Enter");
-    assert_eq!(persisted.completion, Some(CompletionState::Cancelled));
-    assert_eq!(persisted.events.len(), block_at + 1);
+    assert_eq!(persisted.completion, None);
+    assert_eq!(persisted.events.len(), block_at - 1 + 1);
+    assert_eq!(
+        persisted
+            .events
+            .iter()
+            .map(|event| event.outcome_kind.as_str())
+            .collect::<Vec<_>>(),
+        match block_at {
+            2 => vec!["Enter", "Intent"],
+            3 => vec!["Enter", "Intent", "Next"],
+            _ => unreachable!(),
+        }
+    );
     assert_eq!(
         bus.read::<PersistenceHandle>()
             .unwrap()
@@ -739,6 +741,40 @@ async fn checkpoint_fresh_input_can_mask_incompatible_persisted_value() {
                     trace_id: "typed-checkpoint".into(),
                     circuit: axon.schematic().name.clone(),
                     schematic_version: axon.schematic().schema_version.clone(),
+                    event_sequence: 0,
+                    event_type: PersistenceEventType::Enter,
+                    step: 0,
+                    node_id: axon.schematic().nodes.first().map(|node| node.id.clone()),
+                    outcome_kind: "Enter".into(),
+                    timestamp_ms: 0,
+                    payload_hash: None,
+                    payload: None,
+                })
+                .await
+                .unwrap();
+            backing
+                .append(PersistenceEnvelope {
+                    trace_id: "typed-checkpoint".into(),
+                    circuit: axon.schematic().name.clone(),
+                    schematic_version: axon.schematic().schema_version.clone(),
+                    event_sequence: 1,
+                    event_type: PersistenceEventType::Intent,
+                    step: 1,
+                    node_id: Some(axon.schematic().nodes[1].id.to_string()),
+                    outcome_kind: "Intent".into(),
+                    timestamp_ms: 0,
+                    payload_hash: None,
+                    payload: Some(serde_json::json!(7)),
+                })
+                .await
+                .unwrap();
+            backing
+                .append(PersistenceEnvelope {
+                    trace_id: "typed-checkpoint".into(),
+                    circuit: axon.schematic().name.clone(),
+                    schematic_version: axon.schematic().schema_version.clone(),
+                    event_sequence: 2,
+                    event_type: PersistenceEventType::Result,
                     step: 1,
                     node_id: Some(axon.schematic().nodes[1].id.to_string()),
                     outcome_kind: "Next".into(),
@@ -764,7 +800,7 @@ async fn checkpoint_fresh_input_can_mask_incompatible_persisted_value() {
             assert!(undo_inputs.lock().unwrap().is_empty());
             let trace = backing.load("typed-checkpoint").await.unwrap().unwrap();
             assert_eq!(trace.completion, Some(CompletionState::Success));
-            assert_eq!(trace.events[0].payload, Some(payload));
+            assert_eq!(trace.events[2].payload, Some(payload));
         }
     }
 }
@@ -776,6 +812,119 @@ impl CompensationHook for CountRecoveryCleanup {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
+}
+
+#[derive(Clone)]
+struct CompletedWithoutTerminalStore(InMemoryPersistenceStore);
+
+#[async_trait::async_trait]
+impl PersistenceStore for CompletedWithoutTerminalStore {
+    async fn append(&self, event: PersistenceEnvelope) -> anyhow::Result<()> {
+        self.0.append(event).await
+    }
+
+    async fn load(&self, trace_id: &str) -> anyhow::Result<Option<PersistedTrace>> {
+        let mut trace = self.0.load(trace_id).await?;
+        if let Some(trace) = trace.as_mut() {
+            // Model a previously completed v2 record written before terminal
+            // persistence was required.
+            trace.completion = Some(CompletionState::Success);
+        }
+        Ok(trace)
+    }
+
+    async fn resume(&self, trace_id: &str, step: u64) -> anyhow::Result<ResumeCursor> {
+        self.0.resume(trace_id, step).await
+    }
+
+    async fn complete(&self, trace_id: &str, completion: CompletionState) -> anyhow::Result<()> {
+        self.0.complete(trace_id, completion).await
+    }
+
+    async fn save_intervention(
+        &self,
+        trace_id: &str,
+        intervention: Intervention,
+    ) -> anyhow::Result<()> {
+        self.0.save_intervention(trace_id, intervention).await
+    }
+}
+
+#[tokio::test]
+async fn completed_trace_without_terminal_blocks_before_effect() {
+    let backing = InMemoryPersistenceStore::new();
+    let effects = Arc::new(AtomicUsize::new(0));
+    let axon = Axon::<u32, u32, String>::new("missing-terminal").then(Count(effects.clone()));
+    let schematic = axon.schematic();
+    let node_id = schematic.nodes[0].id.clone();
+    backing
+        .append(PersistenceEnvelope {
+            trace_id: "missing-terminal".into(),
+            circuit: schematic.name.clone(),
+            schematic_version: schematic.schema_version.clone(),
+            event_sequence: 0,
+            event_type: PersistenceEventType::Enter,
+            step: 0,
+            node_id: None,
+            outcome_kind: "Enter".into(),
+            timestamp_ms: 0,
+            payload_hash: None,
+            payload: None,
+        })
+        .await
+        .unwrap();
+    backing
+        .append(PersistenceEnvelope {
+            trace_id: "missing-terminal".into(),
+            circuit: schematic.name.clone(),
+            schematic_version: schematic.schema_version.clone(),
+            event_sequence: 1,
+            event_type: PersistenceEventType::Intent,
+            step: 0,
+            node_id: Some(node_id.clone()),
+            outcome_kind: "Intent".into(),
+            timestamp_ms: 1,
+            payload_hash: None,
+            payload: Some(serde_json::json!({"input": 7})),
+        })
+        .await
+        .unwrap();
+    backing
+        .append(PersistenceEnvelope {
+            trace_id: "missing-terminal".into(),
+            circuit: schematic.name.clone(),
+            schematic_version: schematic.schema_version.clone(),
+            event_sequence: 2,
+            event_type: PersistenceEventType::Result,
+            step: 0,
+            node_id: Some(node_id),
+            outcome_kind: "Next".into(),
+            timestamp_ms: 2,
+            payload_hash: None,
+            payload: Some(Outcome::<u32, String>::next(8).to_json_value()),
+        })
+        .await
+        .unwrap();
+    let before = backing.load("missing-terminal").await.unwrap().unwrap();
+
+    let mut bus = Bus::new();
+    bus.insert(PersistenceTraceId::new("missing-terminal"));
+    bus.insert(PersistenceHandle::from_store(
+        CompletedWithoutTerminalStore(backing.clone()),
+    ));
+    assert!(matches!(
+        axon.execute(7, &(), &mut bus).await,
+        ExecutionReport::BlockedBeforeEffect {
+            operation: PersistenceOperation::Terminal,
+            effect: EffectBoundary::NotInvoked,
+            ..
+        }
+    ));
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        backing.load("missing-terminal").await.unwrap(),
+        Some(before)
+    );
 }
 
 #[tokio::test]
@@ -792,6 +941,40 @@ async fn legacy_missing_or_null_result_blocks_effects_without_rewriting_history(
                     trace_id: "legacy-null".into(),
                     circuit: schematic.name.clone(),
                     schematic_version: schematic.schema_version.clone(),
+                    event_sequence: 0,
+                    event_type: PersistenceEventType::Enter,
+                    step: 0,
+                    node_id: schematic.nodes.first().map(|node| node.id.clone()),
+                    outcome_kind: "Enter".into(),
+                    timestamp_ms: 0,
+                    payload_hash: None,
+                    payload: None,
+                })
+                .await
+                .unwrap();
+            backing
+                .append(PersistenceEnvelope {
+                    trace_id: "legacy-null".into(),
+                    circuit: schematic.name.clone(),
+                    schematic_version: schematic.schema_version.clone(),
+                    event_sequence: 1,
+                    event_type: PersistenceEventType::Intent,
+                    step: 1,
+                    node_id: Some(schematic.nodes[1].id.to_string()),
+                    outcome_kind: "Intent".into(),
+                    timestamp_ms: 0,
+                    payload_hash: None,
+                    payload: Some(serde_json::json!(7)),
+                })
+                .await
+                .unwrap();
+            backing
+                .append(PersistenceEnvelope {
+                    trace_id: "legacy-null".into(),
+                    circuit: schematic.name.clone(),
+                    schematic_version: schematic.schema_version.clone(),
+                    event_sequence: 2,
+                    event_type: PersistenceEventType::Result,
                     step: 1,
                     node_id: Some(schematic.nodes[1].id.to_string()),
                     outcome_kind: "Next".into(),
@@ -898,18 +1081,65 @@ async fn collected_stream_prefix_terminal_failure_blocks_initialization_and_reta
         .then_stream(CountStream(effects.clone()))
         .collect_into_vec();
     let report = axon.execute(7, &(), &mut bus).await;
-    assert!(matches!(report, ranvier_runtime::StreamInitializationReport::Rejected {
-        prefix: ExecutionReport::Unconfirmed {
-            result: ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Next(7)),
-            operation: PersistenceOperation::Terminal, effect: EffectBoundary::MayHaveRun, ..
+    assert!(matches!(
+        report,
+        ranvier_runtime::StreamInitializationReport::Rejected {
+            prefix: ExecutionReport::Unconfirmed {
+                result: ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Next(7)),
+                operation: PersistenceOperation::Terminal,
+                effect: EffectBoundary::MayHaveRun,
+                ..
+            }
         }
-    }));
+    ));
     assert_eq!(effects.load(Ordering::SeqCst), 0);
     assert_eq!(writes.load(Ordering::SeqCst), 2);
     let trace = backing.load("stream-report").await.unwrap().unwrap();
     assert_eq!(trace.events.len(), 1);
     assert_eq!(trace.events[0].outcome_kind, "Enter");
     assert_eq!(trace.completion, None);
+}
+
+#[cfg(feature = "streaming")]
+#[tokio::test]
+async fn configured_store_blocks_stream_initializer_without_a_journal_contract() {
+    let backing = InMemoryPersistenceStore::new();
+    let prefix_effects = Arc::new(AtomicUsize::new(0));
+    let initializer_effects = Arc::new(AtomicUsize::new(0));
+    let mut bus = Bus::new();
+    bus.insert(PersistenceTraceId::new("stream-store-gate"));
+    bus.insert(PersistenceHandle::from_store(backing.clone()));
+    let axon = Axon::<u32, u32, String, ()>::new("stream-store-gate")
+        .then(Count(prefix_effects.clone()))
+        .then_stream(CountStream(initializer_effects.clone()))
+        .collect_into_vec();
+
+    let report = axon.execute(7, &(), &mut bus).await;
+
+    assert!(matches!(
+        report,
+        ranvier_runtime::StreamInitializationReport::Rejected {
+            prefix: ExecutionReport::Unconfirmed {
+                result: ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Next(8)),
+                operation: PersistenceOperation::UnsupportedEffect,
+                effect: EffectBoundary::MayHaveRun,
+                ..
+            }
+        }
+    ));
+    assert_eq!(prefix_effects.load(Ordering::SeqCst), 1);
+    assert_eq!(initializer_effects.load(Ordering::SeqCst), 0);
+    assert!(bus.read::<PersistenceAutoComplete>().is_none());
+    let trace = backing.load("stream-store-gate").await.unwrap().unwrap();
+    assert_eq!(trace.completion, None);
+    assert_eq!(
+        trace
+            .events
+            .iter()
+            .map(|event| event.outcome_kind.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Enter", "Intent", "Next", "Next"]
+    );
 }
 
 struct UnknownEntry {
@@ -1060,7 +1290,7 @@ async fn actual_execute_stops_after_unconfirmed_result_append() {
         bus.insert(PersistenceHandle::from_store(FailOnAppend {
             backing: backing.clone(),
             calls: writes.clone(),
-            fail_on_append: 2,
+            fail_on_append: 3,
             apply_failed_append,
         }));
         let axon = Axon::<u32, u32, String, ()>::new("report-fixture").then(Count(effects.clone()));
@@ -1076,11 +1306,11 @@ async fn actual_execute_stops_after_unconfirmed_result_append() {
         ));
         assert!(!format!("{report:?}").contains("secret-backend-sentinel"));
         assert_eq!(effects.load(Ordering::SeqCst), 1);
-        assert_eq!(writes.load(Ordering::SeqCst), 2);
+        assert_eq!(writes.load(Ordering::SeqCst), 3);
 
         let trace = backing.load(trace_id).await.unwrap().unwrap();
         assert_eq!(trace.completion, None);
-        assert_eq!(trace.events.len(), if apply_failed_append { 2 } else { 1 });
+        assert_eq!(trace.events.len(), if apply_failed_append { 3 } else { 2 });
         assert_eq!(
             trace
                 .events
@@ -1090,8 +1320,12 @@ async fn actual_execute_stops_after_unconfirmed_result_append() {
             usize::from(apply_failed_append)
         );
         assert_eq!(trace.events[0].outcome_kind, "Enter");
+        assert_eq!(
+            trace.events[1].event_type,
+            ranvier_runtime::PersistenceEventType::Intent
+        );
         if apply_failed_append {
-            assert_eq!(trace.events[1].outcome_kind, "Next");
+            assert_eq!(trace.events[2].outcome_kind, "Next");
         }
         assert_eq!(
             bus.read::<PersistenceHandle>()
@@ -1106,10 +1340,69 @@ async fn actual_execute_stops_after_unconfirmed_result_append() {
 }
 
 #[tokio::test]
+async fn applied_unconfirmed_intent_blocks_effect_and_later_reentry() {
+    let backing = InMemoryPersistenceStore::new();
+    let writes = Arc::new(AtomicUsize::new(0));
+    let effects = Arc::new(AtomicUsize::new(0));
+    let mut bus = Bus::new();
+    bus.insert(PersistenceTraceId::new("intent-applied-lost-ack"));
+    bus.insert(PersistenceHandle::from_store(FailOnAppend {
+        backing: backing.clone(),
+        calls: writes.clone(),
+        fail_on_append: 2,
+        apply_failed_append: true,
+    }));
+    let axon = Axon::<u32, u32, String, ()>::new("intent-ack-fixture").then(Count(effects.clone()));
+
+    assert!(matches!(
+        axon.execute(0, &(), &mut bus).await,
+        ExecutionReport::BlockedBeforeEffect {
+            operation: PersistenceOperation::Intent,
+            effect: EffectBoundary::NotInvoked,
+            ..
+        }
+    ));
+    let trace = backing
+        .load("intent-applied-lost-ack")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        trace
+            .events
+            .iter()
+            .map(|event| event.outcome_kind.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Enter", "Intent"]
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+
+    assert!(matches!(
+        axon.execute(0, &(), &mut bus).await,
+        ExecutionReport::BlockedBeforeEffect {
+            operation: PersistenceOperation::PendingIntent,
+            effect: EffectBoundary::NotInvoked,
+            ..
+        }
+    ));
+    assert_eq!(writes.load(Ordering::SeqCst), 2);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        backing
+            .load("intent-applied-lost-ack")
+            .await
+            .unwrap()
+            .unwrap(),
+        trace
+    );
+}
+
+#[tokio::test]
 async fn actual_execute_reports_terminal_append_ack_loss_after_domain_result() {
-    for (trace_id, apply_failed_append) in
-        [("terminal-not-applied", false), ("terminal-applied-lost-ack", true)]
-    {
+    for (trace_id, apply_failed_append) in [
+        ("terminal-not-applied", false),
+        ("terminal-applied-lost-ack", true),
+    ] {
         let backing = InMemoryPersistenceStore::new();
         let writes = Arc::new(AtomicUsize::new(0));
         let effects = Arc::new(AtomicUsize::new(0));
@@ -1118,7 +1411,7 @@ async fn actual_execute_reports_terminal_append_ack_loss_after_domain_result() {
         bus.insert(PersistenceHandle::from_store(FailOnAppend {
             backing: backing.clone(),
             calls: writes.clone(),
-            fail_on_append: 3,
+            fail_on_append: 4,
             apply_failed_append,
         }));
         let axon = Axon::<u32, u32, String, ()>::new("terminal-report-fixture")
@@ -1137,13 +1430,13 @@ async fn actual_execute_reports_terminal_append_ack_loss_after_domain_result() {
         ));
         assert!(!format!("{report:?}").contains("secret-backend-sentinel"));
         assert_eq!(effects.load(Ordering::SeqCst), 1);
-        assert_eq!(writes.load(Ordering::SeqCst), 3);
+        assert_eq!(writes.load(Ordering::SeqCst), 4);
 
         let trace = backing.load(trace_id).await.unwrap().unwrap();
         // Neither a rejected append nor an applied-but-unacknowledged append
         // may certify completion to a fresh reader.
         assert_eq!(trace.completion, None);
-        assert_eq!(trace.events.len(), if apply_failed_append { 3 } else { 2 });
+        assert_eq!(trace.events.len(), if apply_failed_append { 4 } else { 3 });
         assert_eq!(
             trace
                 .events
@@ -1153,6 +1446,14 @@ async fn actual_execute_reports_terminal_append_ack_loss_after_domain_result() {
             if apply_failed_append { 2 } else { 1 }
         );
         assert_eq!(trace.events[0].outcome_kind, "Enter");
+        assert_eq!(
+            trace.events[1].event_type,
+            ranvier_runtime::PersistenceEventType::Intent
+        );
+        assert_eq!(
+            trace.events[2].event_type,
+            ranvier_runtime::PersistenceEventType::Result
+        );
         assert_eq!(
             bus.read::<PersistenceHandle>()
                 .unwrap()
@@ -1172,7 +1473,7 @@ async fn actual_execute_reports_terminal_append_ack_loss_after_domain_result() {
             }
         ));
         assert_eq!(effects.load(Ordering::SeqCst), 1);
-        assert_eq!(writes.load(Ordering::SeqCst), 3);
+        assert_eq!(writes.load(Ordering::SeqCst), 4);
         assert_eq!(backing.load(trace_id).await.unwrap().unwrap(), trace);
     }
 }
@@ -1298,21 +1599,27 @@ async fn actual_execute_reports_completion_error_without_replaying_domain_effect
         assert_eq!(effects.load(Ordering::SeqCst), 1);
         assert_eq!(
             *store.operations.lock().unwrap(),
-            vec!["append:Enter", "append:Next", "append:Next", "complete"]
+            vec![
+                "append:Enter",
+                "append:Intent",
+                "append:Next",
+                "append:Next",
+                "complete"
+            ]
         );
 
         let trace = backing.load("complete-error").await.unwrap().unwrap();
-        assert_eq!(trace.events.len(), 3);
+        assert_eq!(trace.events.len(), 4);
         assert_eq!(
             trace
                 .events
                 .iter()
                 .map(|event| event.outcome_kind.as_str())
                 .collect::<Vec<_>>(),
-            vec!["Enter", "Next", "Next"]
+            vec!["Enter", "Intent", "Next", "Next"]
         );
-        assert!(trace.events[1].node_id.is_some());
-        assert!(trace.events[2].node_id.is_none());
+        assert!(trace.events[2].node_id.is_some());
+        assert!(trace.events[3].node_id.is_none());
         assert_eq!(
             trace.completion,
             apply_before_error.then_some(CompletionState::Success)
@@ -1355,7 +1662,12 @@ async fn actual_execute_reports_absent_persistence_and_unrequested_completion() 
     assert_eq!(effects.load(Ordering::SeqCst), 2);
     assert_eq!(
         *store.operations.lock().unwrap(),
-        vec!["append:Enter", "append:Next", "append:Next"]
+        vec![
+            "append:Enter",
+            "append:Intent",
+            "append:Next",
+            "append:Next"
+        ]
     );
 
     let trace = backing
@@ -1363,7 +1675,7 @@ async fn actual_execute_reports_absent_persistence_and_unrequested_completion() 
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(trace.events.len(), 3);
+    assert_eq!(trace.events.len(), 4);
     assert_eq!(trace.completion, None);
 }
 
@@ -1401,7 +1713,7 @@ async fn verify_compensated_result_ack_cancellation(apply_blocked: bool) {
     let original: Arc<dyn PersistenceStore> = Arc::new(AppliedAwaitingAck {
         backing: backing.clone(),
         calls: AtomicUsize::new(0),
-        block_at: 2,
+        block_at: 3,
         apply_blocked,
         applied: applied.clone(),
     });
@@ -1425,10 +1737,7 @@ async fn verify_compensated_result_ack_cancellation(apply_blocked: bool) {
     })
     .await
     .unwrap();
-    let owned_cleanup = report.cleanup().unwrap();
-    assert!(owned_cleanup.is_complete());
-    assert_eq!(owned_cleanup.steps.len(), 1);
-    assert_eq!(owned_cleanup.trace_id, "compensated-result-ack");
+    assert!(report.cleanup().is_none());
     assert!(matches!(
         report,
         ExecutionReport::Unconfirmed {
@@ -1440,7 +1749,7 @@ async fn verify_compensated_result_ack_cancellation(apply_blocked: bool) {
     ));
     assert_eq!(effects.load(Ordering::SeqCst), 1);
     assert_eq!(later_effects.load(Ordering::SeqCst), 0);
-    assert_eq!(*undo_inputs.lock().unwrap(), vec![41]);
+    assert!(undo_inputs.lock().unwrap().is_empty());
     let trace = backing
         .load("compensated-result-ack")
         .await
@@ -1459,8 +1768,9 @@ async fn verify_compensated_result_ack_cancellation(apply_blocked: bool) {
         );
     }
     assert_eq!(trace.events.first().unwrap().outcome_kind, "Enter");
-    assert_eq!(trace.events.last().unwrap().outcome_kind, "Cancelled");
-    assert_eq!(trace.completion, Some(CompletionState::Cancelled));
+    assert_eq!(trace.events.len(), 2 + usize::from(apply_blocked));
+    assert_eq!(trace.events[1].outcome_kind, "Intent");
+    assert_eq!(trace.completion, None);
     assert!(Arc::ptr_eq(
         &original,
         &bus.read::<PersistenceHandle>().unwrap().store()
@@ -1594,14 +1904,14 @@ async fn compensation_marker_write_ack_loss_preserves_fault_and_uncertainty() {
             apply_before_error
         );
         let trace = trace_store.load(trace_id).await.unwrap().unwrap();
-        assert_eq!(trace.completion, Some(CompletionState::Fault));
+        assert_eq!(trace.completion, None);
         assert_eq!(
             trace
                 .events
                 .iter()
                 .map(|event| event.outcome_kind.as_str())
                 .collect::<Vec<_>>(),
-            vec!["Enter", "Fault", "Fault"]
+            vec!["Enter", "Intent", "Fault", "Intent"]
         );
     }
 }

@@ -122,20 +122,32 @@ where
             .await
     }
     fn prepare_owned_child(
-        &self, resources: &Res, bus: &Bus,
+        &self,
+        resources: &Res,
+        bus: &Bus,
     ) -> Result<Option<(Self, crate::nested_custody::WeakCustody)>, &'static str> {
         use crate::nested_custody::{NestedSagaCustody, OwnedResources, RequiredOwnedCustody};
-        if !bus.has::<RequiredOwnedCustody>() || !bus.has::<crate::execution_observation::ActiveObservation>() {
+        if !bus.has::<RequiredOwnedCustody>()
+            || !bus.has::<crate::execution_observation::ActiveObservation>()
+        {
             return Ok(None);
         }
-        let owned = bus.read::<OwnedResources<Res>>()
+        let owned = bus
+            .read::<OwnedResources<Res>>()
             .filter(|owned| std::ptr::eq(owned.0.as_ref(), resources))
             .ok_or("execution.nested_resources_unowned")?;
-        let handlers = self.saga_compensation_registry.try_read()
-            .map_err(|_| "execution.nested_registry_unavailable")?.handlers.clone();
+        let handlers = self
+            .saga_compensation_registry
+            .try_read()
+            .map_err(|_| "execution.nested_registry_unavailable")?
+            .handlers
+            .clone();
         let mut graph = self.clone();
         graph.saga_compensation_registry = std::sync::Arc::new(std::sync::RwLock::new(
-            ranvier_core::saga::SagaCompensationRegistry { handlers: handlers.clone() }));
+            ranvier_core::saga::SagaCompensationRegistry {
+                handlers: handlers.clone(),
+            },
+        ));
         let custody = std::sync::Arc::new(NestedSagaCustody {
             resources: owned.0.clone(),
             handlers: ranvier_core::saga::SagaCompensationRegistry { handlers },
@@ -144,7 +156,9 @@ where
             store.reserve(custody)?
         } else if let Some(client) = bus.read::<crate::nested_custody::WeakCustodyClient>() {
             client.reserve(custody)?
-        } else { return Err("execution.nested_custody_unavailable"); };
+        } else {
+            return Err("execution.nested_custody_unavailable");
+        };
         Ok(Some((graph, retained)))
     }
     fn record_owned_child(bus: &mut Bus, custody: crate::nested_custody::WeakCustody) {
@@ -177,9 +191,13 @@ where
                 &selected
             }
             Ok(None) => self,
-            Err(signal) => return owner.finish(ExecutionTerminal::Outcome(Outcome::emit(signal, None))),
+            Err(signal) => {
+                return owner.finish(ExecutionTerminal::Outcome(Outcome::emit(signal, None)));
+            }
         };
-        let terminal = graph.execute_terminal_domain(input, resources, owner.bus(), token).await;
+        let terminal = graph
+            .execute_terminal_domain(input, resources, owner.bus(), token)
+            .await;
         owner.finish(terminal)
     }
 
@@ -335,6 +353,19 @@ where
                 active.0.configure_cleanup(grace);
             }
         }
+        // The prefix shares this trace with a later stream initializer. Do not
+        // mark the persisted trace complete before deciding whether that
+        // configured-store effect has a supported journal contract.
+        let deferred_completion = if owner.bus().has::<crate::PersistenceHandle>() {
+            let previous = owner
+                .bus()
+                .read::<crate::PersistenceAutoComplete>()
+                .copied();
+            owner.bus().insert(crate::PersistenceAutoComplete(false));
+            Some(previous)
+        } else {
+            None
+        };
         let terminal = match &cancellation {
             Some(token) => {
                 self.execute_terminal_domain(input, resources, owner.bus(), token.clone())
@@ -344,6 +375,13 @@ where
                 ExecutionTerminal::Outcome(self.execute_domain(input, resources, owner.bus()).await)
             }
         };
+        if let Some(previous) = deferred_completion {
+            if let Some(previous) = previous {
+                owner.bus().insert(previous);
+            } else {
+                let _ = owner.bus().remove::<crate::PersistenceAutoComplete>();
+            }
+        }
         // Snapshot while the prefix's IAM, Saga and other context are still owned.
         // Unknown acknowledgments and non-Next results retain their original typed value.
         let (output, prefix) = match admit_prefix(owner.prefix_report(terminal)) {
@@ -367,6 +405,22 @@ where
                         cleanup_grace,
                     )
                     .await,
+            };
+        }
+        if owner.bus().has::<crate::PersistenceHandle>() {
+            if let Some(active) = owner
+                .bus()
+                .read::<crate::execution_observation::ActiveObservation>()
+            {
+                active
+                    .0
+                    .block(crate::PersistenceOperation::UnsupportedEffect);
+            }
+            // Returning the typed prefix result makes the unsupported
+            // initializer visible to callers; it is never invoked without an
+            // intent/result representation in the same persistence contract.
+            return StreamInitializationReport::Rejected {
+                prefix: owner.prefix_report(ExecutionTerminal::Outcome(Outcome::Next(output))),
             };
         }
         let result = {
@@ -564,7 +618,7 @@ where
             .read::<ranvier_core::schematic::MigrationRegistry>()
             .cloned();
 
-        let persistence_start_step = if let Some(handle) = persistence_handle.as_ref() {
+        if let Some(handle) = persistence_handle.as_ref() {
             let (
                 mut start_step,
                 trace_version,
@@ -578,11 +632,18 @@ where
                     if let Some(active) =
                         bus.read::<crate::execution_observation::ActiveObservation>()
                     {
-                        active.0.block(if error.is::<RecoveryPayloadUnavailable>() {
+                        let operation = if error.is::<RecoveryPayloadUnavailable>() {
                             crate::PersistenceOperation::RecoveryPayload
+                        } else if error.is::<UnsupportedPersistenceFormat>() {
+                            crate::PersistenceOperation::UnsupportedFormat
+                        } else if error.is::<PendingPersistenceIntent>() {
+                            crate::PersistenceOperation::PendingIntent
+                        } else if error.is::<MissingPersistenceTerminal>() {
+                            crate::PersistenceOperation::Terminal
                         } else {
                             crate::PersistenceOperation::Load
-                        });
+                        };
+                        active.0.block(operation);
                     }
                     // Internal control signal is discarded by the blocking report.
                     return Outcome::emit("execution.persistence.load_unconfirmed", None);
@@ -839,11 +900,7 @@ where
                     payload: last_payload,
                 });
             }
-
-            Some(start_step)
-        } else {
-            None
-        };
+        }
 
         let should_capture = should_attach_timeline(bus);
         let inserted_timeline = if should_capture {
@@ -872,12 +929,6 @@ where
         );
         let outcome = {
             use futures_util::FutureExt as _;
-            // Collected streams and raw executor bodies need not traverse
-            // run_this_step. Conservatively mark the graph invocation itself
-            // after persistence entry gates, before user executor code runs.
-            if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>() {
-                active.0.effect();
-            }
             let fut = (self.executor)(input, resources, bus).instrument(circuit_span.clone());
             match AssertUnwindSafe(fut).catch_unwind().await {
                 Ok(outcome) => outcome,
@@ -912,8 +963,16 @@ where
             circuit_span.record("ranvier.outcome_target", tracing::field::display(&target));
         }
 
-        // Automated Saga Rollback (LIFO)
-        if matches!(outcome, Outcome::Fault(_)) && effective_saga_policy == SagaPolicy::Enabled {
+        // Automated Saga Rollback (LIFO) is permitted only after the faulting
+        // result was confirmed. Unknown result acknowledgements require
+        // reconciliation and must not trigger another effect.
+        let persistence_failed = bus
+            .read::<crate::execution_observation::ActiveObservation>()
+            .is_some_and(|active| active.0.has_failure());
+        if !persistence_failed
+            && matches!(outcome, Outcome::Fault(_))
+            && effective_saga_policy == SagaPolicy::Enabled
+        {
             self.rollback_saga(resources, bus, &trace_id).await;
         }
 
@@ -932,41 +991,24 @@ where
 
         // A recovery failure raised inside the graph cannot certify terminal
         // history or completion. Preserve earlier history for reconciliation.
+        // A failed or uncertain write cannot be followed by terminal history,
+        // compensation, or a completion claim. Preserve the domain result for
+        // the invocation report and let an operator reconcile the trace.
         if bus
             .read::<crate::execution_observation::ActiveObservation>()
-            .is_some_and(|active| active.0.is_blocked())
+            .is_some_and(|active| active.0.has_failure())
         {
             return outcome;
         }
 
-        // A transition-result write can fail after the domain effect ran. Do
-        // not append a terminal row or certify completion over that unknown
-        // checkpoint; preserve the domain outcome for the invocation report.
-        if bus
-            .read::<crate::execution_observation::ActiveObservation>()
-            .is_some_and(|active| active.0.has_unconfirmed_result_write())
-        {
-            return outcome;
-        }
-
-        let fault_step = persistence_start_step.map(|s| s + 1).unwrap_or(1);
+        // Terminal is a cursor after the entire graph, not an alias for the
+        // first post-entry step. This keeps a lost terminal ACK beyond every
+        // executable node so a later invocation must reconcile instead of
+        // replaying the final transition. External compensation, when
+        // configured, must be journaled before this terminal event.
+        let fault_step = u64::try_from(self.schematic.nodes.len()).unwrap_or(u64::MAX);
+        let mut terminal_step = fault_step;
         let mut terminal_event_confirmed = false;
-        if let Some(handle) = persistence_handle.as_ref() {
-            terminal_event_confirmed = persist_encoded_execution_event(
-                handle,
-                &trace_id,
-                &label,
-                &version,
-                fault_step,
-                None, // Outcome-level events might not have a single node_id context here
-                outcome_kind_name(&outcome),
-                serde_json::to_value(&outcome).map(Some),
-                bus,
-            )
-            .await
-                == crate::execution_report::StoreConfirmation::Confirmed;
-        }
-
         let mut completion = completion_from_outcome(&outcome);
         // External compensation reverses the observed business effect even without
         // an execution-trace store; only its trace event and completion are optional.
@@ -982,8 +1024,27 @@ where
                 timestamp_ms: now_ms(),
             };
 
+            let compensation_step = fault_step.saturating_add(1);
+            if persistence_handle.is_some() {
+                let intent_payload = serde_json::json!({
+                    "kind": "external_compensation",
+                    "fault_kind": outcome_kind_name(&outcome),
+                    "fault_step": fault_step,
+                });
+                if !super::persist_effect_intent(
+                    &intent_payload,
+                    bus,
+                    "external-compensation",
+                    compensation_step,
+                )
+                .await
+                {
+                    return outcome;
+                }
+            }
+
             let journal = external_compensation_journal(bus, &trace_id);
-            if run_compensation(
+            let compensated = run_compensation(
                 compensation,
                 context,
                 compensation_retry_policy,
@@ -992,27 +1053,60 @@ where
                     .map(|active| active.0.clone()),
                 Some(journal),
             )
-            .await
-            {
+            .await;
+            if compensated {
                 if let Some(handle) = persistence_handle.as_ref() {
                     let compensation_event_confirmed = persist_execution_event(
                         handle,
                         &trace_id,
                         &label,
                         &version,
-                        fault_step.saturating_add(1),
-                        None,
+                        compensation_step,
+                        Some("external-compensation".to_string()),
                         "Compensated",
-                        None,
+                        Some(serde_json::json!({"outcome": "completed"})),
                     )
                     .await
                         == crate::execution_report::StoreConfirmation::Confirmed;
-                    terminal_event_confirmed &= compensation_event_confirmed;
                     if compensation_event_confirmed {
                         completion = CompletionState::Compensated;
+                        terminal_step = compensation_step.saturating_add(1);
+                    } else if let Some(active) =
+                        bus.read::<crate::execution_observation::ActiveObservation>()
+                    {
+                        active
+                            .0
+                            .block(crate::PersistenceOperation::CompensationEvent);
                     }
                 }
+            } else if persistence_handle.is_some()
+                && let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>()
+            {
+                active.0.block(crate::PersistenceOperation::PendingIntent);
             }
+        }
+
+        if bus
+            .read::<crate::execution_observation::ActiveObservation>()
+            .is_some_and(|active| active.0.is_blocked())
+        {
+            return outcome;
+        }
+
+        if let Some(handle) = persistence_handle.as_ref() {
+            terminal_event_confirmed = persist_encoded_execution_event(
+                handle,
+                &trace_id,
+                &label,
+                &version,
+                terminal_step,
+                None, // Outcome-level events might not have a single node_id context here
+                outcome_kind_name(&outcome),
+                serde_json::to_value(&outcome).map(Some),
+                bus,
+            )
+            .await
+                == crate::execution_report::StoreConfirmation::Confirmed;
         }
 
         if let Some(handle) = persistence_handle.as_ref()
@@ -1100,6 +1194,59 @@ where
                 }
             };
             if let Some(handler) = handler {
+                let compensation_step = if bus.has::<PersistenceHandle>() {
+                    let Some(compensation_step) = bus
+                        .read::<ranvier_core::schematic::Schematic>()
+                        .and_then(|schematic| {
+                            schematic
+                                .nodes
+                                .iter()
+                                .position(|node| node.id == task.node_id)
+                        })
+                    else {
+                        if let Some(active) =
+                            bus.read::<crate::execution_observation::ActiveObservation>()
+                        {
+                            active.0.block(crate::PersistenceOperation::Intent);
+                        }
+                        journal.settle(SagaRollbackOutcome::NotInvoked);
+                        bus.insert(journal.clone());
+                        break;
+                    };
+                    let compensation_input =
+                        match serde_json::from_slice::<serde_json::Value>(&task.input_snapshot) {
+                            Ok(input) => input,
+                            Err(_) => {
+                                if let Some(active) =
+                                    bus.read::<crate::execution_observation::ActiveObservation>()
+                                {
+                                    active.0.block(crate::PersistenceOperation::RecoveryPayload);
+                                }
+                                journal.settle(SagaRollbackOutcome::NotInvoked);
+                                bus.insert(journal.clone());
+                                break;
+                            }
+                        };
+                    if !super::persist_effect_intent(
+                        &compensation_input,
+                        bus,
+                        &task.node_id,
+                        compensation_step as u64,
+                    )
+                    .await
+                    {
+                        journal.settle(SagaRollbackOutcome::NotInvoked);
+                        bus.insert(journal.clone());
+                        break;
+                    }
+                    compensation_step as u64
+                } else {
+                    0
+                };
+                if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>()
+                {
+                    active.0.effect();
+                }
                 bus.insert(journal.clone());
                 use futures_util::FutureExt as _;
                 // Factory invocation can unwind before returning its future.
@@ -1128,6 +1275,47 @@ where
                 };
                 journal.settle(outcome);
                 bus.insert(journal.clone());
+                if let Some(handle) = bus.read::<PersistenceHandle>() {
+                    let trace = persistence_trace_id(bus);
+                    let (circuit, version) = bus
+                        .read::<ranvier_core::schematic::Schematic>()
+                        .map(|schematic| (schematic.name.clone(), schematic.schema_version.clone()))
+                        .unwrap_or_default();
+                    let event_payload = serde_json::json!({
+                        "outcome": match outcome {
+                            SagaRollbackOutcome::Completed => "completed",
+                            SagaRollbackOutcome::Fault => "fault",
+                            SagaRollbackOutcome::Emitted => "emitted",
+                            SagaRollbackOutcome::Branched => "branched",
+                            SagaRollbackOutcome::Jumped => "jumped",
+                            SagaRollbackOutcome::Panicked => "panicked",
+                            SagaRollbackOutcome::InProgress => "in_progress",
+                            SagaRollbackOutcome::NotInvoked => "not_invoked",
+                            SagaRollbackOutcome::MissingHandler => "missing_handler",
+                        }
+                    });
+                    let confirmation = persist_execution_event(
+                        handle,
+                        &trace,
+                        &circuit,
+                        &version,
+                        compensation_step,
+                        Some(task.node_id.clone()),
+                        "SagaCompensation",
+                        Some(event_payload),
+                    )
+                    .await;
+                    if confirmation == crate::execution_report::StoreConfirmation::Unconfirmed {
+                        if let Some(active) =
+                            bus.read::<crate::execution_observation::ActiveObservation>()
+                        {
+                            active
+                                .0
+                                .block(crate::PersistenceOperation::CompensationEvent);
+                        }
+                        break;
+                    }
+                }
                 match result {
                     Outcome::Fault(_) => {
                         tracing::error!(trace_id = %trace_id, node_id = %task.node_id, "Saga compensation returned a fault");
@@ -1156,6 +1344,14 @@ where
         bus: &mut Bus,
         context: CancellationContext,
     ) {
+        if bus
+            .read::<crate::execution_observation::ActiveObservation>()
+            .is_some_and(|active| active.0.has_failure())
+        {
+            // A write/load whose acknowledgement was already lost cannot be
+            // followed by an automatic cancellation rewrite or compensator.
+            return;
+        }
         let trace_id = persistence_trace_id(bus);
         let label = self.schematic.name.clone();
         let version = self.schematic.schema_version.clone();
@@ -1169,87 +1365,99 @@ where
             .map(|policy| policy.current())
             .unwrap_or_else(|| self.saga_policy.clone());
 
-        let mut terminal_event_confirmed = false;
         let (cancellation_step, persistence_writable) = if let Some(handle) =
             persistence_handle.as_ref()
         {
-            let (next_step, writable, needs_entry) = match handle.store().load(&trace_id).await {
-                Ok(Some(trace)) if has_unusable_recovery_payload(&trace) => {
-                    if let Some(active) =
-                        bus.read::<crate::execution_observation::ActiveObservation>()
-                    {
-                        active.0.block(crate::PersistenceOperation::RecoveryPayload);
+            let (next_step, needs_entry) = match handle.store().load(&trace_id).await {
+                Ok(Some(trace)) => {
+                    if let Err(validation) = crate::persistence::validate_persisted_trace(&trace) {
+                        let operation = match validation {
+                            crate::persistence::TraceValidationError::UnsupportedFormat => {
+                                crate::PersistenceOperation::UnsupportedFormat
+                            }
+                            crate::persistence::TraceValidationError::PendingIntent => {
+                                crate::PersistenceOperation::PendingIntent
+                            }
+                            crate::persistence::TraceValidationError::MissingTerminal => {
+                                crate::PersistenceOperation::Terminal
+                            }
+                        };
+                        if let Some(active) =
+                            bus.read::<crate::execution_observation::ActiveObservation>()
+                        {
+                            active.0.block(operation);
+                        }
+                        return;
                     }
-                    // Unknown historical effects must be reconciled before
-                    // invoking cleanup or rewriting the recovery record.
-                    return;
+                    if has_unusable_recovery_payload(&trace) {
+                        if let Some(active) =
+                            bus.read::<crate::execution_observation::ActiveObservation>()
+                        {
+                            active.0.block(crate::PersistenceOperation::RecoveryPayload);
+                        }
+                        return;
+                    }
+                    if trace.completion.is_some() {
+                        tracing::warn!(
+                            trace_id = %trace_id,
+                            completion = ?trace.completion,
+                            "Cancellation cleanup will not overwrite an already completed trace"
+                        );
+                        return;
+                    }
+                    handle.set_next_event_sequence(u64::try_from(trace.events.len()).unwrap_or(0));
+                    (
+                        trace
+                            .events
+                            .last()
+                            .map(|event| event.step.saturating_add(1))
+                            .unwrap_or(0),
+                        false,
+                    )
                 }
-                Ok(Some(trace)) if trace.completion.is_some() => {
-                    tracing::warn!(
-                        trace_id = %trace_id,
-                        completion = ?trace.completion,
-                        "Cancellation cleanup will not overwrite an already completed trace"
-                    );
-                    // No new undo or external compensation may be replayed for
-                    // an execution already known to be terminal.
-                    return;
-                }
-                Ok(Some(trace)) => (
-                    trace
-                        .events
-                        .last()
-                        .map(|event| event.step.saturating_add(1))
-                        .unwrap_or(0),
-                    true,
-                    false,
-                ),
                 // Preserve the persistence state-machine invariant that a
-                // terminal always follows a normal execution entry, even
-                // when the token was already cancelled before `execute`
-                // was first polled.
-                Ok(None) => (1, true, true),
+                // terminal always follows a confirmed entry marker.
+                Ok(None) => {
+                    handle.set_next_event_sequence(0);
+                    (1, true)
+                }
                 Err(_) => {
                     tracing::warn!(
                         trace_id = %trace_id,
                         store_operation = "cancellation_load",
                         "Failed to inspect persistence cursor before cancellation"
                     );
-                    // The next cursor is unknown. Writing at a guessed step could
-                    // collide with an existing event or create a terminal without
-                    // its entry marker, so leave the persisted trace untouched.
-                    (0, false, false)
+                    if let Some(active) =
+                        bus.read::<crate::execution_observation::ActiveObservation>()
+                    {
+                        active.0.block(crate::PersistenceOperation::Load);
+                    }
+                    return;
                 }
             };
-            if writable {
-                if needs_entry {
-                    let ingress_node_id = self.schematic.nodes.first().map(|node| node.id.clone());
-                    persist_execution_event(
-                        handle,
-                        &trace_id,
-                        &label,
-                        &version,
-                        0,
-                        ingress_node_id,
-                        "Enter",
-                        None,
-                    )
-                    .await;
-                }
-                let payload = serde_json::to_value(&context).ok();
-                terminal_event_confirmed = persist_execution_event(
+            if needs_entry {
+                let ingress_node_id = self.schematic.nodes.first().map(|node| node.id.clone());
+                let confirmation = persist_execution_event(
                     handle,
                     &trace_id,
                     &label,
                     &version,
-                    next_step,
+                    0,
+                    ingress_node_id,
+                    "Enter",
                     None,
-                    "Cancelled",
-                    payload,
                 )
-                .await
-                    == crate::execution_report::StoreConfirmation::Confirmed;
+                .await;
+                if confirmation == crate::execution_report::StoreConfirmation::Unconfirmed {
+                    if let Some(active) =
+                        bus.read::<crate::execution_observation::ActiveObservation>()
+                    {
+                        active.0.block(crate::PersistenceOperation::Intent);
+                    }
+                    return;
+                }
             }
-            (next_step, writable)
+            (next_step, true)
         } else {
             (0, false)
         };
@@ -1257,8 +1465,15 @@ where
         if effective_saga_policy == SagaPolicy::Enabled {
             self.rollback_saga(resources, bus, &trace_id).await;
         }
+        if bus
+            .read::<crate::execution_observation::ActiveObservation>()
+            .is_some_and(|active| active.0.is_blocked())
+        {
+            return;
+        }
 
         let mut completion = CompletionState::Cancelled;
+        let mut terminal_step = cancellation_step;
         if let Some(compensation) = compensation_handle.as_ref()
             && compensation_auto_trigger(bus)
         {
@@ -1270,8 +1485,27 @@ where
                 timestamp_ms: now_ms(),
             };
 
+            let compensation_step = cancellation_step.saturating_add(1);
+            if persistence_writable {
+                let intent_payload = serde_json::json!({
+                    "kind": "external_compensation",
+                    "fault_kind": "Cancelled",
+                    "fault_step": cancellation_step,
+                });
+                if !super::persist_effect_intent(
+                    &intent_payload,
+                    bus,
+                    "external-compensation",
+                    compensation_step,
+                )
+                .await
+                {
+                    return;
+                }
+            }
+
             let journal = external_compensation_journal(bus, &trace_id);
-            if run_compensation(
+            let compensated = run_compensation(
                 compensation,
                 compensation_context,
                 compensation_retry_policy,
@@ -1280,36 +1514,81 @@ where
                     .map(|active| active.0.clone()),
                 Some(journal),
             )
-            .await
-            {
-                if let Some(handle) = persistence_handle.as_ref()
-                    && persistence_writable
-                {
-                    let compensation_event_confirmed = persist_execution_event(
-                        handle,
-                        &trace_id,
-                        &label,
-                        &version,
-                        cancellation_step.saturating_add(1),
-                        None,
-                        "Compensated",
-                        None,
-                    )
-                    .await
-                        == crate::execution_report::StoreConfirmation::Confirmed;
-                    terminal_event_confirmed &= compensation_event_confirmed;
-                    if compensation_event_confirmed {
-                        completion = CompletionState::Compensated;
+            .await;
+            if persistence_writable {
+                let Some(handle) = persistence_handle.as_ref() else {
+                    return;
+                };
+                if !compensated {
+                    // The handler may have partially run. Keep the intent open
+                    // so a later invocation cannot replay cleanup automatically.
+                    if let Some(active) =
+                        bus.read::<crate::execution_observation::ActiveObservation>()
+                    {
+                        active.0.block(crate::PersistenceOperation::PendingIntent);
                     }
-                } else {
-                    terminal_event_confirmed = false;
+                    return;
                 }
+                let compensation_event_confirmed = persist_execution_event(
+                    handle,
+                    &trace_id,
+                    &label,
+                    &version,
+                    compensation_step,
+                    Some("external-compensation".to_string()),
+                    "Compensated",
+                    Some(serde_json::json!({"outcome": "completed"})),
+                )
+                .await
+                    == crate::execution_report::StoreConfirmation::Confirmed;
+                if !compensation_event_confirmed {
+                    if let Some(active) =
+                        bus.read::<crate::execution_observation::ActiveObservation>()
+                    {
+                        active
+                            .0
+                            .block(crate::PersistenceOperation::CompensationEvent);
+                    }
+                    return;
+                }
+                completion = CompletionState::Compensated;
+                terminal_step = compensation_step.saturating_add(1);
+            } else if compensated {
+                completion = CompletionState::Compensated;
             }
         }
 
         if let Some(handle) = persistence_handle.as_ref()
             && persistence_writable
         {
+            let payload = match serde_json::to_value(&context) {
+                Ok(payload) => Some(payload),
+                Err(_) => {
+                    if let Some(active) =
+                        bus.read::<crate::execution_observation::ActiveObservation>()
+                    {
+                        active
+                            .0
+                            .encoding_failed(crate::PersistenceOperation::Terminal);
+                    }
+                    return;
+                }
+            };
+            let terminal_event_confirmed = persist_execution_event(
+                handle,
+                &trace_id,
+                &label,
+                &version,
+                terminal_step,
+                None,
+                "Cancelled",
+                payload,
+            )
+            .await
+                == crate::execution_report::StoreConfirmation::Confirmed;
+            if !terminal_event_confirmed {
+                return;
+            }
             if persistence_auto_complete(bus)
                 && terminal_event_confirmed
                 && !persistence_encoding_failed(bus)

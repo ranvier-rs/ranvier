@@ -35,32 +35,99 @@ fn parse_backend(value: &str) -> anyhow::Result<Backend> {
 
 fn parse_postgres_prefix(value: &str) -> anyhow::Result<&str> {
     match value {
-        "compat_old" | "compat_current" => Ok(value),
-        _ => anyhow::bail!("explicit fixture prefix required"),
+        "release_v2" => Ok(value),
+        _ => anyhow::bail!("explicit forward-only release prefix required"),
     }
 }
 
-fn expected_trace(trace_id: &str, backend: Backend) -> PersistedTrace {
-    let node_id = (backend == Backend::Redis).then(|| "synthetic-node".to_string());
-    let events = [1_u64, 2]
-        .into_iter()
-        .map(|step| PersistenceEnvelope {
+fn expected_trace(trace_id: &str) -> PersistedTrace {
+    let node_id = Some("synthetic-node".to_string());
+    let events = vec![
+        PersistenceEnvelope {
             trace_id: trace_id.to_string(),
             circuit: "StorageCompatibilityFixture".to_string(),
-            schematic_version: format!("compat-{step}"),
-            step,
+            schematic_version: "compat-0".to_string(),
+            event_sequence: 0,
+            event_type: ranvier_runtime::persistence::PersistenceEventType::Enter,
+            step: 0,
+            node_id: None,
+            outcome_kind: "Enter".to_string(),
+            timestamp_ms: 1_700_000_000_000,
+            payload_hash: None,
+            payload: None,
+        },
+        PersistenceEnvelope {
+            trace_id: trace_id.to_string(),
+            circuit: "StorageCompatibilityFixture".to_string(),
+            schematic_version: "compat-1".to_string(),
+            event_sequence: 1,
+            event_type: ranvier_runtime::persistence::PersistenceEventType::Intent,
+            step: 1,
+            node_id: node_id.clone(),
+            outcome_kind: "Intent".to_string(),
+            timestamp_ms: 1_700_000_000_001,
+            payload_hash: None,
+            payload: Some(serde_json::json!({ "input": 1, "synthetic": true })),
+        },
+        PersistenceEnvelope {
+            trace_id: trace_id.to_string(),
+            circuit: "StorageCompatibilityFixture".to_string(),
+            schematic_version: "compat-1".to_string(),
+            event_sequence: 2,
+            event_type: ranvier_runtime::persistence::PersistenceEventType::Result,
+            step: 1,
             node_id: node_id.clone(),
             outcome_kind: "Next".to_string(),
-            timestamp_ms: 1_700_000_000_000 + step,
-            payload_hash: Some(format!("synthetic-hash-{step}")),
-            payload: Some(serde_json::json!({ "step": step, "synthetic": true })),
-        })
-        .collect();
+            timestamp_ms: 1_700_000_000_002,
+            payload_hash: Some("synthetic-hash-1".to_string()),
+            payload: Some(serde_json::json!({ "step": 1, "synthetic": true })),
+        },
+        PersistenceEnvelope {
+            trace_id: trace_id.to_string(),
+            circuit: "StorageCompatibilityFixture".to_string(),
+            schematic_version: "compat-2".to_string(),
+            event_sequence: 3,
+            event_type: ranvier_runtime::persistence::PersistenceEventType::Intent,
+            step: 2,
+            node_id: node_id.clone(),
+            outcome_kind: "Intent".to_string(),
+            timestamp_ms: 1_700_000_000_003,
+            payload_hash: None,
+            payload: Some(serde_json::json!({ "input": 2, "synthetic": true })),
+        },
+        PersistenceEnvelope {
+            trace_id: trace_id.to_string(),
+            circuit: "StorageCompatibilityFixture".to_string(),
+            schematic_version: "compat-2".to_string(),
+            event_sequence: 4,
+            event_type: ranvier_runtime::persistence::PersistenceEventType::Result,
+            step: 2,
+            node_id: node_id.clone(),
+            outcome_kind: "Next".to_string(),
+            timestamp_ms: 1_700_000_000_004,
+            payload_hash: Some("synthetic-hash-2".to_string()),
+            payload: Some(serde_json::json!({ "step": 2, "synthetic": true })),
+        },
+        PersistenceEnvelope {
+            trace_id: trace_id.to_string(),
+            circuit: "StorageCompatibilityFixture".to_string(),
+            schematic_version: "compat-3".to_string(),
+            event_sequence: 5,
+            event_type: ranvier_runtime::persistence::PersistenceEventType::Terminal,
+            step: 3,
+            node_id: None,
+            outcome_kind: "Success".to_string(),
+            timestamp_ms: 1_700_000_000_005,
+            payload_hash: None,
+            payload: Some(serde_json::json!({ "status": "complete" })),
+        },
+    ];
 
     PersistedTrace {
         trace_id: trace_id.to_string(),
         circuit: "StorageCompatibilityFixture".to_string(),
-        schematic_version: "compat-2".to_string(),
+        format_version: ranvier_runtime::PERSISTENCE_FORMAT_VERSION,
+        schematic_version: "compat-3".to_string(),
         events,
         interventions: vec![Intervention {
             target_node: "synthetic-node".to_string(),
@@ -120,11 +187,11 @@ async fn exercise<S: PersistenceStore>(
     Ok(())
 }
 
-// This worker is invoked only by the owned compatibility rehearsal. It records
-// observations for both adapters; it does not select a supported schema floor.
+// This worker verifies a single candidate's v2 self-write/read contract. It
+// does not claim old-binary compatibility or select the release floor.
 #[tokio::test]
 #[ignore = "requires explicitly isolated PostgreSQL and Redis fixture services"]
-async fn storage_compatibility_worker() {
+async fn storage_v2_forward_only_worker() {
     let role = parse_role(&std::env::var("RANVIER_STORAGE_COMPAT_ROLE").unwrap()).unwrap();
     let backend = parse_backend(&std::env::var("RANVIER_STORAGE_COMPAT_BACKEND").unwrap()).unwrap();
     let trace_id = std::env::var("RANVIER_STORAGE_COMPAT_TRACE").unwrap();
@@ -133,7 +200,7 @@ async fn storage_compatibility_worker() {
         uuid::Uuid::parse_str(suffix).unwrap().simple().to_string(),
         suffix
     );
-    let expected = expected_trace(&trace_id, backend);
+    let expected = expected_trace(&trace_id);
 
     let result = tokio::time::timeout(std::time::Duration::from_secs(90), async {
         match backend {
@@ -170,7 +237,7 @@ async fn storage_compatibility_worker() {
 
     match outcome {
         Ok(()) => println!(
-            "STORAGE_COMPATIBILITY backend={} role={} result=PASS detail=full-snapshot-equality",
+            "STORAGE_V2_FORWARD backend={} role={} result=PASS detail=full-snapshot-equality",
             match backend {
                 Backend::Postgres => "postgres",
                 Backend::Redis => "redis",
@@ -181,7 +248,7 @@ async fn storage_compatibility_worker() {
             }
         ),
         Err(error) => println!(
-            "STORAGE_COMPATIBILITY backend={} role={} result=FAIL detail={}",
+            "STORAGE_V2_FORWARD backend={} role={} result=FAIL detail={}",
             match backend {
                 Backend::Postgres => "postgres",
                 Backend::Redis => "redis",
@@ -207,10 +274,7 @@ fn compatibility_worker_requires_explicit_role_and_backend() {
     assert!(parse_backend("").is_err());
     assert!(parse_backend("all").is_err());
 
-    assert_eq!(parse_postgres_prefix("compat_old").unwrap(), "compat_old");
-    assert_eq!(
-        parse_postgres_prefix("compat_current").unwrap(),
-        "compat_current"
-    );
+    assert_eq!(parse_postgres_prefix("release_v2").unwrap(), "release_v2");
+    assert!(parse_postgres_prefix("compat_old").is_err());
     assert!(parse_postgres_prefix("compat; DROP TABLE fixture").is_err());
 }

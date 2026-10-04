@@ -341,8 +341,8 @@ async fn initializer_failure_and_cancel_cleanup_use_nonclone_resources_lifo_and_
 }
 
 #[tokio::test]
-async fn initializer_cleanup_keeps_stored_prefix_confirmation_independent() {
-    use ranvier_runtime::{CompletionConfirmation, StreamInitializationReport, persistence::*};
+async fn configured_store_rejects_unjournaled_stream_initializer() {
+    use ranvier_runtime::{StreamInitializationReport, persistence::*};
     let effects = Arc::new(AtomicUsize::new(0));
     let undo = Arc::new(AtomicUsize::new(0));
     let init = Arc::new(AtomicUsize::new(0));
@@ -357,24 +357,20 @@ async fn initializer_cleanup_keeps_stored_prefix_confirmation_independent() {
         .execute((), &(), &mut bus)
         .await;
     match report {
-        StreamInitializationReport::Failed {
+        StreamInitializationReport::Rejected {
             prefix:
-                ExecutionReport::Recorded {
-                    result: (),
-                    completion: CompletionConfirmation::Confirmed,
-                    cleanup: None,
+                ExecutionReport::Unconfirmed {
+                    result: ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Next(())),
+                    operation: ranvier_runtime::PersistenceOperation::UnsupportedEffect,
+                    effect: ranvier_runtime::EffectBoundary::MayHaveRun,
+                    ..
                 },
-            initialization_cleanup: Some(cleanup),
-            ..
-        } => {
-            assert!(cleanup.is_complete());
-            assert_eq!(cleanup.steps.len(), 1);
-        }
-        _ => panic!("prefix acknowledgment and initializer cleanup must stay separate"),
+        } => {}
+        _ => panic!("configured storage must reject the unjournaled initializer"),
     }
     assert_eq!(effects.load(Ordering::SeqCst), 1);
-    assert_eq!(undo.load(Ordering::SeqCst), 1);
-    assert_eq!(init.load(Ordering::SeqCst), 1);
+    assert_eq!(undo.load(Ordering::SeqCst), 0);
+    assert_eq!(init.load(Ordering::SeqCst), 0);
     assert_eq!(
         backing
             .load("stored-initializer-cleanup")
@@ -382,7 +378,7 @@ async fn initializer_cleanup_keeps_stored_prefix_confirmation_independent() {
             .unwrap()
             .unwrap()
             .completion,
-        Some(CompletionState::Success)
+        None
     );
 }
 

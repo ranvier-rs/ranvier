@@ -1419,7 +1419,9 @@ where
             prefix: prefix.clone(),
             initializer: Arc::new(streaming.clone()),
             callable_factory: crate::streaming_axon::OwnedStreamDefinition::factory::<S, SErr>(),
-            item_maps: Vec::new(), timeout_config: timeout_config.clone(), buffer_size: 64,
+            item_maps: Vec::new(),
+            timeout_config: timeout_config.clone(),
+            buffer_size: 64,
         });
         let stream_executor: crate::streaming_axon::StreamExecutorType<In, Out, Item, E, Res> =
             Arc::new(move |input, resources, bus, token| {

@@ -20,22 +20,80 @@ fn mode(value: &str) -> anyhow::Result<Mode> {
 }
 
 fn expected(trace: &str) -> PersistedTrace {
-    let event = |step| PersistenceEnvelope {
+    let node = |step: u64| format!("node-{step}");
+    let event = |event_sequence: u64,
+                 step: u64,
+                 event_type: ranvier_runtime::persistence::PersistenceEventType,
+                 node_id: Option<String>,
+                 outcome_kind: &str,
+                 payload: Option<serde_json::Value>| PersistenceEnvelope {
         trace_id: trace.into(),
         circuit: "RedisRecoveryFixture".into(),
         schematic_version: format!("recovery-{step}"),
+        event_sequence,
+        event_type,
         step,
-        node_id: Some(format!("node-{step}")),
-        outcome_kind: "Next".into(),
+        node_id,
+        outcome_kind: outcome_kind.into(),
         timestamp_ms: u64::MAX,
-        payload_hash: Some(format!("hash-{step}")),
-        payload: Some(serde_json::json!({"step": step, "large": u64::MAX})),
+        payload_hash: Some(format!("hash-{event_sequence}")),
+        payload,
     };
     PersistedTrace {
         trace_id: trace.into(),
         circuit: "RedisRecoveryFixture".into(),
-        schematic_version: "recovery-1".into(),
-        events: vec![event(0), event(1)],
+        format_version: ranvier_runtime::PERSISTENCE_FORMAT_VERSION,
+        schematic_version: "recovery-2".into(),
+        events: vec![
+            event(
+                0,
+                0,
+                ranvier_runtime::PersistenceEventType::Enter,
+                None,
+                "Enter",
+                None,
+            ),
+            event(
+                1,
+                0,
+                ranvier_runtime::PersistenceEventType::Intent,
+                Some(node(0)),
+                "Intent",
+                Some(serde_json::json!({"input": 0, "large": u64::MAX})),
+            ),
+            event(
+                2,
+                0,
+                ranvier_runtime::PersistenceEventType::Result,
+                Some(node(0)),
+                "Next",
+                Some(serde_json::json!({"step": 0, "large": u64::MAX})),
+            ),
+            event(
+                3,
+                1,
+                ranvier_runtime::PersistenceEventType::Intent,
+                Some(node(1)),
+                "Intent",
+                Some(serde_json::json!({"input": 1, "large": u64::MAX})),
+            ),
+            event(
+                4,
+                1,
+                ranvier_runtime::PersistenceEventType::Result,
+                Some(node(1)),
+                "Next",
+                Some(serde_json::json!({"step": 1, "large": u64::MAX})),
+            ),
+            event(
+                5,
+                2,
+                ranvier_runtime::PersistenceEventType::Terminal,
+                None,
+                "Success",
+                Some(serde_json::json!({"status": "complete"})),
+            ),
+        ],
         interventions: vec![Intervention {
             target_node: "recovery-node".into(),
             payload_override: Some(serde_json::json!({"prior": u64::MAX, "retained": true})),
@@ -259,21 +317,55 @@ async fn redis_legacy_null_blocks_execution_and_pre_cancelled_cleanup() {
                 trace_id: trace_id.clone(),
                 circuit: axon.schematic().name.clone(),
                 schematic_version: axon.schematic().schema_version.clone(),
-                step: 1,
-                node_id: None,
-                outcome_kind: "Next".into(),
+                event_sequence: 0,
+                event_type: ranvier_runtime::persistence::PersistenceEventType::Enter,
+                step: 0,
+                node_id: axon.schematic().nodes.first().map(|node| node.id.clone()),
+                outcome_kind: "Enter".into(),
                 timestamp_ms: 0,
                 payload_hash: None,
-                payload: Some(serde_json::Value::Null),
+                payload: None,
             };
             store.append(seed).await.unwrap();
+            store
+                .append(PersistenceEnvelope {
+                    trace_id: trace_id.clone(),
+                    circuit: axon.schematic().name.clone(),
+                    schematic_version: axon.schematic().schema_version.clone(),
+                    event_sequence: 1,
+                    event_type: ranvier_runtime::persistence::PersistenceEventType::Intent,
+                    step: 1,
+                    node_id: Some(axon.schematic().nodes[1].id.clone()),
+                    outcome_kind: "Intent".into(),
+                    timestamp_ms: 0,
+                    payload_hash: None,
+                    payload: Some(serde_json::json!(7)),
+                })
+                .await
+                .unwrap();
+            store
+                .append(PersistenceEnvelope {
+                    trace_id: trace_id.clone(),
+                    circuit: axon.schematic().name.clone(),
+                    schematic_version: axon.schematic().schema_version.clone(),
+                    event_sequence: 2,
+                    event_type: ranvier_runtime::persistence::PersistenceEventType::Result,
+                    step: 1,
+                    node_id: Some(axon.schematic().nodes[1].id.clone()),
+                    outcome_kind: "Next".into(),
+                    timestamp_ms: 0,
+                    payload_hash: None,
+                    payload: Some(serde_json::Value::Null),
+                })
+                .await
+                .unwrap();
             let before = store.load(&trace_id).await.unwrap().unwrap();
-            assert_eq!(before.events[0].payload, None);
-            let key = format!("ranvier:persistence:{trace_id}");
+            assert_eq!(before.events[2].payload, Some(serde_json::Value::Null));
+            let key = format!("ranvier:persistence:v2:{trace_id}");
             let before_wire: String = raw.get(&key).await.unwrap();
             let wire: serde_json::Value = serde_json::from_str(&before_wire).unwrap();
             assert_eq!(
-                wire["events"][0].get("payload"),
+                wire["events"][2].get("payload"),
                 Some(&serde_json::Value::Null)
             );
             let mut bus = Bus::new();

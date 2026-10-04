@@ -4,16 +4,53 @@ use ranvier_runtime::persistence::{
 };
 
 fn event(trace: &str, step: u64, version: &str) -> PersistenceEnvelope {
+    let (event_type, node_id, outcome_kind) = if step == 0 {
+        (
+            ranvier_runtime::persistence::PersistenceEventType::Enter,
+            None,
+            "Enter",
+        )
+    } else {
+        (
+            ranvier_runtime::persistence::PersistenceEventType::Checkpoint,
+            Some(format!("checkpoint-{step}")),
+            "Checkpoint",
+        )
+    };
     PersistenceEnvelope {
         trace_id: trace.into(),
         circuit: "AtomicFixture".into(),
         schematic_version: version.into(),
+        event_sequence: step,
+        event_type,
         step,
-        node_id: None,
-        outcome_kind: "Next".into(),
+        node_id,
+        outcome_kind: outcome_kind.into(),
         timestamp_ms: 1000,
         payload_hash: None,
         payload: None,
+    }
+}
+
+fn terminal_event(
+    trace: &str,
+    sequence: u64,
+    step: u64,
+    version: &str,
+    outcome: &str,
+) -> PersistenceEnvelope {
+    PersistenceEnvelope {
+        trace_id: trace.into(),
+        circuit: "AtomicFixture".into(),
+        schematic_version: version.into(),
+        event_sequence: sequence,
+        event_type: ranvier_runtime::persistence::PersistenceEventType::Terminal,
+        step,
+        node_id: None,
+        outcome_kind: outcome.into(),
+        timestamp_ms: 1000 + sequence,
+        payload_hash: None,
+        payload: Some(serde_json::json!({ "terminal": outcome })),
     }
 }
 
@@ -179,9 +216,43 @@ async fn postgres_legacy_null_blocks_execution_and_pre_cancelled_cleanup() {
             let effects = Arc::new(AtomicUsize::new(0));
             let cleanup = Arc::new(AtomicUsize::new(0));
             let axon = Axon::<u32, u32, String>::new("AtomicFixture").then(Count(effects.clone()));
-            let mut seed = event(&trace_id, 1, &axon.schematic().schema_version);
-            seed.payload = Some(serde_json::Value::Null);
-            store.append(seed).await.unwrap();
+            let schematic = axon.schematic();
+            store
+                .append(event(&trace_id, 0, &schematic.schema_version))
+                .await
+                .unwrap();
+            store
+                .append(PersistenceEnvelope {
+                    trace_id: trace_id.clone(),
+                    circuit: schematic.name.clone(),
+                    schematic_version: schematic.schema_version.clone(),
+                    event_sequence: 1,
+                    event_type: ranvier_runtime::persistence::PersistenceEventType::Intent,
+                    step: 1,
+                    node_id: Some(schematic.nodes[1].id.clone()),
+                    outcome_kind: "Intent".into(),
+                    timestamp_ms: 1000,
+                    payload_hash: None,
+                    payload: Some(serde_json::json!(7)),
+                })
+                .await
+                .unwrap();
+            store
+                .append(PersistenceEnvelope {
+                    trace_id: trace_id.clone(),
+                    circuit: schematic.name.clone(),
+                    schematic_version: schematic.schema_version.clone(),
+                    event_sequence: 2,
+                    event_type: ranvier_runtime::persistence::PersistenceEventType::Result,
+                    step: 1,
+                    node_id: Some(schematic.nodes[1].id.clone()),
+                    outcome_kind: "Next".into(),
+                    timestamp_ms: 1001,
+                    payload_hash: None,
+                    payload: Some(serde_json::Value::Null),
+                })
+                .await
+                .unwrap();
             let before = store.load(&trace_id).await.unwrap().unwrap();
             let mut bus = Bus::new();
             bus.insert(PersistenceTraceId::new(trace_id.clone()));
@@ -221,11 +292,11 @@ async fn postgres_legacy_null_blocks_execution_and_pre_cancelled_cleanup() {
     .expect("isolated recovery fixture must finish within 15 seconds");
 }
 
-// Retains terminal collision defect evidence while requiring the versioned
-// caller report to expose uncertainty. Missing terminal data is not acceptance.
+// The monotonic event sequence must permit a final terminal event without
+// colliding with the last transition result.
 #[tokio::test]
 #[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
-async fn postgres_executor_terminal_step_collision_is_observable() {
+async fn postgres_executor_event_sequence_prevents_terminal_collision() {
     use ranvier_core::prelude::*;
     use ranvier_runtime::persistence::{PersistenceHandle, PersistenceTraceId};
     use std::sync::{
@@ -264,38 +335,52 @@ async fn postgres_executor_terminal_step_collision_is_observable() {
     bus.insert(PersistenceTraceId::new("terminal-collision"));
     assert!(matches!(
         axon.execute(0, &(), &mut bus).await,
-        ranvier_runtime::ExecutionReport::Unconfirmed {
+        ranvier_runtime::ExecutionReport::Recorded {
             result: Outcome::Next(2),
-            operation: ranvier_runtime::PersistenceOperation::Terminal,
-            effect: ranvier_runtime::EffectBoundary::MayHaveRun,
+            completion: ranvier_runtime::CompletionConfirmation::Confirmed,
             ..
         }
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     let trace = store.load("terminal-collision").await.unwrap().unwrap();
-    assert_eq!(trace.completion, None);
+    assert_eq!(trace.completion, Some(CompletionState::Success));
     assert_eq!(
         trace.events.iter().map(|e| e.step).collect::<Vec<_>>(),
-        vec![0, 1, 2]
+        vec![0, 1, 1, 2, 2, 3]
     );
     assert_eq!(trace.events[0].outcome_kind, "Enter");
-    // PostgreSQL currently does not round-trip node_id. Distinguish the
-    // attempted terminal at step1 by payload, not by absent node metadata.
     let first = Outcome::<u32, String>::next(1).to_json_value();
     let terminal = Outcome::<u32, String>::next(2).to_json_value();
-    assert_ne!(first, terminal);
-    assert_eq!(trace.events[1].outcome_kind, "Next");
-    assert_eq!(trace.events[1].payload, Some(first));
-    assert_eq!(trace.events[2].payload, Some(terminal));
-    // An incomplete cursor beyond the graph must block rather than replay.
+    assert_eq!(
+        trace.events[1].event_type,
+        ranvier_runtime::PersistenceEventType::Intent
+    );
+    assert_eq!(
+        trace.events[2].event_type,
+        ranvier_runtime::PersistenceEventType::Result
+    );
+    assert_eq!(trace.events[2].payload, Some(first));
+    assert_eq!(
+        trace.events[3].event_type,
+        ranvier_runtime::PersistenceEventType::Intent
+    );
+    assert_eq!(
+        trace.events[4].event_type,
+        ranvier_runtime::PersistenceEventType::Result
+    );
+    assert_eq!(trace.events[4].payload, Some(terminal.clone()));
+    assert_eq!(
+        trace.events[5].event_type,
+        ranvier_runtime::PersistenceEventType::Terminal
+    );
+    assert_eq!(trace.events[5].payload, Some(terminal));
     let reentry = axon.execute(0, &(), &mut bus).await;
     assert!(matches!(
         reentry,
-        ranvier_runtime::ExecutionReport::BlockedBeforeEffect {
-            operation: ranvier_runtime::PersistenceOperation::Terminal,
-            effect: ranvier_runtime::EffectBoundary::NotInvoked,
+        ranvier_runtime::ExecutionReport::NotRequested {
+            result: Outcome::Emit(signal, None),
             ..
-        }
+        } if signal == "execution.resumption.completed_trace"
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(
@@ -303,12 +388,9 @@ async fn postgres_executor_terminal_step_collision_is_observable() {
         trace
     );
     println!(
-        "POSTGRES_TERMINAL_COLLISION_REENTRY_BLOCKED effects=2 completion-unset full-trace-unchanged"
+        "POSTGRES_TERMINAL_EVENT_SEQUENCE reentry-completed-trace-blocked effects=2 completion-success full-trace-unchanged"
     );
     pool.close().await;
-    println!(
-        "POSTGRES_TERMINAL_COLLISION_REPRODUCED effects=2 caller-next=2 durability-unconfirmed-terminal completion-unset terminal-event-missing"
-    );
 }
 
 // Simulates loss of the acknowledgement after the actual PostgreSQL store has
@@ -1257,7 +1339,7 @@ async fn postgres_compensation_marker_ack_lost_on_tcp_reports_uncertainty() {
 // that a missing terminal event should be treated as complete.
 #[tokio::test]
 #[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
-async fn postgres_completed_legacy_trace_bypasses_terminal_reconciliation() {
+async fn postgres_completed_trace_without_terminal_requires_reconciliation() {
     use ranvier_core::prelude::*;
     use ranvier_runtime::persistence::{PersistenceHandle, PersistenceTraceId};
     use ranvier_runtime::{Axon, ExecutionReport};
@@ -1300,40 +1382,57 @@ async fn postgres_completed_legacy_trace_bypasses_terminal_reconciliation() {
     let mut enter = event(&trace_id, 0, version);
     enter.outcome_kind = "Enter".into();
     store.append(enter).await.unwrap();
-    let mut result = event(&trace_id, 1, version);
+    let node_id = axon.schematic().nodes[0].id.clone();
+    let mut intent = event(&trace_id, 1, version);
+    intent.step = 0;
+    intent.event_type = ranvier_runtime::persistence::PersistenceEventType::Intent;
+    intent.node_id = Some(node_id.clone());
+    intent.outcome_kind = "Intent".into();
+    intent.payload = Some(serde_json::json!({ "input": 0 }));
+    store.append(intent).await.unwrap();
+    let mut result = event(&trace_id, 2, version);
+    result.step = 0;
+    result.event_type = ranvier_runtime::persistence::PersistenceEventType::Result;
+    result.node_id = Some(node_id);
+    result.outcome_kind = "Next".into();
     result.payload = Some(Outcome::<u32, String>::next(1).to_json_value());
     store.append(result).await.unwrap();
-    store
-        .complete(&trace_id, CompletionState::Success)
-        .await
-        .unwrap();
+    sqlx::query(&format!(
+        "UPDATE {prefix}_v2_state SET completion = 'success' WHERE trace_id = $1"
+    ))
+    .bind(&trace_id)
+    .execute(&pool)
+    .await
+    .unwrap();
     let before = store.load(&trace_id).await.unwrap().unwrap();
-    assert_eq!(before.events.len(), 2);
+    assert_eq!(before.events.len(), 3);
     assert_eq!(
         before
             .events
             .iter()
             .map(|stored| stored.step)
             .collect::<Vec<_>>(),
-        vec![0, 1]
+        vec![0, 0, 0]
     );
     assert_eq!(before.events[0].outcome_kind, "Enter");
-    assert_eq!(before.events[1].outcome_kind, "Next");
+    assert_eq!(before.events[1].outcome_kind, "Intent");
+    assert_eq!(before.events[2].outcome_kind, "Next");
 
     let mut bus = Bus::new();
     bus.insert(PersistenceHandle::from_store(store.clone()));
     bus.insert(PersistenceTraceId::new(trace_id.clone()));
     assert!(matches!(
         axon.execute(0, &(), &mut bus).await,
-        ExecutionReport::NotRequested {
-            result: Outcome::Emit(signal, None),
+        ExecutionReport::BlockedBeforeEffect {
+            operation: ranvier_runtime::PersistenceOperation::Terminal,
+            effect: ranvier_runtime::EffectBoundary::NotInvoked,
             ..
-        } if signal == "execution.resumption.completed_trace"
+        }
     ));
     assert_eq!(effects.load(Ordering::SeqCst), 0);
     assert_eq!(store.load(&trace_id).await.unwrap().unwrap(), before);
     println!(
-        "POSTGRES_HISTORICAL_FALSE_SUCCESS_RETAINED completion-success terminal-event-missing effects=0 full-trace-unchanged"
+        "POSTGRES_COMPLETED_WITHOUT_TERMINAL_RECONCILIATION completion-success terminal-event-missing effects=0 full-trace-unchanged"
     );
     pool.close().await;
 }
@@ -1363,6 +1462,10 @@ async fn postgres_recovery_worker() {
                 .await
                 .unwrap();
             store
+                .append(terminal_event("recovery", 2, 2, "acknowledged", "Next"))
+                .await
+                .unwrap();
+            store
                 .save_intervention(
                     "recovery",
                     Intervention {
@@ -1384,7 +1487,8 @@ async fn postgres_recovery_worker() {
                 trace.events,
                 vec![
                     event("recovery", 0, "seed"),
-                    event("recovery", 1, "acknowledged")
+                    event("recovery", 1, "acknowledged"),
+                    terminal_event("recovery", 2, 2, "acknowledged", "Next")
                 ]
             );
             assert_eq!(trace.schematic_version, "acknowledged");
@@ -1429,7 +1533,7 @@ async fn postgres_process_worker() {
         .unwrap()
         .parse()
         .unwrap();
-    assert!(matches!(step, 1 | 2));
+    assert_eq!(step, 1, "both workers contend for the same next sequence");
     let options = url.parse::<sqlx::postgres::PgConnectOptions>().unwrap();
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
@@ -1443,10 +1547,13 @@ async fn postgres_process_worker() {
     assert_eq!(before.schematic_version, "seed");
     assert_eq!(before.completion, None);
     assert!(before.interventions.is_empty());
-    store
-        .append(event("processes", step, "concurrent"))
-        .await
-        .unwrap();
+    match store.append(event("processes", step, &label)).await {
+        Ok(()) => println!("POSTGRES_PROCESS_APPEND winner={label}"),
+        Err(error) if error.to_string().contains("expected event sequence") => {
+            println!("POSTGRES_PROCESS_APPEND stale={label}");
+        }
+        Err(error) => panic!("unexpected concurrent writer failure: {error:#}"),
+    }
     pool.close().await;
 }
 
@@ -1500,7 +1607,7 @@ async fn postgres_killed_waiting_process_preserves_seed_and_allows_fresh_writer(
         .await
         .unwrap();
     let prefix = format!("killed_{}", uuid::Uuid::new_v4().simple());
-    let state_table = format!("{prefix}_state");
+    let state_table = format!("{prefix}_v2_state");
     let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
     store.ensure_schema().await.unwrap();
     store.append(event("processes", 0, "seed")).await.unwrap();
@@ -1554,8 +1661,8 @@ async fn postgres_killed_waiting_process_preserves_seed_and_allows_fresh_writer(
     assert!(fresh_exit.unwrap().success());
     wait_for_backend_exit(&pool, &fresh_label).await.unwrap();
     let mut expected = seed;
-    expected.schematic_version = "concurrent".into();
-    expected.events.push(event("processes", 1, "concurrent"));
+    expected.schematic_version = fresh_label.clone();
+    expected.events.push(event("processes", 1, &fresh_label));
     assert_eq!(store.load("processes").await.unwrap(), Some(expected));
     pool.close().await;
     println!("POSTGRES_KILLED_PID child={child_pid} backend={backend_pid} status={exit}");
@@ -1585,7 +1692,7 @@ async fn wait_for_backend_exit(pool: &sqlx::PgPool, label: &str) -> anyhow::Resu
 
 #[tokio::test]
 #[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
-async fn postgres_independent_process_writers_preserve_both_events() {
+async fn postgres_independent_process_writers_reject_stale_sequence() {
     let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL").unwrap();
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(3)
@@ -1594,16 +1701,10 @@ async fn postgres_independent_process_writers_preserve_both_events() {
         .await
         .unwrap();
     let prefix = format!("process_{}", uuid::Uuid::new_v4().simple());
-    let state_table = format!("{prefix}_state");
+    let state_table = format!("{prefix}_v2_state");
     let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
     store.ensure_schema().await.unwrap();
     store.append(event("processes", 0, "seed")).await.unwrap();
-    let mut expected = store.load("processes").await.unwrap().unwrap();
-    expected.schematic_version = "concurrent".into();
-    expected.events.extend([
-        event("processes", 1, "concurrent"),
-        event("processes", 2, "concurrent"),
-    ]);
     let mut holder = pool.begin().await.unwrap();
     sqlx::query(&format!(
         "SELECT trace_id FROM {state_table} WHERE trace_id = 'processes' FOR UPDATE"
@@ -1615,7 +1716,7 @@ async fn postgres_independent_process_writers_preserve_both_events() {
     let second_label = format!("proc_second_{}", uuid::Uuid::new_v4().simple());
     let mut first = FixtureProcess::start(&prefix, &first_label, 1);
     let first_wait = wait_for_row_lock(&pool, &first_label, "transactionid", &state_table).await;
-    let mut second = FixtureProcess::start(&prefix, &second_label, 2);
+    let mut second = FixtureProcess::start(&prefix, &second_label, 1);
     assert_ne!(first.0.id(), second.0.id());
     assert_ne!(first.0.id(), std::process::id());
     assert_ne!(second.0.id(), std::process::id());
@@ -1638,22 +1739,13 @@ async fn postgres_independent_process_writers_preserve_both_events() {
     assert!(first_exit.unwrap().success());
     assert!(second_exit.unwrap().success());
     let trace = store.load("processes").await.unwrap().unwrap();
-    assert_eq!(
-        trace.events,
-        vec![
-            event("processes", 0, "seed"),
-            event("processes", 1, "concurrent"),
-            event("processes", 2, "concurrent")
-        ]
-    );
-    assert_eq!(trace.schematic_version, "concurrent");
+    assert_eq!(trace.events.len(), 2);
+    assert_eq!(trace.events[0], event("processes", 0, "seed"));
+    assert_eq!(trace.events[1].event_sequence, 1);
+    assert!(trace.events[1].schematic_version.starts_with("proc_"));
     assert_eq!(trace.completion, None);
-    assert_eq!(
-        trace, expected,
-        "all state, event and intervention fields must match"
-    );
     pool.close().await;
-    println!("POSTGRES_PROCESS_PASS independent-pids same-seed row-queue exact-events");
+    println!("POSTGRES_PROCESS_PASS independent-pids same-seed row-queue one-next-sequence-winner");
 }
 
 #[tokio::test]
@@ -1670,9 +1762,9 @@ async fn postgres_rejected_append_preserves_snapshot_and_rolls_back_insert_failu
     let prefix = format!("atomic_{}", uuid::Uuid::new_v4().simple());
     let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
     store.ensure_schema().await.unwrap();
-    store.append(event("existing", 1, "initial")).await.unwrap();
+    store.append(event("existing", 0, "initial")).await.unwrap();
     let baseline = store.load("existing").await.unwrap();
-    let mut wrong = event("existing", 2, "wrong-circuit-version");
+    let mut wrong = event("existing", 1, "wrong-circuit-version");
     wrong.circuit = "OtherCircuit".into();
     assert!(store.append(wrong).await.is_err());
     assert_eq!(
@@ -1682,7 +1774,11 @@ async fn postgres_rejected_append_preserves_snapshot_and_rolls_back_insert_failu
     );
     assert!(
         store
-            .append(event("existing", 1, "duplicate-version"))
+            .append({
+                let mut stale = event("existing", 1, "duplicate-version");
+                stale.event_sequence = 0;
+                stale
+            })
             .await
             .is_err()
     );
@@ -1698,17 +1794,33 @@ async fn postgres_rejected_append_preserves_snapshot_and_rolls_back_insert_failu
         "failed first append must not leave state"
     );
     overflow.trace_id = "new-timestamp".into();
+    overflow.event_sequence = 0;
     overflow.step = 1;
     overflow.timestamp_ms = u64::MAX;
     assert!(store.append(overflow).await.is_err());
     assert!(store.load("new-timestamp").await.unwrap().is_none());
     store
-        .append(event("existing", 2, "accepted-version"))
+        .append(event("existing", 1, "accepted-version"))
         .await
         .unwrap();
     let accepted = store.load("existing").await.unwrap().unwrap();
     assert_eq!(accepted.schematic_version, "accepted-version");
     assert_eq!(accepted.events.len(), 2);
+    assert!(
+        store
+            .complete("existing", CompletionState::Success)
+            .await
+            .is_err(),
+        "completion cannot be asserted before a terminal event is recorded"
+    );
+    assert_eq!(
+        store.load("existing").await.unwrap(),
+        Some(accepted.clone())
+    );
+    store
+        .append(terminal_event("existing", 2, 2, "accepted-version", "Next"))
+        .await
+        .unwrap();
     store
         .complete("existing", CompletionState::Success)
         .await
@@ -1721,9 +1833,10 @@ async fn postgres_rejected_append_preserves_snapshot_and_rolls_back_insert_failu
             .is_err()
     );
     assert_eq!(store.load("existing").await.unwrap(), completed);
-    sqlx::query(&format!("ALTER TABLE {prefix}_events ADD CONSTRAINT fixture_reject CHECK (outcome_kind <> 'RejectFixture')"))
+    sqlx::query(&format!("ALTER TABLE {prefix}_v2_events ADD CONSTRAINT fixture_reject CHECK (outcome_kind <> 'RejectFixture')"))
         .execute(&pool).await.unwrap();
     let mut rejected_insert = event("new-insert-failure", 1, "new-version");
+    rejected_insert.event_sequence = 0;
     rejected_insert.outcome_kind = "RejectFixture".into();
     assert!(store.append(rejected_insert).await.is_err());
     assert!(
@@ -1733,7 +1846,7 @@ async fn postgres_rejected_append_preserves_snapshot_and_rolls_back_insert_failu
     store.append(event("competing", 0, "seed")).await.unwrap();
     let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
     let mut writers = Vec::new();
-    for step in [1, 2] {
+    for writer_id in ["writer-a", "writer-b"] {
         let store = store.clone();
         let barrier = barrier.clone();
         writers.push(tokio::spawn(async move {
@@ -1742,7 +1855,7 @@ async fn postgres_rejected_append_preserves_snapshot_and_rolls_back_insert_failu
             tokio::time::timeout(std::time::Duration::from_secs(3), barrier.wait())
                 .await
                 .unwrap();
-            store.append(event("competing", step, "concurrent")).await
+            store.append(event("competing", 1, writer_id)).await
         }));
     }
     let mut results = Vec::new();
@@ -1754,21 +1867,22 @@ async fn postgres_rejected_append_preserves_snapshot_and_rolls_back_insert_failu
         }
         results.push(result);
     }
-    for result in results {
-        result.unwrap().unwrap().unwrap();
-    }
+    let results: Vec<_> = results
+        .into_iter()
+        .map(|result| result.unwrap().unwrap())
+        .collect();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
     let trace = store.load("competing").await.unwrap().unwrap();
-    assert_eq!(
-        trace.events,
-        vec![
-            event("competing", 0, "seed"),
-            event("competing", 1, "concurrent"),
-            event("competing", 2, "concurrent")
-        ]
-    );
+    assert_eq!(trace.events.len(), 2);
+    assert_eq!(trace.events[0], event("competing", 0, "seed"));
+    assert!(matches!(
+        trace.events[1].schematic_version.as_str(),
+        "writer-a" | "writer-b"
+    ));
     pool.close().await;
     println!(
-        "POSTGRES_ATOMICITY_PASS wrong-circuit duplicate overflow accepted completed first-insert-rollback competing-writers"
+        "POSTGRES_ATOMICITY_PASS wrong-circuit stale-sequence overflow accepted completed first-insert-rollback concurrent-sequence-conflict"
     );
 }
 
@@ -1789,15 +1903,15 @@ async fn postgres_load_reads_one_snapshot_across_concurrent_append() {
     let writer = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
     writer.ensure_schema().await.unwrap();
     writer
-        .append(event("snapshot", 1, "old-version"))
+        .append(event("snapshot", 0, "old-version"))
         .await
         .unwrap();
     let before = writer.load("snapshot").await.unwrap().unwrap();
     // The state statement takes its MVCC snapshot before waiting on this
     // fixture-only lock. The production writer uses the real backing tables.
-    sqlx::query(&format!("CREATE VIEW {reader_prefix}_state AS SELECT * FROM {prefix}_state WHERE pg_advisory_xact_lock({key}) IS NOT NULL"))
+    sqlx::query(&format!("CREATE VIEW {reader_prefix}_v2_state AS SELECT * FROM {prefix}_v2_state WHERE pg_advisory_xact_lock({key}) IS NOT NULL"))
         .execute(&pool).await.unwrap();
-    for suffix in ["events", "interventions"] {
+    for suffix in ["v2_events", "v2_interventions"] {
         sqlx::query(&format!(
             "CREATE VIEW {reader_prefix}_{suffix} AS SELECT * FROM {prefix}_{suffix}"
         ))
@@ -1832,7 +1946,7 @@ async fn postgres_load_reads_one_snapshot_across_concurrent_append() {
         }
     }).await;
     let appended = if waiting.is_ok() {
-        writer.append(event("snapshot", 2, "new-version")).await
+        writer.append(event("snapshot", 1, "new-version")).await
     } else {
         Err(anyhow::anyhow!(
             "reader did not reach actual state-query barrier"
@@ -1932,6 +2046,10 @@ async fn verify_append_completion_order(completion_first: bool) {
     let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
     store.ensure_schema().await.unwrap();
     store.append(event("ordered", 0, "initial")).await.unwrap();
+    store
+        .append(terminal_event("ordered", 1, 1, "initial", "Next"))
+        .await
+        .unwrap();
     let first_label = format!("first_{}", uuid::Uuid::new_v4().simple());
     let second_label = format!("second_{}", uuid::Uuid::new_v4().simple());
     let options = url.parse::<sqlx::postgres::PgConnectOptions>().unwrap();
@@ -1949,7 +2067,7 @@ async fn verify_append_completion_order(completion_first: bool) {
     let second_store = PostgresPersistenceStore::with_table_prefix(second_pool.clone(), &prefix);
     let mut holder = pool.begin().await.unwrap();
     sqlx::query(&format!(
-        "SELECT trace_id FROM {prefix}_state WHERE trace_id = 'ordered' FOR UPDATE"
+        "SELECT trace_id FROM {prefix}_v2_state WHERE trace_id = 'ordered' FOR UPDATE"
     ))
     .execute(&mut *holder)
     .await
@@ -1960,19 +2078,31 @@ async fn verify_append_completion_order(completion_first: bool) {
                 .complete("ordered", CompletionState::Success)
                 .await
         } else {
-            first_store.append(event("ordered", 1, "appended")).await
+            let mut intent = event("ordered", 2, "appended");
+            intent.event_type = ranvier_runtime::persistence::PersistenceEventType::Intent;
+            intent.step = 2;
+            intent.node_id = Some("external-compensation".into());
+            intent.outcome_kind = "Intent".into();
+            intent.payload = Some(serde_json::json!({"kind": "external-compensation"}));
+            first_store.append(intent).await
         }
     });
     let first_wait = wait_for_row_lock(
         &pool,
         &first_label,
         "transactionid",
-        &format!("{prefix}_state"),
+        &format!("{prefix}_v2_state"),
     )
     .await;
     let mut second = tokio::spawn(async move {
         if completion_first {
-            second_store.append(event("ordered", 1, "appended")).await
+            let mut intent = event("ordered", 2, "appended");
+            intent.event_type = ranvier_runtime::persistence::PersistenceEventType::Intent;
+            intent.step = 2;
+            intent.node_id = Some("external-compensation".into());
+            intent.outcome_kind = "Intent".into();
+            intent.payload = Some(serde_json::json!({"kind": "external-compensation"}));
+            second_store.append(intent).await
         } else {
             second_store
                 .complete("ordered", CompletionState::Success)
@@ -1980,7 +2110,7 @@ async fn verify_append_completion_order(completion_first: bool) {
         }
     });
     let second_wait =
-        wait_for_row_lock(&pool, &second_label, "tuple", &format!("{prefix}_state")).await;
+        wait_for_row_lock(&pool, &second_label, "tuple", &format!("{prefix}_v2_state")).await;
     let released = holder.commit().await;
     let first_result = tokio::time::timeout(std::time::Duration::from_secs(3), &mut first).await;
     if first_result.is_err() {
@@ -1994,18 +2124,74 @@ async fn verify_append_completion_order(completion_first: bool) {
     }
     first_pool.close().await;
     second_pool.close().await;
-    let final_trace = store.load("ordered").await;
-    let late = store
-        .append(event("ordered", 2, "rejected-late-version"))
-        .await;
-    let after_late = store.load("ordered").await;
-    pool.close().await;
     first_wait.expect("first actual operation must wait on holder transaction");
     second_wait.expect("second actual operation must queue on tuple behind first");
     released.unwrap();
     first_result.unwrap().unwrap().unwrap();
     let second_result = second_result.unwrap().unwrap();
-    let trace = final_trace.unwrap().unwrap();
+    let trace = if completion_first {
+        assert!(
+            second_result
+                .unwrap_err()
+                .to_string()
+                .contains("already completed")
+        );
+        let trace = store.load("ordered").await.unwrap().unwrap();
+        assert_eq!(trace.completion, Some(CompletionState::Success));
+        assert_eq!(trace.schematic_version, "initial");
+        assert_eq!(
+            trace.events,
+            vec![
+                event("ordered", 0, "initial"),
+                terminal_event("ordered", 1, 1, "initial", "Next")
+            ]
+        );
+        trace
+    } else {
+        assert!(
+            second_result
+                .unwrap_err()
+                .to_string()
+                .contains("PendingIntent")
+        );
+        let mut compensation = event("ordered", 3, "appended");
+        compensation.event_type = ranvier_runtime::persistence::PersistenceEventType::Compensation;
+        compensation.step = 2;
+        compensation.node_id = Some("external-compensation".into());
+        compensation.outcome_kind = "Compensated".into();
+        compensation.payload = Some(serde_json::json!({"outcome": "completed"}));
+        store.append(compensation.clone()).await.unwrap();
+        store
+            .complete("ordered", CompletionState::Success)
+            .await
+            .unwrap();
+        let final_trace = store.load("ordered").await.unwrap().unwrap();
+        assert_eq!(final_trace.completion, Some(CompletionState::Success));
+        assert_eq!(final_trace.events.len(), 4);
+        assert_eq!(final_trace.schematic_version, "appended");
+        assert_eq!(
+            final_trace.events,
+            vec![
+                event("ordered", 0, "initial"),
+                terminal_event("ordered", 1, 1, "initial", "Next"),
+                {
+                    let mut intent = event("ordered", 2, "appended");
+                    intent.event_type = ranvier_runtime::persistence::PersistenceEventType::Intent;
+                    intent.step = 2;
+                    intent.node_id = Some("external-compensation".into());
+                    intent.outcome_kind = "Intent".into();
+                    intent.payload = Some(serde_json::json!({"kind": "external-compensation"}));
+                    intent
+                },
+                compensation,
+            ]
+        );
+        final_trace
+    };
+    let late = store
+        .append(event("ordered", 4, "rejected-late-version"))
+        .await;
+    let after_late = store.load("ordered").await;
     assert_eq!(trace.completion, Some(CompletionState::Success));
     assert!(late.unwrap_err().to_string().contains("already completed"));
     assert_eq!(
@@ -2013,26 +2199,7 @@ async fn verify_append_completion_order(completion_first: bool) {
         Some(trace.clone()),
         "late rejected append must preserve full terminal snapshot"
     );
-    if completion_first {
-        assert!(
-            second_result
-                .unwrap_err()
-                .to_string()
-                .contains("already completed")
-        );
-        assert_eq!(trace.schematic_version, "initial");
-        assert_eq!(trace.events, vec![event("ordered", 0, "initial")]);
-    } else {
-        second_result.unwrap();
-        assert_eq!(trace.schematic_version, "appended");
-        assert_eq!(
-            trace.events,
-            vec![
-                event("ordered", 0, "initial"),
-                event("ordered", 1, "appended")
-            ]
-        );
-    }
+    pool.close().await;
     println!(
         "POSTGRES_ORDER_PASS completion_first={completion_first} actual-transactionid-and-tuple-waits"
     );

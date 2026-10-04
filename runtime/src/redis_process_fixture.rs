@@ -12,6 +12,8 @@ fn event(trace_id: &str, step: u64) -> PersistenceEnvelope {
         trace_id: trace_id.into(),
         circuit: "ProcessFixture".into(),
         schematic_version: format!("process-version-{step}"),
+        event_sequence: step,
+        event_type: crate::PersistenceEventType::Result,
         step,
         node_id: Some(format!("node-{step}")),
         outcome_kind: "Next".into(),

@@ -613,6 +613,8 @@ async fn redis_load_ack_loss_over_tcp_blocks_before_effect_and_preserves_trace()
                 trace_id: trace_id.clone(),
                 circuit: "RedisLoadAckLossFixture".to_string(),
                 schematic_version: "1.0".to_string(),
+                event_sequence: 0,
+                event_type: ranvier_runtime::persistence::PersistenceEventType::Enter,
                 step: 0,
                 node_id: None,
                 outcome_kind: "Enter".to_string(),

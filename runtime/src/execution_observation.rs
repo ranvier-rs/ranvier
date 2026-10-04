@@ -665,6 +665,9 @@ impl Observation {
     pub(crate) fn encoding_failed(&self, operation: PersistenceOperation) {
         self.encoding_failed.store(true, Ordering::SeqCst);
         self.failed(operation);
+        if matches!(operation, PersistenceOperation::Result) {
+            self.unconfirmed_result_write.store(true, Ordering::SeqCst);
+        }
     }
     pub(crate) fn has_encoding_failure(&self) -> bool {
         self.encoding_failed.load(Ordering::SeqCst)
@@ -699,6 +702,12 @@ impl Observation {
     pub(crate) fn is_blocked(&self) -> bool {
         self.blocked.load(Ordering::SeqCst)
     }
+    pub(crate) fn has_failure(&self) -> bool {
+        self.failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+    }
     pub(crate) fn has_unconfirmed_result_write(&self) -> bool {
         self.unconfirmed_result_write.load(Ordering::SeqCst)
     }
@@ -709,13 +718,17 @@ impl Observation {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(operation) = operation {
             if self.blocked.load(Ordering::SeqCst) {
+                if self.effect.load(Ordering::SeqCst) {
+                    return ExecutionReport::Unconfirmed {
+                        result,
+                        operation,
+                        effect: EffectBoundary::MayHaveRun,
+                        cleanup: None,
+                    };
+                }
                 return ExecutionReport::BlockedBeforeEffect {
                     operation,
-                    effect: if self.effect.load(Ordering::SeqCst) {
-                        EffectBoundary::MayHaveRun
-                    } else {
-                        EffectBoundary::NotInvoked
-                    },
+                    effect: EffectBoundary::NotInvoked,
                     cleanup: None,
                 };
             }
@@ -777,6 +790,9 @@ impl Drop for ObservedCall<'_> {
     fn drop(&mut self) {
         if !self.settled {
             self.observation.failed_store_operation(self.operation);
+            if matches!(self.operation, PersistenceOperation::Intent) {
+                self.observation.block(PersistenceOperation::Intent);
+            }
         }
     }
 }
@@ -788,12 +804,14 @@ pub(crate) struct ObservedStore {
 #[async_trait::async_trait]
 impl PersistenceStore for ObservedStore {
     async fn append(&self, envelope: PersistenceEnvelope) -> anyhow::Result<()> {
-        let operation = if envelope.outcome_kind == "Enter" {
-            PersistenceOperation::Intent
-        } else if envelope.node_id.is_none() {
-            PersistenceOperation::Terminal
-        } else {
-            PersistenceOperation::Result
+        let operation = match envelope.event_type {
+            crate::PersistenceEventType::Enter => PersistenceOperation::Intent,
+            crate::PersistenceEventType::Intent => PersistenceOperation::Intent,
+            crate::PersistenceEventType::Result => PersistenceOperation::Result,
+            crate::PersistenceEventType::Checkpoint => PersistenceOperation::Result,
+            crate::PersistenceEventType::Terminal => PersistenceOperation::Terminal,
+            crate::PersistenceEventType::Compensation => PersistenceOperation::CompensationEvent,
+            crate::PersistenceEventType::LegacyUnknown => PersistenceOperation::UnsupportedFormat,
         };
         self.observation
             .attempted_write
@@ -1082,8 +1100,12 @@ impl Session {
             let child = bus.remove::<crate::saga_report::SagaRollbackJournal>();
             let _ = bus.remove::<crate::saga_report::SagaRollbackReport>();
             let pending_child = child.and_then(|journal| {
-                if journal.has_unresolved_tasks() { Some(journal) }
-                else { journal.release_custody(); None }
+                if journal.has_unresolved_tasks() {
+                    Some(journal)
+                } else {
+                    journal.release_custody();
+                    None
+                }
             });
             let mut parent = self.previous_cleanup;
             if let Some(child) = pending_child {
@@ -1110,7 +1132,6 @@ impl Session {
             let _ = bus.remove::<ActiveObservation>();
         }
     }
-
 }
 
 /// Exact control-plane state suspended across a framework initialization boundary.
