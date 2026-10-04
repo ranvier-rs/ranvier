@@ -949,9 +949,10 @@ where
             return outcome;
         }
 
+        let fault_step = persistence_start_step.map(|s| s + 1).unwrap_or(1);
+        let mut terminal_event_confirmed = false;
         if let Some(handle) = persistence_handle.as_ref() {
-            let fault_step = persistence_start_step.map(|s| s + 1).unwrap_or(1);
-            let mut terminal_event_confirmed = persist_encoded_execution_event(
+            terminal_event_confirmed = persist_encoded_execution_event(
                 handle,
                 &trace_id,
                 &label,
@@ -964,32 +965,36 @@ where
             )
             .await
                 == crate::execution_report::StoreConfirmation::Confirmed;
+        }
 
-            let mut completion = completion_from_outcome(&outcome);
-            if matches!(outcome, Outcome::Fault(_))
-                && let Some(compensation) = compensation_handle.as_ref()
-                && compensation_auto_trigger(bus)
+        let mut completion = completion_from_outcome(&outcome);
+        // External compensation reverses the observed business effect even without
+        // an execution-trace store; only its trace event and completion are optional.
+        if matches!(outcome, Outcome::Fault(_))
+            && let Some(compensation) = compensation_handle.as_ref()
+            && compensation_auto_trigger(bus)
+        {
+            let context = CompensationContext {
+                trace_id: trace_id.clone(),
+                circuit: label.clone(),
+                fault_kind: outcome_kind_name(&outcome).to_string(),
+                fault_step,
+                timestamp_ms: now_ms(),
+            };
+
+            let journal = external_compensation_journal(bus, &trace_id);
+            if run_compensation(
+                compensation,
+                context,
+                compensation_retry_policy,
+                compensation_idempotency.clone(),
+                bus.read::<crate::execution_observation::ActiveObservation>()
+                    .map(|active| active.0.clone()),
+                Some(journal),
+            )
+            .await
             {
-                let context = CompensationContext {
-                    trace_id: trace_id.clone(),
-                    circuit: label.clone(),
-                    fault_kind: outcome_kind_name(&outcome).to_string(),
-                    fault_step,
-                    timestamp_ms: now_ms(),
-                };
-
-                let journal = external_compensation_journal(bus, &trace_id);
-                if run_compensation(
-                    compensation,
-                    context,
-                    compensation_retry_policy,
-                    compensation_idempotency.clone(),
-                    bus.read::<crate::execution_observation::ActiveObservation>()
-                        .map(|active| active.0.clone()),
-                    Some(journal),
-                )
-                .await
-                {
+                if let Some(handle) = persistence_handle.as_ref() {
                     let compensation_event_confirmed = persist_execution_event(
                         handle,
                         &trace_id,
@@ -1008,13 +1013,14 @@ where
                     }
                 }
             }
+        }
 
-            if persistence_auto_complete(bus)
-                && terminal_event_confirmed
-                && !persistence_encoding_failed(bus)
-            {
-                persist_completion(handle, &trace_id, completion).await;
-            }
+        if let Some(handle) = persistence_handle.as_ref()
+            && persistence_auto_complete(bus)
+            && terminal_event_confirmed
+            && !persistence_encoding_failed(bus)
+        {
+            persist_completion(handle, &trace_id, completion).await;
         }
 
         if should_capture {

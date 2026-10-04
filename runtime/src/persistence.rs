@@ -154,7 +154,11 @@ impl Default for CompensationRetryPolicy {
 ///
 /// **Production-stable since 0.12 (M156).** Implement and register this hook
 /// via [`CompensationHandle`] to define rollback actions when an Axon execution
-/// faults after committing external side effects.
+/// faults after committing external side effects. Registration is independent
+/// of the execution-trace store: the hook still runs without one, while the
+/// returned [`crate::ExecutionReport`] remains unpersisted unless that separate
+/// trace store confirms its event writes. Marker-store uncertainty is reported
+/// independently from execution-trace durability.
 #[async_trait]
 pub trait CompensationHook: Send + Sync {
     async fn compensate(&self, context: CompensationContext) -> Result<()>;

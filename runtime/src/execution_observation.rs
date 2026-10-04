@@ -702,7 +702,7 @@ impl Observation {
     pub(crate) fn has_unconfirmed_result_write(&self) -> bool {
         self.unconfirmed_result_write.load(Ordering::SeqCst)
     }
-    fn report<T>(&self, result: T) -> ExecutionReport<T> {
+    fn report<T>(&self, result: T, trace_store_configured: bool) -> ExecutionReport<T> {
         let operation = *self
             .failure
             .lock()
@@ -727,6 +727,12 @@ impl Observation {
                 } else {
                     EffectBoundary::NotInvoked
                 },
+                cleanup: None,
+            };
+        }
+        if !trace_store_configured {
+            return ExecutionReport::Unpersisted {
+                result,
                 cleanup: None,
             };
         }
@@ -852,9 +858,6 @@ impl CompensationIdempotencyStore for ObservedCompensationStore {
         result
     }
     async fn mark_compensated(&self, key: &str) -> anyhow::Result<()> {
-        self.observation
-            .attempted_write
-            .store(true, Ordering::SeqCst);
         let call = ObservedCall::new(&self.observation, PersistenceOperation::CompensationWrite);
         let result = self.inner.mark_compensated(key).await;
         call.finish(&result);
@@ -1023,7 +1026,7 @@ impl Session {
                     .cloned()
             });
         let report = if self.original.is_some() || self.original_compensation.is_some() {
-            self.observation.report(result)
+            self.observation.report(result, self.original.is_some())
         } else {
             ExecutionReport::Unpersisted {
                 result,

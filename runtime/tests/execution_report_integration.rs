@@ -1594,3 +1594,94 @@ async fn compensation_marker_write_ack_loss_preserves_fault_and_uncertainty() {
         );
     }
 }
+
+#[tokio::test]
+async fn compensation_marker_write_does_not_claim_execution_trace_recorded() {
+    let idempotency = InMemoryCompensationIdempotencyStore::new();
+    let effects = Arc::new(AtomicUsize::new(0));
+    let compensation_calls = Arc::new(AtomicUsize::new(0));
+    let mut bus = Bus::new();
+    bus.insert(PersistenceTraceId::new("trace-marker-only"));
+    bus.insert(CompensationIdempotencyHandle::from_store(
+        idempotency.clone(),
+    ));
+    bus.insert(CompensationHandle::from_hook(CountCompensation(
+        compensation_calls.clone(),
+    )));
+    let axon = Axon::<u32, u32, String, ()>::new("compensation-marker-only")
+        .then(CountFault(effects.clone()));
+
+    let report = axon.execute(7, &(), &mut bus).await;
+
+    let cleanup = report.cleanup().expect("external compensation is observed");
+    assert!(cleanup.is_complete());
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(compensation_calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        report,
+        ExecutionReport::Unpersisted {
+            result: Outcome::Fault(ref message),
+            ..
+        } if message == "business-fault"
+    ));
+    let marker_key = "trace-marker-only:compensation-marker-only:Fault";
+    assert!(idempotency.was_compensated(marker_key).await.unwrap());
+}
+
+#[tokio::test]
+async fn compensation_marker_ack_loss_without_trace_store_stays_unconfirmed() {
+    for apply_before_error in [false, true] {
+        let trace_id = if apply_before_error {
+            "marker-only-applied-ack-lost"
+        } else {
+            "marker-only-not-applied"
+        };
+        let marker_store = Arc::new(MarkerWriteAckFailure {
+            backing: InMemoryCompensationIdempotencyStore::new(),
+            apply_before_error,
+            reads: AtomicUsize::new(0),
+            writes: AtomicUsize::new(0),
+            last_key: std::sync::Mutex::new(None),
+        });
+        let effects = Arc::new(AtomicUsize::new(0));
+        let compensation_calls = Arc::new(AtomicUsize::new(0));
+        let mut bus = Bus::new();
+        bus.insert(PersistenceTraceId::new(trace_id));
+        bus.insert(CompensationIdempotencyHandle::from_arc(
+            marker_store.clone(),
+        ));
+        bus.insert(CompensationHandle::from_hook(CountCompensation(
+            compensation_calls.clone(),
+        )));
+        let axon = Axon::<u32, u32, String, ()>::new("compensation-marker-only")
+            .then(CountFault(effects.clone()));
+
+        let report = axon.execute(7, &(), &mut bus).await;
+
+        assert!(matches!(
+            report,
+            ExecutionReport::Unconfirmed {
+                result: Outcome::Fault(ref message),
+                operation: PersistenceOperation::CompensationWrite,
+                effect: EffectBoundary::MayHaveRun,
+                ..
+            } if message == "business-fault"
+        ));
+        assert!(
+            !serde_json::to_string(&report)
+                .unwrap()
+                .contains("private-marker-ack-sentinel")
+        );
+        let cleanup = report.cleanup().unwrap();
+        assert!(!cleanup.is_complete());
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert_eq!(compensation_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(marker_store.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(marker_store.writes.load(Ordering::SeqCst), 1);
+        let key = marker_store.last_key.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            marker_store.backing.was_compensated(&key).await.unwrap(),
+            apply_before_error
+        );
+    }
+}

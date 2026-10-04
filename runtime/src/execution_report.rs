@@ -62,7 +62,8 @@ pub enum CompletionConfirmation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "durability", rename_all = "snake_case")]
 pub enum ExecutionReport<T> {
-    /// No persistence store was configured. No durable success is implied.
+    /// No execution-trace store was configured. A separate cleanup marker may
+    /// still have been recorded; this never implies that the execution trace is durable.
     Unpersisted {
         result: T,
         #[serde(default, skip_serializing_if = "Option::is_none")]
