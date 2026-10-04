@@ -2505,10 +2505,7 @@ mod tests {
             .connect(&url)
             .await
             .unwrap();
-        let table_prefix = format!(
-            "ranvier_compensation_idempotency_test_{}",
-            Uuid::new_v4().simple()
-        );
+        let table_prefix = format!("rci_{}", Uuid::new_v4().simple());
         let store =
             PostgresCompensationIdempotencyStore::with_table_prefix(pool.clone(), &table_prefix);
         store.ensure_schema().await.unwrap();
@@ -2540,10 +2537,7 @@ mod tests {
             .connect(&url)
             .await
             .unwrap();
-        let table_prefix = format!(
-            "ranvier_compensation_collision_test_{}",
-            Uuid::new_v4().simple()
-        );
+        let table_prefix = format!("rci_{}", Uuid::new_v4().simple());
         let store =
             PostgresCompensationIdempotencyStore::with_table_prefix(pool.clone(), &table_prefix);
         store.ensure_schema().await.unwrap();
@@ -2584,10 +2578,7 @@ mod tests {
             .connect(&url)
             .await
             .unwrap();
-        let table_prefix = format!(
-            "ranvier_compensation_idempotency_purge_test_{}",
-            Uuid::new_v4().simple()
-        );
+        let table_prefix = format!("rci_{}", Uuid::new_v4().simple());
         let store =
             PostgresCompensationIdempotencyStore::with_table_prefix(pool.clone(), &table_prefix);
         store.ensure_schema().await.unwrap();
