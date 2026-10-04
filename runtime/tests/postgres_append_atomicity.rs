@@ -20,6 +20,7 @@ fn event(trace: &str, step: u64, version: &str) -> PersistenceEnvelope {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PostgresAckLossTarget {
     CompletionUpdate,
+    CompensationMarkerInsert,
     CommittedTransaction(u8),
 }
 
@@ -47,6 +48,7 @@ async fn postgres_proxy_drop_ready_for_query_after(
     let client_to_database = tokio::io::copy(&mut client_reader, &mut database_writer);
     let database_to_client = async {
         let mut saw_completion_update = false;
+        let mut saw_compensation_marker_insert = false;
         let mut committed_transaction_count = 0_u8;
         loop {
             let mut header = [0_u8; 5];
@@ -67,6 +69,11 @@ async fn postgres_proxy_drop_ready_for_query_after(
                     {
                         saw_completion_update = true;
                     }
+                    PostgresAckLossTarget::CompensationMarkerInsert
+                        if payload.as_slice() == b"INSERT 0 1\0" =>
+                    {
+                        saw_compensation_marker_insert = true;
+                    }
                     PostgresAckLossTarget::CommittedTransaction(_)
                         if payload.as_slice() == b"COMMIT\0" =>
                     {
@@ -79,6 +86,9 @@ async fn postgres_proxy_drop_ready_for_query_after(
                 let transaction_status = payload.first().copied();
                 let target_seen = match target {
                     PostgresAckLossTarget::CompletionUpdate => saw_completion_update,
+                    PostgresAckLossTarget::CompensationMarkerInsert => {
+                        saw_compensation_marker_insert
+                    }
                     PostgresAckLossTarget::CommittedTransaction(count) => {
                         committed_transaction_count == count
                     }
@@ -89,6 +99,7 @@ async fn postgres_proxy_drop_ready_for_query_after(
                     // so the caller observes an unknown acknowledgement.
                     let command_tag = match target {
                         PostgresAckLossTarget::CompletionUpdate => "UPDATE 1",
+                        PostgresAckLossTarget::CompensationMarkerInsert => "INSERT 0 1",
                         PostgresAckLossTarget::CommittedTransaction(_) => "COMMIT",
                     };
                     return Ok(PostgresAckLossObservation {
@@ -101,6 +112,7 @@ async fn postgres_proxy_drop_ready_for_query_after(
                 // append's explicit transaction for completion. Its
                 // ReadyForQuery status is T.
                 saw_completion_update = false;
+                saw_compensation_marker_insert = false;
             }
 
             client_writer.write_all(&header).await?;
@@ -1085,6 +1097,159 @@ async fn postgres_result_append_ack_lost_on_tcp_after_commit_is_unconfirmed() {
     })
     .await
     .expect("isolated TCP result acknowledgement fixture must finish within 15 seconds");
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
+async fn postgres_compensation_marker_ack_lost_on_tcp_reports_uncertainty() {
+    use ranvier_core::prelude::*;
+    use ranvier_runtime::persistence::{
+        CompensationContext, CompensationHandle, CompensationHook, CompensationIdempotencyHandle,
+        InMemoryPersistenceStore, PersistenceHandle, PersistenceTraceId,
+        PostgresCompensationIdempotencyStore,
+    };
+    use ranvier_runtime::{EffectBoundary, ExecutionReport, PersistenceOperation};
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokio::net::{TcpListener, TcpStream};
+
+    #[derive(Clone)]
+    struct CountFault(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl Transition<u32, u32> for CountFault {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, _: u32, _: &(), _: &mut Bus) -> Outcome<u32, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Outcome::Fault("business-fault".into())
+        }
+    }
+
+    #[derive(Clone)]
+    struct CountCompensation(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl CompensationHook for CountCompensation {
+        async fn compensate(&self, _: CompensationContext) -> anyhow::Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL")
+            .expect("explicit isolated database required");
+        let database_options = url.parse::<PgConnectOptions>().unwrap();
+        let upstream_host = database_options.get_host().to_owned();
+        let upstream_port = database_options.get_port();
+        let direct_pool = PgPoolOptions::new()
+            .max_connections(3)
+            .acquire_timeout(std::time::Duration::from_secs(3))
+            .connect(&url)
+            .await
+            .unwrap();
+        let prefix = format!("cmp_{}", uuid::Uuid::new_v4().simple());
+        let trace_store = InMemoryPersistenceStore::new();
+        let direct_marker_store =
+            PostgresCompensationIdempotencyStore::with_table_prefix(direct_pool.clone(), &prefix);
+        direct_marker_store.ensure_schema().await.unwrap();
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let proxy_address = listener.local_addr().unwrap();
+        let proxy_task = tokio::spawn(async move {
+            let (client, _) = listener.accept().await?;
+            let database = TcpStream::connect((upstream_host.as_str(), upstream_port)).await?;
+            postgres_proxy_drop_ready_for_query_after(
+                client,
+                database,
+                PostgresAckLossTarget::CompensationMarkerInsert,
+            )
+            .await
+        });
+        let proxy_options = database_options
+            .host("127.0.0.1")
+            .port(proxy_address.port())
+            .ssl_mode(PgSslMode::Disable);
+        let proxy_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(3))
+            .connect_with(proxy_options)
+            .await
+            .unwrap();
+        let proxy_marker_store =
+            PostgresCompensationIdempotencyStore::with_table_prefix(proxy_pool.clone(), &prefix);
+
+        let effects = Arc::new(AtomicUsize::new(0));
+        let compensation_calls = Arc::new(AtomicUsize::new(0));
+        let axon = ranvier_runtime::Axon::<u32, u32, String, ()>::new(
+            "PostgresWireCompensationMarkerAckLossFixture",
+        )
+        .then(CountFault(effects.clone()));
+        let trace_id = "wire-compensation-marker-ack-loss";
+        let mut bus = Bus::new();
+        bus.insert(PersistenceTraceId::new(trace_id));
+        bus.insert(PersistenceHandle::from_store(trace_store.clone()));
+        bus.insert(CompensationHandle::from_hook(CountCompensation(
+            compensation_calls.clone(),
+        )));
+        bus.insert(CompensationIdempotencyHandle::from_store(
+            proxy_marker_store,
+        ));
+
+        let report = axon.execute(7, &(), &mut bus).await;
+        let proxy_task_observation =
+            tokio::time::timeout(std::time::Duration::from_secs(3), proxy_task)
+                .await
+                .expect("TCP proxy must observe the compensation marker insert response")
+                .expect("TCP proxy task must not panic")
+                .expect("TCP proxy must relay and drop the targeted backend frame");
+        assert_eq!(
+            proxy_task_observation,
+            PostgresAckLossObservation {
+                target: PostgresAckLossTarget::CompensationMarkerInsert,
+                command_tag: "INSERT 0 1",
+                transaction_status: b'I',
+            }
+        );
+        assert!(matches!(
+            &report,
+            ExecutionReport::Unconfirmed {
+                result: Outcome::Fault(message),
+                operation: PersistenceOperation::CompensationWrite,
+                effect: EffectBoundary::MayHaveRun,
+                ..
+            } if message == "business-fault"
+        ), "unexpected compensation marker report: {report:?}");
+        let cleanup = report
+            .cleanup()
+            .expect("external compensation cleanup must be reported");
+        assert_eq!(cleanup.trace_id, trace_id);
+        assert!(!cleanup.is_complete());
+        assert_eq!(cleanup.steps.len(), 1);
+        assert_eq!(
+            cleanup.steps[0].outcome,
+            ranvier_runtime::SagaRollbackOutcome::Fault
+        );
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert_eq!(compensation_calls.load(Ordering::SeqCst), 1);
+        proxy_pool.close().await;
+
+        let marker_count: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {prefix}_compensation_idempotency"
+        ))
+        .fetch_one(&direct_pool)
+        .await
+        .unwrap();
+        assert_eq!(marker_count, 1, "the marker insert must have committed");
+        direct_pool.close().await;
+        println!(
+            "POSTGRES_TCP_COMPENSATION_MARKER_ACK_LOST dropped=ReadyForQuery-after-INSERT-0-1 effect=MayHaveRun effects=1 hook_calls=1 marker_rows=1 cleanup=Fault trace_store=InMemory postgres_trace_store=false"
+        );
+    })
+    .await
+    .expect("isolated TCP compensation-marker acknowledgement fixture must finish within 15 seconds");
 }
 
 // Characterizes historical false-success rows written before completion was
