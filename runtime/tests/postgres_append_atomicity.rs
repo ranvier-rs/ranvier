@@ -56,7 +56,6 @@ fn terminal_event(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PostgresAckLossTarget {
-    CompletionUpdate,
     CompensationMarkerInsert,
     CommittedTransaction(u8),
 }
@@ -84,7 +83,6 @@ async fn postgres_proxy_drop_ready_for_query_after(
 
     let client_to_database = tokio::io::copy(&mut client_reader, &mut database_writer);
     let database_to_client = async {
-        let mut saw_completion_update = false;
         let mut saw_compensation_marker_insert = false;
         let mut committed_transaction_count = 0_u8;
         loop {
@@ -101,11 +99,6 @@ async fn postgres_proxy_drop_ready_for_query_after(
 
             if header[0] == b'C' {
                 match target {
-                    PostgresAckLossTarget::CompletionUpdate
-                        if payload.as_slice() == b"UPDATE 1\0" =>
-                    {
-                        saw_completion_update = true;
-                    }
                     PostgresAckLossTarget::CompensationMarkerInsert
                         if payload.as_slice() == b"INSERT 0 1\0" =>
                     {
@@ -122,7 +115,6 @@ async fn postgres_proxy_drop_ready_for_query_after(
             if header[0] == b'Z' {
                 let transaction_status = payload.first().copied();
                 let target_seen = match target {
-                    PostgresAckLossTarget::CompletionUpdate => saw_completion_update,
                     PostgresAckLossTarget::CompensationMarkerInsert => {
                         saw_compensation_marker_insert
                     }
@@ -132,10 +124,9 @@ async fn postgres_proxy_drop_ready_for_query_after(
                 };
                 if target_seen && transaction_status == Some(b'I') {
                     // PostgreSQL reports an idle session after the targeted
-                    // completion update or append commit. Drop that response
-                    // so the caller observes an unknown acknowledgement.
+                    // compensation marker insert or transaction commit. Drop
+                    // that response so the caller sees an unknown ACK.
                     let command_tag = match target {
-                        PostgresAckLossTarget::CompletionUpdate => "UPDATE 1",
                         PostgresAckLossTarget::CompensationMarkerInsert => "INSERT 0 1",
                         PostgresAckLossTarget::CommittedTransaction(_) => "COMMIT",
                     };
@@ -145,10 +136,6 @@ async fn postgres_proxy_drop_ready_for_query_after(
                         transaction_status: b'I',
                     });
                 }
-                // For the completion target, do not mistake an UPDATE inside
-                // append's explicit transaction for completion. Its
-                // ReadyForQuery status is T.
-                saw_completion_update = false;
                 saw_compensation_marker_insert = false;
             }
 
@@ -500,7 +487,7 @@ async fn postgres_committed_result_with_lost_store_ack_is_reported_unconfirmed()
                 effect: EffectBoundary::MayHaveRun,
                 ..
             }
-        ));
+        ), "unexpected committed-result report: {report:?}; effects={}", effects.load(Ordering::SeqCst));
         assert!(!format!("{report:?}").contains("private-committed-ack-loss-sentinel"));
         assert!(lost.load(Ordering::SeqCst));
         assert_eq!(effects.load(Ordering::SeqCst), 1);
@@ -513,12 +500,18 @@ async fn postgres_committed_result_with_lost_store_ack_is_reported_unconfirmed()
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(trace.events.len(), 2);
+        assert_eq!(trace.events.len(), 3);
         assert_eq!(trace.events[0].outcome_kind, "Enter");
-        assert_eq!(trace.events[1].outcome_kind, "Next");
-        assert_eq!(trace.events[1].step, 1);
         assert_eq!(
-            trace.events[1].payload,
+            trace.events[1].event_type,
+            ranvier_runtime::persistence::PersistenceEventType::Intent
+        );
+        assert_eq!(trace.events[1].step, 1);
+        assert_eq!(trace.events[2].event_type, ranvier_runtime::persistence::PersistenceEventType::Result);
+        assert_eq!(trace.events[2].outcome_kind, "Next");
+        assert_eq!(trace.events[2].step, 1);
+        assert_eq!(
+            trace.events[2].payload,
             Some(Outcome::<u32, String>::next(1).to_json_value())
         );
         assert_eq!(trace.completion, None);
@@ -547,6 +540,18 @@ async fn postgres_committed_completion_with_lost_store_ack_is_reported_unconfirm
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     };
+
+    #[derive(Clone)]
+    struct CountEffect(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl Transition<u32, u32> for CountEffect {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, input: u32, _: &(), _: &mut Bus) -> Outcome<u32, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Outcome::next(input + 1)
+        }
+    }
 
     #[derive(Clone)]
     struct CommitThenLoseCompleteAck {
@@ -610,9 +615,11 @@ async fn postgres_committed_completion_with_lost_store_ack_is_reported_unconfirm
 
         let lost = Arc::new(AtomicBool::new(false));
         let complete_calls = Arc::new(AtomicUsize::new(0));
+        let effects = Arc::new(AtomicUsize::new(0));
         let axon = ranvier_runtime::Axon::<u32, u32, String, ()>::new(
             "PostgresCompleteAckLossFixture",
-        );
+        )
+        .then(CountEffect(effects.clone()));
         let mut bus = Bus::new();
         bus.insert(PersistenceHandle::from_store(CommitThenLoseCompleteAck {
             inner: store.clone(),
@@ -625,7 +632,7 @@ async fn postgres_committed_completion_with_lost_store_ack_is_reported_unconfirm
         assert!(matches!(
             &report,
             ExecutionReport::Unconfirmed {
-                result: Outcome::Next(7),
+                result: Outcome::Next(8),
                 operation: PersistenceOperation::Complete,
                 effect: EffectBoundary::MayHaveRun,
                 ..
@@ -635,6 +642,7 @@ async fn postgres_committed_completion_with_lost_store_ack_is_reported_unconfirm
             .contains("private-committed-completion-ack-loss-sentinel"));
         assert!(lost.load(Ordering::SeqCst));
         assert_eq!(complete_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
 
         let reader_pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(1)
@@ -648,29 +656,38 @@ async fn postgres_committed_completion_with_lost_store_ack_is_reported_unconfirm
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(trace.events.len(), 2);
+        assert_eq!(trace.events.len(), 4);
         assert_eq!(trace.events[0].outcome_kind, "Enter");
         assert_eq!(trace.events[0].step, 0);
-        assert_eq!(trace.events[1].outcome_kind, "Next");
-        assert_eq!(trace.events[1].step, 1);
         assert_eq!(
-            trace.events[1].payload,
-            Some(Outcome::<u32, String>::next(7).to_json_value())
+            trace.events[1].event_type,
+            ranvier_runtime::persistence::PersistenceEventType::Intent
+        );
+        assert_eq!(trace.events[2].event_type, ranvier_runtime::persistence::PersistenceEventType::Result);
+        assert_eq!(trace.events[2].outcome_kind, "Next");
+        assert_eq!(trace.events[2].step, 1);
+        assert_eq!(
+            trace.events[2].payload,
+            Some(Outcome::<u32, String>::next(8).to_json_value())
+        );
+        assert_eq!(
+            trace.events[3].event_type,
+            ranvier_runtime::persistence::PersistenceEventType::Terminal
         );
         assert_eq!(trace.completion, Some(CompletionState::Success));
         reader_pool.close().await;
         pool.close().await;
         println!(
-            "POSTGRES_COMMITTED_COMPLETION_ACK_LOST result=Next(7) complete-calls=1 terminal-row-present completion=Success"
+            "POSTGRES_COMMITTED_COMPLETION_ACK_LOST result=Next(8) effects=1 complete-calls=1 terminal-row-present completion=Success"
         );
     })
     .await
     .expect("isolated committed-completion acknowledgement fixture must finish within 15 seconds");
 }
 
-// Drops PostgreSQL's ReadyForQuery after the completion UPDATE has reached
-// CommandComplete. This exercises a real TCP/SQLx acknowledgement loss after
-// PostgreSQL has applied the autocommitted update.
+// Drops the sixth ReadyForQuery after COMMIT: load, Enter, Intent, Result,
+// Terminal, then completion. PostgreSQL has applied the completion before the
+// caller loses the transaction acknowledgement.
 #[tokio::test]
 #[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
 async fn postgres_completion_ack_lost_on_tcp_after_commit_is_unconfirmed() {
@@ -680,7 +697,23 @@ async fn postgres_completion_ack_lost_on_tcp_after_commit_is_unconfirmed() {
     };
     use ranvier_runtime::{EffectBoundary, ExecutionReport, PersistenceOperation};
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     use tokio::net::{TcpListener, TcpStream};
+
+    #[derive(Clone)]
+    struct CountEffect(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl Transition<u32, u32> for CountEffect {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, input: u32, _: &(), _: &mut Bus) -> Outcome<u32, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Outcome::next(input + 1)
+        }
+    }
 
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL")
@@ -706,7 +739,7 @@ async fn postgres_completion_ack_lost_on_tcp_after_commit_is_unconfirmed() {
             postgres_proxy_drop_ready_for_query_after(
                 client,
                 database,
-                PostgresAckLossTarget::CompletionUpdate,
+                PostgresAckLossTarget::CommittedTransaction(6),
             )
             .await
         });
@@ -721,9 +754,11 @@ async fn postgres_completion_ack_lost_on_tcp_after_commit_is_unconfirmed() {
             .await
             .unwrap();
         let proxy_store = PostgresPersistenceStore::with_table_prefix(proxy_pool.clone(), &prefix);
+        let effects = Arc::new(AtomicUsize::new(0));
         let axon = ranvier_runtime::Axon::<u32, u32, String, ()>::new(
             "PostgresWireCompletionAckLossFixture",
-        );
+        )
+        .then(CountEffect(effects.clone()));
         let mut bus = Bus::new();
         bus.insert(PersistenceHandle::from_store(proxy_store));
         bus.insert(PersistenceTraceId::new("wire-completion-ack-loss"));
@@ -732,12 +767,13 @@ async fn postgres_completion_ack_lost_on_tcp_after_commit_is_unconfirmed() {
         assert!(matches!(
             &report,
             ExecutionReport::Unconfirmed {
-                result: Outcome::Next(7),
+                result: Outcome::Next(8),
                 operation: PersistenceOperation::Complete,
                 effect: EffectBoundary::MayHaveRun,
                 ..
             }
-        ));
+        ), "unexpected TCP completion-ack report: {report:?}; effects={}", effects.load(Ordering::SeqCst));
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
         let proxy_task_observation = tokio::time::timeout(
             std::time::Duration::from_secs(3),
             proxy_task,
@@ -749,8 +785,8 @@ async fn postgres_completion_ack_lost_on_tcp_after_commit_is_unconfirmed() {
         assert_eq!(
             proxy_task_observation,
             PostgresAckLossObservation {
-                target: PostgresAckLossTarget::CompletionUpdate,
-                command_tag: "UPDATE 1",
+                target: PostgresAckLossTarget::CommittedTransaction(6),
+                command_tag: "COMMIT",
                 transaction_status: b'I',
             }
         );
@@ -768,20 +804,29 @@ async fn postgres_completion_ack_lost_on_tcp_after_commit_is_unconfirmed() {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(trace.events.len(), 2);
+        assert_eq!(trace.events.len(), 4);
         assert_eq!(trace.events[0].outcome_kind, "Enter");
         assert_eq!(trace.events[0].step, 0);
-        assert_eq!(trace.events[1].outcome_kind, "Next");
-        assert_eq!(trace.events[1].step, 1);
         assert_eq!(
-            trace.events[1].payload,
-            Some(Outcome::<u32, String>::next(7).to_json_value())
+            trace.events[1].event_type,
+            ranvier_runtime::persistence::PersistenceEventType::Intent
+        );
+        assert_eq!(trace.events[2].event_type, ranvier_runtime::persistence::PersistenceEventType::Result);
+        assert_eq!(trace.events[2].outcome_kind, "Next");
+        assert_eq!(trace.events[2].step, 1);
+        assert_eq!(
+            trace.events[2].payload,
+            Some(Outcome::<u32, String>::next(8).to_json_value())
+        );
+        assert_eq!(
+            trace.events[3].event_type,
+            ranvier_runtime::persistence::PersistenceEventType::Terminal
         );
         assert_eq!(trace.completion, Some(CompletionState::Success));
         reader_pool.close().await;
         direct_pool.close().await;
         println!(
-            "POSTGRES_TCP_COMPLETION_ACK_LOST dropped=ReadyForQuery-after-UPDATE-1 caller=Unconfirmed stored=Success"
+            "POSTGRES_TCP_COMPLETION_ACK_LOST dropped=ReadyForQuery-after-COMMIT-6 caller=Unconfirmed stored=Success"
         );
     })
     .await
@@ -960,7 +1005,7 @@ async fn postgres_intent_ack_lost_on_tcp_blocks_before_effect() {
             .connect(&url)
             .await
             .unwrap();
-        let prefix = format!("wire_intent_ack_{}", uuid::Uuid::new_v4().simple());
+        let prefix = format!("intent_ack_{}", uuid::Uuid::new_v4().simple());
         let direct_store = PostgresPersistenceStore::with_table_prefix(direct_pool.clone(), &prefix);
         direct_store.ensure_schema().await.unwrap();
 
@@ -972,7 +1017,7 @@ async fn postgres_intent_ack_lost_on_tcp_blocks_before_effect() {
             postgres_proxy_drop_ready_for_query_after(
                 client,
                 database,
-                PostgresAckLossTarget::CommittedTransaction(2),
+                PostgresAckLossTarget::CommittedTransaction(3),
             )
             .await
         });
@@ -1010,13 +1055,13 @@ async fn postgres_intent_ack_lost_on_tcp_blocks_before_effect() {
         let proxy_task_observation =
             tokio::time::timeout(std::time::Duration::from_secs(3), proxy_task)
                 .await
-                .expect("TCP proxy must observe the Enter append commit response")
+                .expect("TCP proxy must observe the transition Intent append commit response")
                 .expect("TCP proxy task must not panic")
                 .expect("TCP proxy must relay and drop the targeted backend frame");
         assert_eq!(
             proxy_task_observation,
             PostgresAckLossObservation {
-                target: PostgresAckLossTarget::CommittedTransaction(2),
+                target: PostgresAckLossTarget::CommittedTransaction(3),
                 command_tag: "COMMIT",
                 transaction_status: b'I',
             }
@@ -1031,23 +1076,27 @@ async fn postgres_intent_ack_lost_on_tcp_blocks_before_effect() {
             .unwrap();
         let reader = PostgresPersistenceStore::with_table_prefix(reader_pool.clone(), &prefix);
         let trace = reader.load(trace_id).await.unwrap().unwrap();
-        assert_eq!(trace.events.len(), 1);
+        assert_eq!(trace.events.len(), 2);
         assert_eq!(trace.events[0].outcome_kind, "Enter");
         assert_eq!(trace.events[0].step, 0);
+        assert_eq!(
+            trace.events[1].event_type,
+            ranvier_runtime::persistence::PersistenceEventType::Intent
+        );
+        assert_eq!(trace.events[1].step, 1);
         assert_eq!(trace.completion, None);
         reader_pool.close().await;
         direct_pool.close().await;
         println!(
-            "POSTGRES_TCP_INTENT_ACK_LOST dropped=ReadyForQuery-after-COMMIT-2 operation=Intent effect=NotInvoked effects=0 stored-events=Enter-only completion=unset"
+            "POSTGRES_TCP_INTENT_ACK_LOST dropped=ReadyForQuery-after-COMMIT-3 operation=Intent effect=NotInvoked effects=0 stored-events=Enter+Intent completion=unset"
         );
     })
     .await
     .expect("isolated TCP intent acknowledgement fixture must finish within 15 seconds");
 }
 
-// Execution first commits the persistence load transaction, then Enter, then
-// the transition result. Drop the third ReadyForQuery after COMMIT to exercise
-// real result-append ACK loss.
+// Execution commits load, Enter, Intent, then Result. Drop the fourth
+// ReadyForQuery after COMMIT to exercise real result-append ACK loss.
 #[tokio::test]
 #[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
 async fn postgres_result_append_ack_lost_on_tcp_after_commit_is_unconfirmed() {
@@ -1087,7 +1136,7 @@ async fn postgres_result_append_ack_lost_on_tcp_after_commit_is_unconfirmed() {
             .connect(&url)
             .await
             .unwrap();
-        let prefix = format!("wire_result_ack_{}", uuid::Uuid::new_v4().simple());
+        let prefix = format!("result_ack_{}", uuid::Uuid::new_v4().simple());
         let direct_store = PostgresPersistenceStore::with_table_prefix(direct_pool.clone(), &prefix);
         direct_store.ensure_schema().await.unwrap();
 
@@ -1099,7 +1148,7 @@ async fn postgres_result_append_ack_lost_on_tcp_after_commit_is_unconfirmed() {
             postgres_proxy_drop_ready_for_query_after(
                 client,
                 database,
-                PostgresAckLossTarget::CommittedTransaction(3),
+                PostgresAckLossTarget::CommittedTransaction(4),
             )
             .await
         });
@@ -1142,7 +1191,7 @@ async fn postgres_result_append_ack_lost_on_tcp_after_commit_is_unconfirmed() {
         assert_eq!(
             proxy_task_observation,
             PostgresAckLossObservation {
-                target: PostgresAckLossTarget::CommittedTransaction(3),
+                target: PostgresAckLossTarget::CommittedTransaction(4),
                 command_tag: "COMMIT",
                 transaction_status: b'I',
             }
@@ -1161,20 +1210,26 @@ async fn postgres_result_append_ack_lost_on_tcp_after_commit_is_unconfirmed() {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(trace.events.len(), 2);
+        assert_eq!(trace.events.len(), 3);
         assert_eq!(trace.events[0].outcome_kind, "Enter");
         assert_eq!(trace.events[0].step, 0);
-        assert_eq!(trace.events[1].outcome_kind, "Next");
-        assert_eq!(trace.events[1].step, 1);
         assert_eq!(
-            trace.events[1].payload,
+            trace.events[1].event_type,
+            ranvier_runtime::persistence::PersistenceEventType::Intent
+        );
+        assert_eq!(trace.events[1].step, 1);
+        assert_eq!(trace.events[2].event_type, ranvier_runtime::persistence::PersistenceEventType::Result);
+        assert_eq!(trace.events[2].outcome_kind, "Next");
+        assert_eq!(trace.events[2].step, 1);
+        assert_eq!(
+            trace.events[2].payload,
             Some(Outcome::<u32, String>::next(1).to_json_value())
         );
         assert_eq!(trace.completion, None);
         reader_pool.close().await;
         direct_pool.close().await;
         println!(
-            "POSTGRES_TCP_RESULT_ACK_LOST dropped=ReadyForQuery-after-COMMIT-3 effects=1 stored-result-present completion=unset"
+            "POSTGRES_TCP_RESULT_ACK_LOST dropped=ReadyForQuery-after-COMMIT-4 effects=1 stored-result-present completion=unset"
         );
     })
     .await
@@ -1368,7 +1423,7 @@ async fn postgres_completed_trace_without_terminal_requires_reconciliation() {
         .connect(&url)
         .await
         .unwrap();
-    let prefix = format!("legacy_success_{}", uuid::Uuid::new_v4().simple());
+    let prefix = format!("legacy_{}", uuid::Uuid::new_v4().simple());
     let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
     store.ensure_schema().await.unwrap();
 
@@ -2004,13 +2059,13 @@ async fn postgres_load_reads_one_snapshot_across_concurrent_append() {
 
 #[tokio::test]
 #[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
-async fn postgres_completion_before_append_rejects_late_event() {
+async fn postgres_completion_before_terminal_append_does_not_complete() {
     verify_append_completion_order(true).await;
 }
 
 #[tokio::test]
 #[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
-async fn postgres_append_before_completion_preserves_event_and_terminal() {
+async fn postgres_terminal_append_before_completion_commits_trace() {
     verify_append_completion_order(false).await;
 }
 
@@ -2045,11 +2100,9 @@ async fn verify_append_completion_order(completion_first: bool) {
     let prefix = format!("order_{}", uuid::Uuid::new_v4().simple());
     let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), &prefix);
     store.ensure_schema().await.unwrap();
-    store.append(event("ordered", 0, "initial")).await.unwrap();
-    store
-        .append(terminal_event("ordered", 1, 1, "initial", "Next"))
-        .await
-        .unwrap();
+    let initial = event("ordered", 0, "initial");
+    store.append(initial.clone()).await.unwrap();
+    let terminal = terminal_event("ordered", 1, 1, "appended", "Next");
     let first_label = format!("first_{}", uuid::Uuid::new_v4().simple());
     let second_label = format!("second_{}", uuid::Uuid::new_v4().simple());
     let options = url.parse::<sqlx::postgres::PgConnectOptions>().unwrap();
@@ -2072,19 +2125,14 @@ async fn verify_append_completion_order(completion_first: bool) {
     .execute(&mut *holder)
     .await
     .unwrap();
+    let first_terminal = terminal.clone();
     let mut first = tokio::spawn(async move {
         if completion_first {
             first_store
                 .complete("ordered", CompletionState::Success)
                 .await
         } else {
-            let mut intent = event("ordered", 2, "appended");
-            intent.event_type = ranvier_runtime::persistence::PersistenceEventType::Intent;
-            intent.step = 2;
-            intent.node_id = Some("external-compensation".into());
-            intent.outcome_kind = "Intent".into();
-            intent.payload = Some(serde_json::json!({"kind": "external-compensation"}));
-            first_store.append(intent).await
+            first_store.append(first_terminal).await
         }
     });
     let first_wait = wait_for_row_lock(
@@ -2094,15 +2142,10 @@ async fn verify_append_completion_order(completion_first: bool) {
         &format!("{prefix}_v2_state"),
     )
     .await;
+    let second_terminal = terminal.clone();
     let mut second = tokio::spawn(async move {
         if completion_first {
-            let mut intent = event("ordered", 2, "appended");
-            intent.event_type = ranvier_runtime::persistence::PersistenceEventType::Intent;
-            intent.step = 2;
-            intent.node_id = Some("external-compensation".into());
-            intent.outcome_kind = "Intent".into();
-            intent.payload = Some(serde_json::json!({"kind": "external-compensation"}));
-            second_store.append(intent).await
+            second_store.append(second_terminal).await
         } else {
             second_store
                 .complete("ordered", CompletionState::Success)
@@ -2127,73 +2170,46 @@ async fn verify_append_completion_order(completion_first: bool) {
     first_wait.expect("first actual operation must wait on holder transaction");
     second_wait.expect("second actual operation must queue on tuple behind first");
     released.unwrap();
-    first_result.unwrap().unwrap().unwrap();
-    let second_result = second_result.unwrap().unwrap();
-    let trace = if completion_first {
-        assert!(
-            second_result
-                .unwrap_err()
-                .to_string()
-                .contains("already completed")
-        );
-        let trace = store.load("ordered").await.unwrap().unwrap();
-        assert_eq!(trace.completion, Some(CompletionState::Success));
-        assert_eq!(trace.schematic_version, "initial");
-        assert_eq!(
-            trace.events,
-            vec![
-                event("ordered", 0, "initial"),
-                terminal_event("ordered", 1, 1, "initial", "Next")
-            ]
-        );
-        trace
+    let first_result = first_result
+        .expect("first operation must finish after row release")
+        .expect("first operation task must not panic");
+    let second_result = second_result
+        .expect("second operation must finish after row release")
+        .expect("second operation task must not panic");
+    if completion_first {
+        let error = first_result.expect_err("completion before terminal must fail closed");
+        assert!(error.to_string().contains("terminal event"), "{error:#}");
+        second_result.expect("terminal append after rejected completion must succeed");
     } else {
-        assert!(
-            second_result
-                .unwrap_err()
-                .to_string()
-                .contains("PendingIntent")
-        );
-        let mut compensation = event("ordered", 3, "appended");
-        compensation.event_type = ranvier_runtime::persistence::PersistenceEventType::Compensation;
-        compensation.step = 2;
-        compensation.node_id = Some("external-compensation".into());
-        compensation.outcome_kind = "Compensated".into();
-        compensation.payload = Some(serde_json::json!({"outcome": "completed"}));
-        store.append(compensation.clone()).await.unwrap();
-        store
-            .complete("ordered", CompletionState::Success)
-            .await
-            .unwrap();
-        let final_trace = store.load("ordered").await.unwrap().unwrap();
-        assert_eq!(final_trace.completion, Some(CompletionState::Success));
-        assert_eq!(final_trace.events.len(), 4);
-        assert_eq!(final_trace.schematic_version, "appended");
-        assert_eq!(
-            final_trace.events,
-            vec![
-                event("ordered", 0, "initial"),
-                terminal_event("ordered", 1, 1, "initial", "Next"),
-                {
-                    let mut intent = event("ordered", 2, "appended");
-                    intent.event_type = ranvier_runtime::persistence::PersistenceEventType::Intent;
-                    intent.step = 2;
-                    intent.node_id = Some("external-compensation".into());
-                    intent.outcome_kind = "Intent".into();
-                    intent.payload = Some(serde_json::json!({"kind": "external-compensation"}));
-                    intent
-                },
-                compensation,
-            ]
-        );
-        final_trace
-    };
+        first_result.expect("terminal append before completion must succeed");
+        second_result.expect("completion after terminal append must succeed");
+    }
+
+    let trace = store.load("ordered").await.unwrap().unwrap();
+    assert_eq!(trace.schematic_version, "appended");
+    assert_eq!(trace.events, vec![initial, terminal]);
+    assert_eq!(
+        trace.completion,
+        if completion_first {
+            None
+        } else {
+            Some(CompletionState::Success)
+        }
+    );
+
     let late = store
-        .append(event("ordered", 4, "rejected-late-version"))
+        .append(event("ordered", 2, "rejected-late-version"))
         .await;
     let after_late = store.load("ordered").await;
-    assert_eq!(trace.completion, Some(CompletionState::Success));
-    assert!(late.unwrap_err().to_string().contains("already completed"));
+    let late_error = late.unwrap_err().to_string();
+    if completion_first {
+        assert!(
+            late_error.contains("after a terminal event"),
+            "{late_error}"
+        );
+    } else {
+        assert!(late_error.contains("already completed"), "{late_error}");
+    }
     assert_eq!(
         after_late.unwrap(),
         Some(trace.clone()),
@@ -2201,6 +2217,6 @@ async fn verify_append_completion_order(completion_first: bool) {
     );
     pool.close().await;
     println!(
-        "POSTGRES_ORDER_PASS completion_first={completion_first} actual-transactionid-and-tuple-waits"
+        "POSTGRES_ORDER_PASS completion_first={completion_first} terminal-append-completion actual-transactionid-and-tuple-waits"
     );
 }
