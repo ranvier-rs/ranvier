@@ -4,7 +4,10 @@ use anyhow::{Context, Result, ensure};
 use ranvier_core::prelude::*;
 use ranvier_runtime::{
     Axon, EffectBoundary, ExecutionReport, PersistenceOperation,
-    persistence::{PersistenceHandle, PersistenceStore, PersistenceTraceId, RedisPersistenceStore},
+    persistence::{
+        CompletionState, PersistenceHandle, PersistenceStore, PersistenceTraceId,
+        RedisPersistenceStore,
+    },
 };
 use std::{
     net::SocketAddr,
@@ -478,5 +481,82 @@ async fn redis_terminal_ack_loss_over_tcp_blocks_reentry() -> Result<()> {
     })
     .await
     .context("isolated Redis TCP terminal ACK-loss fixture must finish within 20 seconds")??;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly isolated unauthenticated Redis fixture URL and address"]
+async fn redis_complete_ack_loss_over_tcp_reports_uncertainty_after_apply() -> Result<()> {
+    timeout(Duration::from_secs(20), async {
+        let backend_url = std::env::var("RANVIER_ATOMICITY_REDIS_URL")
+            .context("explicit isolated Redis URL required")?;
+        ensure!(
+            backend_url.starts_with("redis://") && !backend_url.contains('@'),
+            "fixture supports only an isolated unauthenticated redis:// endpoint"
+        );
+        let backend_endpoint = std::env::var("RANVIER_ATOMICITY_REDIS_ADDRESS")
+            .context("explicit isolated Redis address required")?;
+        let backend_address = lookup_host(&backend_endpoint)
+            .await?
+            .next()
+            .context("isolated Redis address did not resolve")?;
+        let reader = RedisPersistenceStore::connect(&backend_url).await?;
+        let trace_id = format!("redis-complete-ack-{}", uuid::Uuid::new_v4().simple());
+        ensure!(reader.load(&trace_id).await?.is_none(), "unique trace id already exists");
+
+        // EVAL #1 appends Enter, #2 the transition result, #3 the terminal
+        // Next, and #4 writes completion. Drop only the successful completion reply.
+        let (proxy_url, mut dropped_reply, proxy) = start_proxy(backend_address, 4).await?;
+        let execution_store = RedisPersistenceStore::connect(&proxy_url).await?;
+        let effects = Arc::new(AtomicUsize::new(0));
+        let axon = Axon::<u32, u32, String, ()>::new("RedisCompleteAckLossFixture")
+            .then(CountEffect(effects.clone()));
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_store(execution_store));
+        bus.insert(PersistenceTraceId::new(trace_id.clone()));
+
+        let report = axon.execute(10, &(), &mut bus).await;
+        let observed_drop = timeout(Duration::from_secs(5), dropped_reply.recv())
+            .await?
+            .context("Redis TCP proxy did not drop the targeted EVAL reply")?;
+        ensure!(observed_drop.ordinal == 4, "proxy dropped a different EVAL command");
+        ensure!(observed_drop.response == b":1\r\n", "Redis did not apply completion");
+        ensure!(
+            matches!(
+                &report,
+                ExecutionReport::Unconfirmed {
+                    result: Outcome::Next(11),
+                    operation: PersistenceOperation::Complete,
+                    effect: EffectBoundary::MayHaveRun,
+                    ..
+                }
+            ),
+            "unexpected caller report after losing committed completion ACK: {report:?}"
+        );
+        ensure!(effects.load(Ordering::SeqCst) == 1, "domain effect did not run exactly once");
+
+        let trace = reader
+            .load(&trace_id)
+            .await?
+            .context("separate Redis client could not read the trace")?;
+        ensure!(trace.events.len() == 3, "unexpected persisted event count");
+        ensure!(trace.events[0].outcome_kind == "Enter", "initial event was not retained");
+        ensure!(trace.events[1].outcome_kind == "Next", "transition result is missing");
+        ensure!(trace.events[2].outcome_kind == "Next", "terminal event is missing");
+        ensure!(trace.events[1].step == 1, "transition result has an unexpected step");
+        ensure!(trace.events[2].step == 1, "terminal event has an unexpected step");
+        ensure!(
+            trace.completion == Some(CompletionState::Success),
+            "successful completion was not applied before its reply was dropped"
+        );
+        proxy.stop().await?;
+        println!(
+            "REDIS_TCP_COMPLETE_ACK_LOST eval={} reply=:1 effects=1 stored=[Enter,Next,Next] completion=Success",
+            observed_drop.ordinal
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("isolated Redis TCP completion ACK-loss fixture must finish within 20 seconds")??;
     Ok(())
 }
