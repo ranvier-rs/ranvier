@@ -774,3 +774,130 @@ async fn redis_intent_ack_loss_over_tcp_blocks_before_effect_and_preserves_enter
     .context("isolated Redis TCP intent ACK-loss fixture must finish within 20 seconds")??;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires explicitly isolated unauthenticated Redis fixture URL and address"]
+async fn redis_compensation_marker_ack_loss_over_tcp_reports_uncertainty() -> Result<()> {
+    use ranvier_runtime::persistence::{
+        CompensationHandle, CompensationHook, CompensationIdempotencyHandle,
+        CompensationIdempotencyStore, InMemoryPersistenceStore, PersistenceHandle,
+        PersistenceTraceId, RedisCompensationIdempotencyStore,
+    };
+
+    #[derive(Clone)]
+    struct CountFault(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl Transition<u32, u32> for CountFault {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, _: u32, _: &(), _: &mut Bus) -> Outcome<u32, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Outcome::Fault("business-fault".into())
+        }
+    }
+
+    #[derive(Clone)]
+    struct CountCompensation(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl CompensationHook for CountCompensation {
+        async fn compensate(
+            &self,
+            _: ranvier_runtime::persistence::CompensationContext,
+        ) -> anyhow::Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    timeout(Duration::from_secs(20), async {
+        let backend_url = std::env::var("RANVIER_ATOMICITY_REDIS_URL")
+            .context("explicit isolated Redis URL required")?;
+        ensure!(
+            backend_url.starts_with("redis://") && !backend_url.contains('@'),
+            "fixture supports only an isolated unauthenticated redis:// endpoint"
+        );
+        let backend_endpoint = std::env::var("RANVIER_ATOMICITY_REDIS_ADDRESS")
+            .context("explicit isolated Redis address required")?;
+        let backend_address = lookup_host(&backend_endpoint)
+            .await?
+            .next()
+            .context("isolated Redis address did not resolve")?;
+
+        let reader = RedisCompensationIdempotencyStore::connect(&backend_url).await?;
+        let trace_id = format!("redis-compensation-marker-ack-{}", uuid::Uuid::new_v4().simple());
+        let circuit = "RedisWireCompensationMarkerAckLossFixture";
+        let key = format!("{trace_id}:{circuit}:Fault");
+        ensure!(
+            !reader.was_compensated(&key).await?,
+            "unique compensation marker key already exists"
+        );
+
+        let (proxy_url, mut dropped_reply, proxy) =
+            start_proxy_for_command(backend_address, "SETNX", 1).await?;
+        let marker_store = RedisCompensationIdempotencyStore::connect(&proxy_url).await?;
+        let effects = Arc::new(AtomicUsize::new(0));
+        let compensation_calls = Arc::new(AtomicUsize::new(0));
+        let axon = Axon::<u32, u32, String, ()>::new(circuit).then(CountFault(effects.clone()));
+        let mut bus = Bus::new();
+        bus.insert(PersistenceTraceId::new(trace_id.clone()));
+        bus.insert(PersistenceHandle::from_store(InMemoryPersistenceStore::new()));
+        bus.insert(CompensationHandle::from_hook(CountCompensation(
+            compensation_calls.clone(),
+        )));
+        bus.insert(CompensationIdempotencyHandle::from_store(marker_store));
+
+        let report = axon.execute(7, &(), &mut bus).await;
+        let observed_drop = timeout(Duration::from_secs(5), dropped_reply.recv())
+            .await?
+            .context("Redis TCP proxy did not drop the compensation marker SETNX reply")?;
+        ensure!(
+            observed_drop.command.eq_ignore_ascii_case("SETNX")
+                && observed_drop.ordinal == 1,
+            "proxy dropped a different Redis command"
+        );
+        ensure!(
+            observed_drop.response == b":1\r\n",
+            "Redis did not apply a new SETNX marker"
+        );
+        ensure!(
+            matches!(
+                &report,
+                ExecutionReport::Unconfirmed {
+                    result: Outcome::Fault(message),
+                    operation: PersistenceOperation::CompensationWrite,
+                    effect: EffectBoundary::MayHaveRun,
+                    ..
+                } if message == "business-fault"
+            ),
+            "unexpected compensation marker report: {report:?}"
+        );
+        let cleanup = report
+            .cleanup()
+            .context("external compensation cleanup must be reported")?;
+        ensure!(cleanup.trace_id == trace_id, "cleanup trace ID changed");
+        ensure!(!cleanup.is_complete(), "cleanup was reported complete");
+        ensure!(cleanup.steps.len() == 1, "cleanup step count changed");
+        ensure!(
+            cleanup.steps[0].outcome == ranvier_runtime::SagaRollbackOutcome::Fault,
+            "cleanup lost the original business Fault"
+        );
+        ensure!(effects.load(Ordering::SeqCst) == 1, "domain effect count changed");
+        ensure!(
+            compensation_calls.load(Ordering::SeqCst) == 1,
+            "compensation hook count changed"
+        );
+        proxy.stop().await?;
+
+        ensure!(
+            reader.was_compensated(&key).await?,
+            "marker applied by Redis disappeared after its acknowledgement was lost"
+        );
+        println!(
+            "REDIS_TCP_COMPENSATION_MARKER_ACK_LOST dropped=SETNX-1 effect=MayHaveRun effects=1 hook_calls=1 marker_present=true cleanup=Fault trace_store=InMemory redis_trace_store=false"
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("isolated Redis TCP compensation-marker ACK-loss fixture must finish within 20 seconds")??;
+    Ok(())
+}
