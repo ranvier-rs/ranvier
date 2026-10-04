@@ -1351,6 +1351,15 @@ impl PostgresPersistenceStore {
 }
 
 #[cfg(feature = "persistence-postgres")]
+fn postgres_event_sequence_is_contiguous(count: i64, max_sequence: Option<i64>) -> bool {
+    match (count, max_sequence) {
+        (0, None) => true,
+        (count, Some(max_sequence)) if count > 0 => max_sequence.checked_add(1) == Some(count),
+        _ => false,
+    }
+}
+
+#[cfg(feature = "persistence-postgres")]
 #[async_trait]
 impl PersistenceStore for PostgresPersistenceStore {
     async fn append(&self, envelope: PersistenceEnvelope) -> Result<()> {
@@ -1415,15 +1424,13 @@ impl PersistenceStore for PostgresPersistenceStore {
         .bind(&envelope.trace_id)
         .fetch_one(&mut *transaction)
         .await?;
-        let expected_sequence = u64::try_from(event_state.0)?;
-        if event_state.1.map(u64::try_from).transpose()?
-            != event_state.0.checked_sub(1).map(|v| v as u64)
-        {
+        if !postgres_event_sequence_is_contiguous(event_state.0, event_state.1) {
             return Err(anyhow!(
                 "trace_id {} has a non-contiguous v2 event sequence",
                 envelope.trace_id
             ));
         }
+        let expected_sequence = u64::try_from(event_state.0)?;
         if envelope.event_sequence != expected_sequence {
             return Err(anyhow!(
                 "trace_id {} expected event sequence {}, got {}",
@@ -2000,6 +2007,20 @@ mod tests {
     use super::*;
     #[cfg(any(feature = "persistence-postgres", feature = "persistence-redis"))]
     use uuid::Uuid;
+
+    #[cfg(feature = "persistence-postgres")]
+    #[test]
+    fn postgres_event_sequence_contiguity_accepts_empty_table_and_rejects_gaps() {
+        assert!(postgres_event_sequence_is_contiguous(0, None));
+        assert!(postgres_event_sequence_is_contiguous(1, Some(0)));
+        assert!(postgres_event_sequence_is_contiguous(6, Some(5)));
+
+        assert!(!postgres_event_sequence_is_contiguous(0, Some(0)));
+        assert!(!postgres_event_sequence_is_contiguous(1, None));
+        assert!(!postgres_event_sequence_is_contiguous(2, Some(0)));
+        assert!(!postgres_event_sequence_is_contiguous(2, Some(2)));
+        assert!(!postgres_event_sequence_is_contiguous(-1, None));
+    }
 
     #[cfg(feature = "persistence-postgres")]
     #[test]
