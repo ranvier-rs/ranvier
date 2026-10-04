@@ -825,6 +825,132 @@ async fn postgres_load_ack_lost_on_tcp_blocks_before_effect() {
     .expect("isolated TCP load acknowledgement fixture must finish within 15 seconds");
 }
 
+// Drops the Enter append transaction's ReadyForQuery after COMMIT #2. The
+// initial load is COMMIT #1; the uncertain intent must block before effects.
+#[tokio::test]
+#[ignore = "requires explicitly isolated PostgreSQL fixture URL"]
+async fn postgres_intent_ack_lost_on_tcp_blocks_before_effect() {
+    use ranvier_core::prelude::*;
+    use ranvier_runtime::persistence::{
+        PersistenceHandle, PersistenceTraceId, PostgresPersistenceStore,
+    };
+    use ranvier_runtime::{EffectBoundary, ExecutionReport, PersistenceOperation};
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokio::net::{TcpListener, TcpStream};
+
+    #[derive(Clone)]
+    struct CountEffect(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl Transition<u32, u32> for CountEffect {
+        type Error = String;
+        type Resources = ();
+        async fn run(&self, input: u32, _: &(), _: &mut Bus) -> Outcome<u32, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Outcome::next(input + 1)
+        }
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let url = std::env::var("RANVIER_ATOMICITY_POSTGRES_URL")
+            .expect("explicit isolated database required");
+        let database_options = url.parse::<PgConnectOptions>().unwrap();
+        let upstream_host = database_options.get_host().to_owned();
+        let upstream_port = database_options.get_port();
+        let direct_pool = PgPoolOptions::new()
+            .max_connections(2)
+            .acquire_timeout(std::time::Duration::from_secs(3))
+            .connect(&url)
+            .await
+            .unwrap();
+        let prefix = format!("wire_intent_ack_{}", uuid::Uuid::new_v4().simple());
+        let direct_store = PostgresPersistenceStore::with_table_prefix(direct_pool.clone(), &prefix);
+        direct_store.ensure_schema().await.unwrap();
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let proxy_address = listener.local_addr().unwrap();
+        let proxy_task = tokio::spawn(async move {
+            let (client, _) = listener.accept().await?;
+            let database = TcpStream::connect((upstream_host.as_str(), upstream_port)).await?;
+            postgres_proxy_drop_ready_for_query_after(
+                client,
+                database,
+                PostgresAckLossTarget::CommittedTransaction(2),
+            )
+            .await
+        });
+        let proxy_options = database_options
+            .host("127.0.0.1")
+            .port(proxy_address.port())
+            .ssl_mode(PgSslMode::Disable);
+        let proxy_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(3))
+            .connect_with(proxy_options)
+            .await
+            .unwrap();
+        let proxy_store = PostgresPersistenceStore::with_table_prefix(proxy_pool.clone(), &prefix);
+        let effects = Arc::new(AtomicUsize::new(0));
+        let axon = ranvier_runtime::Axon::<u32, u32, String, ()>::new(
+            "PostgresWireIntentAckLossFixture",
+        )
+        .then(CountEffect(effects.clone()));
+        let trace_id = "wire-intent-ack-loss";
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_store(proxy_store));
+        bus.insert(PersistenceTraceId::new(trace_id));
+
+        let report = axon.execute(0, &(), &mut bus).await;
+        assert!(matches!(
+            &report,
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Intent,
+                effect: EffectBoundary::NotInvoked,
+                ..
+            }
+        ), "unexpected intent-ack report: {report:?}; effects={}", effects.load(Ordering::SeqCst));
+        assert_eq!(effects.load(Ordering::SeqCst), 0);
+        let proxy_task_observation =
+            tokio::time::timeout(std::time::Duration::from_secs(3), proxy_task)
+                .await
+                .expect("TCP proxy must observe the Enter append commit response")
+                .expect("TCP proxy task must not panic")
+                .expect("TCP proxy must relay and drop the targeted backend frame");
+        assert_eq!(
+            proxy_task_observation,
+            PostgresAckLossObservation {
+                target: PostgresAckLossTarget::CommittedTransaction(2),
+                command_tag: "COMMIT",
+                transaction_status: b'I',
+            }
+        );
+        proxy_pool.close().await;
+
+        let reader_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(3))
+            .connect(&url)
+            .await
+            .unwrap();
+        let reader = PostgresPersistenceStore::with_table_prefix(reader_pool.clone(), &prefix);
+        let trace = reader.load(trace_id).await.unwrap().unwrap();
+        assert_eq!(trace.events.len(), 1);
+        assert_eq!(trace.events[0].outcome_kind, "Enter");
+        assert_eq!(trace.events[0].step, 0);
+        assert_eq!(trace.completion, None);
+        reader_pool.close().await;
+        direct_pool.close().await;
+        println!(
+            "POSTGRES_TCP_INTENT_ACK_LOST dropped=ReadyForQuery-after-COMMIT-2 operation=Intent effect=NotInvoked effects=0 stored-events=Enter-only completion=unset"
+        );
+    })
+    .await
+    .expect("isolated TCP intent acknowledgement fixture must finish within 15 seconds");
+}
+
 // Execution first commits the persistence load transaction, then Enter, then
 // the transition result. Drop the third ReadyForQuery after COMMIT to exercise
 // real result-append ACK loss.
