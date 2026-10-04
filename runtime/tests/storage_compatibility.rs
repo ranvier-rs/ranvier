@@ -72,31 +72,52 @@ fn expected_trace(trace_id: &str, backend: Backend) -> PersistedTrace {
     }
 }
 
-async fn exercise<S: PersistenceStore>(store: &S, role: Role, expected: PersistedTrace) {
+async fn exercise<S: PersistenceStore>(
+    store: &S,
+    role: Role,
+    expected: PersistedTrace,
+) -> anyhow::Result<()> {
     let trace_id = expected.trace_id.clone();
     match role {
         Role::Seed => {
-            assert!(store.load(&trace_id).await.unwrap().is_none());
+            anyhow::ensure!(
+                store.load(&trace_id).await?.is_none(),
+                "fixture trace already exists before seeding"
+            );
             for event in &expected.events {
-                store.append(event.clone()).await.unwrap();
+                store.append(event.clone()).await.map_err(|error| {
+                    anyhow::anyhow!("append step {} failed: {error:#}", event.step)
+                })?;
             }
-            let cursor = store.resume(&trace_id, 2).await.unwrap();
-            assert_eq!(cursor.trace_id, trace_id);
-            assert_eq!(cursor.next_step, 3);
+            let cursor = store
+                .resume(&trace_id, 2)
+                .await
+                .map_err(|error| anyhow::anyhow!("resume failed: {error:#}"))?;
+            anyhow::ensure!(cursor.trace_id == trace_id, "resume trace ID mismatch");
+            anyhow::ensure!(cursor.next_step == 3, "resume next step mismatch");
             store
                 .save_intervention(&trace_id, expected.interventions[0].clone())
                 .await
-                .unwrap();
+                .map_err(|error| anyhow::anyhow!("save intervention failed: {error:#}"))?;
             store
                 .complete(&trace_id, CompletionState::Success)
                 .await
-                .unwrap();
-            assert_eq!(store.load(&trace_id).await.unwrap(), Some(expected));
+                .map_err(|error| anyhow::anyhow!("complete failed: {error:#}"))?;
+            let actual = store
+                .load(&trace_id)
+                .await
+                .map_err(|error| anyhow::anyhow!("read after seed failed: {error:#}"))?;
+            anyhow::ensure!(actual == Some(expected), "seed snapshot mismatch");
         }
         Role::Check => {
-            assert_eq!(store.load(&trace_id).await.unwrap(), Some(expected));
+            let actual = store
+                .load(&trace_id)
+                .await
+                .map_err(|error| anyhow::anyhow!("cross-version read failed: {error:#}"))?;
+            anyhow::ensure!(actual == Some(expected), "cross-version snapshot mismatch");
         }
     }
+    Ok(())
 }
 
 // This worker is invoked only by the owned compatibility rehearsal. It records
@@ -104,18 +125,17 @@ async fn exercise<S: PersistenceStore>(store: &S, role: Role, expected: Persiste
 #[tokio::test]
 #[ignore = "requires explicitly isolated PostgreSQL and Redis fixture services"]
 async fn storage_compatibility_worker() {
-    tokio::time::timeout(std::time::Duration::from_secs(90), async {
-        let role = parse_role(&std::env::var("RANVIER_STORAGE_COMPAT_ROLE").unwrap()).unwrap();
-        let backend =
-            parse_backend(&std::env::var("RANVIER_STORAGE_COMPAT_BACKEND").unwrap()).unwrap();
-        let trace_id = std::env::var("RANVIER_STORAGE_COMPAT_TRACE").unwrap();
-        let suffix = trace_id.strip_prefix("storage-compat-").unwrap();
-        assert_eq!(
-            uuid::Uuid::parse_str(suffix).unwrap().simple().to_string(),
-            suffix
-        );
-        let expected = expected_trace(&trace_id, backend);
+    let role = parse_role(&std::env::var("RANVIER_STORAGE_COMPAT_ROLE").unwrap()).unwrap();
+    let backend = parse_backend(&std::env::var("RANVIER_STORAGE_COMPAT_BACKEND").unwrap()).unwrap();
+    let trace_id = std::env::var("RANVIER_STORAGE_COMPAT_TRACE").unwrap();
+    let suffix = trace_id.strip_prefix("storage-compat-").unwrap();
+    assert_eq!(
+        uuid::Uuid::parse_str(suffix).unwrap().simple().to_string(),
+        suffix
+    );
+    let expected = expected_trace(&trace_id, backend);
 
+    let result = tokio::time::timeout(std::time::Duration::from_secs(90), async {
         match backend {
             Backend::Postgres => {
                 let url = std::env::var("RANVIER_STORAGE_COMPAT_POSTGRES_URL").unwrap();
@@ -125,25 +145,54 @@ async fn storage_compatibility_worker() {
                     .max_connections(2)
                     .connect(&url)
                     .await
-                    .unwrap();
+                    .map_err(|error| anyhow::anyhow!("connect failed: {error:#}"))?;
                 let store = PostgresPersistenceStore::with_table_prefix(pool, prefix);
-                store.ensure_schema().await.unwrap();
-                exercise(&store, role, expected).await;
+                store
+                    .ensure_schema()
+                    .await
+                    .map_err(|error| anyhow::anyhow!("ensure schema failed: {error:#}"))?;
+                exercise(&store, role, expected).await
             }
             Backend::Redis => {
                 let url = std::env::var("RANVIER_STORAGE_COMPAT_REDIS_URL").unwrap();
-                let store = RedisPersistenceStore::connect(&url).await.unwrap();
-                exercise(&store, role, expected).await;
+                let store = RedisPersistenceStore::connect(&url)
+                    .await
+                    .map_err(|error| anyhow::anyhow!("connect failed: {error:#}"))?;
+                exercise(&store, role, expected).await
             }
         }
-
-        println!(
-            "STORAGE_COMPATIBILITY_{:?}_{:?} full-snapshot-equality",
-            backend, role
-        );
     })
-    .await
-    .expect("bounded storage compatibility worker");
+    .await;
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(_) => Err(anyhow::anyhow!("worker deadline expired")),
+    };
+
+    match outcome {
+        Ok(()) => println!(
+            "STORAGE_COMPATIBILITY backend={} role={} result=PASS detail=full-snapshot-equality",
+            match backend {
+                Backend::Postgres => "postgres",
+                Backend::Redis => "redis",
+            },
+            match role {
+                Role::Seed => "seed",
+                Role::Check => "check",
+            }
+        ),
+        Err(error) => println!(
+            "STORAGE_COMPATIBILITY backend={} role={} result=FAIL detail={}",
+            match backend {
+                Backend::Postgres => "postgres",
+                Backend::Redis => "redis",
+            },
+            match role {
+                Role::Seed => "seed",
+                Role::Check => "check",
+            },
+            error.to_string().replace('\n', " ").replace('\r', " ")
+        ),
+    }
 }
 
 #[test]
