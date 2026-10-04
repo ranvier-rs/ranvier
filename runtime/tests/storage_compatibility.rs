@@ -235,30 +235,26 @@ async fn storage_v2_forward_only_worker() {
         Err(_) => Err(anyhow::anyhow!("worker deadline expired")),
     };
 
+    let backend_name = match backend {
+        Backend::Postgres => "postgres",
+        Backend::Redis => "redis",
+    };
+    let role_name = match role {
+        Role::Seed => "seed",
+        Role::Check => "check",
+    };
+
     match outcome {
         Ok(()) => println!(
-            "STORAGE_V2_FORWARD backend={} role={} result=PASS detail=full-snapshot-equality",
-            match backend {
-                Backend::Postgres => "postgres",
-                Backend::Redis => "redis",
-            },
-            match role {
-                Role::Seed => "seed",
-                Role::Check => "check",
-            }
+            "STORAGE_V2_FORWARD backend={backend_name} role={role_name} result=PASS detail=full-snapshot-equality"
         ),
-        Err(error) => println!(
-            "STORAGE_V2_FORWARD backend={} role={} result=FAIL detail={}",
-            match backend {
-                Backend::Postgres => "postgres",
-                Backend::Redis => "redis",
-            },
-            match role {
-                Role::Seed => "seed",
-                Role::Check => "check",
-            },
-            error.to_string().replace('\n', " ").replace('\r', " ")
-        ),
+        Err(error) => {
+            let detail = format!("{error:#}").replace('\n', " ").replace('\r', " ");
+            println!(
+                "STORAGE_V2_FORWARD backend={backend_name} role={role_name} result=FAIL detail={detail}"
+            );
+            panic!("storage v2 persistence fixture failed: {detail}");
+        }
     }
 }
 
