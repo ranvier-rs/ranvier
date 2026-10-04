@@ -5,8 +5,8 @@ use ranvier_core::prelude::*;
 use ranvier_runtime::{
     Axon, EffectBoundary, ExecutionReport, PersistenceOperation,
     persistence::{
-        CompletionState, PersistenceHandle, PersistenceStore, PersistenceTraceId,
-        RedisPersistenceStore,
+        CompletionState, PersistenceEnvelope, PersistenceHandle, PersistenceStore,
+        PersistenceTraceId, RedisPersistenceStore,
     },
 };
 use std::{
@@ -29,7 +29,8 @@ const MAX_RESP_LINE_BYTES: usize = 4096;
 const MAX_RESP_ELEMENTS: usize = 100_000;
 
 #[derive(Debug)]
-struct DroppedEvalReply {
+struct DroppedCommandReply {
+    command: String,
     ordinal: usize,
     response: Vec<u8>,
 }
@@ -202,9 +203,10 @@ async fn read_resp_request<R: AsyncRead + Unpin>(
 async fn proxy_connection(
     client: TcpStream,
     backend_address: SocketAddr,
-    target_eval_ordinal: usize,
-    eval_count: Arc<AtomicUsize>,
-    dropped_reply: mpsc::UnboundedSender<DroppedEvalReply>,
+    target_command: &'static str,
+    target_ordinal: usize,
+    command_count: Arc<AtomicUsize>,
+    dropped_reply: mpsc::UnboundedSender<DroppedCommandReply>,
 ) -> Result<()> {
     let backend = TcpStream::connect(backend_address).await?;
     let (mut client_reader, mut client_writer) = client.into_split();
@@ -216,17 +218,18 @@ async fn proxy_connection(
         backend_writer.write_all(&request).await?;
         let response = read_resp_frame(&mut backend_reader, 0).await?;
         let ordinal = command
-            .eq_ignore_ascii_case("EVAL")
-            .then(|| eval_count.fetch_add(1, Ordering::SeqCst) + 1);
-        if ordinal == Some(target_eval_ordinal) {
+            .eq_ignore_ascii_case(target_command)
+            .then(|| command_count.fetch_add(1, Ordering::SeqCst) + 1);
+        if ordinal == Some(target_ordinal) {
             dropped_reply
-                .send(DroppedEvalReply {
-                    ordinal: target_eval_ordinal,
+                .send(DroppedCommandReply {
+                    command,
+                    ordinal: target_ordinal,
                     response,
                 })
                 .map_err(|_| anyhow::anyhow!("Redis ACK observation receiver was dropped"))?;
-            // The EVAL reply is deliberately discarded after Redis has executed
-            // the script. Closing both sockets also prevents stale RESP framing.
+            // The response is deliberately discarded after Redis has executed
+            // the command. Closing both sockets prevents stale RESP framing.
             return Ok(());
         }
         client_writer.write_all(&response).await?;
@@ -236,11 +239,12 @@ async fn proxy_connection(
 async fn run_proxy(
     listener: TcpListener,
     backend_address: SocketAddr,
-    target_eval_ordinal: usize,
-    dropped_reply: mpsc::UnboundedSender<DroppedEvalReply>,
+    target_command: &'static str,
+    target_ordinal: usize,
+    dropped_reply: mpsc::UnboundedSender<DroppedCommandReply>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let eval_count = Arc::new(AtomicUsize::new(0));
+    let command_count = Arc::new(AtomicUsize::new(0));
     let mut connections = JoinSet::new();
     loop {
         tokio::select! {
@@ -249,8 +253,9 @@ async fn run_proxy(
                 connections.spawn(proxy_connection(
                     client,
                     backend_address,
-                    target_eval_ordinal,
-                    eval_count.clone(),
+                    target_command,
+                    target_ordinal,
+                    command_count.clone(),
                     dropped_reply.clone(),
                 ));
             }
@@ -273,7 +278,19 @@ async fn start_proxy(
     target_eval_ordinal: usize,
 ) -> Result<(
     String,
-    mpsc::UnboundedReceiver<DroppedEvalReply>,
+    mpsc::UnboundedReceiver<DroppedCommandReply>,
+    ProxyGuard,
+)> {
+    start_proxy_for_command(backend_address, "EVAL", target_eval_ordinal).await
+}
+
+async fn start_proxy_for_command(
+    backend_address: SocketAddr,
+    target_command: &'static str,
+    target_ordinal: usize,
+) -> Result<(
+    String,
+    mpsc::UnboundedReceiver<DroppedCommandReply>,
     ProxyGuard,
 )> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -283,7 +300,8 @@ async fn start_proxy(
     let task = tokio::spawn(run_proxy(
         listener,
         backend_address,
-        target_eval_ordinal,
+        target_command,
+        target_ordinal,
         dropped_tx,
         shutdown_rx,
     ));
@@ -347,7 +365,10 @@ async fn redis_result_append_ack_lost_after_tcp_eval_keeps_report_and_committed_
         let observed_drop = timeout(Duration::from_secs(5), dropped_reply.recv())
             .await?
             .context("Redis TCP proxy did not drop the targeted EVAL reply")?;
-        ensure!(observed_drop.ordinal == 2, "proxy dropped a different EVAL command");
+        ensure!(
+            observed_drop.command.eq_ignore_ascii_case("EVAL") && observed_drop.ordinal == 2,
+            "proxy dropped a different Redis command"
+        );
         ensure!(observed_drop.response == b":1\r\n", "Redis did not commit the targeted EVAL");
         ensure!(
             matches!(
@@ -423,7 +444,10 @@ async fn redis_terminal_ack_loss_over_tcp_blocks_reentry() -> Result<()> {
         let observed_drop = timeout(Duration::from_secs(5), dropped_reply.recv())
             .await?
             .context("Redis TCP proxy did not drop the targeted EVAL reply")?;
-        ensure!(observed_drop.ordinal == 3, "proxy dropped a different EVAL command");
+        ensure!(
+            observed_drop.command.eq_ignore_ascii_case("EVAL") && observed_drop.ordinal == 3,
+            "proxy dropped a different Redis command"
+        );
         ensure!(observed_drop.response == b":1\r\n", "Redis did not commit the targeted EVAL");
         ensure!(
             matches!(
@@ -519,7 +543,10 @@ async fn redis_complete_ack_loss_over_tcp_reports_uncertainty_after_apply() -> R
         let observed_drop = timeout(Duration::from_secs(5), dropped_reply.recv())
             .await?
             .context("Redis TCP proxy did not drop the targeted EVAL reply")?;
-        ensure!(observed_drop.ordinal == 4, "proxy dropped a different EVAL command");
+        ensure!(
+            observed_drop.command.eq_ignore_ascii_case("EVAL") && observed_drop.ordinal == 4,
+            "proxy dropped a different Redis command"
+        );
         ensure!(observed_drop.response == b":1\r\n", "Redis did not apply completion");
         ensure!(
             matches!(
@@ -558,5 +585,99 @@ async fn redis_complete_ack_loss_over_tcp_reports_uncertainty_after_apply() -> R
     })
     .await
     .context("isolated Redis TCP completion ACK-loss fixture must finish within 20 seconds")??;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly isolated unauthenticated Redis fixture URL and address"]
+async fn redis_load_ack_loss_over_tcp_blocks_before_effect_and_preserves_trace() -> Result<()> {
+    timeout(Duration::from_secs(20), async {
+        let backend_url = std::env::var("RANVIER_ATOMICITY_REDIS_URL")
+            .context("explicit isolated Redis URL required")?;
+        ensure!(
+            backend_url.starts_with("redis://") && !backend_url.contains('@'),
+            "fixture supports only an isolated unauthenticated redis:// endpoint"
+        );
+        let backend_endpoint = std::env::var("RANVIER_ATOMICITY_REDIS_ADDRESS")
+            .context("explicit isolated Redis address required")?;
+        let backend_address = lookup_host(&backend_endpoint)
+            .await?
+            .next()
+            .context("isolated Redis address did not resolve")?;
+        let reader = RedisPersistenceStore::connect(&backend_url).await?;
+        let trace_id = format!("redis-load-ack-{}", uuid::Uuid::new_v4().simple());
+        ensure!(reader.load(&trace_id).await?.is_none(), "unique trace id already exists");
+
+        reader
+            .append(PersistenceEnvelope {
+                trace_id: trace_id.clone(),
+                circuit: "RedisLoadAckLossFixture".to_string(),
+                schematic_version: "1.0".to_string(),
+                step: 0,
+                node_id: None,
+                outcome_kind: "Enter".to_string(),
+                timestamp_ms: 1,
+                payload_hash: None,
+                payload: None,
+            })
+            .await?;
+        let before = reader
+            .load(&trace_id)
+            .await?
+            .context("seeded Redis trace could not be read")?;
+        ensure!(before.events.len() == 1, "fixture did not seed exactly one Enter event");
+        ensure!(before.events[0].outcome_kind == "Enter", "fixture seed is not Enter");
+
+        let (proxy_url, mut dropped_reply, proxy) =
+            start_proxy_for_command(backend_address, "GET", 1).await?;
+        let execution_store = RedisPersistenceStore::connect(&proxy_url).await?;
+        let effects = Arc::new(AtomicUsize::new(0));
+        let axon = Axon::<u32, u32, String, ()>::new("RedisLoadAckLossFixture")
+            .then(CountEffect(effects.clone()));
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_store(execution_store));
+        bus.insert(PersistenceTraceId::new(trace_id.clone()));
+
+        let report = axon.execute(10, &(), &mut bus).await;
+        let observed_drop = timeout(Duration::from_secs(5), dropped_reply.recv())
+            .await?
+            .context("Redis TCP proxy did not drop the targeted GET reply")?;
+        ensure!(
+            observed_drop.command.eq_ignore_ascii_case("GET") && observed_drop.ordinal == 1,
+            "proxy dropped a different Redis command"
+        );
+        ensure!(
+            observed_drop.response.starts_with(b"$")
+                && !observed_drop.response.starts_with(b"$-1\r\n"),
+            "Redis GET did not return the seeded trace"
+        );
+        ensure!(
+            matches!(
+                &report,
+                ExecutionReport::BlockedBeforeEffect {
+                    operation: PersistenceOperation::Load,
+                    effect: EffectBoundary::NotInvoked,
+                    ..
+                }
+            ),
+            "unexpected caller report after losing the persisted-trace GET reply: {report:?}"
+        );
+        ensure!(effects.load(Ordering::SeqCst) == 0, "domain effect ran after load ACK loss");
+
+        let after = reader
+            .load(&trace_id)
+            .await?
+            .context("persisted Redis trace disappeared after the load failure")?;
+        ensure!(after == before, "load ACK loss changed the persisted trace");
+        ensure!(after.completion.is_none(), "load ACK loss marked the trace complete");
+        proxy.stop().await?;
+        println!(
+            "REDIS_TCP_LOAD_ACK_LOST command={} ordinal={} effects=0 stored=[Enter] completion=unset",
+            observed_drop.command, observed_drop.ordinal
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("isolated Redis TCP load ACK-loss fixture must finish within 20 seconds")??;
     Ok(())
 }
