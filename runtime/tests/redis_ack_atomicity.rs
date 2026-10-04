@@ -681,3 +681,96 @@ async fn redis_load_ack_loss_over_tcp_blocks_before_effect_and_preserves_trace()
     .context("isolated Redis TCP load ACK-loss fixture must finish within 20 seconds")??;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires explicitly isolated unauthenticated Redis fixture URL and address"]
+async fn redis_intent_ack_loss_over_tcp_blocks_before_effect_and_preserves_enter() -> Result<()> {
+    timeout(Duration::from_secs(20), async {
+        let backend_url = std::env::var("RANVIER_ATOMICITY_REDIS_URL")
+            .context("explicit isolated Redis URL required")?;
+        ensure!(
+            backend_url.starts_with("redis://") && !backend_url.contains('@'),
+            "fixture supports only an isolated unauthenticated redis:// endpoint"
+        );
+        let backend_endpoint = std::env::var("RANVIER_ATOMICITY_REDIS_ADDRESS")
+            .context("explicit isolated Redis address required")?;
+        let backend_address = lookup_host(&backend_endpoint)
+            .await?
+            .next()
+            .context("isolated Redis address did not resolve")?;
+        let reader = RedisPersistenceStore::connect(&backend_url).await?;
+        let trace_id = format!("redis-intent-ack-{}", uuid::Uuid::new_v4().simple());
+        ensure!(
+            reader.load(&trace_id).await?.is_none(),
+            "unique trace id already exists"
+        );
+
+        let (proxy_url, mut dropped_reply, proxy) =
+            start_proxy_for_command(backend_address, "EVAL", 1).await?;
+        let execution_store = RedisPersistenceStore::connect(&proxy_url).await?;
+        let effects = Arc::new(AtomicUsize::new(0));
+        let axon = Axon::<u32, u32, String, ()>::new("RedisIntentAckLossFixture")
+            .then(CountEffect(effects.clone()));
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_store(execution_store));
+        bus.insert(PersistenceTraceId::new(trace_id.clone()));
+
+        let report = axon.execute(10, &(), &mut bus).await;
+        let observed_drop = timeout(Duration::from_secs(5), dropped_reply.recv())
+            .await?
+            .context("Redis TCP proxy did not drop the targeted EVAL reply")?;
+        ensure!(
+            observed_drop.command.eq_ignore_ascii_case("EVAL") && observed_drop.ordinal == 1,
+            "proxy dropped a different Redis command"
+        );
+        ensure!(
+            observed_drop.response == b":1\r\n",
+            "Redis did not commit the targeted EVAL"
+        );
+        ensure!(
+            matches!(
+                &report,
+                ExecutionReport::BlockedBeforeEffect {
+                    operation: PersistenceOperation::Intent,
+                    effect: EffectBoundary::NotInvoked,
+                    ..
+                }
+            ),
+            "unexpected caller report after losing the persisted-intent EVAL reply: {report:?}"
+        );
+        ensure!(
+            effects.load(Ordering::SeqCst) == 0,
+            "domain effect ran after intent ACK loss"
+        );
+
+        let after = reader
+            .load(&trace_id)
+            .await?
+            .context("committed Redis intent disappeared after its ACK was lost")?;
+        ensure!(
+            after.events.len() == 1,
+            "intent ACK loss stored unexpected extra events"
+        );
+        ensure!(
+            after.events[0].step == 0,
+            "stored intent has an unexpected step"
+        );
+        ensure!(
+            after.events[0].outcome_kind == "Enter",
+            "stored event is not the expected Enter intent"
+        );
+        ensure!(
+            after.completion.is_none(),
+            "intent ACK loss marked the trace complete"
+        );
+        proxy.stop().await?;
+        println!(
+            "REDIS_TCP_INTENT_ACK_LOST eval={} reply=:1 effects=0 stored=[Enter] completion=unset",
+            observed_drop.ordinal
+        );
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("isolated Redis TCP intent ACK-loss fixture must finish within 20 seconds")??;
+    Ok(())
+}
