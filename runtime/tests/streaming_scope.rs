@@ -80,13 +80,15 @@ async fn stream_initialization_restores_caller_control_after_return_unwind_or_dr
                         }
                     } else {
                         let result = caught.await;
-                        assert_eq!(result.is_err(), mode == 2);
-                        if let Ok(initialized) = result {
-                            assert_eq!(
-                                stream_reports::initialized(initialized).is_err(),
-                                mode == 1
-                            );
-                        }
+                        assert!(
+                            result.is_ok(),
+                            "initializer panics are converted into failure reports"
+                        );
+                        let initialized = result.expect("stream execution should return a report");
+                        assert_eq!(
+                            stream_reports::initialized(initialized).is_err(),
+                            matches!(mode, 1 | 2)
+                        );
                     }
                 }
                 assert!(

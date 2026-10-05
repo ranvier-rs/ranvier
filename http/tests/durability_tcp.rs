@@ -26,6 +26,7 @@ struct Store {
     apply_unknown: bool,
     writes: AtomicUsize,
     completions: AtomicUsize,
+    load_override: Option<PersistedTrace>,
 }
 
 #[async_trait::async_trait]
@@ -47,8 +48,13 @@ impl PersistenceStore for Store {
         }
         Ok(())
     }
-    async fn load(&self, trace: &str) -> anyhow::Result<Option<PersistedTrace>> {
-        self.backing.load(trace).await
+    async fn load(&self, trace_id: &str) -> anyhow::Result<Option<PersistedTrace>> {
+        if let Some(trace) = self.load_override.as_ref() {
+            if trace.trace_id == trace_id {
+                return Ok(Some(trace.clone()));
+            }
+        }
+        self.backing.load(trace_id).await
     }
     async fn resume(&self, trace: &str, step: u64) -> anyhow::Result<ResumeCursor> {
         self.backing.resume(trace, step).await
@@ -118,12 +124,21 @@ impl Transition<(), ()> for Undo {
 }
 
 fn store(failure: Failure, apply_unknown: bool) -> Arc<Store> {
+    store_with_load_override(failure, apply_unknown, None)
+}
+
+fn store_with_load_override(
+    failure: Failure,
+    apply_unknown: bool,
+    load_override: Option<PersistedTrace>,
+) -> Arc<Store> {
     Arc::new(Store {
         backing: InMemoryPersistenceStore::new(),
         failure,
         apply_unknown,
         writes: AtomicUsize::new(0),
         completions: AtomicUsize::new(0),
+        load_override,
     })
 }
 
@@ -244,7 +259,7 @@ async fn entry_unknown_returns_503_without_effect_for_applied_and_unapplied_writ
 }
 
 #[tokio::test]
-async fn unknown_result_returns_409_with_known_domain_result_even_after_completion_ack() {
+async fn unknown_result_ack_stops_before_terminal_write_and_completion() {
     for applied in [false, true] {
         let store = store(Failure::Result, applied);
         let effects = Arc::new(AtomicUsize::new(0));
@@ -258,20 +273,30 @@ async fn unknown_result_returns_409_with_known_domain_result_even_after_completi
         assert_eq!(body["result"]["value"]["Next"], 7);
         assert_eq!(body["reconciliation_required"], true);
         assert_eq!(effects.load(Ordering::SeqCst), 1);
-        assert_eq!(store.completions.load(Ordering::SeqCst), 1);
+        assert_eq!(store.completions.load(Ordering::SeqCst), 0);
         let trace = store
             .backing
             .load("http-report-fixture")
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(trace.completion, Some(CompletionState::Success));
+        assert_eq!(trace.completion, None);
+        let event_types = trace
+            .events
+            .iter()
+            .map(|event| event.event_type)
+            .collect::<Vec<_>>();
         assert_eq!(
-            trace
-                .events
-                .iter()
-                .any(|event| event.node_id.is_some() && event.outcome_kind == "Next"),
-            applied
+            event_types,
+            if applied {
+                vec![
+                    PersistenceEventType::Enter,
+                    PersistenceEventType::Intent,
+                    PersistenceEventType::Result,
+                ]
+            } else {
+                vec![PersistenceEventType::Enter, PersistenceEventType::Intent]
+            }
         );
     }
 }
@@ -330,15 +355,23 @@ async fn later_terminal_and_completion_unknowns_never_become_http_success() {
                 .unwrap()
                 .unwrap();
             if operation == "terminal" {
+                assert_eq!(store.completions.load(Ordering::SeqCst), 0);
                 assert_eq!(
                     trace
                         .events
                         .iter()
-                        .any(|event| event.node_id.is_none() && event.outcome_kind != "Enter"),
+                        .any(|event| event.event_type == PersistenceEventType::Terminal),
                     applied
                 );
-                assert_eq!(trace.completion, Some(CompletionState::Success));
+                assert_eq!(trace.completion, None);
             } else {
+                assert_eq!(store.completions.load(Ordering::SeqCst), 1);
+                assert!(
+                    trace
+                        .events
+                        .iter()
+                        .any(|event| event.event_type == PersistenceEventType::Terminal)
+                );
                 assert_eq!(
                     trace.completion,
                     applied.then_some(CompletionState::Success)
@@ -383,28 +416,51 @@ async fn fully_acknowledged_execution_keeps_normal_json_success() {
 struct BrokenOutput;
 
 #[tokio::test]
-async fn legacy_null_trace_is_blocked_over_tcp_without_effect_or_store_mutation() {
+async fn v2_trace_with_unusable_null_result_payload_is_blocked_without_effect_or_mutation() {
     let store = store(Failure::None, false);
     let effects = Arc::new(AtomicUsize::new(0));
     let axon = Axon::<(), (), String>::new("legacy-null-http").then(Business(effects.clone()));
     let schematic = axon.schematic();
-    store
-        .backing
-        .append(PersistenceEnvelope {
-            trace_id: "http-report-fixture".into(),
-            circuit: schematic.name.clone(),
-            schematic_version: schematic.schema_version.clone(),
-            event_sequence: 0,
-            event_type: ranvier_runtime::PersistenceEventType::Result,
-            step: 1,
-            node_id: Some(schematic.nodes[1].id.to_string()),
-            outcome_kind: "Next".into(),
-            timestamp_ms: 0,
-            payload_hash: None,
-            payload: Some(serde_json::Value::Null),
-        })
-        .await
-        .unwrap();
+    let node_id = schematic.nodes[1].id.to_string();
+    let event = |event_sequence: u64,
+                 event_type: PersistenceEventType,
+                 step: u64,
+                 node_id: Option<String>,
+                 outcome_kind: &str,
+                 payload: Option<serde_json::Value>| PersistenceEnvelope {
+        trace_id: "http-report-fixture".into(),
+        circuit: schematic.name.clone(),
+        schematic_version: schematic.schema_version.clone(),
+        event_sequence,
+        event_type,
+        step,
+        node_id,
+        outcome_kind: outcome_kind.into(),
+        timestamp_ms: 0,
+        payload_hash: None,
+        payload,
+    };
+    for event in [
+        event(0, PersistenceEventType::Enter, 0, None, "Enter", None),
+        event(
+            1,
+            PersistenceEventType::Intent,
+            1,
+            Some(node_id.clone()),
+            "Intent",
+            Some(serde_json::json!({"kind": "transition"})),
+        ),
+        event(
+            2,
+            PersistenceEventType::Result,
+            1,
+            Some(node_id),
+            "Next",
+            Some(serde_json::Value::Null),
+        ),
+    ] {
+        store.backing.append(event).await.unwrap();
+    }
     let before =
         serde_json::to_value(store.backing.load("http-report-fixture").await.unwrap()).unwrap();
     let (status, body) = request(axon, store.clone()).await;
@@ -421,6 +477,36 @@ async fn legacy_null_trace_is_blocked_over_tcp_without_effect_or_store_mutation(
         before
     );
 }
+#[tokio::test]
+async fn unsupported_v1_trace_is_rejected_before_effect_or_store_mutation() {
+    let effects = Arc::new(AtomicUsize::new(0));
+    let axon = Axon::<(), (), String>::new("legacy-v1-http").then(Business(effects.clone()));
+    let schematic = axon.schematic();
+    let legacy_trace = PersistedTrace {
+        trace_id: "http-report-fixture".into(),
+        circuit: schematic.name.clone(),
+        format_version: 1,
+        schematic_version: schematic.schema_version.clone(),
+        events: Vec::new(),
+        interventions: Vec::new(),
+        resumed_from_step: None,
+        completion: None,
+    };
+    let store = store_with_load_override(Failure::None, false, Some(legacy_trace));
+    let before = serde_json::to_value(store.load("http-report-fixture").await.unwrap()).unwrap();
+    let (status, body) = request(axon, store.clone()).await;
+    assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["durability"], "blocked_before_effect");
+    assert_eq!(body["operation"], "unsupported_format");
+    assert_eq!(body["effect"], "not_invoked");
+    assert_eq!(body["reconciliation_required"], false);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    assert_eq!(store.writes.load(Ordering::SeqCst), 0);
+    assert_eq!(store.completions.load(Ordering::SeqCst), 0);
+    let after = serde_json::to_value(store.load("http-report-fixture").await.unwrap()).unwrap();
+    assert_eq!(after, before);
+}
+
 impl serde::Serialize for BrokenOutput {
     fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
         Err(serde::ser::Error::custom("private-serializer-probe"))

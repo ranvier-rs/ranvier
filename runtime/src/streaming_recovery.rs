@@ -3424,10 +3424,10 @@ mod tests {
                     .iter()
                     .any(|event| event.outcome_kind == "Compensated")
             );
-            assert_eq!(
-                persisted.completion,
-                Some(crate::persistence::CompletionState::Fault)
-            );
+            assert!(persisted.events.iter().all(|event| {
+                event.event_type != crate::persistence::PersistenceEventType::Terminal
+            }));
+            assert_eq!(persisted.completion, None);
             let observer = owner.observe();
             drop(owner);
             assert_eq!(
@@ -3567,10 +3567,10 @@ mod tests {
                 .iter()
                 .any(|event| event.outcome_kind == "Compensated")
         );
-        assert_eq!(
-            persisted.completion,
-            Some(crate::persistence::CompletionState::Fault)
-        );
+        assert!(persisted.events.iter().all(|event| {
+            event.event_type != crate::persistence::PersistenceEventType::Terminal
+        }));
+        assert_eq!(persisted.completion, None);
         let observer = owner.observe();
         drop(owner);
         assert_eq!(

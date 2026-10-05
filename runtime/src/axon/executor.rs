@@ -1352,6 +1352,11 @@ where
             // followed by an automatic cancellation rewrite or compensator.
             return;
         }
+        // A pre-cancelled token can win before execute_domain installs the
+        // current graph in the Bus. Cleanup still needs that identity to
+        // journal external-compensation Intent/Result events against the same
+        // circuit and schema version as the entry marker.
+        bus.insert(self.schematic.clone());
         let trace_id = persistence_trace_id(bus);
         let label = self.schematic.name.clone();
         let version = self.schematic.schema_version.clone();

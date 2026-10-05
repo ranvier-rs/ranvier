@@ -12,7 +12,7 @@ use std::{
 const PRIVATE: &str = "private-prefix-value-should-not-enter-SSE-rejection";
 struct Store {
     backing: InMemoryPersistenceStore,
-    mode: u8,
+    fail_load: bool,
 }
 #[async_trait::async_trait]
 impl PersistenceStore for Store {
@@ -20,7 +20,7 @@ impl PersistenceStore for Store {
         self.backing.append(event).await
     }
     async fn load(&self, trace: &str) -> anyhow::Result<Option<PersistedTrace>> {
-        if self.mode == 1 {
+        if self.fail_load {
             anyhow::bail!("private-history-error");
         }
         self.backing.load(trace).await
@@ -29,11 +29,7 @@ impl PersistenceStore for Store {
         self.backing.resume(trace, step).await
     }
     async fn complete(&self, trace: &str, state: CompletionState) -> anyhow::Result<()> {
-        self.backing.complete(trace, state).await?;
-        if self.mode == 2 {
-            anyhow::bail!("private-completion-error");
-        }
-        Ok(())
+        self.backing.complete(trace, state).await
     }
     async fn save_intervention(&self, trace: &str, event: Intervention) -> anyhow::Result<()> {
         self.backing.save_intervention(trace, event).await
@@ -70,16 +66,6 @@ impl Transition<(), ()> for CompSuccess {
     async fn run(&self, _: (), _: &(), _: &mut Bus) -> Outcome<(), String> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Outcome::Next(())
-    }
-}
-#[derive(Clone)]
-struct Fault;
-#[async_trait::async_trait]
-impl Transition<String, String> for Fault {
-    type Error = String;
-    type Resources = ();
-    async fn run(&self, _: String, _: &(), _: &mut Bus) -> Outcome<String, String> {
-        Outcome::Fault("private-business-error".into())
     }
 }
 #[derive(Clone)]
@@ -133,34 +119,25 @@ impl StreamingTransition<String> for Init {
     }
 }
 #[tokio::test]
-async fn prefix_durability_and_cleanup_precede_sse_success_without_private_results() {
-    for mode in 0..6 {
+async fn configured_persistence_blocks_unjournaled_stream_initialization() {
+    for fail_load in [false, true] {
         let effects = Arc::new(AtomicUsize::new(0));
         let compensations = Arc::new(AtomicUsize::new(0));
         let initialized = Arc::new(AtomicUsize::new(0));
         let backing = InMemoryPersistenceStore::new();
         let store: Arc<dyn PersistenceStore> = Arc::new(Store {
             backing: backing.clone(),
-            mode,
+            fail_load,
         });
-        let base = Axon::<(), (), String>::start("http-prefix-report");
-        let prefix = if mode == 3 {
-            base.with_saga_policy(SagaPolicy::Enabled)
-                .then_compensated(Effect(effects.clone()), Comp(compensations.clone()))
-                .then(Fault)
-        } else {
-            base.then(Effect(effects.clone()))
-        };
+        let prefix =
+            Axon::<(), (), String>::start("http-prefix-report").then(Effect(effects.clone()));
         let app = TestApp::new(
             Ranvier::http::<()>()
                 .bus_injector(move |_, bus| {
                     bus.insert(PersistenceHandle::from_arc(store.clone()));
                     bus.insert(PersistenceTraceId::new("sse-report"));
                 })
-                .post_sse(
-                    "/stream",
-                    prefix.then_stream(Init(initialized.clone(), mode)),
-                ),
+                .post_sse("/stream", prefix.then_stream(Init(initialized.clone(), 0))),
             (),
         );
         let response = tokio::time::timeout(
@@ -172,85 +149,36 @@ async fn prefix_durability_and_cleanup_precede_sse_success_without_private_resul
         .unwrap();
         assert_eq!(
             response.status().as_u16(),
-            [200, 503, 409, 409, 500, 503][usize::from(mode)]
+            if fail_load { 503 } else { 409 },
+            "fail_load={fail_load}"
         );
         let body = response.text().unwrap();
         assert!(!body.contains(PRIVATE));
         assert!(!body.contains("private-history-error"));
         assert!(!body.contains("private-completion-error"));
         assert!(!body.contains("private-compensation-error"));
-        assert!(!body.contains("private-business-error"));
         assert!(!body.contains("private-init-error"));
         assert!(!body.contains("private-init-panic"));
-        if mode == 0 {
-            assert!(body.contains("public-item"));
-            assert_eq!(body.matches("data: [DONE]").count(), 1);
-            assert!(!body.contains("event: error"));
-            // TestApp retains HTTP/1.1 chunk framing, so decode before
-            // asserting application-level termination.
-            let mut wire = response.body();
-            let mut decoded = Vec::new();
-            while !wire.is_empty() {
-                let end = wire.windows(2).position(|v| v == b"\r\n").unwrap();
-                let size =
-                    usize::from_str_radix(std::str::from_utf8(&wire[..end]).unwrap(), 16).unwrap();
-                wire = &wire[end + 2..];
-                if size == 0 {
-                    assert_eq!(wire, b"\r\n");
-                    break;
-                }
-                decoded.extend_from_slice(&wire[..size]);
-                assert_eq!(&wire[size..size + 2], b"\r\n");
-                wire = &wire[size + 2..];
-            }
-            assert!(decoded.ends_with(b"data: [DONE]\n\n"));
-            assert_eq!(initialized.load(Ordering::SeqCst), 1);
+        assert_eq!(response.header("cache-control").unwrap(), "no-store");
+        assert!(!body.contains("data:"));
+        let report: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert!(report.get("result").is_none_or(serde_json::Value::is_null));
+        assert_eq!(initialized.load(Ordering::SeqCst), 0);
+        assert_eq!(effects.load(Ordering::SeqCst), usize::from(!fail_load));
+        assert_eq!(compensations.load(Ordering::SeqCst), 0);
+        assert_eq!(report["reconciliation_required"], !fail_load);
+        if fail_load {
+            assert_eq!(report["durability"], "blocked_before_effect");
+            assert_eq!(report["operation"], "load");
+            assert_eq!(report["effect"], "not_invoked");
         } else {
-            assert_eq!(response.header("cache-control").unwrap(), "no-store");
-            assert!(!body.contains("data:"));
-            let report: serde_json::Value = serde_json::from_str(body).unwrap();
-            assert!(!report.get("result").is_some_and(|result| !result.is_null()));
-            assert_eq!(initialized.load(Ordering::SeqCst), usize::from(mode >= 4));
-            if mode == 2 {
-                assert_eq!(report["operation"], "complete");
-                assert!(
-                    backing
-                        .load("sse-report")
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .completion
-                        .is_some()
-                );
-            }
-            if mode >= 4 {
-                assert!(report["initialization_cleanup_complete"].is_null());
-                assert!(report["initialization_cleanup"].is_null());
-                assert_eq!(report["prefix"]["durability"], "recorded");
-                assert_eq!(report["prefix"]["completion"], "confirmed");
-                assert_eq!(report["initialization"], "may_have_run");
-                assert_eq!(report["reconciliation_required"], true);
-                if mode == 5 {
-                    assert_eq!(report["reason"], "explicit");
-                }
-                // Stored success acknowledges the prefix only. The failed initializer
-                // still returns500: this trace is not proof of streaming completion.
-                assert_eq!(
-                    backing
-                        .load("sse-report")
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .completion,
-                    Some(CompletionState::Success)
-                );
-            }
-            if mode == 3 {
-                assert_eq!(report["cleanup"]["steps"][0]["outcome"], "fault");
-            }
+            assert_eq!(report["durability"], "unconfirmed");
+            assert_eq!(report["operation"], "unsupported_effect");
+            assert_eq!(report["effect"], "may_have_run");
+            let trace = backing.load("sse-report").await.unwrap().unwrap();
+            assert_eq!(trace.completion, None);
+            assert_eq!(trace.events.last().unwrap().outcome_kind, "Next");
         }
-        assert_eq!(effects.load(Ordering::SeqCst), usize::from(mode != 1));
-        assert_eq!(compensations.load(Ordering::SeqCst), usize::from(mode == 3));
     }
 }
 
@@ -289,14 +217,12 @@ async fn late_timeout_and_cancellation_emit_error_without_done() {
 }
 
 #[tokio::test]
-async fn initializer_cleanup_completion_is_explicit_without_private_values() {
+async fn initializer_cleanup_is_explicit_for_unpersisted_streams_without_private_values() {
     for complete in [false, true] {
         for mode in [4, 5, 8] {
             let effects = Arc::new(AtomicUsize::new(0));
             let undo = Arc::new(AtomicUsize::new(0));
             let init = Arc::new(AtomicUsize::new(0));
-            let backing = InMemoryPersistenceStore::new();
-            let store = backing.clone();
             let prefix = Axon::<(), (), String>::start("incomplete-init-cleanup")
                 .with_saga_policy(SagaPolicy::Enabled);
             let prefix = if complete {
@@ -305,15 +231,7 @@ async fn initializer_cleanup_completion_is_explicit_without_private_values() {
                 prefix.then_compensated(Effect(effects.clone()), Comp(undo.clone()))
             };
             let stream = prefix.then_stream(Init(init.clone(), mode));
-            let app = TestApp::new(
-                Ranvier::http::<()>()
-                    .bus_injector(move |_, bus| {
-                        bus.insert(PersistenceHandle::from_store(store.clone()));
-                        bus.insert(PersistenceTraceId::new("incomplete-init-cleanup"));
-                    })
-                    .post_sse("/stream", stream),
-                (),
-            );
+            let app = TestApp::new(Ranvier::http::<()>().post_sse("/stream", stream), ());
             let response = tokio::time::timeout(
                 std::time::Duration::from_secs(3),
                 app.send(TestRequest::post("/stream")),
@@ -341,20 +259,10 @@ async fn initializer_cleanup_completion_is_explicit_without_private_values() {
             );
             assert_eq!(report["initialization_cleanup_complete"], complete);
             assert_eq!(report["reconciliation_required"], true);
-            assert_eq!(report["prefix"]["durability"], "recorded");
-            assert_eq!(report["prefix"]["completion"], "confirmed");
+            assert_eq!(report["prefix"]["durability"], "unpersisted");
             assert_eq!(effects.load(Ordering::SeqCst), 1);
             assert_eq!(undo.load(Ordering::SeqCst), 1);
             assert_eq!(init.load(Ordering::SeqCst), 1);
-            assert_eq!(
-                backing
-                    .load("incomplete-init-cleanup")
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .completion,
-                Some(CompletionState::Success)
-            );
         }
     }
 }

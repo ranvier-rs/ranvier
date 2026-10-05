@@ -97,29 +97,6 @@ impl CompensationIdempotencyStore for CompensationMarkerWriteFailure {
     }
 }
 
-#[derive(Clone)]
-struct StartedEffectThenWait {
-    entered: Arc<Notify>,
-    effects: Arc<AtomicUsize>,
-}
-
-#[async_trait]
-impl Transition<i32, i32> for StartedEffectThenWait {
-    type Error = String;
-    type Resources = ();
-
-    fn bus_access_policy(&self) -> Option<BusAccessPolicy> {
-        Some(BusAccessPolicy::allow_only(Vec::new()))
-    }
-
-    async fn run(&self, state: i32, _resources: &(), _bus: &mut Bus) -> Outcome<i32, String> {
-        self.effects.fetch_add(1, Ordering::SeqCst);
-        self.entered.notify_one();
-        std::future::pending::<()>().await;
-        Outcome::Next(state)
-    }
-}
-
 #[tokio::test]
 async fn pre_cancelled_cleanup_reports_applied_compensation_without_ack() {
     for with_trace_store in [false, true] {
@@ -151,11 +128,14 @@ async fn pre_cancelled_cleanup_reports_applied_compensation_without_ack() {
         )
         .await
         .expect("cleanup must terminate");
-        assert!(matches!(&report, ExecutionReport::Unconfirmed {
+        assert!(
+            matches!(&report, ExecutionReport::Unconfirmed {
             result: ExecutionTerminal::Cancelled(context),
             operation: PersistenceOperation::CompensationWrite,
             effect: EffectBoundary::MayHaveRun,
-         .. } if context.reason == CancellationReason::Explicit));
+         .. } if context.reason == CancellationReason::Explicit),
+            "unexpected cancellation report: {report:#?}"
+        );
         assert_eq!(observed.load(Ordering::SeqCst), 0);
         let recorded = calls.lock().await;
         assert_eq!(recorded.len(), 1);
@@ -179,28 +159,42 @@ async fn pre_cancelled_cleanup_reports_applied_compensation_without_ack() {
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(trace.completion, Some(CompletionState::Cancelled));
+            assert_eq!(trace.completion, None);
             assert!(
                 !trace
                     .events
                     .iter()
                     .any(|event| event.outcome_kind == "Compensated")
             );
-            assert!(!report.cleanup().unwrap().is_complete());
+            assert_eq!(
+                trace
+                    .events
+                    .iter()
+                    .map(|event| event.outcome_kind.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["Enter", "Intent"]
+            );
         }
+        let cleanup = report.cleanup().expect("compensation cleanup report");
+        assert!(cleanup.finished);
+        assert_eq!(cleanup.steps.len(), 1);
+        assert_eq!(
+            cleanup.steps[0].outcome,
+            ranvier_runtime::SagaRollbackOutcome::Fault
+        );
+        assert!(!cleanup.is_complete());
     }
 }
 
 #[tokio::test]
-async fn in_flight_cancellation_marker_write_failure_is_unknown_without_retry() {
+async fn pre_cancelled_compensation_marker_write_failure_requires_reconciliation() {
     for apply_before_error in [false, true] {
         let trace_id = if apply_before_error {
-            "in-flight-marker-applied-ack-lost"
+            "pre-cancelled-marker-applied-ack-lost"
         } else {
-            "in-flight-marker-not-applied"
+            "pre-cancelled-marker-not-applied"
         };
-        let entered = Arc::new(Notify::new());
-        let effects = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::new(AtomicUsize::new(0));
         let calls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
         let backing = InMemoryCompensationIdempotencyStore::new();
         let failing_store = Arc::new(CompensationMarkerWriteFailure {
@@ -212,11 +206,11 @@ async fn in_flight_cancellation_marker_write_failure_is_unknown_without_retry() 
         let original: Arc<dyn CompensationIdempotencyStore> = failing_store.clone();
         let trace_store = InMemoryPersistenceStore::new();
         let token = CancellationToken::new();
-        let trigger = tokio::spawn(cancel_after_entry(entered.clone(), token.clone()));
-        let axon = Axon::<i32, i32, String>::start("InFlightCompensationMarkerFailure").then(
-            StartedEffectThenWait {
-                entered,
-                effects: effects.clone(),
+        token.cancel(CancellationReason::Explicit);
+        let axon = Axon::<i32, i32, String>::start("PreCancelledCompensationMarkerFailure").then(
+            WaitForCancellation {
+                entered: Arc::new(Notify::new()),
+                observed_token: observed.clone(),
             },
         );
         let mut bus = Bus::new();
@@ -233,18 +227,20 @@ async fn in_flight_cancellation_marker_write_failure_is_unknown_without_retry() 
         )
         .await
         .expect("cancellation cleanup must terminate");
-        trigger.await.expect("cancellation trigger");
 
-        assert!(matches!(
-            &report,
-            ExecutionReport::Unconfirmed {
-                result: ExecutionTerminal::Cancelled(context),
-                operation: PersistenceOperation::CompensationWrite,
-                effect: EffectBoundary::MayHaveRun,
-                ..
-            } if context.reason == CancellationReason::OperatorShutdown
-        ));
-        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert!(
+            matches!(
+                &report,
+                ExecutionReport::Unconfirmed {
+                    result: ExecutionTerminal::Cancelled(context),
+                    operation: PersistenceOperation::CompensationWrite,
+                    effect: EffectBoundary::MayHaveRun,
+                    ..
+                } if context.reason == CancellationReason::Explicit
+            ),
+            "unexpected cancellation report: {report:#?}"
+        );
+        assert_eq!(observed.load(Ordering::SeqCst), 0);
         let recorded = calls.lock().await;
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].fault_kind, "Cancelled");
@@ -268,16 +264,16 @@ async fn in_flight_cancellation_marker_write_failure_is_unknown_without_retry() 
         drop(recorded);
 
         let trace = trace_store.load(trace_id).await.unwrap().unwrap();
-        assert_eq!(trace.completion, Some(CompletionState::Cancelled));
+        assert_eq!(trace.completion, None);
         assert_eq!(
             trace
                 .events
                 .iter()
                 .map(|event| event.outcome_kind.as_str())
                 .collect::<Vec<_>>(),
-            vec!["Enter", "Cancelled"]
+            vec!["Enter", "Intent"]
         );
-        let cleanup = report.cleanup().unwrap();
+        let cleanup = report.cleanup().expect("compensation cleanup report");
         assert!(cleanup.finished);
         assert_eq!(cleanup.steps.len(), 1);
         assert_eq!(
@@ -315,6 +311,22 @@ async fn completed_trace_blocks_normal_and_cancellation_effects_for_all_terminal
                     node_id: None,
                     outcome_kind: "Enter".into(),
                     timestamp_ms: 0,
+                    payload_hash: None,
+                    payload: None,
+                })
+                .await
+                .unwrap();
+            store
+                .append(PersistenceEnvelope {
+                    trace_id: "completed".into(),
+                    circuit: "CompletedGuard".into(),
+                    schematic_version: axon.schematic().schema_version.clone(),
+                    event_sequence: 1,
+                    event_type: ranvier_runtime::PersistenceEventType::Terminal,
+                    step: 1,
+                    node_id: None,
+                    outcome_kind: "Success".into(),
+                    timestamp_ms: 1,
                     payload_hash: None,
                     payload: None,
                 })
@@ -442,15 +454,17 @@ async fn pre_cancelled_execution_does_not_write_when_persistence_cursor_load_fai
 
     let terminal = axon.execute_cancellable(1, &(), &mut bus, token).await;
 
-    assert!(matches!(
-        terminal,
-        ExecutionReport::Unconfirmed {
-            result: ExecutionTerminal::Cancelled(_),
-            operation: PersistenceOperation::Load,
-            effect: EffectBoundary::NotInvoked,
-            ..
-        }
-    ));
+    assert!(
+        matches!(
+            &terminal,
+            ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::Load,
+                effect: EffectBoundary::NotInvoked,
+                ..
+            }
+        ),
+        "unexpected cancellation report: {terminal:#?}"
+    );
     assert_eq!(observed.load(Ordering::SeqCst), 0);
     assert_eq!(store.loads.load(Ordering::SeqCst), 1);
     assert_eq!(store.appends.load(Ordering::SeqCst), 0);
@@ -539,7 +553,7 @@ async fn pre_cancelled_persisted_execution_records_entry_before_terminal() {
 
     let terminal = axon.execute_cancellable(1, &(), &mut bus, token).await;
     assert!(matches!(
-        terminal,
+        &terminal,
         ExecutionReport::Recorded {
             result: ExecutionTerminal::Cancelled(_),
             completion: CompletionConfirmation::Confirmed,
@@ -565,7 +579,7 @@ async fn pre_cancelled_persisted_execution_records_entry_before_terminal() {
 }
 
 #[tokio::test]
-async fn in_flight_cancellation_is_structured_persisted_and_policy_visible() {
+async fn in_flight_cancellation_leaves_pending_intent_for_reconciliation() {
     let entered = Arc::new(Notify::new());
     let observed = Arc::new(AtomicUsize::new(0));
     let store = Arc::new(InMemoryPersistenceStore::new());
@@ -589,11 +603,18 @@ async fn in_flight_cancellation_is_structured_persisted_and_policy_visible() {
     .expect("cancellable execution should terminate");
     trigger.await.expect("cancellation trigger");
 
-    assert!(matches!(
-        terminal,
-        ExecutionReport::Recorded { result: ExecutionTerminal::Cancelled(context), completion: CompletionConfirmation::Confirmed , .. }
-            if context.reason == CancellationReason::OperatorShutdown
-    ));
+    assert!(
+        matches!(
+            &terminal,
+            ExecutionReport::Unconfirmed {
+                result: ExecutionTerminal::Cancelled(context),
+                operation: PersistenceOperation::PendingIntent,
+                effect: EffectBoundary::MayHaveRun,
+                ..
+            } if context.reason == CancellationReason::OperatorShutdown
+        ),
+        "unexpected cancellation report: {terminal:#?}"
+    );
     assert_eq!(observed.load(Ordering::SeqCst), 1);
 
     let persisted = store
@@ -601,38 +622,35 @@ async fn in_flight_cancellation_is_structured_persisted_and_policy_visible() {
         .await
         .expect("load trace")
         .expect("persisted trace");
+    assert_eq!(persisted.completion, None);
     assert_eq!(
         persisted
             .events
             .iter()
             .map(|event| event.outcome_kind.as_str())
             .collect::<Vec<_>>(),
-        vec!["Enter", "Cancelled"]
+        vec!["Enter", "Intent"]
     );
-    assert_eq!(persisted.completion, Some(CompletionState::Cancelled));
     assert_eq!(
-        persisted.events[1]
-            .payload
-            .as_ref()
-            .and_then(|payload| payload.get("reason"))
-            .and_then(serde_json::Value::as_str),
-        Some("operator_shutdown")
+        persisted.events[1].event_type,
+        ranvier_runtime::PersistenceEventType::Intent
     );
+    assert_eq!(persisted.events[1].payload, Some(serde_json::json!(1)));
 }
 
 #[tokio::test]
 async fn cancellation_runs_external_compensation_and_marks_compensated() {
-    let entered = Arc::new(Notify::new());
     let calls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let store = Arc::new(InMemoryPersistenceStore::new());
     let store_dyn: Arc<dyn PersistenceStore> = store.clone();
     let token = CancellationToken::new();
-    let trigger = tokio::spawn(cancel_after_entry(entered.clone(), token.clone()));
+    token.cancel(CancellationReason::Explicit);
+    let observed = Arc::new(AtomicUsize::new(0));
 
     let axon =
         Axon::<i32, i32, String>::start("CancellationCompensated").then(WaitForCancellation {
-            entered,
-            observed_token: Arc::new(AtomicUsize::new(0)),
+            entered: Arc::new(Notify::new()),
+            observed_token: observed.clone(),
         });
     let mut bus = Bus::new();
     bus.insert(PersistenceHandle::from_arc(store_dyn));
@@ -642,15 +660,18 @@ async fn cancellation_runs_external_compensation_and_marks_compensated() {
     }));
 
     let terminal = axon.execute_cancellable(1, &(), &mut bus, token).await;
-    trigger.await.expect("cancellation trigger");
-    assert!(matches!(
-        terminal,
-        ExecutionReport::Recorded {
-            result: ExecutionTerminal::Cancelled(_),
-            completion: CompletionConfirmation::Confirmed,
-            ..
-        }
-    ));
+    assert!(
+        matches!(
+            &terminal,
+            ExecutionReport::Recorded {
+                result: ExecutionTerminal::Cancelled(context),
+                completion: CompletionConfirmation::Confirmed,
+                ..
+            } if context.reason == CancellationReason::Explicit
+        ),
+        "unexpected cancellation report: {terminal:#?}"
+    );
+    assert_eq!(observed.load(Ordering::SeqCst), 0);
 
     let persisted = store
         .load("trace-cancel-compensated")
@@ -663,7 +684,7 @@ async fn cancellation_runs_external_compensation_and_marks_compensated() {
             .iter()
             .map(|event| event.outcome_kind.as_str())
             .collect::<Vec<_>>(),
-        vec!["Enter", "Cancelled", "Compensated"]
+        vec!["Enter", "Intent", "Compensated", "Cancelled"]
     );
     assert_eq!(persisted.completion, Some(CompletionState::Compensated));
     let recorded = calls.lock().await;

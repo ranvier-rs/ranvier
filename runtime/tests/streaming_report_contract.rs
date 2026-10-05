@@ -170,7 +170,7 @@ impl StreamingTransition<usize> for FailInit {
     }
 }
 #[tokio::test]
-async fn acknowledged_prefix_completion_does_not_certify_failed_initializer() {
+async fn configured_store_blocks_initializer_without_a_durable_journal_contract() {
     let initialized = Arc::new(AtomicUsize::new(0));
     let backing = InMemoryPersistenceStore::new();
     let mut bus = Bus::new();
@@ -180,23 +180,33 @@ async fn acknowledged_prefix_completion_does_not_certify_failed_initializer() {
         .then_stream(FailInit(initialized.clone()))
         .execute(42, &(), &mut bus)
         .await;
-    assert!(matches!(report, StreamInitializationReport::Failed {
-        prefix: ExecutionReport::Recorded { result: (), completion: ranvier_runtime::CompletionConfirmation::Confirmed, .. },
-        error: ranvier_runtime::StreamInitializationError::Transition(ref detail),
-        initialization: EffectBoundary::MayHaveRun,
-        initialization_cleanup: None,
-    } if detail == "\"owned-private-init-detail\""));
-    assert_eq!(initialized.load(Ordering::SeqCst), 1);
-    // This is deliberately recorded as prefix evidence, not accepted as a completed
-    // full streaming graph by this assertion. Consumers must distinguish phases.
+    assert!(matches!(
+        &report,
+        StreamInitializationReport::Rejected {
+            prefix: ExecutionReport::BlockedBeforeEffect {
+                operation: PersistenceOperation::UnsupportedEffect,
+                effect: EffectBoundary::NotInvoked,
+                ..
+            }
+        }
+    ));
+    assert_eq!(initialized.load(Ordering::SeqCst), 0);
+    let persisted = backing
+        .load("prefix-only")
+        .await
+        .unwrap()
+        .expect("the non-effect prefix terminal is persisted");
+    assert_eq!(persisted.completion, None);
     assert_eq!(
-        backing
-            .load("prefix-only")
-            .await
-            .unwrap()
-            .unwrap()
-            .completion,
-        Some(CompletionState::Success)
+        persisted
+            .events
+            .iter()
+            .map(|event| (event.event_type, event.outcome_kind.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (PersistenceEventType::Enter, "Enter"),
+            (PersistenceEventType::Terminal, "Next")
+        ]
     );
 }
 

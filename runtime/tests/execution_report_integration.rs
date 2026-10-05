@@ -1081,17 +1081,22 @@ async fn collected_stream_prefix_terminal_failure_blocks_initialization_and_reta
         .then_stream(CountStream(effects.clone()))
         .collect_into_vec();
     let report = axon.execute(7, &(), &mut bus).await;
-    assert!(matches!(
-        report,
-        ranvier_runtime::StreamInitializationReport::Rejected {
-            prefix: ExecutionReport::Unconfirmed {
+    let prefix = match &report {
+        ranvier_runtime::StreamInitializationReport::Rejected { prefix } => prefix,
+        _ => panic!("terminal append failure must reject stream initialization"),
+    };
+    assert!(
+        matches!(
+            prefix,
+            ExecutionReport::Unconfirmed {
                 result: ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Next(7)),
                 operation: PersistenceOperation::Terminal,
-                effect: EffectBoundary::MayHaveRun,
+                effect: EffectBoundary::NotInvoked,
                 ..
             }
-        }
-    ));
+        ),
+        "unexpected stream prefix report: {prefix:#?}"
+    );
     assert_eq!(effects.load(Ordering::SeqCst), 0);
     assert_eq!(writes.load(Ordering::SeqCst), 2);
     let trace = backing.load("stream-report").await.unwrap().unwrap();

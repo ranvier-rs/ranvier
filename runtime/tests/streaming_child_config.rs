@@ -102,13 +102,15 @@ impl StreamingTransition<()> for Parent {
                 }
             } else {
                 let result = future.await;
-                assert_eq!(result.is_err(), self.mode == 2);
-                if let Ok(initialized) = result {
-                    assert_eq!(
-                        stream_reports::initialized(initialized).is_err(),
-                        self.mode == 1
-                    );
-                }
+                assert!(
+                    result.is_ok(),
+                    "child initializer panics are converted into failure reports"
+                );
+                let initialized = result.expect("child execution should return a report");
+                assert_eq!(
+                    stream_reports::initialized(initialized).is_err(),
+                    matches!(self.mode, 1 | 2)
+                );
             }
         }
         assert_eq!(

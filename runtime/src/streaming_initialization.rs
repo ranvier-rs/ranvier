@@ -448,11 +448,7 @@ mod tests {
             trace: &str,
             completion: crate::CompletionState,
         ) -> anyhow::Result<()> {
-            self.backing.complete(trace, completion).await?;
-            if self.mode == 2 {
-                anyhow::bail!("synthetic applied completion without ACK");
-            }
-            Ok(())
+            self.backing.complete(trace, completion).await
         }
         async fn save_intervention(
             &self,
@@ -463,14 +459,11 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn actual_ack_matrix_blocks_initialization_and_retains_known_result() {
+    async fn configured_store_blocks_unjournaled_initializer_and_retains_prefix_result() {
         use crate::PersistenceStore;
-        for mode in 0..4 {
+        for mode in [0, 1, 3] {
             for cancellable in [false, true] {
                 for auto_complete in [false, true] {
-                    if mode == 2 && !auto_complete {
-                        continue;
-                    }
                     let backing = crate::InMemoryPersistenceStore::new();
                     let original: Arc<dyn PersistenceStore> = Arc::new(AckStore {
                         backing: backing.clone(),
@@ -496,20 +489,21 @@ mod tests {
                     match (mode, report) {
                         (
                             0,
-                            StreamInitializationReport::Ready {
-                                prefix: ExecutionReport::Recorded { completion, .. },
+                            StreamInitializationReport::Rejected {
+                                prefix:
+                                    ExecutionReport::Unconfirmed {
+                                        result: ExecutionTerminal::Outcome(Outcome::Next(42)),
+                                        operation: PersistenceOperation::UnsupportedEffect,
+                                        effect: EffectBoundary::MayHaveRun,
+                                        ..
+                                    },
                                 ..
                             },
                         ) => {
-                            assert_eq!(
-                                completion,
-                                if auto_complete {
-                                    CompletionConfirmation::Confirmed
-                                } else {
-                                    CompletionConfirmation::NotRequested
-                                }
-                            );
-                            assert_eq!(initialized.load(Ordering::SeqCst), 1);
+                            assert_eq!(initialized.load(Ordering::SeqCst), 0);
+                            let trace = backing.load("ack-handoff").await.unwrap().unwrap();
+                            assert_eq!(trace.completion, None);
+                            assert_eq!(trace.events.last().unwrap().outcome_kind, "Next");
                         }
                         (
                             1,
@@ -523,28 +517,6 @@ mod tests {
                             },
                         ) => {}
                         (
-                            2,
-                            StreamInitializationReport::Rejected {
-                                prefix:
-                                    ExecutionReport::Unconfirmed {
-                                        result: ExecutionTerminal::Outcome(Outcome::Next(42)),
-                                        operation: PersistenceOperation::Complete,
-                                        effect: EffectBoundary::MayHaveRun,
-                                        ..
-                                    },
-                            },
-                        ) => {
-                            assert!(
-                                backing
-                                    .load("ack-handoff")
-                                    .await
-                                    .unwrap()
-                                    .unwrap()
-                                    .completion
-                                    .is_some()
-                            );
-                        }
-                        (
                             3,
                             StreamInitializationReport::Rejected {
                                 prefix:
@@ -557,13 +529,8 @@ mod tests {
                         ) => {}
                         _ => panic!("unexpected admission state for mode {mode}"),
                     }
-                    if mode != 0 {
-                        assert_eq!(initialized.load(Ordering::SeqCst), 0);
-                    }
-                    assert_eq!(
-                        effects.load(Ordering::SeqCst),
-                        usize::from(mode == 0 || mode == 2)
-                    );
+                    assert_eq!(initialized.load(Ordering::SeqCst), 0);
+                    assert_eq!(effects.load(Ordering::SeqCst), usize::from(mode == 0));
                     assert!(Arc::ptr_eq(
                         &bus.read::<crate::PersistenceHandle>().unwrap().store(),
                         &original

@@ -42,8 +42,8 @@ use async_trait::async_trait;
 use ranvier_core::prelude::*;
 use ranvier_runtime::{
     Axon, CompensationContext, CompensationHandle, CompensationHook, CompensationRetryPolicy,
-    InMemoryPersistenceStore, PersistenceAutoComplete, PersistenceHandle, PersistenceStore,
-    PersistenceTraceId,
+    InMemoryPersistenceStore, PersistenceAutoComplete, PersistenceEventType, PersistenceHandle,
+    PersistenceStore, PersistenceTraceId,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -193,27 +193,103 @@ fn verify_trace(
     {
         anyhow::bail!("Stored trace identity or completion mismatch");
     }
-    if trace.events.iter().any(|event| {
+    let invalid_event = trace.events.iter().any(|event| {
         event.trace_id != id
             || event.circuit != trace.circuit
-            || (event.outcome_kind != "Enter" && event.node_id.is_none())
-    }) || trace
+            || match event.event_type {
+                PersistenceEventType::Intent
+                | PersistenceEventType::Result
+                | PersistenceEventType::Compensation
+                | PersistenceEventType::Checkpoint => event.node_id.is_none(),
+                PersistenceEventType::Terminal => event.node_id.is_some(),
+                PersistenceEventType::Enter => event.outcome_kind != "Enter",
+                PersistenceEventType::LegacyUnknown => true,
+            }
+    });
+    let invalid_sequence = trace
         .events
-        .windows(2)
-        .any(|events| events[0].step >= events[1].step)
-    {
+        .iter()
+        .enumerate()
+        .any(|(expected, event)| event.event_sequence != expected as u64);
+    if invalid_event || invalid_sequence {
         anyhow::bail!(
             "Stored event identity/order mismatch: {:?}",
             trace
                 .events
                 .iter()
                 .map(|event| (
+                    event.event_sequence,
+                    event.event_type,
                     event.step,
                     event.outcome_kind.as_str(),
                     event.node_id.is_some()
                 ))
                 .collect::<Vec<_>>()
         );
+    }
+    Ok(())
+}
+
+async fn seed_interrupted_checkpoint(
+    store: &InMemoryPersistenceStore,
+    axon: &Axon<OrderState, String, String>,
+    trace_id: &str,
+    input: &OrderState,
+    checkpoint: &OrderState,
+) -> anyhow::Result<()> {
+    let schematic = axon.schematic();
+    let entry_node_id = schematic
+        .nodes
+        .first()
+        .map(|node| node.id.to_string())
+        .ok_or_else(|| anyhow::anyhow!("entry node missing"))?;
+    let validate_node_id = schematic
+        .nodes
+        .get(1)
+        .map(|node| node.id.to_string())
+        .ok_or_else(|| anyhow::anyhow!("validation node missing"))?;
+    let envelope = |event_sequence, event_type, step, node_id, outcome_kind: &str, payload| {
+        ranvier_runtime::PersistenceEnvelope {
+            trace_id: trace_id.to_owned(),
+            circuit: schematic.name.clone(),
+            schematic_version: schematic.schema_version.clone(),
+            event_sequence,
+            event_type,
+            step,
+            node_id,
+            outcome_kind: outcome_kind.to_owned(),
+            timestamp_ms: 0,
+            payload_hash: None,
+            payload,
+        }
+    };
+    for event in [
+        envelope(
+            0,
+            PersistenceEventType::Enter,
+            0,
+            Some(entry_node_id),
+            "Enter",
+            None,
+        ),
+        envelope(
+            1,
+            PersistenceEventType::Intent,
+            1,
+            Some(validate_node_id.clone()),
+            "Intent",
+            Some(serde_json::to_value(input)?),
+        ),
+        envelope(
+            2,
+            PersistenceEventType::Result,
+            1,
+            Some(validate_node_id),
+            "Next",
+            Some(serde_json::to_value(checkpoint)?),
+        ),
+    ] {
+        store.append(event).await?;
     }
     Ok(())
 }
@@ -230,31 +306,21 @@ async fn run_demo() -> anyhow::Result<()> {
     let handle = PersistenceHandle::from_arc(store_dyn);
     let axon = build_order_axon();
 
-    // --- Phase 1: First run faults at payment (trace kept open) ---
-    println!("--- Phase 1: First run — payment fault (trace stays open) ---");
+    // --- Phase 1: Simulate process stop after a settled validation checkpoint ---
+    println!("--- Phase 1: Process stops after the validation checkpoint ---");
 
     let trace_id = "order-5001";
-    let mut bus = ranvier_core::ranvier_bus!(
-        handle.clone(),
-        PersistenceTraceId::new(trace_id),
-        PersistenceAutoComplete(false),
-    );
-
     let input = OrderState {
         order_id: "5001".into(),
         validated: false,
-        should_fail_payment: true,
+        should_fail_payment: false,
     };
-
-    let outcome = recorded_outcome(axon.execute(input, &(), &mut bus).await, false)?;
-    if !matches!(&outcome, Outcome::Fault(error) if error == "payment_declined") {
-        anyhow::bail!("Initial payment fault missing");
-    }
-    match &outcome {
-        Outcome::Fault(e) => println!("  Outcome: FAULT — {}", e),
-        Outcome::Next(t) => println!("  Outcome: SUCCESS — {}", t),
-        _ => {}
-    }
+    let checkpoint = OrderState {
+        validated: true,
+        ..input.clone()
+    };
+    seed_interrupted_checkpoint(&store_impl, &axon, trace_id, &input, &checkpoint).await?;
+    println!("  Persisted validation checkpoint; payment step has not run");
 
     let trace = store_impl
         .load(trace_id)
@@ -264,20 +330,22 @@ async fn run_demo() -> anyhow::Result<()> {
     if trace
         .events
         .last()
-        .is_none_or(|event| event.outcome_kind != "Fault")
+        .is_none_or(|event| event.event_type != PersistenceEventType::Result)
     {
-        anyhow::bail!("Initial fault event missing");
+        anyhow::bail!("Settled validation checkpoint missing");
     }
 
-    // --- Phase 2: Resume from checkpoint (fix condition, complete) ---
-    println!("\n--- Phase 2: Resume — fix payment condition and complete ---");
+    // --- Phase 2: Resume after the last settled checkpoint and complete ---
+    println!("\n--- Phase 2: Resume from checkpoint and complete ---");
 
-    // Resume from the latest successful checkpoint, not from a terminal fault marker.
+    // Resume only from a settled nonterminal result, never from a terminal fault.
     let resume_from = trace
         .events
         .iter()
         .rev()
-        .find(|event| event.outcome_kind == "Next")
+        .find(|event| {
+            event.event_type == PersistenceEventType::Result && event.outcome_kind == "Next"
+        })
         .map(|event| event.step)
         .ok_or_else(|| {
             anyhow::anyhow!("Successful checkpoint missing; operator reconciliation required")
@@ -293,12 +361,6 @@ async fn run_demo() -> anyhow::Result<()> {
         PersistenceTraceId::new(trace_id),
         PersistenceAutoComplete(true),
     );
-
-    let input = OrderState {
-        order_id: "5001".into(),
-        validated: false,
-        should_fail_payment: false,
-    };
 
     let outcome = recorded_outcome(axon.execute(input, &(), &mut bus).await, true)?;
     if !matches!(&outcome, Outcome::Next(value) if value == "TRACK-5001") {

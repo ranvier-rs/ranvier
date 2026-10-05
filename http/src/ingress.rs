@@ -7151,7 +7151,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timeout_layer_waits_for_cancellation_persistence_and_compensation() {
+    async fn timeout_layer_surfaces_pending_intent_for_reconciliation_without_compensation() {
         #[derive(Clone)]
         struct NeverCompletes;
 
@@ -7202,7 +7202,13 @@ mod tests {
             .send(crate::test_harness::TestRequest::get("/slow"))
             .await
             .expect("timeout response");
-        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let report: serde_json::Value = response.json().expect("durability report");
+        assert_eq!(report["durability"], "unconfirmed");
+        assert_eq!(report["effect"], "may_have_run");
+        assert_eq!(report["operation"], "pending_intent");
+        assert_eq!(report["reconciliation_required"], true);
+        assert_eq!(report["result"]["terminal"], "cancelled");
 
         use ranvier_runtime::persistence::PersistenceStore as _;
         let trace = store
@@ -7210,19 +7216,18 @@ mod tests {
             .await
             .expect("load trace")
             .expect("timeout trace");
+        // The transition Intent is unresolved; do not run automatic compensation or append a terminal row.
+        assert_eq!(trace.completion, None);
+        assert_eq!(trace.events.len(), 2);
         assert_eq!(
-            trace.completion,
-            Some(ranvier_runtime::persistence::CompletionState::Compensated)
+            trace.events[0].event_type,
+            ranvier_runtime::persistence::PersistenceEventType::Enter
         );
         assert_eq!(
-            trace
-                .events
-                .iter()
-                .map(|event| event.outcome_kind.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Enter", "Cancelled", "Compensated"]
+            trace.events[1].event_type,
+            ranvier_runtime::persistence::PersistenceEventType::Intent
         );
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

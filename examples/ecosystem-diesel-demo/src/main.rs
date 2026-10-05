@@ -296,18 +296,26 @@ impl Transition<FetchAllInput, Vec<UserSummary>> for ListUsersTransition {
 struct OwnedDemoDb(std::path::PathBuf);
 impl OwnedDemoDb {
     fn create() -> Result<Self> {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "ranvier-diesel-{}-{nonce}.sqlite",
-            std::process::id()
-        ));
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        Ok(Self(path))
+        static NEXT_TEMP_FILE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        loop {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos();
+            let sequence = NEXT_TEMP_FILE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "ranvier-diesel-{}-{nonce}-{sequence}.sqlite",
+                std::process::id()
+            ));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(_) => return Ok(Self(path)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 }
 impl Drop for OwnedDemoDb {

@@ -119,13 +119,12 @@ impl Transition<(), ()> for Parent {
                 }
             } else {
                 let result = future.await;
-                assert_eq!(result.is_err(), self.mode == 2 && !self.ordinary_child);
-                if let Ok(result) = result {
-                    assert_eq!(
-                        result.is_err(),
-                        self.mode == 1 || (self.mode == 2 && self.ordinary_child)
-                    );
-                }
+                assert!(
+                    result.is_ok(),
+                    "child initialization failures are converted into reports"
+                );
+                let result = result.expect("child execution should return a report");
+                assert_eq!(result.is_err(), matches!(self.mode, 1 | 2));
             }
         }
         assert_eq!(

@@ -458,7 +458,11 @@ mod report_tests {
                     .await
                     .unwrap()
                     .unwrap();
-                assert!(n > 0 && request.len() + n <= 8192);
+                assert!(n > 0, "client closed before request headers were complete");
+                assert!(
+                    request.len() + n <= 8192,
+                    "request headers exceeded the 8 KiB fixture limit"
+                );
                 request.extend_from_slice(&buffer[..n]);
             }
             tokio::time::sleep(delay).await;
@@ -540,10 +544,10 @@ mod report_tests {
                 .await
                 .is_err()
         );
-        let (resources, server) = fixture(200, "{}".into(), Duration::from_millis(100)).await;
+        let (resources, server) = fixture(200, "{}".into(), Duration::from_secs(1)).await;
         let axon =
             Axon::<UserLookupRequest, UserLookupRequest, String, ApiResources>::new("timeout")
-                .then_with_timeout(FetchUserFromApi, Duration::from_millis(20), || {
+                .then_with_timeout(FetchUserFromApi, Duration::from_millis(500), || {
                     "Local wait elapsed".to_owned()
                 });
         assert!(
