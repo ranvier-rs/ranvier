@@ -1,40 +1,40 @@
-error[E0277]: `Rc<std::string::String>` cannot be shared between threads safely
- --> tests/ui/fail/r12_non_send_resource.rs:8:31
-  |
-8 | async fn invalid(_resources: &Rc<String>) -> Outcome<(), String> {
-  |                               ^^^^^^^^^^ `Rc<std::string::String>` cannot be shared between threads safely
-  |
-  = help: the trait `Sync` is not implemented for `Rc<std::string::String>`
+error[E0277]: `Rc<u32>` cannot be shared between threads safely
+  --> tests/ui/fail/r12_non_send_resource.rs:10:31
+   |
+10 | async fn invalid(_resources: &Rc<u32>) -> Outcome<(), u32> {
+   |                               ^^^^^^^ `Rc<u32>` cannot be shared between threads safely
+   |
+   = help: the trait `Sync` is not implemented for `Rc<u32>`
 note: required by a bound in `ranvier_core::Transition::Resources`
- --> $WORKSPACE/core/src/transition.rs
-  |
-  |     type Resources: Send + Sync + 'static;
-  |                            ^^^^ required by this bound in `Transition::Resources`
+  --> $WORKSPACE/core/src/transition.rs
+   |
+   |     type Resources: Send + Sync + 'static;
+   |                            ^^^^ required by this bound in `Transition::Resources`
 
-error[E0277]: `Rc<std::string::String>` cannot be sent between threads safely
- --> tests/ui/fail/r12_non_send_resource.rs:8:31
-  |
-8 | async fn invalid(_resources: &Rc<String>) -> Outcome<(), String> {
-  |                               ^^^^^^^^^^ `Rc<std::string::String>` cannot be sent between threads safely
-  |
-  = help: the trait `Send` is not implemented for `Rc<std::string::String>`
+error[E0277]: `Rc<u32>` cannot be sent between threads safely
+  --> tests/ui/fail/r12_non_send_resource.rs:10:31
+   |
+10 | async fn invalid(_resources: &Rc<u32>) -> Outcome<(), u32> {
+   |                               ^^^^^^^ `Rc<u32>` cannot be sent between threads safely
+   |
+   = help: the trait `Send` is not implemented for `Rc<u32>`
 note: required by a bound in `ranvier_core::Transition::Resources`
- --> $WORKSPACE/core/src/transition.rs
-  |
-  |     type Resources: Send + Sync + 'static;
-  |                     ^^^^ required by this bound in `Transition::Resources`
+  --> $WORKSPACE/core/src/transition.rs
+   |
+   |     type Resources: Send + Sync + 'static;
+   |                     ^^^^ required by this bound in `Transition::Resources`
 
 error: future cannot be sent between threads safely
- --> tests/ui/fail/r12_non_send_resource.rs:7:1
+ --> tests/ui/fail/r12_non_send_resource.rs:9:1
   |
-7 | #[transition]
+9 | #[transition]
   | ^^^^^^^^^^^^^ future created by async block is not `Send`
   |
-  = help: the trait `Sync` is not implemented for `Rc<std::string::String>`
+  = help: the trait `Sync` is not implemented for `Rc<u32>`
 note: captured value is not `Send` because `&` references cannot be sent unless their referent is `Sync`
- --> tests/ui/fail/r12_non_send_resource.rs:7:1
+ --> tests/ui/fail/r12_non_send_resource.rs:9:1
   |
-7 | #[transition]
-  | ^^^^^^^^^^^^^ has type `&Rc<std::string::String>` which is not `Send`, because `Rc<std::string::String>` is not `Sync`
-  = note: required for the cast from `Pin<Box<{async block@$DIR/tests/ui/fail/r12_non_send_resource.rs:7:1: 7:14}>>` to `Pin<Box<dyn Future<Output = Outcome<(), std::string::String>> + Send>>`
+9 | #[transition]
+  | ^^^^^^^^^^^^^ has type `&Rc<u32>` which is not `Send`, because `Rc<u32>` is not `Sync`
+  = note: required for the cast from `Pin<Box<{async block@$DIR/tests/ui/fail/r12_non_send_resource.rs:9:1: 9:14}>>` to `Pin<Box<dyn Future<Output = Outcome<(), u32>> + Send>>`
   = note: this error originates in the attribute macro `transition` (in Nightly builds, run with -Z macro-backtrace for more info)
