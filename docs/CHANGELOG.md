@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.51.1] — 2026-11
+
+### Summary
+
+**Ranvier 0.51.1 — persistence patch for `ranvier-runtime`.**
+Fixes two persistence defects in 0.51.0. Only `ranvier-runtime` is republished;
+the other 0.51.0 crates, including the `ranvier` facade, depend on
+`ranvier-runtime ^0.51.0` and pick up the fix with `cargo update -p ranvier-runtime`.
+No public API or stored format changes. Remaining known issues are listed in
+[KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+
+### Fixed
+- **Terminal and `Compensated` events were lost on PostgreSQL (ranvier-runtime):**
+  the final outcome event was written at `start_step + 1`, the same step as the
+  first transition's event. PostgreSQL rejected it as a duplicate
+  `(trace_id, step)` key, so the trace kept no record of its final outcome or
+  of a successful compensation; Redis and in-memory stores kept both events
+  under the same step. Execution-level events are now written after the
+  highest step already stored for the trace. `CompensationContext::fault_step`
+  passed to compensation hooks is unchanged.
+- **Resume used a serialization-failure placeholder as state (ranvier-runtime):**
+  when an outcome could not be serialized, its payload was stored as a bare
+  JSON `null`, and a later resume could decode that `null` as valid state for
+  a node whose input accepts `null` (for example `Option<T>`). A bare `null`
+  payload is no longer used as resume state; resume falls back to the fresh
+  input or returns `execution.resumption.payload_error`. Normal nullable
+  results, stored as `{"Next": null}`, still resume.
+
+### Behavior change
+- On every store, the step number of the terminal event and the `Compensated`
+  event changes: for a two-transition success, the terminal event moves from
+  step 1 to step 3. Code that reads events by step should use `outcome_kind`
+  to find execution-level events.
+
+---
+
 ## [0.51.0] — 2026-06
 
 ### Summary
