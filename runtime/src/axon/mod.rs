@@ -418,8 +418,13 @@ fn compensation_retry_policy(bus: &Bus) -> CompensationRetryPolicy {
 /// Events are stored with `outcome.to_json_value()` which serializes the full
 /// Outcome enum, e.g. `{"Next": {"order_id": "1001", ...}}`. The resumption
 /// handler expects the raw inner value, so we extract it here.
+///
+/// A bare top-level `null` is not an encoded outcome: it is what
+/// `Outcome::to_json_value` stores when serialization fails (a valid nullable
+/// `Next` is stored as `{"Next": null}`). The typed result is lost, so it must
+/// not be offered as resumption state (G0-5). Treat it as missing.
 fn unwrap_outcome_payload(payload: Option<&serde_json::Value>) -> Option<serde_json::Value> {
-    payload.map(|p| {
+    payload.filter(|p| !p.is_null()).map(|p| {
         p.get("Next")
             .or_else(|| p.get("Branch"))
             .or_else(|| p.get("Jump"))
@@ -499,6 +504,37 @@ async fn load_persistence_version(
                 "Failed to load persistence trace; falling back to step=0"
             );
             (0, None, None, None, None)
+        }
+    }
+}
+
+/// Step for an execution-level event (terminal outcome or `Compensated`).
+///
+/// Step-level events use the schematic node index, so the previous fixed
+/// `start_step + 1` collided with the first transition row and was rejected by
+/// stores keyed on `(trace_id, step)` such as PostgreSQL (G0-1). Place the
+/// event after the highest step already stored for the trace instead. When the
+/// trace cannot be read, fall back to the previous value.
+async fn next_execution_event_step(
+    handle: &PersistenceHandle,
+    trace_id: &str,
+    fallback: u64,
+) -> u64 {
+    match handle.store().load(trace_id).await {
+        Ok(Some(trace)) => trace
+            .events
+            .iter()
+            .map(|event| event.step)
+            .max()
+            .map_or(fallback, |max| max.saturating_add(1).max(fallback)),
+        Ok(None) => fallback,
+        Err(err) => {
+            tracing::warn!(
+                trace_id = %trace_id,
+                error = %err,
+                "Failed to load persistence trace for terminal step; using fallback step"
+            );
+            fallback
         }
     }
 }
@@ -1750,6 +1786,204 @@ mod tests {
         let persisted = store_impl.load("trace-no-complete").await.unwrap().unwrap();
         assert_eq!(persisted.events.len(), 3); // Enter + step-level Next + final Next
         assert_eq!(persisted.completion, None);
+    }
+
+    /// In-memory store that rejects a second event with the same
+    /// `(trace_id, step)`, matching the PostgreSQL events primary key.
+    #[derive(Clone, Default)]
+    struct UniqueStepStore {
+        inner: InMemoryPersistenceStore,
+    }
+
+    #[async_trait]
+    impl PersistenceStore for UniqueStepStore {
+        async fn append(&self, envelope: crate::persistence::PersistenceEnvelope) -> Result<()> {
+            if let Some(trace) = self.inner.load(&envelope.trace_id).await?
+                && trace.events.iter().any(|event| event.step == envelope.step)
+            {
+                return Err(anyhow::anyhow!("duplicate key (trace_id, step)"));
+            }
+            self.inner.append(envelope).await
+        }
+
+        async fn load(&self, trace_id: &str) -> Result<Option<crate::persistence::PersistedTrace>> {
+            self.inner.load(trace_id).await
+        }
+
+        async fn resume(
+            &self,
+            trace_id: &str,
+            resume_from_step: u64,
+        ) -> Result<crate::persistence::ResumeCursor> {
+            self.inner.resume(trace_id, resume_from_step).await
+        }
+
+        async fn complete(&self, trace_id: &str, completion: CompletionState) -> Result<()> {
+            self.inner.complete(trace_id, completion).await
+        }
+
+        async fn save_intervention(
+            &self,
+            trace_id: &str,
+            intervention: crate::persistence::Intervention,
+        ) -> Result<()> {
+            self.inner.save_intervention(trace_id, intervention).await
+        }
+    }
+
+    fn event_kinds_and_steps(trace: &crate::persistence::PersistedTrace) -> Vec<(String, u64)> {
+        trace
+            .events
+            .iter()
+            .map(|event| (event.outcome_kind.clone(), event.step))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn g0_1_terminal_event_is_stored_under_unique_step_key() {
+        let store_impl = Arc::new(UniqueStepStore::default());
+        let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
+
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(store_dyn));
+        bus.insert(PersistenceTraceId::new("g0-1-success"));
+
+        let axon = Axon::<i32, i32, TestInfallible>::start("G01Success")
+            .then(AddOne)
+            .then(MultiplyByTwo);
+        let outcome = axon.execute(1, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Next(4)));
+
+        let persisted = store_impl.load("g0-1-success").await.unwrap().unwrap();
+        assert_eq!(
+            event_kinds_and_steps(&persisted),
+            vec![
+                ("Enter".to_string(), 0),
+                ("Next".to_string(), 1),
+                ("Next".to_string(), 2),
+                ("Next".to_string(), 3),
+            ]
+        );
+        assert_eq!(
+            persisted.events[3].payload,
+            Some(serde_json::json!({ "Next": 4 }))
+        );
+        assert_eq!(persisted.completion, Some(CompletionState::Success));
+    }
+
+    #[tokio::test]
+    async fn g0_1_compensated_event_is_stored_under_unique_step_key() {
+        let store_impl = Arc::new(UniqueStepStore::default());
+        let store_dyn: Arc<dyn PersistenceStore> = store_impl.clone();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(store_dyn));
+        bus.insert(PersistenceTraceId::new("g0-1-compensated"));
+        bus.insert(CompensationHandle::from_hook(RecordingCompensationHook {
+            calls: calls.clone(),
+            should_fail: false,
+        }));
+
+        let axon = Axon::<i32, i32, String>::start("G01Compensated")
+            .then(AddOneString)
+            .then(AlwaysFault)
+            .then(AddTenString);
+        let outcome = axon.execute(5, &(), &mut bus).await;
+        assert!(matches!(outcome, Outcome::Fault(msg) if msg == "boom"));
+
+        let persisted = store_impl.load("g0-1-compensated").await.unwrap().unwrap();
+        assert_eq!(
+            event_kinds_and_steps(&persisted),
+            vec![
+                ("Enter".to_string(), 0),
+                ("Next".to_string(), 1),
+                ("Fault".to_string(), 2),
+                ("Fault".to_string(), 3),
+                ("Compensated".to_string(), 4),
+            ]
+        );
+        assert_eq!(persisted.completion, Some(CompletionState::Compensated));
+        // The hook-visible context keeps its 0.51.0 value.
+        assert_eq!(calls.lock().await[0].fault_step, 1);
+    }
+
+    async fn seed_trace_with_next_payload(
+        store: &InMemoryPersistenceStore,
+        trace_id: &str,
+        circuit: &str,
+        payload: Option<serde_json::Value>,
+    ) {
+        for (step, kind, payload) in [(0, "Enter", None), (1, "Next", payload)] {
+            store
+                .append(crate::persistence::PersistenceEnvelope {
+                    trace_id: trace_id.to_string(),
+                    circuit: circuit.to_string(),
+                    schematic_version: "1.0".to_string(),
+                    step,
+                    node_id: None,
+                    outcome_kind: kind.to_string(),
+                    timestamp_ms: 0,
+                    payload_hash: None,
+                    payload,
+                })
+                .await
+                .unwrap();
+        }
+    }
+
+    /// Resume a `String -> Option<i32> -> i32` circuit at its second
+    /// transition. The fresh `String` input cannot become `Option<i32>`, so
+    /// the persisted step-1 result is the only resumption state.
+    async fn resume_nullable_circuit(
+        trace_id: &str,
+        step1_payload: serde_json::Value,
+    ) -> Outcome<i32, String> {
+        let store_impl = InMemoryPersistenceStore::new();
+        seed_trace_with_next_payload(&store_impl, trace_id, "G05Resume", Some(step1_payload)).await;
+
+        let mut bus = Bus::new();
+        bus.insert(PersistenceHandle::from_arc(Arc::new(store_impl)));
+        bus.insert(PersistenceTraceId::new(trace_id));
+
+        let axon = Axon::<String, String, String>::start("G05Resume")
+            .then_fn("parse", |s: String, _bus: &mut Bus| {
+                Outcome::next(s.parse::<i32>().ok())
+            })
+            .then_fn("resolve", |v: Option<i32>, _bus: &mut Bus| {
+                Outcome::next(v.unwrap_or(-1))
+            });
+        axon.execute("not-a-number".to_string(), &(), &mut bus)
+            .await
+    }
+
+    #[tokio::test]
+    async fn g0_5_bare_null_payload_is_not_used_as_resumption_state() {
+        // Bare `null` is the historical serialization-error fallback. Before
+        // the fix it decoded as `None` and resumed with -1.
+        let outcome = resume_nullable_circuit("g0-5-bare-null", serde_json::Value::Null).await;
+        assert!(
+            matches!(&outcome, Outcome::Emit(name, _) if name == "execution.resumption.payload_error"),
+            "unexpected outcome {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn g0_5_encoded_payloads_still_resume() {
+        let outcome =
+            resume_nullable_circuit("g0-5-encoded", serde_json::json!({ "Next": 7 })).await;
+        assert!(
+            matches!(outcome, Outcome::Next(7)),
+            "unexpected outcome {outcome:?}"
+        );
+
+        // A valid nullable result is encoded as {"Next": null} and stays usable.
+        let outcome =
+            resume_nullable_circuit("g0-5-encoded-null", serde_json::json!({ "Next": null })).await;
+        assert!(
+            matches!(outcome, Outcome::Next(-1)),
+            "unexpected outcome {outcome:?}"
+        );
     }
 
     #[tokio::test]

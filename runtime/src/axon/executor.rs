@@ -11,9 +11,10 @@ use super::*;
 use super::{
     ExecutionMode, ManualJump, ResumptionState, StartStep, compensation_auto_trigger,
     compensation_retry_policy, completion_from_outcome, ensure_timeline, extract_panic_message,
-    load_persistence_version, maybe_export_timeline, now_ms, outcome_kind_name, outcome_target,
-    outcome_type_name, persist_completion, persist_execution_event, persistence_auto_complete,
-    persistence_trace_id, run_compensation, should_attach_timeline,
+    load_persistence_version, maybe_export_timeline, next_execution_event_step, now_ms,
+    outcome_kind_name, outcome_target, outcome_type_name, persist_completion,
+    persist_execution_event, persistence_auto_complete, persistence_trace_id, run_compensation,
+    should_attach_timeline,
 };
 
 use crate::persistence::{
@@ -499,13 +500,17 @@ where
         }
 
         if let Some(handle) = persistence_handle.as_ref() {
+            // `fault_step` keeps its 0.51.0 value for `CompensationContext`;
+            // only the stored execution-level events move past the last
+            // stored step so they do not collide with step-level rows (G0-1).
             let fault_step = persistence_start_step.map(|s| s + 1).unwrap_or(1);
+            let terminal_step = next_execution_event_step(handle, &trace_id, fault_step).await;
             persist_execution_event(
                 handle,
                 &trace_id,
                 &label,
                 &version,
-                fault_step,
+                terminal_step,
                 None, // Outcome-level events might not have a single node_id context here
                 outcome_kind_name(&outcome),
                 Some(outcome.to_json_value()),
@@ -538,7 +543,7 @@ where
                         &trace_id,
                         &label,
                         &version,
-                        fault_step.saturating_add(1),
+                        terminal_step.saturating_add(1),
                         None,
                         "Compensated",
                         None,
