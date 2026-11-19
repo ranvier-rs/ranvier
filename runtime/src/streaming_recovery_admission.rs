@@ -8,7 +8,9 @@ pub(crate) enum RecoveryAdmissionFailure {
     Poisoned,
     RegistryPoisoned,
     RegistryBusy,
+    #[cfg(test)]
     InvalidRetention,
+    #[cfg(test)]
     DispositionCapacity,
 }
 #[derive(Clone)]
@@ -79,6 +81,7 @@ impl StreamRecoveryAdmission {
             .closed = true;
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn in_use(&self) -> Result<usize, RecoveryAdmissionFailure> {
         Ok(self
             .0

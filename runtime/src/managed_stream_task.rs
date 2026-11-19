@@ -114,6 +114,7 @@ impl<T: Send + 'static> PreparedStreamTask<T> {
         result
     }
     /// Reject synchronously, then borrow custody through lock/join deadline.
+    #[cfg(test)]
     pub(crate) fn reject_until(
         &mut self,
         deadline: Instant,
@@ -197,6 +198,7 @@ impl<T: Send + 'static> ManagedStreamTask<T> {
 
     /// Borrow the handle rather than moving it into the deadline future.
     /// Timeout or dropped wait leaves task custody in this owner for later join.
+    #[cfg(test)]
     pub(crate) async fn join_until(
         &mut self,
         deadline: Instant,

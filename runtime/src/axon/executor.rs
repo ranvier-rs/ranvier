@@ -88,6 +88,10 @@ where
 {
     /// Private explicit owned child entry. The active root store remains the owner;
     /// this scope supplies a distinct typed resource allocation without cloning it.
+    ///
+    /// Test-only until production nested owned-child execution (M427 OR1–OR5) is
+    /// wired; see the M425–M432 work plan backlog.
+    #[cfg(test)]
     pub(crate) async fn execute_owned_child(
         &self,
         input: In,
@@ -102,6 +106,8 @@ where
         }
         self.execute(input, resources.as_ref(), scope.bus()).await
     }
+    /// Cancellable variant of [`Self::execute_owned_child`]; test-only for the same reason.
+    #[cfg(test)]
     pub(crate) async fn execute_owned_child_cancellable(
         &self,
         input: In,

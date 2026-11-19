@@ -111,6 +111,7 @@ pub(crate) struct OwnedCallablePlan<In, Out, Item, E, Res> {
 impl<In, Out, Item, E, Res> OwnedCallablePlan<In, Out, Item, E, Res> {
     /// One preparation decision per admitted plan, before allocating a channel
     /// or spawning another frame. The owner remains available for reconciliation.
+    #[cfg(test)]
     pub(crate) fn prepare_bounded(
         &mut self,
         input: In,
@@ -156,6 +157,7 @@ where
     E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + Debug + 'static,
     Res: Send + Sync + 'static,
 {
+    #[cfg(test)]
     pub(crate) fn report_handle(
         &self,
         prepared: &crate::managed_stream_task::PreparedStreamTask<
@@ -214,6 +216,7 @@ where
             })
         })
     }
+    #[cfg(test)]
     pub(crate) fn try_callable_plan(
         &self,
         context: OwnedStreamContext<Res>,
@@ -223,6 +226,7 @@ where
     {
         (self.callable_factory)(self, context, admission, expires, None)
     }
+    #[cfg(test)]
     pub(crate) fn try_plan<S, SErr>(
         &self,
         context: OwnedStreamContext<Res>,
@@ -303,6 +307,7 @@ where
     Res: Send + Sync + 'static,
     Item: Send + 'static,
 {
+    #[cfg(test)]
     pub(crate) fn prepare_bounded<SErr>(
         &self,
         input: In,
@@ -417,6 +422,7 @@ where
         );
         Ok((prepared, receiver))
     }
+    #[cfg(test)]
     pub(crate) fn prepare<T, F, Fut, SErr>(
         &self,
         input: In,

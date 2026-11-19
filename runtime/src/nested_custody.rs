@@ -17,11 +17,16 @@ impl<Res> Clone for OwnedResources<Res> {
 }
 /// Temporary explicit typed owner; restore the parent's original Bus storage on
 /// return, panic or future Drop. Required supervision retains the live record.
+///
+/// Test-only until production nested owned-child execution (M427 OR1–OR5) is
+/// wired; see the M425–M432 work plan backlog.
+#[cfg(test)]
 pub(crate) struct OwnedResourceScope<'a> {
     bus: &'a mut ranvier_core::Bus,
     scope: Option<ranvier_core::bus::BusResourceScope>,
     pub(crate) eligible: bool,
 }
+#[cfg(test)]
 impl<'a> OwnedResourceScope<'a> {
     pub(crate) fn begin<Res: Send + Sync + 'static>(
         bus: &'a mut ranvier_core::Bus,
@@ -44,6 +49,7 @@ impl<'a> OwnedResourceScope<'a> {
         self.bus
     }
 }
+#[cfg(test)]
 impl Drop for OwnedResourceScope<'_> {
     fn drop(&mut self) {
         let access = self.bus.take_access_scope();
@@ -53,8 +59,25 @@ impl Drop for OwnedResourceScope<'_> {
         self.bus.restore_access_scope(access);
     }
 }
+/// Retained by the custody store so a nested Saga's resources and compensation
+/// handlers outlive the child invocation. Production code only retains them;
+/// the reader (operator recovery / nested drain) is M427 backlog work.
 pub(crate) struct NestedSagaCustody<E, Res> {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "retained for M427 nested compensation; reader not wired yet"
+        )
+    )]
     pub(crate) resources: Arc<Res>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "retained for M427 nested compensation; reader not wired yet"
+        )
+    )]
     pub(crate) handlers: ranvier_core::saga::SagaCompensationRegistry<E, Res>,
 }
 pub(crate) type Capability = Arc<dyn Any + Send + Sync>;
@@ -136,6 +159,7 @@ impl CustodyReservation {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn finalize_stream(
         &mut self,
         client: &WeakCustodyClient,
@@ -292,6 +316,7 @@ impl CustodyStore {
     }
     /// Root-only snapshot after admission closure. Cloning holders preserves
     /// unjoined task custody; this neither removes records nor proves join.
+    #[cfg(test)]
     pub(crate) fn closed_tasks(&self) -> Result<Vec<(uuid::Uuid, Capability)>, &'static str> {
         let records = self
             .0
@@ -310,6 +335,7 @@ impl CustodyStore {
     /// Acquire result custody before waiting, so dropped waits and root/record
     /// retirement cannot discard reports while this family lease remains owned.
     #[cfg(feature = "streaming")]
+    #[cfg(test)]
     pub(crate) fn closed_typed_family<T: Send + 'static>(
         &self,
     ) -> Result<ManagedTaskFamily<T>, &'static str> {
@@ -323,6 +349,7 @@ impl CustodyStore {
         })
     }
     #[cfg(feature = "streaming")]
+    #[cfg(test)]
     pub(crate) async fn settle_closed_tasks<T: Send + 'static>(
         &self,
         deadline: tokio::time::Instant,
@@ -371,6 +398,7 @@ impl CustodyStore {
 }
 /// Private typed family lease; no serialization or Debug of task outputs.
 #[cfg(feature = "streaming")]
+#[cfg(test)]
 pub(crate) struct ManagedTaskFamily<T> {
     tasks: Vec<(
         uuid::Uuid,
@@ -382,6 +410,7 @@ pub(crate) struct ManagedTaskFamily<T> {
     )>,
 }
 #[cfg(feature = "streaming")]
+#[cfg(test)]
 impl<T> std::ops::Deref for ManagedTaskFamily<T> {
     type Target = [(
         uuid::Uuid,
@@ -392,6 +421,7 @@ impl<T> std::ops::Deref for ManagedTaskFamily<T> {
     }
 }
 #[cfg(feature = "streaming")]
+#[cfg(test)]
 impl<T: Send + 'static> ManagedTaskFamily<T> {
     pub(crate) async fn settle_until(&mut self, deadline: tokio::time::Instant) {
         use futures_util::{StreamExt, stream::FuturesUnordered};
@@ -429,6 +459,7 @@ impl<T: Send + 'static> ManagedTaskFamily<T> {
 }
 impl WeakCustodyClient {
     #[cfg(feature = "streaming")]
+    #[cfg(test)]
     pub(crate) fn reserve_stream(
         &self,
         record: Capability,
@@ -610,6 +641,7 @@ impl WeakCustody {
     /// Validate the exact registered task and send its framework start gate
     /// under the retirement lock. No user future is polled under this lock.
     #[cfg(feature = "streaming")]
+    #[cfg(test)]
     pub(crate) fn attach_settlement(
         &self,
         settlement: crate::managed_stream_task::TaskSettlement,
@@ -682,6 +714,7 @@ impl WeakCustody {
     }
     /// In-process custody correlation only; never a persisted event identity.
     #[cfg(feature = "streaming")]
+    #[cfg(test)]
     pub(crate) fn id(&self) -> uuid::Uuid {
         self.id
     }

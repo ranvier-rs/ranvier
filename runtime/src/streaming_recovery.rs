@@ -20,6 +20,13 @@ type RawStream<Item> = Pin<Box<dyn futures_core::Stream<Item = Item> + Send>>;
 
 /// Local consumption observation, separate from stored prefix completion.
 pub(crate) struct StreamDriveResult<T> {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "consumption value is returned to the M427 streaming durable Intent/Result path, not wired yet"
+        )
+    )]
     pub(crate) value: T,
     pub(crate) terminal: crate::StreamConsumptionTerminal,
 }
@@ -37,6 +44,7 @@ pub(crate) struct StreamReadyResult<T> {
 /// Bounded delivery: reserve before polling source, keep controls live while full,
 /// and release source before returning to shielded cleanup. Completion is returned
 /// directly to supervisor rather than sent behind queued items.
+#[cfg(test)]
 pub(crate) async fn produce_bounded<Item: Send + 'static>(
     source: RawStream<Item>,
     config: ranvier_core::streaming::StreamTimeoutConfig,
@@ -159,6 +167,7 @@ impl Drop for SupervisorObservationGuard {
 }
 
 #[derive(Debug, Clone)]
+#[cfg(test)]
 pub(crate) struct RecoveryAbandonment {
     pub(crate) owner_id: uuid::Uuid,
     pub(crate) operator_id: uuid::Uuid,
@@ -166,6 +175,7 @@ pub(crate) struct RecoveryAbandonment {
     pub(crate) prior: SupervisorObservation,
 }
 #[derive(Debug, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) enum RecoveryDispositionFailure {
     Missing,
     NotExpired,
@@ -175,12 +185,14 @@ pub(crate) enum RecoveryDispositionFailure {
     DuplicateDecision,
     Poisoned,
 }
+#[cfg(test)]
 struct StoredRecovery<In, Out, E, Res> {
     owner: OwnedStreamRecovery<In, Out, E, Res>,
     expires: std::time::Instant,
 }
 /// External owner retention. Count is bounded by shared admission; payload/lifetime
 /// budgets and authorized operator disposition must be added before production use.
+#[cfg(test)]
 pub(crate) struct StreamRecoveryStore<In, Out, E, Res> {
     admission: StreamRecoveryAdmission,
     retention: std::time::Duration,
@@ -189,6 +201,7 @@ pub(crate) struct StreamRecoveryStore<In, Out, E, Res> {
     owners:
         std::sync::Mutex<std::collections::HashMap<uuid::Uuid, StoredRecovery<In, Out, E, Res>>>,
 }
+#[cfg(test)]
 impl<In, Out, E, Res> StreamRecoveryStore<In, Out, E, Res>
 where
     In: Send + Sync + Serialize + DeserializeOwned + 'static,
@@ -465,6 +478,7 @@ impl<In, Out, E, Res> std::fmt::Debug for StreamRecoveryAdmissionRejected<In, Ou
     }
 }
 impl<In, Out, E, Res> StreamRecoveryAdmissionRejected<In, Out, E, Res> {
+    #[cfg(test)]
     pub(crate) fn reason(&self) -> RecoveryAdmissionFailure {
         self.reason
     }
@@ -578,6 +592,7 @@ where
     /// Direct hooks, non-yielding handlers and external resource custody need separate limits.
     /// Parent owns this exact complete graph/resource/Bus context before effects.
     /// The child contains only weak links back to the authoritative parent store.
+    #[cfg(test)]
     pub(crate) async fn admit_to_parent(
         &self,
         client: crate::nested_custody::WeakCustodyClient,
@@ -587,6 +602,7 @@ where
 
     /// Freeze inherited control at admission. A descendant can cancel locally
     /// without cancelling its parent; execution cannot replace this authority.
+    #[cfg(test)]
     pub(crate) async fn admit_to_parent_with_control(
         &self,
         client: crate::nested_custody::WeakCustodyClient,
@@ -595,6 +611,7 @@ where
         self.bind_parent(client, parent, None, None, None).await
     }
 
+    #[cfg(test)]
     async fn bind_parent(
         &self,
         client: crate::nested_custody::WeakCustodyClient,
@@ -650,6 +667,7 @@ where
 
     /// Parent report retains observation, while the root store retains the actual
     /// owner. Watch receivers contain no typed resources or raw recovery inputs.
+    #[cfg(test)]
     pub(crate) async fn admit_to_parent_journal(
         &self,
         client: crate::nested_custody::WeakCustodyClient,
@@ -659,6 +677,7 @@ where
             .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn admit_to_parent_journal_with_control(
         &self,
         client: crate::nested_custody::WeakCustodyClient,
@@ -671,6 +690,7 @@ where
 
     /// Register exact child owner, indexed observation and actual task holder
     /// together before the caller grants its prepared task's start permit.
+    #[cfg(test)]
     pub(crate) async fn admit_managed_to_parent<T: Send + 'static>(
         &self,
         client: crate::nested_custody::WeakCustodyClient,
@@ -693,6 +713,7 @@ where
 
     /// Register and grant the exact preparation, retaining registration on a
     /// failed grant. Caller retains preparation and must join rejected tasks.
+    #[cfg(test)]
     pub(crate) async fn register_and_start<T: Send + 'static>(
         &self,
         client: crate::nested_custody::WeakCustodyClient,
@@ -739,6 +760,7 @@ where
     /// Consume the pre-context root slot for this exact recovery frame.
     /// Rejected frames remain caller-owned and must be joined; failed grants
     /// return the finalized custody receipt for explicit cleanup.
+    #[cfg(test)]
     pub(crate) async fn register_reserved_and_start<T: Send + 'static>(
         &self,
         client: crate::nested_custody::WeakCustodyClient,
@@ -1177,6 +1199,7 @@ where
 
     /// Build the gated future from this exact recovery owner and owned inputs.
     /// The supervisor must register this owner's holder before granting start.
+    #[cfg(test)]
     pub(crate) fn prepare_managed<Item, SErr, S, T, F, Fut>(
         &self,
         input: In,
@@ -1243,6 +1266,7 @@ where
         })
     }
 
+    #[cfg(test)]
     pub(crate) async fn initialize_and_drive<Item, SErr, S, T, F, Fut>(
         &self,
         input: In,
