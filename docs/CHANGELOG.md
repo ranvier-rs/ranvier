@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.51.1] — 2026-11 (`release/0.51`)
+
+### Summary
+
+**`ranvier-runtime` 0.51.1 — persistence patch for the 0.51 line.**
+Published from the `release/0.51` branch (tag `v0.51.1`); only `ranvier-runtime` was republished.
+The full entry and the list of issues that the patch does not fix are in the
+[0.51.1 CHANGELOG](https://github.com/ranvier-rs/ranvier/blob/v0.51.1/docs/CHANGELOG.md) and
+[0.51.x KNOWN_ISSUES](https://github.com/ranvier-rs/ranvier/blob/v0.51.1/docs/KNOWN_ISSUES.md).
+
+### Fixed
+- **Terminal and `Compensated` events were lost on PostgreSQL (ranvier-runtime):** execution-level events are now written after the highest step already stored for the trace instead of `start_step + 1`.
+- **Resume used a serialization-failure placeholder as state (ranvier-runtime):** a bare JSON `null` payload is no longer used as resume state.
+
+---
+
 ## [0.51.0] — 2026-06
 
 ### Summary
