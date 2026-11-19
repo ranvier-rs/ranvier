@@ -49,7 +49,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: stable-${{ runner.os }}
+      # Early warning for new stable releases: compile breakage fails this job,
+      # but new stable lints do not. Lints are gated on the pinned toolchain
+      # (1.98.1, see the M425-M432 work plan D-TOOLCHAIN); adopting a newer
+      # toolchain's lints is a deliberate gate-toolchain bump.
       - name: Compile locked workspace on current stable
+        env:
+          RUSTFLAGS: ""
         run: |
           rustc --version
           cargo --version
@@ -61,7 +67,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
       - run: node scripts/list_manifest_examples.mjs --verify-portfolio --verify-workspace-members
       - run: node --test scripts/tests/list_manifest_examples.test.mjs
@@ -84,7 +90,7 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
       - run: node scripts/tiered_example_gate.mjs --lane developer --phase test
         env:
@@ -100,7 +106,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
