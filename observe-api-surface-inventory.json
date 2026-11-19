@@ -13,11 +13,11 @@
   ],
   "input_sha256": {
     ".ranvier-observe-api-policy.json": "e446e25a77f1593761c01145a3fc9d9f2942d2e68e00d83a8c1412e241940687",
-    "Cargo.lock": "b2702673f921f3171ec376f74c022829dd38a97384e399990de396aa21fdc399",
+    "Cargo.lock": "e9b237c11be549e64a62f36d6324bd3d2b56ee88c5d1398378b0a1e75e5a0d6d",
     "Cargo.toml": "233cf940bd6f1dd4b55e955e24dd4357aca33ae492e0828568e58ce439bfac69",
     "extensions/observe/Cargo.toml": "5be29ff3c2746e7471db5fff964c8297a152eeb59628d43429b95806f3b9716f",
     "extensions/observe/src/lib.rs": "87a149cbbb6d190cb0f61342487424d23655216e878f160908cebbd45547b2c5",
-    "extensions/observe/src/metrics.rs": "3a413bd63554065a05387dd310cded59fd5e97b898ff1f55b9701d79b8a773cc",
+    "extensions/observe/src/metrics.rs": "7840f34d80570d1b75820eec11c2822ac2e90f58202ae63936ad25bb6a035c4f",
     "extensions/observe/src/redaction.rs": "ac9c9168f61bad8f1a07f284664f60abdeb008694707461edee5cd7792ce5b6f",
     "scripts/api_surface_inventory.mjs": "c8b6bfaa9bda625a0ea7bc93c8aceffacb469bc5f7531f3dada008e8a5c086ce",
     "scripts/optional_api_contract.mjs": "3766d992956ee312207f7c00b71bfcd053c1313aca7ac0125861cc8b98371a48"
