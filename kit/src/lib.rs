@@ -40,14 +40,14 @@ pub use ranvier_http::{
 pub use ranvier_inspector::{Inspector, StateInspector};
 #[cfg(feature = "openapi")]
 pub use ranvier_openapi::{OpenApiDocument, OpenApiGenerator, swagger_ui_html};
-#[cfg(feature = "streaming")]
-pub use ranvier_runtime::{
-    CollectedStreamingAxon, StreamInitializationError, StreamInitializationReport, StreamingAxon,
-};
 pub use ranvier_runtime::{
     Axon, CompletionConfirmation, EffectBoundary, ExecutionReport, ExecutionTerminal,
     PersistenceOperation, SagaRollbackJournal, SagaRollbackOutcome, SagaRollbackReport,
     SagaRollbackStep,
+};
+#[cfg(feature = "streaming")]
+pub use ranvier_runtime::{
+    CollectedStreamingAxon, StreamInitializationError, StreamInitializationReport, StreamingAxon,
 };
 
 pub mod prelude {

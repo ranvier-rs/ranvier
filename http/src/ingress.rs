@@ -99,7 +99,10 @@ impl Default for ManagedTaskRegistry {
     }
 }
 #[derive(Debug, PartialEq, Eq)]
-enum TaskReservationError { Closed, Capacity }
+enum TaskReservationError {
+    Closed,
+    Capacity,
+}
 
 type ManagedTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
@@ -107,7 +110,9 @@ type ManagedTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 struct ManagedTaskReservation(tokio::sync::oneshot::Sender<ManagedTask>);
 impl ManagedTaskReservation {
     fn start<F>(self, future: F) -> Result<(), ManagedTask>
-    where F: Future<Output = ()> + Send + 'static {
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
         self.0.send(Box::pin(future))
     }
 }
@@ -139,9 +144,13 @@ impl ManagedTaskRegistry {
     }
 
     async fn reserve(&self) -> Result<ManagedTaskReservation, TaskReservationError> {
-        if self.is_closed() { return Err(TaskReservationError::Closed); }
+        if self.is_closed() {
+            return Err(TaskReservationError::Closed);
+        }
         let mut tasks = self.tasks.lock().await;
-        if self.is_closed() { return Err(TaskReservationError::Closed); }
+        if self.is_closed() {
+            return Err(TaskReservationError::Closed);
+        }
         // Reap completed work so admission counts live slots, not historical requests.
         while let Some(result) = tasks.try_join_next() {
             if result.is_err() {
@@ -153,7 +162,9 @@ impl ManagedTaskRegistry {
         }
         let (sender, receiver) = tokio::sync::oneshot::channel::<ManagedTask>();
         tasks.spawn(async move {
-            if let Ok(task) = receiver.await { task.await; }
+            if let Ok(task) = receiver.await {
+                task.await;
+            }
         });
         Ok(ManagedTaskReservation(sender))
     }
@@ -198,11 +209,14 @@ fn task_admission_closed_response(reconciliation_required: bool) -> HttpResponse
             .status(StatusCode::SERVICE_UNAVAILABLE)
             .header("content-type", "application/json")
             .header("cache-control", "no-store"),
-        boxed_body(serde_json::json!({
-            "error": "Managed task admission is closed",
-            "code": "managed_task_admission_closed",
-            "reconciliation_required": reconciliation_required,
-        }).to_string()),
+        boxed_body(
+            serde_json::json!({
+                "error": "Managed task admission is closed",
+                "code": "managed_task_admission_closed",
+                "reconciliation_required": reconciliation_required,
+            })
+            .to_string(),
+        ),
     )
 }
 
@@ -229,9 +243,13 @@ fn request_task_owner(parts: &http::request::Parts) -> Option<ManagedTaskRegistr
 
 #[cfg(feature = "streaming")]
 fn stream_reconciliation_response(status: StatusCode, payload: serde_json::Value) -> HttpResponse {
-    build_response(Response::builder().status(status)
-        .header("content-type", "application/json").header("cache-control", "no-store"),
-        boxed_body(payload.to_string()))
+    build_response(
+        Response::builder()
+            .status(status)
+            .header("content-type", "application/json")
+            .header("cache-control", "no-store"),
+        boxed_body(payload.to_string()),
+    )
 }
 
 async fn execute_http_axon<In, Out, E, R>(
@@ -287,7 +305,8 @@ where
             // can turn control outcomes into successful or unrelated statuses.
             if let Outcome::Emit(event, _) = &outcome {
                 if let Some(response) = crate::service::iam_failure_response(event)
-                    .or_else(|| crate::service::saga_failure_response(event)) {
+                    .or_else(|| crate::service::saga_failure_response(event))
+                {
                     return Err(response.map(BodyExt::boxed));
                 }
             }
@@ -1833,8 +1852,12 @@ where
                         let task_reservation = match request_task_owner(&parts) {
                             Some(owner) => match owner.reserve().await {
                                 Ok(reservation) => Some(reservation),
-                                Err(TaskReservationError::Closed) => return task_admission_closed_response(false),
-                                Err(TaskReservationError::Capacity) => return task_capacity_response(),
+                                Err(TaskReservationError::Closed) => {
+                                    return task_admission_closed_response(false);
+                                }
+                                Err(TaskReservationError::Capacity) => {
+                                    return task_capacity_response();
+                                }
                             },
                             None => None,
                         };
@@ -3935,7 +3958,10 @@ where
 
         tokio::pin!(shutdown_signal);
         let mut connections = tokio::task::JoinSet::new();
-        let task_registry = ManagedTaskRegistry { reservation_limit: managed_task_capacity, ..Default::default() };
+        let task_registry = ManagedTaskRegistry {
+            reservation_limit: managed_task_capacity,
+            ..Default::default()
+        };
 
         loop {
             tokio::select! {
@@ -4099,7 +4125,10 @@ where
             preflight_config,
             resources,
             root_cancellation: CancellationToken::new(),
-            task_registry: ManagedTaskRegistry { reservation_limit: self.managed_task_capacity, ..Default::default() },
+            task_registry: ManagedTaskRegistry {
+                reservation_limit: self.managed_task_capacity,
+                ..Default::default()
+            },
         }
     }
 
@@ -6747,9 +6776,12 @@ mod tests {
     #[tokio::test]
     async fn managed_task_registry_aborts_stuck_child_at_shared_deadline() {
         let registry = ManagedTaskRegistry::default();
-        assert!(registry
-            .spawn(async { std::future::pending::<()>().await })
-            .await.is_ok());
+        assert!(
+            registry
+                .spawn(async { std::future::pending::<()>().await })
+                .await
+                .is_ok()
+        );
         let deadline = tokio::time::Instant::now() + Duration::from_millis(10);
         let report = registry.drain_until(deadline).await;
         assert_eq!(report.forced_aborts, 1);
@@ -6761,22 +6793,42 @@ mod tests {
         let registry = ManagedTaskRegistry::default();
         let release = Arc::new(tokio::sync::Notify::new());
         let wait = release.clone();
-        assert!(registry.spawn(async move { wait.notified().await }).await.is_ok());
+        assert!(
+            registry
+                .spawn(async move { wait.notified().await })
+                .await
+                .is_ok()
+        );
         let draining = registry.clone();
         let drain = tokio::spawn(async move {
-            draining.drain_until(tokio::time::Instant::now() + Duration::from_secs(3)).await
+            draining
+                .drain_until(tokio::time::Instant::now() + Duration::from_secs(3))
+                .await
         });
         // Observe the actual registry lock held by drain, not elapsed time.
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                if registry.tasks.try_lock().is_err() { break; }
+                if registry.tasks.try_lock().is_err() {
+                    break;
+                }
                 tokio::task::yield_now().await;
             }
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         let mut late = Box::pin(registry.spawn(std::future::pending::<()>()));
-        assert!(matches!(futures_util::poll!(&mut late), std::task::Poll::Ready(Err(_))), "draining registry must reject without waiting");
+        assert!(
+            matches!(
+                futures_util::poll!(&mut late),
+                std::task::Poll::Ready(Err(_))
+            ),
+            "draining registry must reject without waiting"
+        );
         release.notify_one();
-        let report = tokio::time::timeout(Duration::from_secs(4), drain).await.unwrap().unwrap();
+        let report = tokio::time::timeout(Duration::from_secs(4), drain)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(report.forced_aborts, 0);
 
         let mut tasks = registry.tasks.lock().await;
@@ -6784,17 +6836,27 @@ mod tests {
         // Fixture owns and always terminates the synthetic task before asserting.
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
-        assert_eq!(remaining, 0, "drain returned success before a queued task registered");
+        assert_eq!(
+            remaining, 0,
+            "drain returned success before a queued task registered"
+        );
     }
 
     #[tokio::test]
     async fn managed_task_closed_admission_does_not_wait_for_drain_lock() {
         let registry = ManagedTaskRegistry::default();
         let _held = registry.tasks.lock().await;
-        registry.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        registry
+            .closed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let mut attempt = Box::pin(registry.spawn(std::future::pending::<()>()));
-        assert!(matches!(futures_util::poll!(&mut attempt), std::task::Poll::Ready(Err(_))),
-            "known closed admission must return ownership without awaiting the held drain lock");
+        assert!(
+            matches!(
+                futures_util::poll!(&mut attempt),
+                std::task::Poll::Ready(Err(_))
+            ),
+            "known closed admission must return ownership without awaiting the held drain lock"
+        );
     }
 
     #[tokio::test]
@@ -6803,9 +6865,14 @@ mod tests {
         let held = registry.tasks.lock().await;
         let mut attempt = Box::pin(registry.spawn(std::future::pending::<()>()));
         assert!(futures_util::poll!(&mut attempt).is_pending());
-        registry.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        registry
+            .closed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         drop(held);
-        assert!(attempt.await.is_err(), "closure during lock wait must reject ownership");
+        assert!(
+            attempt.await.is_err(),
+            "closure during lock wait must reject ownership"
+        );
         assert!(registry.tasks.lock().await.is_empty());
     }
 
@@ -6813,19 +6880,38 @@ mod tests {
     async fn managed_task_rejection_returns_unpolled_future_ownership() {
         struct DropProbe(Arc<std::sync::atomic::AtomicUsize>);
         impl Drop for DropProbe {
-            fn drop(&mut self) { self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+            fn drop(&mut self) {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
         }
         let registry = ManagedTaskRegistry::default();
-        assert_eq!(registry.drain_until(tokio::time::Instant::now()).await.forced_aborts, 0);
+        assert_eq!(
+            registry
+                .drain_until(tokio::time::Instant::now())
+                .await
+                .forced_aborts,
+            0
+        );
         let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let probe = DropProbe(drops.clone());
-        let future = async move { let _probe = probe; std::future::pending::<()>().await; };
-        let Err(rejected) = registry.spawn(future).await else { panic!("closed admission accepted task") };
+        let future = async move {
+            let _probe = probe;
+            std::future::pending::<()>().await;
+        };
+        let Err(rejected) = registry.spawn(future).await else {
+            panic!("closed admission accepted task")
+        };
         assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 0);
         drop(rejected);
         assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(registry.tasks.lock().await.is_empty());
-        assert_eq!(registry.drain_until(tokio::time::Instant::now()).await.forced_aborts, 0);
+        assert_eq!(
+            registry
+                .drain_until(tokio::time::Instant::now())
+                .await
+                .forced_aborts,
+            0
+        );
     }
 
     #[tokio::test]
@@ -6851,19 +6937,34 @@ mod tests {
             type Item = String;
             type Error = String;
             type Resources = ();
-            async fn run_stream(&self, _: (), _: &(), _: &mut Bus)
-                -> Result<Pin<Box<dyn futures_util::Stream<Item = String> + Send>>, String> {
+            async fn run_stream(
+                &self,
+                _: (),
+                _: &(),
+                _: &mut Bus,
+            ) -> Result<Pin<Box<dyn futures_util::Stream<Item = String> + Send>>, String>
+            {
                 panic!("closed route must not initialize")
             }
         }
         let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let calls = callbacks.clone();
         let app = Ranvier::http::<()>()
-            .bus_injector(move |_, _| { calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst); })
-            .post_sse("/closed", Axon::<(), (), String>::start("closed-route").then_stream(Init));
+            .bus_injector(move |_, _| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+            .post_sse(
+                "/closed",
+                Axon::<(), (), String>::start("closed-route").then_stream(Init),
+            );
         let registry = ManagedTaskRegistry::default();
         registry.drain_until(tokio::time::Instant::now()).await;
-        let (mut parts, _) = Request::builder().method("POST").uri("/closed").body(()).unwrap().into_parts();
+        let (mut parts, _) = Request::builder()
+            .method("POST")
+            .uri("/closed")
+            .body(())
+            .unwrap()
+            .into_parts();
         parts.extensions.insert(RequestTaskOwner(registry.clone()));
         let response = (app.routes[0].handler)(parts, &()).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -6871,8 +6972,11 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["reconciliation_required"], false);
-        assert_eq!(callbacks.load(std::sync::atomic::Ordering::SeqCst), 0,
-            "closed task admission must precede user injectors");
+        assert_eq!(
+            callbacks.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "closed task admission must precede user injectors"
+        );
         assert!(registry.tasks.lock().await.is_empty());
     }
 
@@ -6886,18 +6990,36 @@ mod tests {
             type Item = String;
             type Error = String;
             type Resources = ();
-            async fn run_stream(&self, _: (), _: &(), _: &mut Bus)
-                -> Result<Pin<Box<dyn futures_util::Stream<Item = String> + Send>>, String> {
+            async fn run_stream(
+                &self,
+                _: (),
+                _: &(),
+                _: &mut Bus,
+            ) -> Result<Pin<Box<dyn futures_util::Stream<Item = String> + Send>>, String>
+            {
                 panic!("closed route must not initialize")
             }
         }
         let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let calls = callbacks.clone();
         let app = Ranvier::http::<()>()
-            .bus_injector(move |_, _| { calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst); })
-            .post_sse("/closed", Axon::<(), (), String>::start("closed-route").then_stream(Init));
-        let registry = ManagedTaskRegistry { reservation_limit: 0, ..Default::default() };
-        let (mut parts, _) = Request::builder().method("POST").uri("/closed").body(()).unwrap().into_parts();
+            .bus_injector(move |_, _| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+            .post_sse(
+                "/closed",
+                Axon::<(), (), String>::start("closed-route").then_stream(Init),
+            );
+        let registry = ManagedTaskRegistry {
+            reservation_limit: 0,
+            ..Default::default()
+        };
+        let (mut parts, _) = Request::builder()
+            .method("POST")
+            .uri("/closed")
+            .body(())
+            .unwrap()
+            .into_parts();
         parts.extensions.insert(RequestTaskOwner(registry.clone()));
         let response = (app.routes[0].handler)(parts, &()).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -6906,8 +7028,11 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["code"], "managed_task_capacity_exhausted");
         assert_eq!(body["reconciliation_required"], false);
-        assert_eq!(callbacks.load(std::sync::atomic::Ordering::SeqCst), 0,
-            "closed task admission must precede user injectors");
+        assert_eq!(
+            callbacks.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "closed task admission must precede user injectors"
+        );
         assert!(registry.tasks.lock().await.is_empty());
     }
 
@@ -6916,11 +7041,19 @@ mod tests {
         let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let calls = callbacks.clone();
         let app = Ranvier::http::<()>()
-            .bus_injector(move |_, _| { calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst); })
-            .ws("/closed", |_, _, _| async { panic!("closed route must not upgrade") });
+            .bus_injector(move |_, _| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+            .ws("/closed", |_, _, _| async {
+                panic!("closed route must not upgrade")
+            });
         let registry = ManagedTaskRegistry::default();
         registry.drain_until(tokio::time::Instant::now()).await;
-        let (mut parts, _) = Request::builder().uri("/closed").body(()).unwrap().into_parts();
+        let (mut parts, _) = Request::builder()
+            .uri("/closed")
+            .body(())
+            .unwrap()
+            .into_parts();
         parts.extensions.insert(RequestTaskOwner(registry.clone()));
         let response = (app.routes[0].handler)(parts, &()).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -6937,10 +7070,21 @@ mod tests {
         let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let calls = callbacks.clone();
         let app = Ranvier::http::<()>()
-            .bus_injector(move |_, _| { calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst); })
-            .ws("/closed", |_, _, _| async { panic!("closed route must not upgrade") });
-        let registry = ManagedTaskRegistry { reservation_limit: 0, ..Default::default() };
-        let (mut parts, _) = Request::builder().uri("/closed").body(()).unwrap().into_parts();
+            .bus_injector(move |_, _| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+            .ws("/closed", |_, _, _| async {
+                panic!("closed route must not upgrade")
+            });
+        let registry = ManagedTaskRegistry {
+            reservation_limit: 0,
+            ..Default::default()
+        };
+        let (mut parts, _) = Request::builder()
+            .uri("/closed")
+            .body(())
+            .unwrap()
+            .into_parts();
         parts.extensions.insert(RequestTaskOwner(registry.clone()));
         let response = (app.routes[0].handler)(parts, &()).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -6964,11 +7108,16 @@ mod tests {
         let executed = calls.clone();
         let Err(retained) = reservation.start(async move {
             executed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }) else { panic!("aborted reservation accepted work") };
+        }) else {
+            panic!("aborted reservation accepted work")
+        };
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         retained.await;
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert!(matches!(registry.reserve().await, Err(TaskReservationError::Closed)));
+        assert!(matches!(
+            registry.reserve().await,
+            Err(TaskReservationError::Closed)
+        ));
     }
 
     #[tokio::test]
@@ -6979,34 +7128,58 @@ mod tests {
             let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             if start {
                 let executed = calls.clone();
-                assert!(reservation.start(async move {
-                    executed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                }).is_ok());
-            } else { drop(reservation); }
-            let report = registry.drain_until(tokio::time::Instant::now() + Duration::from_secs(1)).await;
+                assert!(
+                    reservation
+                        .start(async move {
+                            executed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        })
+                        .is_ok()
+                );
+            } else {
+                drop(reservation);
+            }
+            let report = registry
+                .drain_until(tokio::time::Instant::now() + Duration::from_secs(1))
+                .await;
             assert_eq!(report.forced_aborts, 0);
-            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), usize::from(start));
+            assert_eq!(
+                calls.load(std::sync::atomic::Ordering::SeqCst),
+                usize::from(start)
+            );
             assert!(registry.tasks.lock().await.is_empty());
         }
     }
 
     #[tokio::test]
     async fn managed_task_reservation_capacity_recovers_after_slot_release() {
-        let registry = ManagedTaskRegistry { reservation_limit: 1, ..Default::default() };
+        let registry = ManagedTaskRegistry {
+            reservation_limit: 1,
+            ..Default::default()
+        };
         let slot = registry.reserve().await.unwrap();
-        assert!(matches!(registry.reserve().await, Err(TaskReservationError::Capacity)));
+        assert!(matches!(
+            registry.reserve().await,
+            Err(TaskReservationError::Capacity)
+        ));
         drop(slot);
         // Observe completion of the actual oneshot receiver before reserving again.
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 match registry.reserve().await {
-                    Ok(slot) => { drop(slot); break; }
+                    Ok(slot) => {
+                        drop(slot);
+                        break;
+                    }
                     Err(TaskReservationError::Capacity) => tokio::task::yield_now().await,
                     Err(_) => panic!("capacity recovery closed registry"),
                 }
             }
-        }).await.unwrap();
-        let report = registry.drain_until(tokio::time::Instant::now() + Duration::from_secs(1)).await;
+        })
+        .await
+        .unwrap();
+        let report = registry
+            .drain_until(tokio::time::Instant::now() + Duration::from_secs(1))
+            .await;
         assert_eq!(report.forced_aborts, 0);
     }
 
@@ -7015,27 +7188,55 @@ mod tests {
         let app = Ranvier::http::<()>().ws("/invalid", |_, _, _| async {
             panic!("invalid request must not run session")
         });
-        let registry = ManagedTaskRegistry { reservation_limit: 1, ..Default::default() };
-        let (mut parts, _) = Request::builder().uri("/invalid").body(()).unwrap().into_parts();
+        let registry = ManagedTaskRegistry {
+            reservation_limit: 1,
+            ..Default::default()
+        };
+        let (mut parts, _) = Request::builder()
+            .uri("/invalid")
+            .body(())
+            .unwrap()
+            .into_parts();
         parts.extensions.insert(RequestTaskOwner(registry.clone()));
         let response = (app.routes[0].handler)(parts, &()).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let report = registry.drain_until(tokio::time::Instant::now() + Duration::from_secs(1)).await;
+        let report = registry
+            .drain_until(tokio::time::Instant::now() + Duration::from_secs(1))
+            .await;
         assert_eq!(report.forced_aborts, 0);
         assert!(registry.tasks.lock().await.is_empty());
     }
 
     #[tokio::test]
     async fn managed_task_capacity_configuration_is_shared_by_raw_service_clones() {
-        let service = Ranvier::http::<()>().managed_task_capacity(1).into_raw_service(());
+        let service = Ranvier::http::<()>()
+            .managed_task_capacity(1)
+            .into_raw_service(());
         let cloned = service.clone();
         let reservation = service.task_registry.reserve().await.unwrap();
-        assert!(matches!(cloned.task_registry.reserve().await, Err(TaskReservationError::Capacity)));
+        assert!(matches!(
+            cloned.task_registry.reserve().await,
+            Err(TaskReservationError::Capacity)
+        ));
         drop(reservation);
-        assert_eq!(service.drain_tasks(Duration::from_secs(1)).await.forced_aborts, 0);
-        assert!(matches!(cloned.task_registry.reserve().await, Err(TaskReservationError::Closed)));
-        let disabled = Ranvier::http::<()>().managed_task_capacity(0).into_raw_service(());
-        assert!(matches!(disabled.task_registry.reserve().await, Err(TaskReservationError::Capacity)));
+        assert_eq!(
+            service
+                .drain_tasks(Duration::from_secs(1))
+                .await
+                .forced_aborts,
+            0
+        );
+        assert!(matches!(
+            cloned.task_registry.reserve().await,
+            Err(TaskReservationError::Closed)
+        ));
+        let disabled = Ranvier::http::<()>()
+            .managed_task_capacity(0)
+            .into_raw_service(());
+        assert!(matches!(
+            disabled.task_registry.reserve().await,
+            Err(TaskReservationError::Capacity)
+        ));
     }
 
     #[tokio::test]
@@ -7051,9 +7252,16 @@ mod tests {
             }
         }
         let app = crate::test_harness::TestApp::new(
-            Ranvier::http::<()>().managed_task_capacity(0)
-                .get("/ping", Axon::<(), (), String>::start("zero-capacity-ping").then(Ping)), ());
-        let response = app.send(crate::test_harness::TestRequest::get("/ping")).await.unwrap();
+            Ranvier::http::<()>().managed_task_capacity(0).get(
+                "/ping",
+                Axon::<(), (), String>::start("zero-capacity-ping").then(Ping),
+            ),
+            (),
+        );
+        let response = app
+            .send(crate::test_harness::TestRequest::get("/ping"))
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.text().unwrap(), "pong");
     }

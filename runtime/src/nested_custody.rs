@@ -3,8 +3,8 @@ use std::{
     any::Any,
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex, Weak,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -107,54 +107,128 @@ impl CustodyReservation {
     /// Check the original placeholder before a context callback. No callback or
     /// arbitrary resource destruction occurs while holding the registry lock.
     pub(crate) fn validate_open(&self, client: &WeakCustodyClient) -> Result<(), &'static str> {
-        let receipt = self.receipt.as_ref().ok_or("execution.nested_reservation_decided")?;
-        if !Weak::ptr_eq(&client.0, &receipt.store) { return Err("execution.nested_custody_mismatch"); }
-        let store = receipt.store.upgrade().ok_or("execution.parent_custody_released")?;
-        let records = store.records.lock().map_err(|_| "execution.nested_custody_unavailable")?;
-        if store.closed.load(Ordering::Acquire) { return Err("execution.parent_custody_released"); }
-        if store.admission_closed.load(Ordering::Acquire) { return Err("execution.nested_custody_admission_closed"); }
-        let record = records.get(&receipt.id).ok_or("execution.parent_custody_released")?;
+        let receipt = self
+            .receipt
+            .as_ref()
+            .ok_or("execution.nested_reservation_decided")?;
+        if !Weak::ptr_eq(&client.0, &receipt.store) {
+            return Err("execution.nested_custody_mismatch");
+        }
+        let store = receipt
+            .store
+            .upgrade()
+            .ok_or("execution.parent_custody_released")?;
+        let records = store
+            .records
+            .lock()
+            .map_err(|_| "execution.nested_custody_unavailable")?;
+        if store.closed.load(Ordering::Acquire) {
+            return Err("execution.parent_custody_released");
+        }
+        if store.admission_closed.load(Ordering::Acquire) {
+            return Err("execution.nested_custody_admission_closed");
+        }
+        let record = records
+            .get(&receipt.id)
+            .ok_or("execution.parent_custody_released")?;
         if !Arc::ptr_eq(&record.owner, &self.marker) || record.task.is_some() {
             return Err("execution.nested_reservation_mismatch");
         }
         Ok(())
     }
-    pub(crate) fn finalize_stream(&mut self, client: &WeakCustodyClient, owner: Capability,
-        task: Capability, journal: &crate::SagaRollbackJournal,
-        observer: tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>)
-        -> Result<WeakCustody, &'static str> {
-        self.finalize_with_settlement(client, owner, task, journal, observer, None)
-    }
-    pub(crate) fn finalize_managed<T: Send + 'static>(&mut self, client: &WeakCustodyClient, owner: Capability,
-        prepared: &crate::managed_stream_task::PreparedStreamTask<T>, journal: &crate::SagaRollbackJournal,
-        observer: tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>) -> Result<WeakCustody, &'static str> {
-        if !prepared.matches_owner(&owner) { return Err("execution.nested_task_owner_mismatch"); }
-        if !prepared.has_open_start() { return Err("execution.nested_task_start_decided"); }
-        self.finalize_with_settlement(client, owner, prepared.holder(), journal, observer, Some(prepared.settlement()))
-    }
-    fn finalize_with_settlement(&mut self, client: &WeakCustodyClient, owner: Capability, task: Capability,
+    pub(crate) fn finalize_stream(
+        &mut self,
+        client: &WeakCustodyClient,
+        owner: Capability,
+        task: Capability,
         journal: &crate::SagaRollbackJournal,
         observer: tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>,
-        settlement: Option<crate::managed_stream_task::TaskSettlement>) -> Result<WeakCustody, &'static str> {
-        if settlement.as_ref().is_some_and(|settlement| !settlement.matches(&task)) {
+    ) -> Result<WeakCustody, &'static str> {
+        self.finalize_with_settlement(client, owner, task, journal, observer, None)
+    }
+    pub(crate) fn finalize_managed<T: Send + 'static>(
+        &mut self,
+        client: &WeakCustodyClient,
+        owner: Capability,
+        prepared: &crate::managed_stream_task::PreparedStreamTask<T>,
+        journal: &crate::SagaRollbackJournal,
+        observer: tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>,
+    ) -> Result<WeakCustody, &'static str> {
+        if !prepared.matches_owner(&owner) {
+            return Err("execution.nested_task_owner_mismatch");
+        }
+        if !prepared.has_open_start() {
+            return Err("execution.nested_task_start_decided");
+        }
+        self.finalize_with_settlement(
+            client,
+            owner,
+            prepared.holder(),
+            journal,
+            observer,
+            Some(prepared.settlement()),
+        )
+    }
+    fn finalize_with_settlement(
+        &mut self,
+        client: &WeakCustodyClient,
+        owner: Capability,
+        task: Capability,
+        journal: &crate::SagaRollbackJournal,
+        observer: tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>,
+        settlement: Option<crate::managed_stream_task::TaskSettlement>,
+    ) -> Result<WeakCustody, &'static str> {
+        if settlement
+            .as_ref()
+            .is_some_and(|settlement| !settlement.matches(&task))
+        {
             return Err("execution.nested_task_registration_mismatch");
         }
-        let receipt = self.receipt.as_ref().ok_or("execution.nested_reservation_decided")?;
-        if !Weak::ptr_eq(&client.0, &receipt.store) { return Err("execution.nested_custody_mismatch"); }
-        let store = receipt.store.upgrade().ok_or("execution.parent_custody_released")?;
+        let receipt = self
+            .receipt
+            .as_ref()
+            .ok_or("execution.nested_reservation_decided")?;
+        if !Weak::ptr_eq(&client.0, &receipt.store) {
+            return Err("execution.nested_custody_mismatch");
+        }
+        let store = receipt
+            .store
+            .upgrade()
+            .ok_or("execution.parent_custody_released")?;
         let released = {
-            let mut records = store.records.lock().map_err(|_| "execution.nested_custody_unavailable")?;
-            if store.closed.load(Ordering::Acquire) { return Err("execution.parent_custody_released"); }
+            let mut records = store
+                .records
+                .lock()
+                .map_err(|_| "execution.nested_custody_unavailable")?;
+            if store.closed.load(Ordering::Acquire) {
+                return Err("execution.parent_custody_released");
+            }
             // A closed drain snapshot must not miss a subsequently attached task.
-            if store.admission_closed.load(Ordering::Acquire) { return Err("execution.nested_custody_admission_closed"); }
-            let record = records.get_mut(&receipt.id).ok_or("execution.parent_custody_released")?;
+            if store.admission_closed.load(Ordering::Acquire) {
+                return Err("execution.nested_custody_admission_closed");
+            }
+            let record = records
+                .get_mut(&receipt.id)
+                .ok_or("execution.parent_custody_released")?;
             if !Arc::ptr_eq(&record.owner, &self.marker) || record.task.is_some() {
                 return Err("execution.nested_reservation_mismatch");
             }
             journal.retain_stream_child(observer);
-            std::mem::replace(record, CustodyRecord { owner: owner.clone(), task: Some(task), settlement, is_reservation: false })
+            std::mem::replace(
+                record,
+                CustodyRecord {
+                    owner: owner.clone(),
+                    task: Some(task),
+                    settlement,
+                    is_reservation: false,
+                },
+            )
         };
-        let registered = WeakCustody { id: receipt.id, record: Arc::downgrade(&owner), store: receipt.store.clone() };
+        let registered = WeakCustody {
+            id: receipt.id,
+            record: Arc::downgrade(&owner),
+            store: receipt.store.clone(),
+        };
         self.receipt = None;
         drop(released);
         Ok(registered)
@@ -163,13 +237,24 @@ impl CustodyReservation {
 #[cfg(feature = "streaming")]
 impl Drop for CustodyReservation {
     fn drop(&mut self) {
-        let Some(receipt) = &self.receipt else { return; };
-        let Some(store) = receipt.store.upgrade() else { return; };
+        let Some(receipt) = &self.receipt else {
+            return;
+        };
+        let Some(store) = receipt.store.upgrade() else {
+            return;
+        };
         let released = {
-            let mut records = store.records.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if records.get(&receipt.id).is_some_and(|record| Arc::ptr_eq(&record.owner, &self.marker) && record.task.is_none()) {
+            let mut records = store
+                .records
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if records.get(&receipt.id).is_some_and(|record| {
+                Arc::ptr_eq(&record.owner, &self.marker) && record.task.is_none()
+            }) {
                 records.remove(&receipt.id)
-            } else { None }
+            } else {
+                None
+            }
         };
         drop(released);
     }
@@ -179,8 +264,11 @@ impl CustodyStore {
     #[cfg(feature = "streaming")]
     pub(crate) fn reserve_stream_slot(&self) -> Result<CustodyReservation, &'static str> {
         let marker: Capability = Arc::new(());
-        let receipt = reserve_in_with_kind(&self.0 .0, marker.clone(), None, || {}, true)?;
-        Ok(CustodyReservation { receipt: Some(receipt), marker })
+        let receipt = reserve_in_with_kind(&self.0.0, marker.clone(), None, || {}, true)?;
+        Ok(CustodyReservation {
+            receipt: Some(receipt),
+            marker,
+        })
     }
     pub(crate) fn new(capacity: usize) -> Self {
         Self(Arc::new(StoreOwner(Arc::new(StoreInner {
@@ -193,35 +281,51 @@ impl CustodyStore {
     /// Stop future admission while retaining existing recovery capabilities.
     /// Serialize with reserve; final owner Drop remains a separate retirement.
     pub(crate) fn close_admission(&self) -> Result<(), &'static str> {
-        let _records = self.0 .0.records.lock()
+        let _records = self
+            .0
+            .0
+            .records
+            .lock()
             .map_err(|_| "execution.nested_custody_unavailable")?;
-        self.0 .0.admission_closed.store(true, Ordering::Release);
+        self.0.0.admission_closed.store(true, Ordering::Release);
         Ok(())
     }
     /// Root-only snapshot after admission closure. Cloning holders preserves
     /// unjoined task custody; this neither removes records nor proves join.
     pub(crate) fn closed_tasks(&self) -> Result<Vec<(uuid::Uuid, Capability)>, &'static str> {
-        let records = self.0 .0.records.lock()
+        let records = self
+            .0
+            .0
+            .records
+            .lock()
             .map_err(|_| "execution.nested_custody_unavailable")?;
-        if !self.0 .0.admission_closed.load(Ordering::Acquire) {
+        if !self.0.0.admission_closed.load(Ordering::Acquire) {
             return Err("execution.nested_custody_admission_open");
         }
-        Ok(records.iter().filter_map(|(id, record)|
-            record.task.as_ref().map(|task| (*id, task.clone()))).collect())
+        Ok(records
+            .iter()
+            .filter_map(|(id, record)| record.task.as_ref().map(|task| (*id, task.clone())))
+            .collect())
     }
     /// Acquire result custody before waiting, so dropped waits and root/record
     /// retirement cannot discard reports while this family lease remains owned.
     #[cfg(feature = "streaming")]
-    pub(crate) fn closed_typed_family<T: Send + 'static>(&self) -> Result<ManagedTaskFamily<T>, &'static str> {
+    pub(crate) fn closed_typed_family<T: Send + 'static>(
+        &self,
+    ) -> Result<ManagedTaskFamily<T>, &'static str> {
         let tasks = self.closed_tasks()?.into_iter().map(|(id, holder)| {
             holder.downcast::<tokio::sync::Mutex<crate::managed_stream_task::ManagedStreamTask<T>>>()
                 .map(|task| (id, task)).map_err(|_| "execution.nested_task_type_mismatch")
         }).collect::<Result<Vec<_>, _>>()?;
-        Ok(ManagedTaskFamily { tasks, statuses: Vec::new() })
+        Ok(ManagedTaskFamily {
+            tasks,
+            statuses: Vec::new(),
+        })
     }
     #[cfg(feature = "streaming")]
     pub(crate) async fn settle_closed_tasks<T: Send + 'static>(
-        &self, deadline: tokio::time::Instant,
+        &self,
+        deadline: tokio::time::Instant,
     ) -> Result<ManagedTaskFamily<T>, &'static str> {
         let mut family = self.closed_typed_family()?;
         family.settle_until(deadline).await;
@@ -229,42 +333,68 @@ impl CustodyStore {
     }
     #[cfg(feature = "streaming")]
     pub(crate) fn close_and_erased_family(&self) -> Result<ErasedTaskFamily, &'static str> {
-        let records = self.0 .0.records.lock().map_err(|_| "execution.nested_custody_unavailable")?;
-        self.0 .0.admission_closed.store(true, Ordering::Release);
+        let records = self
+            .0
+            .0
+            .records
+            .lock()
+            .map_err(|_| "execution.nested_custody_unavailable")?;
+        self.0.0.admission_closed.store(true, Ordering::Release);
         let mut tasks = Vec::new();
         let mut reserved = 0;
         for (id, record) in records.iter() {
             if record.task.is_none() {
-                if !record.is_reservation { return Err("execution.nested_unmanaged_owner"); }
-                reserved += 1; continue;
+                if !record.is_reservation {
+                    return Err("execution.nested_unmanaged_owner");
+                }
+                reserved += 1;
+                continue;
             }
-            let settlement = record.settlement.clone().ok_or("execution.nested_task_settlement_missing")?;
+            let settlement = record
+                .settlement
+                .clone()
+                .ok_or("execution.nested_task_settlement_missing")?;
             tasks.push((*id, record.owner.clone(), settlement));
         }
-        Ok(ErasedTaskFamily { tasks, statuses: Vec::new(), reserved })
+        Ok(ErasedTaskFamily {
+            tasks,
+            statuses: Vec::new(),
+            reserved,
+        })
     }
     pub(crate) fn client(&self) -> WeakCustodyClient {
-        WeakCustodyClient(Arc::downgrade(&self.0 .0))
+        WeakCustodyClient(Arc::downgrade(&self.0.0))
     }
     pub(crate) fn reserve(&self, record: Capability) -> Result<WeakCustody, &'static str> {
-        reserve_in(&self.0 .0, record)
+        reserve_in(&self.0.0, record)
     }
 }
 /// Private typed family lease; no serialization or Debug of task outputs.
 #[cfg(feature = "streaming")]
 pub(crate) struct ManagedTaskFamily<T> {
-    tasks: Vec<(uuid::Uuid, Arc<tokio::sync::Mutex<crate::managed_stream_task::ManagedStreamTask<T>>>)>,
-    statuses: Vec<(uuid::Uuid, Result<(), crate::managed_stream_task::ManagedTaskWaitError>)>,
+    tasks: Vec<(
+        uuid::Uuid,
+        Arc<tokio::sync::Mutex<crate::managed_stream_task::ManagedStreamTask<T>>>,
+    )>,
+    statuses: Vec<(
+        uuid::Uuid,
+        Result<(), crate::managed_stream_task::ManagedTaskWaitError>,
+    )>,
 }
 #[cfg(feature = "streaming")]
 impl<T> std::ops::Deref for ManagedTaskFamily<T> {
-    type Target = [(uuid::Uuid, Result<(), crate::managed_stream_task::ManagedTaskWaitError>)];
-    fn deref(&self) -> &Self::Target { &self.statuses }
+    type Target = [(
+        uuid::Uuid,
+        Result<(), crate::managed_stream_task::ManagedTaskWaitError>,
+    )];
+    fn deref(&self) -> &Self::Target {
+        &self.statuses
+    }
 }
 #[cfg(feature = "streaming")]
 impl<T: Send + 'static> ManagedTaskFamily<T> {
     pub(crate) async fn settle_until(&mut self, deadline: tokio::time::Instant) {
-        use futures_util::{stream::FuturesUnordered, StreamExt};
+        use futures_util::{StreamExt, stream::FuturesUnordered};
         let mut pending = FuturesUnordered::new();
         for (id, task) in &self.tasks {
             pending.push(async move {
@@ -276,13 +406,23 @@ impl<T: Send + 'static> ManagedTaskFamily<T> {
             });
         }
         self.statuses.clear();
-        while let Some(result) = pending.next().await { self.statuses.push(result); }
+        while let Some(result) = pending.next().await {
+            self.statuses.push(result);
+        }
     }
-    pub(crate) async fn take_joined(&self, id: uuid::Uuid, deadline: tokio::time::Instant)
-        -> Result<Option<Result<Option<T>, tokio::task::JoinError>>, &'static str> {
-        let task = self.tasks.iter().find(|(candidate, _)| *candidate == id)
-            .map(|(_, task)| task).ok_or("execution.nested_task_not_found")?;
-        let mut task = tokio::time::timeout_at(deadline, task.lock()).await
+    pub(crate) async fn take_joined(
+        &self,
+        id: uuid::Uuid,
+        deadline: tokio::time::Instant,
+    ) -> Result<Option<Result<Option<T>, tokio::task::JoinError>>, &'static str> {
+        let task = self
+            .tasks
+            .iter()
+            .find(|(candidate, _)| *candidate == id)
+            .map(|(_, task)| task)
+            .ok_or("execution.nested_task_not_found")?;
+        let mut task = tokio::time::timeout_at(deadline, task.lock())
+            .await
             .map_err(|_| "execution.nested_task_transfer_timeout")?;
         Ok(task.take_joined())
     }
@@ -296,8 +436,13 @@ impl WeakCustodyClient {
         task: Option<Capability>,
         observer: tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation>,
     ) -> Result<WeakCustody, &'static str> {
-        let store = self.0.upgrade().ok_or("execution.parent_custody_released")?;
-        reserve_in_with(&store, record, task, || journal.retain_stream_child(observer))
+        let store = self
+            .0
+            .upgrade()
+            .ok_or("execution.parent_custody_released")?;
+        reserve_in_with(&store, record, task, || {
+            journal.retain_stream_child(observer)
+        })
     }
     pub(crate) fn validate_member(
         &self,
@@ -325,17 +470,43 @@ impl WeakCustodyClient {
         Ok(())
     }
     #[cfg(feature = "streaming")]
-    pub(crate) fn validate_staged_task(&self, receipt: &WeakCustody, owner: &Capability, task: &Capability) -> Result<(), &'static str> {
-        if !Weak::ptr_eq(&self.0, &receipt.store) { return Err("execution.nested_custody_mismatch"); }
-        let store = self.0.upgrade().ok_or("execution.parent_custody_released")?;
-        let records = store.records.lock().map_err(|_| "execution.nested_custody_unavailable")?;
-        if store.closed.load(Ordering::Acquire) { return Err("execution.parent_custody_released"); }
-        if store.admission_closed.load(Ordering::Acquire) { return Err("execution.nested_custody_admission_closed"); }
-        let record = records.get(&receipt.id).ok_or("execution.parent_custody_released")?;
-        if !Arc::ptr_eq(&record.owner, owner) || !Weak::ptr_eq(&receipt.record, &Arc::downgrade(owner)) {
+    pub(crate) fn validate_staged_task(
+        &self,
+        receipt: &WeakCustody,
+        owner: &Capability,
+        task: &Capability,
+    ) -> Result<(), &'static str> {
+        if !Weak::ptr_eq(&self.0, &receipt.store) {
+            return Err("execution.nested_custody_mismatch");
+        }
+        let store = self
+            .0
+            .upgrade()
+            .ok_or("execution.parent_custody_released")?;
+        let records = store
+            .records
+            .lock()
+            .map_err(|_| "execution.nested_custody_unavailable")?;
+        if store.closed.load(Ordering::Acquire) {
+            return Err("execution.parent_custody_released");
+        }
+        if store.admission_closed.load(Ordering::Acquire) {
+            return Err("execution.nested_custody_admission_closed");
+        }
+        let record = records
+            .get(&receipt.id)
+            .ok_or("execution.parent_custody_released")?;
+        if !Arc::ptr_eq(&record.owner, owner)
+            || !Weak::ptr_eq(&receipt.record, &Arc::downgrade(owner))
+        {
             return Err("execution.nested_task_owner_mismatch");
         }
-        if !record.task.as_ref().is_some_and(|registered| Arc::ptr_eq(registered, task)) || record.settlement.is_none() {
+        if !record
+            .task
+            .as_ref()
+            .is_some_and(|registered| Arc::ptr_eq(registered, task))
+            || record.settlement.is_none()
+        {
             return Err("execution.nested_task_registration_mismatch");
         }
         Ok(())
@@ -354,12 +525,19 @@ fn reserve_in(store: &Arc<StoreInner>, record: Capability) -> Result<WeakCustody
 // Only fixed framework bookkeeping may run under this gate. No user callbacks,
 // awaits or record retirement. Lock order: store records -> journal report/list.
 fn reserve_in_with(
-    store: &Arc<StoreInner>, record: Capability, task: Option<Capability>, register: impl FnOnce(),
+    store: &Arc<StoreInner>,
+    record: Capability,
+    task: Option<Capability>,
+    register: impl FnOnce(),
 ) -> Result<WeakCustody, &'static str> {
     reserve_in_with_kind(store, record, task, register, false)
 }
 fn reserve_in_with_kind(
-    store: &Arc<StoreInner>, record: Capability, task: Option<Capability>, register: impl FnOnce(), is_reservation: bool,
+    store: &Arc<StoreInner>,
+    record: Capability,
+    task: Option<Capability>,
+    register: impl FnOnce(),
+    is_reservation: bool,
 ) -> Result<WeakCustody, &'static str> {
     let _ = is_reservation;
     let mut records = store
@@ -384,61 +562,129 @@ fn reserve_in_with_kind(
         record: Arc::downgrade(&record),
         store: Arc::downgrade(store),
     };
-    records.insert(id, CustodyRecord { owner: record, task, #[cfg(feature = "streaming")] settlement: None, #[cfg(feature = "streaming")] is_reservation });
+    records.insert(
+        id,
+        CustodyRecord {
+            owner: record,
+            task,
+            #[cfg(feature = "streaming")]
+            settlement: None,
+            #[cfg(feature = "streaming")]
+            is_reservation,
+        },
+    );
     register();
     Ok(weak)
 }
 #[cfg(feature = "streaming")]
 pub(crate) struct ErasedTaskFamily {
-    tasks: Vec<(uuid::Uuid, Capability, crate::managed_stream_task::TaskSettlement)>,
-    pub(crate) statuses: Vec<(uuid::Uuid, Result<(), crate::managed_stream_task::ManagedTaskWaitError>)>,
+    tasks: Vec<(
+        uuid::Uuid,
+        Capability,
+        crate::managed_stream_task::TaskSettlement,
+    )>,
+    pub(crate) statuses: Vec<(
+        uuid::Uuid,
+        Result<(), crate::managed_stream_task::ManagedTaskWaitError>,
+    )>,
     pub(crate) reserved: usize,
 }
 #[cfg(feature = "streaming")]
 impl ErasedTaskFamily {
-    pub(crate) fn task_ids(&self) -> Vec<uuid::Uuid> { self.tasks.iter().map(|(id, _, _)| *id).collect() }
+    pub(crate) fn task_ids(&self) -> Vec<uuid::Uuid> {
+        self.tasks.iter().map(|(id, _, _)| *id).collect()
+    }
     pub(crate) async fn settle_until(&mut self, deadline: tokio::time::Instant) {
-        use futures_util::{stream::FuturesUnordered, StreamExt};
+        use futures_util::{StreamExt, stream::FuturesUnordered};
         let mut pending = FuturesUnordered::new();
-        for (id, _, task) in &self.tasks { pending.push(async move { (*id, task.settle_until(deadline).await) }); }
+        for (id, _, task) in &self.tasks {
+            pending.push(async move { (*id, task.settle_until(deadline).await) });
+        }
         self.statuses.clear();
-        while let Some(status) = pending.next().await { self.statuses.push(status); }
+        while let Some(status) = pending.next().await {
+            self.statuses.push(status);
+        }
     }
 }
 impl WeakCustody {
     /// Validate the exact registered task and send its framework start gate
     /// under the retirement lock. No user future is polled under this lock.
     #[cfg(feature = "streaming")]
-    pub(crate) fn attach_settlement(&self, settlement: crate::managed_stream_task::TaskSettlement) -> Result<(), &'static str> {
-        let store = self.store.upgrade().ok_or("execution.parent_custody_released")?;
-        let mut records = store.records.lock().map_err(|_| "execution.nested_custody_unavailable")?;
-        if store.closed.load(Ordering::Acquire) { return Err("execution.parent_custody_released"); }
-        let record = records.get_mut(&self.id).ok_or("execution.parent_custody_released")?;
-        if !Weak::ptr_eq(&self.record, &Arc::downgrade(&record.owner)) { return Err("execution.nested_task_owner_mismatch"); }
-        if !record.task.as_ref().is_some_and(|holder| settlement.matches(holder)) { return Err("execution.nested_task_registration_mismatch"); }
-        if record.settlement.is_some() { return Err("execution.nested_task_settlement_decided"); }
+    pub(crate) fn attach_settlement(
+        &self,
+        settlement: crate::managed_stream_task::TaskSettlement,
+    ) -> Result<(), &'static str> {
+        let store = self
+            .store
+            .upgrade()
+            .ok_or("execution.parent_custody_released")?;
+        let mut records = store
+            .records
+            .lock()
+            .map_err(|_| "execution.nested_custody_unavailable")?;
+        if store.closed.load(Ordering::Acquire) {
+            return Err("execution.parent_custody_released");
+        }
+        let record = records
+            .get_mut(&self.id)
+            .ok_or("execution.parent_custody_released")?;
+        if !Weak::ptr_eq(&self.record, &Arc::downgrade(&record.owner)) {
+            return Err("execution.nested_task_owner_mismatch");
+        }
+        if !record
+            .task
+            .as_ref()
+            .is_some_and(|holder| settlement.matches(holder))
+        {
+            return Err("execution.nested_task_registration_mismatch");
+        }
+        if record.settlement.is_some() {
+            return Err("execution.nested_task_settlement_decided");
+        }
         record.settlement = Some(settlement);
         Ok(())
     }
     #[cfg(feature = "streaming")]
-    pub(crate) fn grant_task_start(&self, task: &Capability, permit: &mut Option<tokio::sync::oneshot::Sender<()>>)
-        -> Result<(), &'static str> {
-        let store = self.store.upgrade().ok_or("execution.parent_custody_released")?;
-        let records = store.records.lock().map_err(|_| "execution.nested_custody_unavailable")?;
-        let record = records.get(&self.id).ok_or("execution.parent_custody_released")?;
-        if store.closed.load(Ordering::Acquire) { return Err("execution.parent_custody_released"); }
+    pub(crate) fn grant_task_start(
+        &self,
+        task: &Capability,
+        permit: &mut Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> Result<(), &'static str> {
+        let store = self
+            .store
+            .upgrade()
+            .ok_or("execution.parent_custody_released")?;
+        let records = store
+            .records
+            .lock()
+            .map_err(|_| "execution.nested_custody_unavailable")?;
+        let record = records
+            .get(&self.id)
+            .ok_or("execution.parent_custody_released")?;
+        if store.closed.load(Ordering::Acquire) {
+            return Err("execution.parent_custody_released");
+        }
         if !Weak::ptr_eq(&self.record, &Arc::downgrade(&record.owner)) {
             return Err("execution.nested_task_owner_mismatch");
         }
-        if !record.task.as_ref().is_some_and(|registered| Arc::ptr_eq(registered, task)) {
+        if !record
+            .task
+            .as_ref()
+            .is_some_and(|registered| Arc::ptr_eq(registered, task))
+        {
             return Err("execution.nested_task_registration_mismatch");
         }
-        permit.take().ok_or("execution.nested_task_start_decided")?
-            .send(()).map_err(|_| "execution.nested_task_start_unavailable")
+        permit
+            .take()
+            .ok_or("execution.nested_task_start_decided")?
+            .send(())
+            .map_err(|_| "execution.nested_task_start_unavailable")
     }
     /// In-process custody correlation only; never a persisted event identity.
     #[cfg(feature = "streaming")]
-    pub(crate) fn id(&self) -> uuid::Uuid { self.id }
+    pub(crate) fn id(&self) -> uuid::Uuid {
+        self.id
+    }
     #[cfg(test)]
     pub(crate) fn upgrade(&self) -> Option<Capability> {
         self.record.upgrade()
@@ -447,10 +693,13 @@ impl WeakCustody {
         if let Some(store) = self.store.upgrade() {
             let released = {
                 let mut records = store.records.lock().unwrap_or_else(|p| p.into_inner());
-                if records.get(&self.id).is_some_and(|record|
-                    Weak::ptr_eq(&self.record, &Arc::downgrade(&record.owner))) {
+                if records.get(&self.id).is_some_and(|record| {
+                    Weak::ptr_eq(&self.record, &Arc::downgrade(&record.owner))
+                }) {
                     records.remove(&self.id)
-                } else { None }
+                } else {
+                    None
+                }
             };
             // User resources/handlers may have destructors; never release under lock.
             drop(released);
@@ -461,17 +710,38 @@ impl WeakCustody {
     /// required recovery guards held through this call. Busy/poisoned registries
     /// and missing records are failures; they never imply prior reconciliation.
     #[cfg(feature = "streaming")]
-    pub(crate) fn release_exact_task(&self, owner: &Capability, task: &Capability) -> Result<(), &'static str> {
-        let store = self.store.upgrade().ok_or("execution.parent_custody_released")?;
+    pub(crate) fn release_exact_task(
+        &self,
+        owner: &Capability,
+        task: &Capability,
+    ) -> Result<(), &'static str> {
+        let store = self
+            .store
+            .upgrade()
+            .ok_or("execution.parent_custody_released")?;
         let released = {
-            let mut records = store.records.try_lock().map_err(|_| "execution.nested_custody_unavailable")?;
-            if store.closed.load(Ordering::Acquire) { return Err("execution.parent_custody_released"); }
-            let record = records.get(&self.id).ok_or("execution.parent_custody_released")?;
+            let mut records = store
+                .records
+                .try_lock()
+                .map_err(|_| "execution.nested_custody_unavailable")?;
+            if store.closed.load(Ordering::Acquire) {
+                return Err("execution.parent_custody_released");
+            }
+            let record = records
+                .get(&self.id)
+                .ok_or("execution.parent_custody_released")?;
             if !Weak::ptr_eq(&self.record, &Arc::downgrade(&record.owner))
                 || !Arc::ptr_eq(owner, &record.owner)
-                || !record.task.as_ref().is_some_and(|registered| Arc::ptr_eq(task, registered))
-                || !record.settlement.as_ref().is_some_and(|settlement| settlement.matches(task))
-                || record.is_reservation {
+                || !record
+                    .task
+                    .as_ref()
+                    .is_some_and(|registered| Arc::ptr_eq(task, registered))
+                || !record
+                    .settlement
+                    .as_ref()
+                    .is_some_and(|settlement| settlement.matches(task))
+                || record.is_reservation
+            {
                 return Err("execution.nested_task_registration_mismatch");
             }
             records.remove(&self.id)
@@ -490,55 +760,101 @@ mod tests {
     async fn exact_task_release_requires_original_identity_and_settlement() {
         let root = CustodyStore::new(1);
         let owner: Capability = Arc::new(347u32);
-        let mut prepared = crate::managed_stream_task::PreparedStreamTask::new_owned(owner.clone(), async { 349u32 });
+        let mut prepared =
+            crate::managed_stream_task::PreparedStreamTask::new_owned(owner.clone(), async {
+                349u32
+            });
         let task: Capability = prepared.holder();
-        let receipt = reserve_in_with(&root.0 .0, owner.clone(), Some(task.clone()), || {}).unwrap();
-        assert_eq!(receipt.release_exact_task(&owner, &task), Err("execution.nested_task_registration_mismatch"));
+        let receipt = reserve_in_with(&root.0.0, owner.clone(), Some(task.clone()), || {}).unwrap();
+        assert_eq!(
+            receipt.release_exact_task(&owner, &task),
+            Err("execution.nested_task_registration_mismatch")
+        );
         receipt.attach_settlement(prepared.settlement()).unwrap();
         let foreign_owner: Capability = Arc::new(347u32);
         let foreign_task: Capability = Arc::new(349u32);
         let mut stale_receipt = receipt.clone();
         stale_receipt.record = Arc::downgrade(&foreign_owner);
-        assert_eq!(stale_receipt.release_exact_task(&owner, &task), Err("execution.nested_task_registration_mismatch"));
-        assert_eq!(receipt.release_exact_task(&foreign_owner, &task), Err("execution.nested_task_registration_mismatch"));
-        assert_eq!(receipt.release_exact_task(&owner, &foreign_task), Err("execution.nested_task_registration_mismatch"));
+        assert_eq!(
+            stale_receipt.release_exact_task(&owner, &task),
+            Err("execution.nested_task_registration_mismatch")
+        );
+        assert_eq!(
+            receipt.release_exact_task(&foreign_owner, &task),
+            Err("execution.nested_task_registration_mismatch")
+        );
+        assert_eq!(
+            receipt.release_exact_task(&owner, &foreign_task),
+            Err("execution.nested_task_registration_mismatch")
+        );
         {
-            let _held = root.0 .0.records.lock().unwrap();
-            assert_eq!(receipt.release_exact_task(&owner, &task), Err("execution.nested_custody_unavailable"));
+            let _held = root.0.0.records.lock().unwrap();
+            assert_eq!(
+                receipt.release_exact_task(&owner, &task),
+                Err("execution.nested_custody_unavailable")
+            );
         }
-        assert_eq!(root.0 .0.records.lock().unwrap().len(), 1);
+        assert_eq!(root.0.0.records.lock().unwrap().len(), 1);
         // Fixture caller joins the actual rejected gate before identity removal.
-        assert!(matches!(prepared.reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+        assert!(matches!(
+            prepared
+                .reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                .await,
+            Ok(Ok(None))
+        ));
         root.close_admission().unwrap();
         assert_eq!(receipt.release_exact_task(&owner, &task), Ok(()));
-        assert_eq!(receipt.release_exact_task(&owner, &task), Err("execution.parent_custody_released"));
-        assert!(root.0 .0.records.lock().unwrap().is_empty());
+        assert_eq!(
+            receipt.release_exact_task(&owner, &task),
+            Err("execution.parent_custody_released")
+        );
+        assert!(root.0.0.records.lock().unwrap().is_empty());
     }
     #[cfg(feature = "streaming")]
     #[tokio::test]
     async fn exact_task_release_preserves_poisoned_record() {
         let root = CustodyStore::new(1);
         let owner: Capability = Arc::new(353u32);
-        let mut prepared = crate::managed_stream_task::PreparedStreamTask::new_owned(owner.clone(), async {});
+        let mut prepared =
+            crate::managed_stream_task::PreparedStreamTask::new_owned(owner.clone(), async {});
         let task: Capability = prepared.holder();
-        let receipt = reserve_in_with(&root.0 .0, owner.clone(), Some(task.clone()), || {}).unwrap();
+        let receipt = reserve_in_with(&root.0.0, owner.clone(), Some(task.clone()), || {}).unwrap();
         receipt.attach_settlement(prepared.settlement()).unwrap();
-        let core = root.0 .0.clone();
-        assert!(std::thread::spawn(move || { let _held = core.records.lock().unwrap(); panic!("fixture poison"); }).join().is_err());
-        assert_eq!(receipt.release_exact_task(&owner, &task), Err("execution.nested_custody_unavailable"));
-        match root.0 .0.records.lock() {
+        let core = root.0.0.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _held = core.records.lock().unwrap();
+                panic!("fixture poison");
+            })
+            .join()
+            .is_err()
+        );
+        assert_eq!(
+            receipt.release_exact_task(&owner, &task),
+            Err("execution.nested_custody_unavailable")
+        );
+        match root.0.0.records.lock() {
             Err(poison) => assert_eq!(poison.into_inner().len(), 1),
             Ok(_) => panic!("fixture registry was not poisoned"),
         }
-        assert!(matches!(prepared.reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+        assert!(matches!(
+            prepared
+                .reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                .await,
+            Ok(Ok(None))
+        ));
     }
     #[cfg(feature = "streaming")]
-    fn slot_observer() -> tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation> {
+    fn slot_observer()
+    -> tokio::sync::watch::Receiver<crate::streaming_recovery::SupervisorObservation> {
         tokio::sync::watch::channel(crate::streaming_recovery::SupervisorObservation {
             phase: crate::streaming_recovery::SupervisorPhase::NotStarted,
-            disposition: None, cleanup_complete: None, cleanup_timed_out: false,
+            disposition: None,
+            cleanup_complete: None,
+            cleanup_timed_out: false,
             custody: crate::streaming_recovery::RecoveryCustody::Held,
-        }).1
+        })
+        .1
     }
     #[cfg(feature = "streaming")]
     #[tokio::test]
@@ -552,7 +868,8 @@ mod tests {
             let owner: Capability = effects.clone();
             let observed = effects.clone();
             let prepared = PreparedStreamTask::new_owned(owner.clone(), async move {
-                observed.fetch_add(1, Ordering::SeqCst); 331u32
+                observed.fetch_add(1, Ordering::SeqCst);
+                331u32
             });
             let holder = prepared.holder();
             let barrier = Arc::new(std::sync::Barrier::new(2));
@@ -560,7 +877,8 @@ mod tests {
             let worker = std::thread::spawn(move || {
                 let journal = crate::SagaRollbackJournal::new("atomic-stage-close");
                 ready.wait();
-                let result = slot.finalize_managed(&client, owner, &prepared, &journal, slot_observer());
+                let result =
+                    slot.finalize_managed(&client, owner, &prepared, &journal, slot_observer());
                 drop(prepared); // Reject unopened gate; root retains a published holder.
                 result
             });
@@ -569,12 +887,18 @@ mod tests {
             let stage = worker.join().unwrap();
             match stage {
                 Ok(_) => assert_eq!(family.tasks.len(), 1),
-                Err("execution.nested_custody_admission_closed") => assert!(family.tasks.is_empty()),
+                Err("execution.nested_custody_admission_closed") => {
+                    assert!(family.tasks.is_empty())
+                }
                 Err(other) => panic!("unexpected stage error: {other}"),
             }
-            family.settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await;
+            family
+                .settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                .await;
             assert!(family.statuses.iter().all(|(_, result)| result.is_ok()));
-            if !family.tasks.is_empty() { assert!(matches!(holder.lock().await.take_joined(), Some(Ok(None)))); }
+            if !family.tasks.is_empty() {
+                assert!(matches!(holder.lock().await.take_joined(), Some(Ok(None))));
+            }
             assert_eq!(effects.load(Ordering::SeqCst), 0);
         }
     }
@@ -583,7 +907,10 @@ mod tests {
     fn heterogeneous_snapshot_never_treats_live_unmanaged_owner_as_reservation() {
         let root = CustodyStore::new(1);
         let receipt = root.reserve(Arc::new(311u32)).unwrap();
-        assert!(matches!(root.close_and_erased_family(), Err("execution.nested_unmanaged_owner")));
+        assert!(matches!(
+            root.close_and_erased_family(),
+            Err("execution.nested_unmanaged_owner")
+        ));
         assert!(receipt.upgrade().is_some());
         assert!(root.reserve_stream_slot().is_err());
         receipt.release();
@@ -593,33 +920,68 @@ mod tests {
     }
     #[cfg(feature = "streaming")]
     #[tokio::test(start_paused = true)]
-    async fn heterogeneous_family_settles_concurrently_and_retains_original_reports_after_root_drop() {
+    async fn heterogeneous_family_settles_concurrently_and_retains_original_reports_after_root_drop()
+     {
         use crate::managed_stream_task::PreparedStreamTask;
         let root = CustodyStore::new(2);
         let owner: Capability = Arc::new(271u32);
         let weak = Arc::downgrade(&owner);
         let mut first = PreparedStreamTask::new_owned(owner.clone(), async {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await; 277u32
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            277u32
         });
         let mut second = PreparedStreamTask::new_owned(owner.clone(), async {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await; String::from("original second report")
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            String::from("original second report")
         });
         let journal = crate::SagaRollbackJournal::new("heterogeneous-family");
-        let a = root.client().reserve_stream(owner.clone(), &journal, Some(first.holder()), slot_observer()).unwrap();
-        let b = root.client().reserve_stream(owner.clone(), &journal, Some(second.holder()), slot_observer()).unwrap();
-        a.attach_settlement(first.settlement()).unwrap(); b.attach_settlement(second.settlement()).unwrap();
-        first.grant_registered_start(&a).unwrap(); second.grant_registered_start(&b).unwrap();
-        let first_holder = first.holder(); let second_holder = second.holder();
+        let a = root
+            .client()
+            .reserve_stream(
+                owner.clone(),
+                &journal,
+                Some(first.holder()),
+                slot_observer(),
+            )
+            .unwrap();
+        let b = root
+            .client()
+            .reserve_stream(
+                owner.clone(),
+                &journal,
+                Some(second.holder()),
+                slot_observer(),
+            )
+            .unwrap();
+        a.attach_settlement(first.settlement()).unwrap();
+        b.attach_settlement(second.settlement()).unwrap();
+        first.grant_registered_start(&a).unwrap();
+        second.grant_registered_start(&b).unwrap();
+        let first_holder = first.holder();
+        let second_holder = second.holder();
         let mut family = root.close_and_erased_family().unwrap();
-        drop(first); drop(second); drop(root); drop(owner);
+        drop(first);
+        drop(second);
+        drop(root);
+        drop(owner);
         assert!(weak.upgrade().is_some());
         let started = tokio::time::Instant::now();
-        family.settle_until(started + std::time::Duration::from_secs(3)).await;
-        assert_eq!(tokio::time::Instant::now() - started, std::time::Duration::from_secs(2));
+        family
+            .settle_until(started + std::time::Duration::from_secs(3))
+            .await;
+        assert_eq!(
+            tokio::time::Instant::now() - started,
+            std::time::Duration::from_secs(2)
+        );
         assert_eq!(family.statuses.len(), 2);
         assert!(family.statuses.iter().all(|(_, result)| result.is_ok()));
-        assert!(matches!(first_holder.lock().await.take_joined(), Some(Ok(Some(277)))));
-        assert!(matches!(second_holder.lock().await.take_joined(), Some(Ok(Some(value))) if value == "original second report"));
+        assert!(matches!(
+            first_holder.lock().await.take_joined(),
+            Some(Ok(Some(277)))
+        ));
+        assert!(
+            matches!(second_holder.lock().await.take_joined(), Some(Ok(Some(value))) if value == "original second report")
+        );
         assert!(weak.upgrade().is_some());
         drop(family);
         assert!(weak.upgrade().is_none());
@@ -631,18 +993,36 @@ mod tests {
         let root = CustodyStore::new(1);
         let owner: Capability = Arc::new(281u32);
         let mut prepared = PreparedStreamTask::new_owned(owner.clone(), async { 283u32 });
-        let mut other = PreparedStreamTask::new_owned(owner.clone(), async { String::from("foreign") });
+        let mut other =
+            PreparedStreamTask::new_owned(owner.clone(), async { String::from("foreign") });
         let journal = crate::SagaRollbackJournal::new("missing-settlement");
-        let receipt = root.client().reserve_stream(owner, &journal, Some(prepared.holder()), slot_observer()).unwrap();
-        assert_eq!(receipt.attach_settlement(other.settlement()), Err("execution.nested_task_registration_mismatch"));
-        assert!(matches!(root.close_and_erased_family(), Err("execution.nested_task_settlement_missing")));
+        let receipt = root
+            .client()
+            .reserve_stream(owner, &journal, Some(prepared.holder()), slot_observer())
+            .unwrap();
+        assert_eq!(
+            receipt.attach_settlement(other.settlement()),
+            Err("execution.nested_task_registration_mismatch")
+        );
+        assert!(matches!(
+            root.close_and_erased_family(),
+            Err("execution.nested_task_settlement_missing")
+        ));
         receipt.attach_settlement(prepared.settlement()).unwrap();
-        assert_eq!(receipt.attach_settlement(prepared.settlement()), Err("execution.nested_task_settlement_decided"));
+        assert_eq!(
+            receipt.attach_settlement(prepared.settlement()),
+            Err("execution.nested_task_settlement_decided")
+        );
         prepared.grant_registered_start(&receipt).unwrap();
         let mut family = root.close_and_erased_family().unwrap();
-        family.settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await;
+        family
+            .settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+            .await;
         assert!(family.statuses[0].1.is_ok());
-        assert!(matches!(prepared.holder().lock().await.take_joined(), Some(Ok(Some(283)))));
+        assert!(matches!(
+            prepared.holder().lock().await.take_joined(),
+            Some(Ok(Some(283)))
+        ));
         other.reject_start().unwrap();
     }
     #[cfg(feature = "streaming")]
@@ -658,23 +1038,51 @@ mod tests {
         let owner: Capability = calls.clone();
         let observed = calls.clone();
         let mut prepared = PreparedStreamTask::new_owned(owner.clone(), async move {
-            observed.fetch_add(1, Ordering::SeqCst); 191u32
+            observed.fetch_add(1, Ordering::SeqCst);
+            191u32
         });
         let journal = crate::SagaRollbackJournal::new("reserved-root");
-        let registered = reservation.finalize_stream(&root.client(), owner.clone(), prepared.holder(), &journal, slot_observer()).unwrap();
+        let registered = reservation
+            .finalize_stream(
+                &root.client(),
+                owner.clone(),
+                prepared.holder(),
+                &journal,
+                slot_observer(),
+            )
+            .unwrap();
         assert_eq!(registered.id(), id);
-        assert_eq!(root.0 .0.records.lock().unwrap().len(), 1);
+        assert_eq!(root.0.0.records.lock().unwrap().len(), 1);
         assert_eq!(journal.retained_stream_observations().len(), 1);
-        assert!(matches!(reservation.finalize_stream(&root.client(), owner, prepared.holder(), &journal, slot_observer()),
-            Err("execution.nested_reservation_decided")));
+        assert!(matches!(
+            reservation.finalize_stream(
+                &root.client(),
+                owner,
+                prepared.holder(),
+                &journal,
+                slot_observer()
+            ),
+            Err("execution.nested_reservation_decided")
+        ));
         drop(reservation);
         assert!(registered.upgrade().is_some());
-        assert_eq!(prepared.grant_registered_start(&stale), Err("execution.nested_task_owner_mismatch"));
+        assert_eq!(
+            prepared.grant_registered_start(&stale),
+            Err("execution.nested_task_owner_mismatch")
+        );
         stale.release();
         assert!(registered.upgrade().is_some());
-        assert_eq!(root.0 .0.records.lock().unwrap().len(), 1);
+        assert_eq!(root.0.0.records.lock().unwrap().len(), 1);
         prepared.grant_registered_start(&registered).unwrap();
-        assert!(matches!(prepared.holder().lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(Some(191)))));
+        assert!(matches!(
+            prepared
+                .holder()
+                .lock()
+                .await
+                .join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                .await,
+            Ok(Ok(Some(191)))
+        ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -685,31 +1093,53 @@ mod tests {
         for mode in 0..3 {
             let root = CustodyStore::new(1);
             let foreign = CustodyStore::new(1);
-            let client = if mode == 0 { foreign.client() } else { root.client() };
+            let client = if mode == 0 {
+                foreign.client()
+            } else {
+                root.client()
+            };
             let mut reservation = root.reserve_stream_slot().unwrap();
             let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let owner: Capability = calls.clone();
             let observed = calls.clone();
             let mut prepared = PreparedStreamTask::new_owned(owner.clone(), async move {
-                observed.fetch_add(1, Ordering::SeqCst); 193u32
+                observed.fetch_add(1, Ordering::SeqCst);
+                193u32
             });
             let journal = crate::SagaRollbackJournal::new("rejected-root-slot");
-            if mode == 1 { root.close_admission().unwrap(); }
-            let root = if mode == 2 { drop(root); None } else { Some(root) };
+            if mode == 1 {
+                root.close_admission().unwrap();
+            }
+            let root = if mode == 2 {
+                drop(root);
+                None
+            } else {
+                Some(root)
+            };
             let expected = match mode {
                 0 => "execution.nested_custody_mismatch",
                 1 => "execution.nested_custody_admission_closed",
                 _ => "execution.parent_custody_released",
             };
-            assert!(matches!(reservation.finalize_stream(&client, owner, prepared.holder(), &journal, slot_observer()), Err(error) if error == expected));
+            assert!(
+                matches!(reservation.finalize_stream(&client, owner, prepared.holder(), &journal, slot_observer()), Err(error) if error == expected)
+            );
             assert!(journal.retained_stream_observations().is_empty());
             drop(reservation);
             if let Some(root) = root {
-                assert!(root.0 .0.records.lock().unwrap().is_empty());
-                if mode == 0 { assert!(root.reserve_stream_slot().is_ok()); }
-                else { assert!(root.reserve_stream_slot().is_err()); }
+                assert!(root.0.0.records.lock().unwrap().is_empty());
+                if mode == 0 {
+                    assert!(root.reserve_stream_slot().is_ok());
+                } else {
+                    assert!(root.reserve_stream_slot().is_err());
+                }
             }
-            assert!(matches!(prepared.reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+            assert!(matches!(
+                prepared
+                    .reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                    .await,
+                Ok(Ok(None))
+            ));
             assert_eq!(calls.load(Ordering::SeqCst), 0);
         }
     }
@@ -722,9 +1152,19 @@ mod tests {
         let root = CustodyStore::new(1);
         let ordinary = root.reserve(Arc::new(127u32)).unwrap();
         root.close_admission().unwrap();
-        let mut prepared = PreparedStreamTask::new(async { panic!("ordinary owner must not authorize start"); });
-        assert_eq!(prepared.grant_registered_start(&ordinary), Err("execution.nested_task_registration_mismatch"));
-        assert!(matches!(prepared.reject_until(Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+        let mut prepared = PreparedStreamTask::new(async {
+            panic!("ordinary owner must not authorize start");
+        });
+        assert_eq!(
+            prepared.grant_registered_start(&ordinary),
+            Err("execution.nested_task_registration_mismatch")
+        );
+        assert!(matches!(
+            prepared
+                .reject_until(Instant::now() + std::time::Duration::from_secs(5))
+                .await,
+            Ok(Ok(None))
+        ));
         assert!(ordinary.upgrade().is_some());
     }
     #[cfg(feature = "streaming")]
@@ -735,18 +1175,36 @@ mod tests {
         let root = CustodyStore::new(1);
         let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed = effects.clone();
-        let mut prepared = PreparedStreamTask::new(async move { observed.fetch_add(1, Ordering::SeqCst); });
-        let admission = reserve_in_with(&root.0 .0, Arc::new(()), Some(prepared.holder()), || {}).unwrap();
-        let core = root.0 .0.clone();
-        assert!(std::thread::spawn(move || {
-            let _held = core.records.lock().unwrap();
-            panic!("fixture poison");
-        }).join().is_err());
-        assert_eq!(prepared.grant_registered_start(&admission), Err("execution.nested_custody_unavailable"));
-        assert!(matches!(prepared.reject_until(Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+        let mut prepared = PreparedStreamTask::new(async move {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        let admission =
+            reserve_in_with(&root.0.0, Arc::new(()), Some(prepared.holder()), || {}).unwrap();
+        let core = root.0.0.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _held = core.records.lock().unwrap();
+                panic!("fixture poison");
+            })
+            .join()
+            .is_err()
+        );
+        assert_eq!(
+            prepared.grant_registered_start(&admission),
+            Err("execution.nested_custody_unavailable")
+        );
+        assert!(matches!(
+            prepared
+                .reject_until(Instant::now() + std::time::Duration::from_secs(5))
+                .await,
+            Ok(Ok(None))
+        ));
         assert_eq!(effects.load(Ordering::SeqCst), 0);
         drop(root);
-        assert_eq!(prepared.grant_registered_start(&admission), Err("execution.parent_custody_released"));
+        assert_eq!(
+            prepared.grant_registered_start(&admission),
+            Err("execution.parent_custody_released")
+        );
     }
     #[cfg(feature = "streaming")]
     #[tokio::test]
@@ -756,19 +1214,42 @@ mod tests {
         let root = CustodyStore::new(2);
         let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let observed = effects.clone();
-        let mut first = PreparedStreamTask::new(async move { observed.fetch_add(1, Ordering::SeqCst); });
+        let mut first = PreparedStreamTask::new(async move {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
         let mut second = PreparedStreamTask::new(async {});
-        let first_record = reserve_in_with(&root.0 .0, Arc::new(()), Some(first.holder()), || {}).unwrap();
-        let second_record = reserve_in_with(&root.0 .0, Arc::new(()), Some(second.holder()), || {}).unwrap();
+        let first_record =
+            reserve_in_with(&root.0.0, Arc::new(()), Some(first.holder()), || {}).unwrap();
+        let second_record =
+            reserve_in_with(&root.0.0, Arc::new(()), Some(second.holder()), || {}).unwrap();
         root.close_admission().unwrap();
-        assert_eq!(first.grant_registered_start(&second_record), Err("execution.nested_task_registration_mismatch"));
+        assert_eq!(
+            first.grant_registered_start(&second_record),
+            Err("execution.nested_task_registration_mismatch")
+        );
         assert_eq!(effects.load(Ordering::SeqCst), 0);
         first.grant_registered_start(&first_record).unwrap();
-        assert!(matches!(first.holder().lock().await.join_until(Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(Some(())))));
+        assert!(matches!(
+            first
+                .holder()
+                .lock()
+                .await
+                .join_until(Instant::now() + std::time::Duration::from_secs(5))
+                .await,
+            Ok(Ok(Some(())))
+        ));
         assert_eq!(effects.load(Ordering::SeqCst), 1);
         second_record.release();
-        assert_eq!(second.grant_registered_start(&second_record), Err("execution.parent_custody_released"));
-        assert!(matches!(second.reject_until(Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+        assert_eq!(
+            second.grant_registered_start(&second_record),
+            Err("execution.parent_custody_released")
+        );
+        assert!(matches!(
+            second
+                .reject_until(Instant::now() + std::time::Duration::from_secs(5))
+                .await,
+            Ok(Ok(None))
+        ));
     }
     #[cfg(feature = "streaming")]
     #[tokio::test(start_paused = true)]
@@ -778,26 +1259,55 @@ mod tests {
         let root = CustodyStore::new(1);
         let (task, permit) = ManagedStreamTask::prepare(async { 103u32 });
         let task = Arc::new(AsyncMutex::new(task));
-        let admission = reserve_in_with(&root.0 .0, Arc::new(()), Some(task.clone()), || {}).unwrap();
+        let admission =
+            reserve_in_with(&root.0.0, Arc::new(()), Some(task.clone()), || {}).unwrap();
         root.close_admission().unwrap();
         permit.send(()).unwrap();
-        let family = root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
-        assert!(matches!(family.take_joined(uuid::Uuid::new_v4(), Instant::now()).await, Err("execution.nested_task_not_found")));
+        let family = root
+            .settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(matches!(
+            family
+                .take_joined(uuid::Uuid::new_v4(), Instant::now())
+                .await,
+            Err("execution.nested_task_not_found")
+        ));
         let held = task.lock().await;
-        assert!(matches!(family.take_joined(admission.id, Instant::now() + std::time::Duration::from_secs(3)).await, Err("execution.nested_task_transfer_timeout")));
+        assert!(matches!(
+            family
+                .take_joined(
+                    admission.id,
+                    Instant::now() + std::time::Duration::from_secs(3)
+                )
+                .await,
+            Err("execution.nested_task_transfer_timeout")
+        ));
         drop(held);
-        assert_eq!(family.take_joined(admission.id, Instant::now()).await.unwrap().unwrap().unwrap(), Some(103));
+        assert_eq!(
+            family
+                .take_joined(admission.id, Instant::now())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            Some(103)
+        );
     }
     #[cfg(feature = "streaming")]
     #[tokio::test]
     async fn family_lease_preserves_report_after_root_loss_and_dropped_wait() {
         use crate::managed_stream_task::ManagedStreamTask;
-        use tokio::{sync::{Mutex as AsyncMutex, oneshot}, time::Instant};
+        use tokio::{
+            sync::{Mutex as AsyncMutex, oneshot},
+            time::Instant,
+        };
         let root = CustodyStore::new(1);
         let (finish, gate) = oneshot::channel();
-        let (task, permit) = ManagedStreamTask::prepare(async move { Box::new(gate.await.unwrap()) });
+        let (task, permit) =
+            ManagedStreamTask::prepare(async move { Box::new(gate.await.unwrap()) });
         let task = Arc::new(AsyncMutex::new(task));
-        let admission = reserve_in_with(&root.0 .0, Arc::new(()), Some(task), || {}).unwrap();
+        let admission = reserve_in_with(&root.0.0, Arc::new(()), Some(task), || {}).unwrap();
         root.close_admission().unwrap();
         let mut family = root.closed_typed_family::<Box<u32>>().unwrap();
         permit.send(()).unwrap();
@@ -809,10 +1319,27 @@ mod tests {
         admission.release();
         drop(root);
         finish.send(101u32).unwrap();
-        family.settle_until(Instant::now() + std::time::Duration::from_secs(5)).await;
+        family
+            .settle_until(Instant::now() + std::time::Duration::from_secs(5))
+            .await;
         assert_eq!(family.statuses, vec![(admission.id, Ok(()))]);
-        assert_eq!(*family.take_joined(admission.id, Instant::now()).await.unwrap().unwrap().unwrap().unwrap(), 101);
-        assert!(family.take_joined(admission.id, Instant::now()).await.unwrap().is_none());
+        assert_eq!(
+            *family
+                .take_joined(admission.id, Instant::now())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            101
+        );
+        assert!(
+            family
+                .take_joined(admission.id, Instant::now())
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
     #[cfg(feature = "streaming")]
     #[tokio::test]
@@ -822,18 +1349,24 @@ mod tests {
         let root = CustodyStore::new(1);
         let (task, permit) = ManagedStreamTask::prepare(async { Box::new(89u32) });
         let task = Arc::new(AsyncMutex::new(task));
-        let admission = reserve_in_with(&root.0 .0, Arc::new(()), Some(task.clone()), || {}).unwrap();
+        let admission =
+            reserve_in_with(&root.0.0, Arc::new(()), Some(task.clone()), || {}).unwrap();
         root.close_admission().unwrap();
         permit.send(()).unwrap();
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
-        let (first, second) = tokio::join!(root.settle_closed_tasks::<Box<u32>>(deadline), root.settle_closed_tasks::<Box<u32>>(deadline));
+        let (first, second) = tokio::join!(
+            root.settle_closed_tasks::<Box<u32>>(deadline),
+            root.settle_closed_tasks::<Box<u32>>(deadline)
+        );
         assert_eq!(first.unwrap().statuses, vec![(admission.id, Ok(()))]);
         assert_eq!(second.unwrap().statuses, vec![(admission.id, Ok(()))]);
-        let (first, second) = tokio::join!(
-            async { task.lock().await.take_joined() },
-            async { task.lock().await.take_joined() },
+        let (first, second) = tokio::join!(async { task.lock().await.take_joined() }, async {
+            task.lock().await.take_joined()
+        },);
+        assert_eq!(
+            usize::from(first.is_some()) + usize::from(second.is_some()),
+            1
         );
-        assert_eq!(usize::from(first.is_some()) + usize::from(second.is_some()), 1);
         assert_eq!(*first.or(second).unwrap().unwrap().unwrap(), 89);
     }
 
@@ -841,17 +1374,22 @@ mod tests {
     #[tokio::test]
     async fn active_family_snapshot_survives_record_retirement() {
         use crate::managed_stream_task::ManagedStreamTask;
-        use tokio::{sync::{Mutex as AsyncMutex, oneshot}, time::Instant};
+        use tokio::{
+            sync::{Mutex as AsyncMutex, oneshot},
+            time::Instant,
+        };
         let root = CustodyStore::new(1);
         let (finish, gate) = oneshot::channel();
         let (task, permit) = ManagedStreamTask::prepare(async move { gate.await.unwrap() });
         let task = Arc::new(AsyncMutex::new(task));
         let weak_task = Arc::downgrade(&task);
-        let admission = reserve_in_with(&root.0 .0, Arc::new(()), Some(task.clone()), || {}).unwrap();
+        let admission =
+            reserve_in_with(&root.0.0, Arc::new(()), Some(task.clone()), || {}).unwrap();
         root.close_admission().unwrap();
         permit.send(()).unwrap();
         drop(task);
-        let wait = root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(5));
+        let wait =
+            root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(5));
         tokio::pin!(wait);
         assert!(futures_util::poll!(&mut wait).is_pending());
         admission.release();
@@ -860,7 +1398,10 @@ mod tests {
         let retained = weak_task.upgrade().unwrap();
         finish.send(97u32).unwrap();
         assert_eq!(wait.await.unwrap().statuses, vec![(admission.id, Ok(()))]);
-        assert_eq!(retained.lock().await.take_joined().unwrap().unwrap(), Some(97));
+        assert_eq!(
+            retained.lock().await.take_joined().unwrap().unwrap(),
+            Some(97)
+        );
         drop(retained);
         assert!(weak_task.upgrade().is_none());
     }
@@ -872,14 +1413,24 @@ mod tests {
         let root = CustodyStore::new(1);
         let (task, permit) = ManagedStreamTask::prepare(async { 83u32 });
         let task = Arc::new(AsyncMutex::new(task));
-        let admission = reserve_in_with(&root.0 .0, Arc::new(()), Some(task.clone()), || {}).unwrap();
+        let admission =
+            reserve_in_with(&root.0.0, Arc::new(()), Some(task.clone()), || {}).unwrap();
         root.close_admission().unwrap();
         permit.send(()).unwrap();
         let held = task.lock().await;
-        let result = root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(3)).await.unwrap();
-        assert_eq!(result.statuses, vec![(admission.id, Err(ManagedTaskWaitError::TimedOut))]);
+        let result = root
+            .settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(3))
+            .await
+            .unwrap();
+        assert_eq!(
+            result.statuses,
+            vec![(admission.id, Err(ManagedTaskWaitError::TimedOut))]
+        );
         drop(held);
-        let result = root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(3)).await.unwrap();
+        let result = root
+            .settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(3))
+            .await
+            .unwrap();
         assert_eq!(result.statuses, vec![(admission.id, Ok(()))]);
         assert_eq!(task.lock().await.take_joined().unwrap().unwrap(), Some(83));
     }
@@ -887,7 +1438,10 @@ mod tests {
     #[tokio::test]
     async fn family_settlement_drop_preserves_completed_report_and_pending_handle() {
         use crate::managed_stream_task::ManagedStreamTask;
-        use tokio::{sync::{Mutex as AsyncMutex, oneshot}, time::Instant};
+        use tokio::{
+            sync::{Mutex as AsyncMutex, oneshot},
+            time::Instant,
+        };
         let root = CustodyStore::new(2);
         let report = Arc::new(67u32);
         let weak_report = Arc::downgrade(&report);
@@ -897,19 +1451,22 @@ mod tests {
             report
         });
         let (finish, finish_gate) = oneshot::channel();
-        let (second, second_permit) = ManagedStreamTask::prepare(async move {
-            Arc::new(finish_gate.await.unwrap())
-        });
+        let (second, second_permit) =
+            ManagedStreamTask::prepare(async move { Arc::new(finish_gate.await.unwrap()) });
         let first = Arc::new(AsyncMutex::new(first));
         let second = Arc::new(AsyncMutex::new(second));
-        let first_record = reserve_in_with(&root.0 .0, Arc::new(()), Some(first.clone()), || {}).unwrap();
-        let second_record = reserve_in_with(&root.0 .0, Arc::new(()), Some(second.clone()), || {}).unwrap();
+        let first_record =
+            reserve_in_with(&root.0.0, Arc::new(()), Some(first.clone()), || {}).unwrap();
+        let second_record =
+            reserve_in_with(&root.0.0, Arc::new(()), Some(second.clone()), || {}).unwrap();
         root.close_admission().unwrap();
         first_permit.send(()).unwrap();
         second_permit.send(()).unwrap();
         ready_gate.await.unwrap();
         {
-            let wait = root.settle_closed_tasks::<Arc<u32>>(Instant::now() + std::time::Duration::from_secs(5));
+            let wait = root.settle_closed_tasks::<Arc<u32>>(
+                Instant::now() + std::time::Duration::from_secs(5),
+            );
             tokio::pin!(wait);
             assert!(futures_util::poll!(&mut wait).is_pending());
         }
@@ -918,11 +1475,22 @@ mod tests {
         let original = first.lock().await.take_joined().unwrap().unwrap().unwrap();
         assert_eq!(*original, 67);
         finish.send(71u32).unwrap();
-        let settled = root.settle_closed_tasks::<Arc<u32>>(Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+        let settled = root
+            .settle_closed_tasks::<Arc<u32>>(Instant::now() + std::time::Duration::from_secs(5))
+            .await
+            .unwrap();
         assert_eq!(settled.len(), 2);
-        assert!(settled.iter().any(|(id, status)| *id == first_record.id && *status == Err(crate::managed_stream_task::ManagedTaskWaitError::AlreadyJoined)));
-        assert!(settled.iter().any(|(id, status)| *id == second_record.id && *status == Ok(())));
-        assert_eq!(*second.lock().await.take_joined().unwrap().unwrap().unwrap(), 71);
+        assert!(settled.iter().any(|(id, status)| *id == first_record.id
+            && *status == Err(crate::managed_stream_task::ManagedTaskWaitError::AlreadyJoined)));
+        assert!(
+            settled
+                .iter()
+                .any(|(id, status)| *id == second_record.id && *status == Ok(()))
+        );
+        assert_eq!(
+            *second.lock().await.take_joined().unwrap().unwrap().unwrap(),
+            71
+        );
         drop(original);
         assert!(weak_report.upgrade().is_none());
     }
@@ -935,14 +1503,25 @@ mod tests {
         let root = CustodyStore::new(2);
         let (first, permit) = ManagedStreamTask::prepare(async { 73u32 });
         let first = Arc::new(AsyncMutex::new(first));
-        reserve_in_with(&root.0 .0, Arc::new(()), Some(first.clone()), || {}).unwrap();
-        let mismatch = reserve_in_with(&root.0 .0, Arc::new(()), Some(Arc::new(79u64)), || {}).unwrap();
+        reserve_in_with(&root.0.0, Arc::new(()), Some(first.clone()), || {}).unwrap();
+        let mismatch =
+            reserve_in_with(&root.0.0, Arc::new(()), Some(Arc::new(79u64)), || {}).unwrap();
         root.close_admission().unwrap();
         permit.send(()).unwrap();
-        assert!(matches!(root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(5)).await, Err("execution.nested_task_type_mismatch")));
+        assert!(matches!(
+            root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(5))
+                .await,
+            Err("execution.nested_task_type_mismatch")
+        ));
         assert!(first.lock().await.take_joined().is_none());
         mismatch.release();
-        assert!(root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().iter().all(|(_, result)| result.is_ok()));
+        assert!(
+            root.settle_closed_tasks::<u32>(Instant::now() + std::time::Duration::from_secs(5))
+                .await
+                .unwrap()
+                .iter()
+                .all(|(_, result)| result.is_ok())
+        );
         assert_eq!(first.lock().await.take_joined().unwrap().unwrap(), Some(73));
     }
     #[test]
@@ -951,7 +1530,7 @@ mod tests {
         let ordinary = root.reserve(Arc::new(53u32)).unwrap();
         let holder: Capability = Arc::new(59u32);
         let weak = Arc::downgrade(&holder);
-        let managed = reserve_in_with(&root.0 .0, Arc::new(61u32), Some(holder), || {}).unwrap();
+        let managed = reserve_in_with(&root.0.0, Arc::new(61u32), Some(holder), || {}).unwrap();
         root.close_admission().unwrap();
         let snapshot = root.closed_tasks().unwrap();
         assert_eq!(snapshot.len(), 1);
@@ -966,18 +1545,24 @@ mod tests {
     #[test]
     fn admission_closure_cannot_pass_framework_registration_gate() {
         let root = CustodyStore::new(1);
-        let core = root.0 .0.clone();
+        let core = root.0.0.clone();
         let registered = Arc::new(AtomicBool::new(false));
         let recorded = registered.clone();
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let reserve = std::thread::spawn(move || reserve_in_with(&core, Arc::new(47u32), None, || {
-            entered_tx.send(()).unwrap();
-            release_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-            recorded.store(true, Ordering::Release);
-        }));
-        entered_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-        assert!(root.0 .0.records.try_lock().is_err());
+        let reserve = std::thread::spawn(move || {
+            reserve_in_with(&core, Arc::new(47u32), None, || {
+                entered_tx.send(()).unwrap();
+                release_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                recorded.store(true, Ordering::Release);
+            })
+        });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(root.0.0.records.try_lock().is_err());
         let closer = root.clone();
         let closed_registered = registered.clone();
         let close = std::thread::spawn(move || {
@@ -988,7 +1573,10 @@ mod tests {
         let admission = reserve.join().unwrap().unwrap();
         close.join().unwrap();
         assert!(admission.upgrade().is_some());
-        assert!(matches!(root.reserve(Arc::new(())), Err("execution.nested_custody_admission_closed")));
+        assert!(matches!(
+            root.reserve(Arc::new(())),
+            Err("execution.nested_custody_admission_closed")
+        ));
         admission.release();
     }
     #[test]
@@ -1004,7 +1592,9 @@ mod tests {
             workers.push(std::thread::spawn(move || {
                 let record: Capability = Arc::new(value);
                 start.wait();
-                client.reserve(record.clone()).map(|admission| (admission, record))
+                client
+                    .reserve(record.clone())
+                    .map(|admission| (admission, record))
             }));
         }
         barrier.wait();
@@ -1016,25 +1606,37 @@ mod tests {
                 Err(signal) => assert_eq!(signal, "execution.nested_custody_admission_closed"),
             }
         }
-        assert_eq!(root.0 .0.records.lock().unwrap().len(), accepted.len() + 1);
-        assert!(root.client().validate_member(&anchor_admission, &anchor).is_ok());
+        assert_eq!(root.0.0.records.lock().unwrap().len(), accepted.len() + 1);
+        assert!(
+            root.client()
+                .validate_member(&anchor_admission, &anchor)
+                .is_ok()
+        );
         for (admission, record) in &accepted {
             assert!(root.client().validate_member(admission, record).is_ok());
         }
-        assert!(matches!(root.reserve(Arc::new(())), Err("execution.nested_custody_admission_closed")));
-        for (admission, _) in accepted { admission.release(); }
+        assert!(matches!(
+            root.reserve(Arc::new(())),
+            Err("execution.nested_custody_admission_closed")
+        ));
+        for (admission, _) in accepted {
+            admission.release();
+        }
         anchor_admission.release();
-        assert!(root.0 .0.records.lock().unwrap().is_empty());
+        assert!(root.0.0.records.lock().unwrap().is_empty());
     }
     #[test]
     fn admission_close_fails_closed_on_poison_without_retiring_records() {
         let root = CustodyStore::new(1);
         let admission = root.reserve(Arc::new(43u32)).unwrap();
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _held = root.0 .0.records.lock().unwrap();
+            let _held = root.0.0.records.lock().unwrap();
             panic!("fixture poison");
         }));
-        assert_eq!(root.close_admission(), Err("execution.nested_custody_unavailable"));
+        assert_eq!(
+            root.close_admission(),
+            Err("execution.nested_custody_unavailable")
+        );
         assert!(admission.upgrade().is_some());
         drop(root);
         assert!(admission.upgrade().is_none());
@@ -1048,13 +1650,19 @@ mod tests {
         let admission = client.reserve(record.clone()).unwrap();
         root.close_admission().unwrap();
         root.close_admission().unwrap();
-        assert!(matches!(client.reserve(Arc::new(())), Err("execution.nested_custody_admission_closed")));
+        assert!(matches!(
+            client.reserve(Arc::new(())),
+            Err("execution.nested_custody_admission_closed")
+        ));
         assert!(client.validate_member(&admission, &record).is_ok());
         drop(record);
         assert!(weak.upgrade().is_some());
         drop(root);
         assert!(weak.upgrade().is_none());
-        assert!(matches!(client.reserve(Arc::new(())), Err("execution.parent_custody_released")));
+        assert!(matches!(
+            client.reserve(Arc::new(())),
+            Err("execution.parent_custody_released")
+        ));
     }
     #[test]
     fn resource_scope_restores_exact_owned_shared_aliased_and_inherited_storage() {
@@ -1092,7 +1700,7 @@ mod tests {
                 let access = scope.bus().take_access_scope();
                 let selected = scope.bus().read::<OwnedResources<NonClone>>().unwrap();
                 assert!(Arc::ptr_eq(&selected.0, &replacement));
-                assert_eq!(selected.0 .0, 42);
+                assert_eq!(selected.0.0, 42);
                 scope.bus().restore_access_scope(access);
             }
             assert!(bus.get::<OwnedResources<NonClone>>().is_err());
@@ -1186,13 +1794,15 @@ mod tests {
         let record = root
             .reserve(Arc::new(()))
             .unwrap_or_else(|_| panic!("admission failed"));
-        let core = root.0 .0.clone();
-        assert!(std::thread::spawn(move || {
-            let _held = core.records.lock().unwrap();
-            panic!("fixture poison");
-        })
-        .join()
-        .is_err());
+        let core = root.0.0.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _held = core.records.lock().unwrap();
+                panic!("fixture poison");
+            })
+            .join()
+            .is_err()
+        );
         assert!(matches!(
             client.reserve(Arc::new(())),
             Err("execution.nested_custody_unavailable")
@@ -1219,17 +1829,19 @@ mod tests {
         let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let retained = store
             .reserve(Arc::new(Probe {
-                store: Arc::downgrade(&store.0 .0),
+                store: Arc::downgrade(&store.0.0),
                 released: released.clone(),
             }))
             .unwrap_or_else(|_| panic!("admission failed"));
         let refused = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        assert!(store
-            .reserve(Arc::new(Probe {
-                store: Arc::downgrade(&store.0 .0),
-                released: refused.clone()
-            }))
-            .is_err());
+        assert!(
+            store
+                .reserve(Arc::new(Probe {
+                    store: Arc::downgrade(&store.0.0),
+                    released: refused.clone()
+                }))
+                .is_err()
+        );
         assert!(refused.load(std::sync::atomic::Ordering::SeqCst));
         assert!(!released.load(std::sync::atomic::Ordering::SeqCst));
         retained.release();

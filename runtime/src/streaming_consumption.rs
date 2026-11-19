@@ -209,7 +209,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn original_total_origin_expires_before_ready_source_is_polled() {
-        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
         let origin = Instant::now();
         tokio::time::advance(std::time::Duration::from_secs(8)).await;
         let polls = Arc::new(AtomicUsize::new(0));
@@ -218,15 +221,25 @@ mod tests {
             count.fetch_add(1, Ordering::SeqCst);
             Poll::Ready(Some(1))
         });
-        let report = ObservedStream::with_total_origin(Box::pin(source), StreamTimeoutConfig {
-            init: Some(std::time::Duration::from_secs(30)), idle: None,
-            total: Some(std::time::Duration::from_secs(5)),
-        }, None, origin).collect_report().await;
+        let report = ObservedStream::with_total_origin(
+            Box::pin(source),
+            StreamTimeoutConfig {
+                init: Some(std::time::Duration::from_secs(30)),
+                idle: None,
+                total: Some(std::time::Duration::from_secs(5)),
+            },
+            None,
+            origin,
+        )
+        .collect_report()
+        .await;
         assert!(report.items.is_empty());
-        assert_eq!(report.terminal, StreamConsumptionTerminal::TimedOut(StreamTimeoutKind::Total));
+        assert_eq!(
+            report.terminal,
+            StreamConsumptionTerminal::TimedOut(StreamTimeoutKind::Total)
+        );
         assert_eq!(polls.load(Ordering::SeqCst), 0);
     }
-
 
     #[tokio::test(start_paused = true)]
     async fn original_total_origin_does_not_age_first_item_or_idle_budget() {
@@ -234,11 +247,16 @@ mod tests {
         tokio::time::advance(std::time::Duration::from_secs(8)).await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let source = stream::poll_fn(move |cx| rx.poll_recv(cx));
-        let mut observed = ObservedStream::with_total_origin(Box::pin(source), StreamTimeoutConfig {
-            init: Some(std::time::Duration::from_secs(3)),
-            idle: Some(std::time::Duration::from_secs(2)),
-            total: Some(std::time::Duration::from_secs(20)),
-        }, None, origin);
+        let mut observed = ObservedStream::with_total_origin(
+            Box::pin(source),
+            StreamTimeoutConfig {
+                init: Some(std::time::Duration::from_secs(3)),
+                idle: Some(std::time::Duration::from_secs(2)),
+                total: Some(std::time::Duration::from_secs(20)),
+            },
+            None,
+            origin,
+        );
         tokio::time::advance(std::time::Duration::from_secs(2)).await;
         tx.send(1).unwrap();
         assert_eq!(observed.next().await, Some(1));
@@ -247,7 +265,12 @@ mod tests {
         assert_eq!(observed.next().await, Some(2));
         tokio::time::advance(std::time::Duration::from_secs(2)).await;
         assert_eq!(observed.next().await, None);
-        assert_eq!(observed.terminal(), Some(&StreamConsumptionTerminal::TimedOut(StreamTimeoutKind::Idle)));
+        assert_eq!(
+            observed.terminal(),
+            Some(&StreamConsumptionTerminal::TimedOut(
+                StreamTimeoutKind::Idle
+            ))
+        );
         drop(tx);
     }
 
@@ -257,12 +280,23 @@ mod tests {
         tokio::time::advance(std::time::Duration::from_secs(8)).await;
         let token = CancellationToken::new();
         token.cancel(CancellationReason::Explicit);
-        let report = ObservedStream::with_total_origin(Box::pin(stream::repeat(1)), StreamTimeoutConfig {
-            init: None, idle: None, total: Some(std::time::Duration::from_secs(5)),
-        }, Some(token), origin).collect_report().await;
+        let report = ObservedStream::with_total_origin(
+            Box::pin(stream::repeat(1)),
+            StreamTimeoutConfig {
+                init: None,
+                idle: None,
+                total: Some(std::time::Duration::from_secs(5)),
+            },
+            Some(token),
+            origin,
+        )
+        .collect_report()
+        .await;
         assert!(report.items.is_empty());
-        assert!(matches!(report.terminal, StreamConsumptionTerminal::Cancelled(context)
-            if context.reason == CancellationReason::Explicit));
+        assert!(
+            matches!(report.terminal, StreamConsumptionTerminal::Cancelled(context)
+            if context.reason == CancellationReason::Explicit)
+        );
     }
 
     use std::{cell::Cell, time::Duration};

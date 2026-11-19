@@ -159,8 +159,14 @@ impl CancellationToken {
         } else {
             wall_now.saturating_sub(duration_ms(now.duration_since(deadline)))
         };
-        Self::from_parts(Some(self.clone()), self.inner.family.clone(),
-            Some(CancellationDeadline { instant: deadline, unix_ms }))
+        Self::from_parts(
+            Some(self.clone()),
+            self.inner.family.clone(),
+            Some(CancellationDeadline {
+                instant: deadline,
+                unix_ms,
+            }),
+        )
     }
 
     /// Request cancellation with a fixed reason.

@@ -41,17 +41,35 @@ impl StreamRecoveryAdmission {
         state.used += 1;
         Ok(RecoveryPermit(self.0.clone()))
     }
-    pub(crate) fn validate_permit(&self, permit: &RecoveryPermit) -> Result<(), RecoveryAdmissionFailure> {
-        if !Arc::ptr_eq(&self.0, &permit.0) { return Err(RecoveryAdmissionFailure::PermitMismatch); }
+    pub(crate) fn validate_permit(
+        &self,
+        permit: &RecoveryPermit,
+    ) -> Result<(), RecoveryAdmissionFailure> {
+        if !Arc::ptr_eq(&self.0, &permit.0) {
+            return Err(RecoveryAdmissionFailure::PermitMismatch);
+        }
         // Existing reservations survive close, but unknown poisoned authority
         // cannot be converted into a new recovery owner.
-        let _state = self.0.lock().map_err(|_| RecoveryAdmissionFailure::Poisoned)?;
+        let _state = self
+            .0
+            .lock()
+            .map_err(|_| RecoveryAdmissionFailure::Poisoned)?;
         Ok(())
     }
-    pub(crate) fn validate_open_permit(&self, permit: &RecoveryPermit) -> Result<(), RecoveryAdmissionFailure> {
-        if !Arc::ptr_eq(&self.0, &permit.0) { return Err(RecoveryAdmissionFailure::PermitMismatch); }
-        let state = self.0.lock().map_err(|_| RecoveryAdmissionFailure::Poisoned)?;
-        if state.closed { return Err(RecoveryAdmissionFailure::Closed); }
+    pub(crate) fn validate_open_permit(
+        &self,
+        permit: &RecoveryPermit,
+    ) -> Result<(), RecoveryAdmissionFailure> {
+        if !Arc::ptr_eq(&self.0, &permit.0) {
+            return Err(RecoveryAdmissionFailure::PermitMismatch);
+        }
+        let state = self
+            .0
+            .lock()
+            .map_err(|_| RecoveryAdmissionFailure::Poisoned)?;
+        if state.closed {
+            return Err(RecoveryAdmissionFailure::Closed);
+        }
         Ok(())
     }
     pub(crate) fn close(&self) -> Result<(), RecoveryAdmissionFailure> {
@@ -92,14 +110,24 @@ mod tests {
         let admission = StreamRecoveryAdmission::new(1);
         let permit = admission.reserve().unwrap();
         let poisoned = admission.clone();
-        assert!(std::thread::spawn(move || {
-            let _state = poisoned.0.lock().unwrap();
-            panic!("fixture poison");
-        }).join().is_err());
-        assert_eq!(admission.validate_permit(&permit), Err(RecoveryAdmissionFailure::Poisoned));
+        assert!(
+            std::thread::spawn(move || {
+                let _state = poisoned.0.lock().unwrap();
+                panic!("fixture poison");
+            })
+            .join()
+            .is_err()
+        );
+        assert_eq!(
+            admission.validate_permit(&permit),
+            Err(RecoveryAdmissionFailure::Poisoned)
+        );
         drop(permit);
         assert!(admission.reserve().is_err());
-        let state = admission.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = admission
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(state.used, 0);
     }
 

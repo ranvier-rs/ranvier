@@ -43,7 +43,11 @@ async fn greet(_state: (), _resources: &RanvierConfig, _bus: &mut Bus) -> Outcom
 }
 
 #[transition]
-async fn health_info(_state: (), _resources: &RanvierConfig, _bus: &mut Bus) -> Outcome<String, String> {
+async fn health_info(
+    _state: (),
+    _resources: &RanvierConfig,
+    _bus: &mut Bus,
+) -> Outcome<String, String> {
     let config = _resources;
     let info = serde_json::json!({
         "service": config.telemetry.service_name,
@@ -79,7 +83,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
 
     if config.telemetry.otlp_endpoint.is_some() {
-        tracing::info!("OTLP destination is configured; this example does not initialize an exporter");
+        tracing::info!(
+            "OTLP destination is configured; this example does not initialize an exporter"
+        );
     } else {
         tracing::info!("No OTLP endpoint configured — telemetry is a no-op");
     }
@@ -91,7 +97,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .health_endpoint("/health")
         .readiness_liveness_default()
         .request_id_layer()
-        .route("/", Axon::<(), (), String, RanvierConfig>::new("Greet").then(greet))
+        .route(
+            "/",
+            Axon::<(), (), String, RanvierConfig>::new("Greet").then(greet),
+        )
         .route(
             "/telemetry-info",
             Axon::<(), (), String, RanvierConfig>::new("TelemetryInfo").then(health_info),

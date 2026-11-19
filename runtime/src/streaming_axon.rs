@@ -55,9 +55,15 @@ pub enum StreamReadinessError {
 }
 impl StreamReadiness {
     pub async fn initialized(&mut self) -> Result<(), StreamReadinessError> {
-        if let Some(observed) = self.observed { return observed; }
-        let observed = self.receiver.as_mut().expect("unobserved readiness retains receiver")
-            .await.map_err(|_| StreamReadinessError::Unavailable);
+        if let Some(observed) = self.observed {
+            return observed;
+        }
+        let observed = self
+            .receiver
+            .as_mut()
+            .expect("unobserved readiness retains receiver")
+            .await
+            .map_err(|_| StreamReadinessError::Unavailable);
         self.receiver = None;
         self.observed = Some(observed);
         observed
@@ -65,39 +71,82 @@ impl StreamReadiness {
 }
 
 type BoundedFrame<Out, Item, E> = (
-    crate::managed_stream_task::PreparedStreamTask<Result<StreamInitializationReport<Out,
-        crate::streaming_recovery::StreamReadyResult<()>, E>, crate::streaming_recovery::StreamInvocationAlreadyStarted>>,
+    crate::managed_stream_task::PreparedStreamTask<
+        Result<
+            StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult<()>, E>,
+            crate::streaming_recovery::StreamInvocationAlreadyStarted,
+        >,
+    >,
     tokio::sync::mpsc::Receiver<Item>,
 );
-type OwnedPlanFactory<In, Out, Item, E, Res> = Arc<dyn Fn(
-    &OwnedStreamDefinition<In, Out, Item, E, Res>, OwnedStreamContext<Res>,
-    &crate::streaming_recovery_admission::StreamRecoveryAdmission, Option<std::time::Instant>,
-    Option<crate::streaming_recovery_admission::RecoveryPermit>,
-) -> Result<OwnedCallablePlan<In, Out, Item, E, Res>, OwnedStreamPlanRejected<In, Out, E, Res>> + Send + Sync>;
+type OwnedPlanFactory<In, Out, Item, E, Res> = Arc<
+    dyn Fn(
+            &OwnedStreamDefinition<In, Out, Item, E, Res>,
+            OwnedStreamContext<Res>,
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission,
+            Option<std::time::Instant>,
+            Option<crate::streaming_recovery_admission::RecoveryPermit>,
+        ) -> Result<
+            OwnedCallablePlan<In, Out, Item, E, Res>,
+            OwnedStreamPlanRejected<In, Out, E, Res>,
+        > + Send
+        + Sync,
+>;
 /// Concrete initializer identity is hidden; original report and context types remain.
 pub(crate) struct OwnedCallablePlan<In, Out, Item, E, Res> {
     pub(crate) owner: crate::streaming_recovery::OwnedStreamRecovery<In, Out, E, Res>,
-    prepare: Option<Box<dyn FnOnce(In, std::time::Duration, Option<tokio::sync::oneshot::Sender<()>>) -> Result<BoundedFrame<Out, Item, E>, BoundedPreparationRejected<In>> + Send + Sync>>,
+    prepare: Option<
+        Box<
+            dyn FnOnce(
+                    In,
+                    std::time::Duration,
+                    Option<tokio::sync::oneshot::Sender<()>>,
+                )
+                    -> Result<BoundedFrame<Out, Item, E>, BoundedPreparationRejected<In>>
+                + Send
+                + Sync,
+        >,
+    >,
 }
 impl<In, Out, Item, E, Res> OwnedCallablePlan<In, Out, Item, E, Res> {
     /// One preparation decision per admitted plan, before allocating a channel
     /// or spawning another frame. The owner remains available for reconciliation.
-    pub(crate) fn prepare_bounded(&mut self, input: In, grace: std::time::Duration)
-        -> Result<BoundedFrame<Out, Item, E>, BoundedPreparationRejected<In>> {
+    pub(crate) fn prepare_bounded(
+        &mut self,
+        input: In,
+        grace: std::time::Duration,
+    ) -> Result<BoundedFrame<Out, Item, E>, BoundedPreparationRejected<In>> {
         match self.prepare.take() {
             Some(prepare) => prepare(input, grace, None),
-            None => Err(BoundedPreparationRejected { signal: "execution.stream_preparation_decided", input }),
+            None => Err(BoundedPreparationRejected {
+                signal: "execution.stream_preparation_decided",
+                input,
+            }),
         }
     }
-    pub(crate) fn prepare_bounded_ready(&mut self, input: In, grace: std::time::Duration)
-        -> Result<(BoundedFrame<Out, Item, E>, StreamReadiness), BoundedPreparationRejected<In>> {
+    pub(crate) fn prepare_bounded_ready(
+        &mut self,
+        input: In,
+        grace: std::time::Duration,
+    ) -> Result<(BoundedFrame<Out, Item, E>, StreamReadiness), BoundedPreparationRejected<In>> {
         let prepare = match self.prepare.take() {
             Some(prepare) => prepare,
-            None => return Err(BoundedPreparationRejected { signal: "execution.stream_preparation_decided", input }),
+            None => {
+                return Err(BoundedPreparationRejected {
+                    signal: "execution.stream_preparation_decided",
+                    input,
+                });
+            }
         };
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let frame = prepare(input, grace, Some(sender))?;
-        Ok((frame, StreamReadiness { receiver: Some(receiver), observed: None }))
+        Ok((
+            frame,
+            StreamReadiness {
+                receiver: Some(receiver),
+                observed: None,
+            },
+        ))
     }
 }
 impl<In, Out, Item, E, Res> OwnedCallablePlan<In, Out, Item, E, Res>
@@ -107,13 +156,27 @@ where
     E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + Debug + 'static,
     Res: Send + Sync + 'static,
 {
-    pub(crate) fn report_handle(&self, prepared: &crate::managed_stream_task::PreparedStreamTask<Result<
-        StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult<()>, E>,
-        crate::streaming_recovery::StreamInvocationAlreadyStarted>>)
-        -> Result<crate::streaming_report_handle::StreamReportHandle<Out, E>, &'static str> {
+    pub(crate) fn report_handle(
+        &self,
+        prepared: &crate::managed_stream_task::PreparedStreamTask<
+            Result<
+                StreamInitializationReport<
+                    Out,
+                    crate::streaming_recovery::StreamReadyResult<()>,
+                    E,
+                >,
+                crate::streaming_recovery::StreamInvocationAlreadyStarted,
+            >,
+        >,
+    ) -> Result<crate::streaming_report_handle::StreamReportHandle<Out, E>, &'static str> {
         let owner = self.owner.retention_capability();
-        if !prepared.matches_owner(&owner) { return Err("execution.nested_task_owner_mismatch"); }
-        Ok(crate::streaming_report_handle::StreamReportHandle::new(prepared.holder(), owner))
+        if !prepared.matches_owner(&owner) {
+            return Err("execution.nested_task_owner_mismatch");
+        }
+        Ok(crate::streaming_report_handle::StreamReportHandle::new(
+            prepared.holder(),
+            owner,
+        ))
     }
 }
 pub(crate) struct BoundedPreparationRejected<In> {
@@ -131,43 +194,76 @@ where
     /// Capture type selection at builder construction, while using current
     /// definition settings at plan creation. No graph/context reconstruction.
     pub(crate) fn factory<S, SErr>() -> OwnedPlanFactory<In, Out, Item, E, Res>
-    where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
+    where
+        S: ranvier_core::streaming::StreamingTransition<
+                Out,
+                Item = Item,
+                Error = SErr,
+                Resources = Res,
+            > + Clone,
         SErr: Send + Sync + Debug + 'static,
     {
         Arc::new(|definition, context, admission, expires, permit| {
-            let plan = definition.try_plan_with_reservation::<S, SErr>(context, admission, expires, permit)?;
+            let plan = definition
+                .try_plan_with_reservation::<S, SErr>(context, admission, expires, permit)?;
             Ok(OwnedCallablePlan {
                 owner: plan.owner.clone(),
-                prepare: Some(Box::new(move |input, grace, ready| plan.prepare_bounded_notifying::<SErr>(input, grace, ready))),
+                prepare: Some(Box::new(move |input, grace, ready| {
+                    plan.prepare_bounded_notifying::<SErr>(input, grace, ready)
+                })),
             })
         })
     }
-    pub(crate) fn try_callable_plan(&self, context: OwnedStreamContext<Res>,
+    pub(crate) fn try_callable_plan(
+        &self,
+        context: OwnedStreamContext<Res>,
         admission: &crate::streaming_recovery_admission::StreamRecoveryAdmission,
-        expires: Option<std::time::Instant>)
-        -> Result<OwnedCallablePlan<In, Out, Item, E, Res>, OwnedStreamPlanRejected<In, Out, E, Res>> {
+        expires: Option<std::time::Instant>,
+    ) -> Result<OwnedCallablePlan<In, Out, Item, E, Res>, OwnedStreamPlanRejected<In, Out, E, Res>>
+    {
         (self.callable_factory)(self, context, admission, expires, None)
     }
-    pub(crate) fn try_plan<S, SErr>(&self, context: OwnedStreamContext<Res>,
+    pub(crate) fn try_plan<S, SErr>(
+        &self,
+        context: OwnedStreamContext<Res>,
         admission: &crate::streaming_recovery_admission::StreamRecoveryAdmission,
-        expires: Option<std::time::Instant>)
-        -> Result<OwnedStreamPlan<In, Out, Item, E, Res, S>, OwnedStreamPlanRejected<In, Out, E, Res>>
-    where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
+        expires: Option<std::time::Instant>,
+    ) -> Result<OwnedStreamPlan<In, Out, Item, E, Res, S>, OwnedStreamPlanRejected<In, Out, E, Res>>
+    where
+        S: ranvier_core::streaming::StreamingTransition<
+                Out,
+                Item = Item,
+                Error = SErr,
+                Resources = Res,
+            > + Clone,
         SErr: Send + Sync + Debug + 'static,
     {
         self.try_plan_with_reservation::<S, SErr>(context, admission, expires, None)
     }
-    pub(crate) fn try_callable_plan_reserved(&self, context: OwnedStreamContext<Res>,
+    pub(crate) fn try_callable_plan_reserved(
+        &self,
+        context: OwnedStreamContext<Res>,
         admission: &crate::streaming_recovery_admission::StreamRecoveryAdmission,
-        expires: Option<std::time::Instant>, permit: crate::streaming_recovery_admission::RecoveryPermit)
-        -> Result<OwnedCallablePlan<In, Out, Item, E, Res>, OwnedStreamPlanRejected<In, Out, E, Res>> {
+        expires: Option<std::time::Instant>,
+        permit: crate::streaming_recovery_admission::RecoveryPermit,
+    ) -> Result<OwnedCallablePlan<In, Out, Item, E, Res>, OwnedStreamPlanRejected<In, Out, E, Res>>
+    {
         (self.callable_factory)(self, context, admission, expires, Some(permit))
     }
-    fn try_plan_with_reservation<S, SErr>(&self, context: OwnedStreamContext<Res>,
+    fn try_plan_with_reservation<S, SErr>(
+        &self,
+        context: OwnedStreamContext<Res>,
         admission: &crate::streaming_recovery_admission::StreamRecoveryAdmission,
-        expires: Option<std::time::Instant>, permit: Option<crate::streaming_recovery_admission::RecoveryPermit>)
-        -> Result<OwnedStreamPlan<In, Out, Item, E, Res, S>, OwnedStreamPlanRejected<In, Out, E, Res>>
-    where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
+        expires: Option<std::time::Instant>,
+        permit: Option<crate::streaming_recovery_admission::RecoveryPermit>,
+    ) -> Result<OwnedStreamPlan<In, Out, Item, E, Res, S>, OwnedStreamPlanRejected<In, Out, E, Res>>
+    where
+        S: ranvier_core::streaming::StreamingTransition<
+                Out,
+                Item = Item,
+                Error = SErr,
+                Resources = Res,
+            > + Clone,
         SErr: Send + Sync + Debug + 'static,
     {
         let initializer = match self.initializer.downcast_ref::<S>() {
@@ -175,10 +271,28 @@ where
             None => return Err(OwnedStreamPlanRejected::InitializerType { context }),
         };
         let owner = match permit {
-            Some(permit) => crate::streaming_recovery::OwnedStreamRecovery::try_new_reserved(self.prefix.clone(), context, admission, expires, permit),
-            None => crate::streaming_recovery::OwnedStreamRecovery::try_new(self.prefix.clone(), context, admission, expires),
-        }.map_err(OwnedStreamPlanRejected::Admission)?;
-        Ok(OwnedStreamPlan { owner, initializer, item_maps: self.item_maps.clone(), timeout_config: self.timeout_config.clone(), buffer_size: self.buffer_size })
+            Some(permit) => crate::streaming_recovery::OwnedStreamRecovery::try_new_reserved(
+                self.prefix.clone(),
+                context,
+                admission,
+                expires,
+                permit,
+            ),
+            None => crate::streaming_recovery::OwnedStreamRecovery::try_new(
+                self.prefix.clone(),
+                context,
+                admission,
+                expires,
+            ),
+        }
+        .map_err(OwnedStreamPlanRejected::Admission)?;
+        Ok(OwnedStreamPlan {
+            owner,
+            initializer,
+            item_maps: self.item_maps.clone(),
+            timeout_config: self.timeout_config.clone(),
+            buffer_size: self.buffer_size,
+        })
     }
 }
 impl<In, Out, Item, E, Res, S> OwnedStreamPlan<In, Out, Item, E, Res, S>
@@ -189,55 +303,151 @@ where
     Res: Send + Sync + 'static,
     Item: Send + 'static,
 {
-    pub(crate) fn prepare_bounded<SErr>(&self, input: In, grace: std::time::Duration)
-        -> Result<(crate::managed_stream_task::PreparedStreamTask<Result<StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult<()>, E>, crate::streaming_recovery::StreamInvocationAlreadyStarted>>, tokio::sync::mpsc::Receiver<Item>), BoundedPreparationRejected<In>>
-    where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
+    pub(crate) fn prepare_bounded<SErr>(
+        &self,
+        input: In,
+        grace: std::time::Duration,
+    ) -> Result<
+        (
+            crate::managed_stream_task::PreparedStreamTask<
+                Result<
+                    StreamInitializationReport<
+                        Out,
+                        crate::streaming_recovery::StreamReadyResult<()>,
+                        E,
+                    >,
+                    crate::streaming_recovery::StreamInvocationAlreadyStarted,
+                >,
+            >,
+            tokio::sync::mpsc::Receiver<Item>,
+        ),
+        BoundedPreparationRejected<In>,
+    >
+    where
+        S: ranvier_core::streaming::StreamingTransition<
+                Out,
+                Item = Item,
+                Error = SErr,
+                Resources = Res,
+            > + Clone,
         SErr: Send + Sync + Debug + 'static,
     {
         self.prepare_bounded_notifying::<SErr>(input, grace, None)
     }
-    pub(crate) fn prepare_bounded_notifying<SErr>(&self, input: In, grace: std::time::Duration, ready: Option<tokio::sync::oneshot::Sender<()>>)
-        -> Result<(crate::managed_stream_task::PreparedStreamTask<Result<StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult<()>, E>, crate::streaming_recovery::StreamInvocationAlreadyStarted>>, tokio::sync::mpsc::Receiver<Item>), BoundedPreparationRejected<In>>
-    where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
+    pub(crate) fn prepare_bounded_notifying<SErr>(
+        &self,
+        input: In,
+        grace: std::time::Duration,
+        ready: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> Result<
+        (
+            crate::managed_stream_task::PreparedStreamTask<
+                Result<
+                    StreamInitializationReport<
+                        Out,
+                        crate::streaming_recovery::StreamReadyResult<()>,
+                        E,
+                    >,
+                    crate::streaming_recovery::StreamInvocationAlreadyStarted,
+                >,
+            >,
+            tokio::sync::mpsc::Receiver<Item>,
+        ),
+        BoundedPreparationRejected<In>,
+    >
+    where
+        S: ranvier_core::streaming::StreamingTransition<
+                Out,
+                Item = Item,
+                Error = SErr,
+                Resources = Res,
+            > + Clone,
         SErr: Send + Sync + Debug + 'static,
     {
         if self.buffer_size == 0 {
-            return Err(BoundedPreparationRejected { signal: "execution.stream_buffer_invalid", input });
+            return Err(BoundedPreparationRejected {
+                signal: "execution.stream_buffer_invalid",
+                input,
+            });
         }
         let config = self.timeout_config.clone().unwrap_or(StreamTimeoutConfig {
-            init: None, idle: Some(std::time::Duration::from_secs(30)), total: None,
+            init: None,
+            idle: Some(std::time::Duration::from_secs(30)),
+            total: None,
         });
-        if config.total.is_some_and(|duration| tokio::time::Instant::now().checked_add(duration).is_none()) {
-            return Err(BoundedPreparationRejected { signal: "execution.stream_deadline_invalid", input });
+        if config
+            .total
+            .is_some_and(|duration| tokio::time::Instant::now().checked_add(duration).is_none())
+        {
+            return Err(BoundedPreparationRejected {
+                signal: "execution.stream_deadline_invalid",
+                input,
+            });
         }
         let (sender, receiver) = tokio::sync::mpsc::channel(self.buffer_size);
         let maps = self.item_maps.clone();
-        let prepared = self.owner.prepare_managed_controlled(input, self.initializer.clone(), grace, config.total, move |stream, token, origin| async move {
-            if let Some(ready) = ready {
-                if ready.send(()).is_err() {
-                    return crate::streaming_recovery::StreamDriveResult {
-                        value: (), terminal: crate::StreamConsumptionTerminal::Cancelled(
-                            ranvier_core::CancellationContext::new(ranvier_core::CancellationReason::ClientDisconnected)),
-                    };
+        let prepared = self.owner.prepare_managed_controlled(
+            input,
+            self.initializer.clone(),
+            grace,
+            config.total,
+            move |stream, token, origin| async move {
+                if let Some(ready) = ready {
+                    if ready.send(()).is_err() {
+                        return crate::streaming_recovery::StreamDriveResult {
+                            value: (),
+                            terminal: crate::StreamConsumptionTerminal::Cancelled(
+                                ranvier_core::CancellationContext::new(
+                                    ranvier_core::CancellationReason::ClientDisconnected,
+                                ),
+                            ),
+                        };
+                    }
                 }
-            }
-            let mapped = stream.map(move |item| maps.iter().fold(item, |item, map| map(item)));
-            crate::streaming_recovery::produce_bounded_with_total_origin(Box::pin(mapped), config, token, sender, origin).await
-        });
+                let mapped = stream.map(move |item| maps.iter().fold(item, |item, map| map(item)));
+                crate::streaming_recovery::produce_bounded_with_total_origin(
+                    Box::pin(mapped),
+                    config,
+                    token,
+                    sender,
+                    origin,
+                )
+                .await
+            },
+        );
         Ok((prepared, receiver))
     }
-    pub(crate) fn prepare<T, F, Fut, SErr>(&self, input: In, grace: std::time::Duration, drive: F)
-        -> crate::managed_stream_task::PreparedStreamTask<Result<StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult<T>, E>, crate::streaming_recovery::StreamInvocationAlreadyStarted>>
-    where S: ranvier_core::streaming::StreamingTransition<Out, Item = Item, Error = SErr, Resources = Res> + Clone,
-        SErr: Send + Sync + Debug + 'static, T: Send + 'static,
+    pub(crate) fn prepare<T, F, Fut, SErr>(
+        &self,
+        input: In,
+        grace: std::time::Duration,
+        drive: F,
+    ) -> crate::managed_stream_task::PreparedStreamTask<
+        Result<
+            StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult<T>, E>,
+            crate::streaming_recovery::StreamInvocationAlreadyStarted,
+        >,
+    >
+    where
+        S: ranvier_core::streaming::StreamingTransition<
+                Out,
+                Item = Item,
+                Error = SErr,
+                Resources = Res,
+            > + Clone,
+        SErr: Send + Sync + Debug + 'static,
+        T: Send + 'static,
         F: FnOnce(Pin<Box<dyn Stream<Item = Item> + Send>>) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = crate::streaming_recovery::StreamDriveResult<T>> + Send + 'static,
+        Fut: std::future::Future<Output = crate::streaming_recovery::StreamDriveResult<T>>
+            + Send
+            + 'static,
     {
         let maps = self.item_maps.clone();
-        self.owner.prepare_managed(input, self.initializer.clone(), grace, move |stream| {
-            let mapped = stream.map(move |item| maps.iter().fold(item, |item, map| map(item)));
-            drive(Box::pin(mapped))
-        })
+        self.owner
+            .prepare_managed(input, self.initializer.clone(), grace, move |stream| {
+                let mapped = stream.map(move |item| maps.iter().fold(item, |item, map| map(item)));
+                drive(Box::pin(mapped))
+            })
     }
 }
 
@@ -329,9 +539,12 @@ where
     }
     fn refresh_owned_config(&mut self) {
         self.owned_definition = Arc::new(OwnedStreamDefinition {
-            prefix: self.owned_definition.prefix.clone(), initializer: self.owned_definition.initializer.clone(),
+            prefix: self.owned_definition.prefix.clone(),
+            initializer: self.owned_definition.initializer.clone(),
             callable_factory: self.owned_definition.callable_factory.clone(),
-            item_maps: self.owned_definition.item_maps.clone(), timeout_config: self.timeout_config.clone(), buffer_size: self.buffer_size,
+            item_maps: self.owned_definition.item_maps.clone(),
+            timeout_config: self.timeout_config.clone(),
+            buffer_size: self.buffer_size,
         });
     }
     pub fn export_schematic(&self) -> &Schematic {
@@ -351,7 +564,9 @@ where
             prefix: self.owned_definition.prefix.clone(),
             initializer: self.owned_definition.initializer.clone(),
             callable_factory: self.owned_definition.callable_factory.clone(),
-            item_maps, timeout_config: self.timeout_config.clone(), buffer_size: self.buffer_size,
+            item_maps,
+            timeout_config: self.timeout_config.clone(),
+            buffer_size: self.buffer_size,
         });
         let executor: StreamExecutorType<In, Out, Item, E, Res> =
             Arc::new(move |input, resources, bus, token| {
@@ -565,41 +780,93 @@ mod tests {
     async fn owned_definition_survives_clone_and_maps_in_actual_execution_order() {
         let original = circuit(&["a"]);
         let cloned = original.clone();
-        assert!(Arc::ptr_eq(&original.owned_definition, &cloned.owned_definition));
+        assert!(Arc::ptr_eq(
+            &original.owned_definition,
+            &cloned.owned_definition
+        ));
         let initializer = original.owned_definition.initializer.clone();
         let prefix_nodes = original.owned_definition.prefix.schematic.nodes.len();
-        let mapped = cloned.map_items(|item| format!("{item}1")).map_items(|item| format!("{item}2"));
-        assert!(Arc::ptr_eq(&initializer, &mapped.owned_definition.initializer));
-        assert!(mapped.owned_definition.initializer.downcast_ref::<Chunks>().is_some());
-        assert_eq!(mapped.owned_definition.prefix.schematic.nodes.len(), prefix_nodes);
+        let mapped = cloned
+            .map_items(|item| format!("{item}1"))
+            .map_items(|item| format!("{item}2"));
+        assert!(Arc::ptr_eq(
+            &initializer,
+            &mapped.owned_definition.initializer
+        ));
+        assert!(
+            mapped
+                .owned_definition
+                .initializer
+                .downcast_ref::<Chunks>()
+                .is_some()
+        );
+        assert_eq!(
+            mapped.owned_definition.prefix.schematic.nodes.len(),
+            prefix_nodes
+        );
         assert_eq!(mapped.owned_definition.item_maps.len(), 2);
-        let expected = mapped.owned_definition.item_maps.iter().fold("a".to_string(), |item, map| map(item));
-        let items = ready(mapped.execute("".into(), &(), &mut Bus::new()).await).collect::<Vec<_>>().await;
+        let expected = mapped
+            .owned_definition
+            .item_maps
+            .iter()
+            .fold("a".to_string(), |item, map| map(item));
+        let items = ready(mapped.execute("".into(), &(), &mut Bus::new()).await)
+            .collect::<Vec<_>>()
+            .await;
         assert_eq!(items, vec![expected]);
         assert!(original.owned_definition.item_maps.is_empty());
     }
     #[tokio::test]
     async fn owned_plan_drives_original_items_with_maps_once() {
-        let circuit = circuit(&["a"]).map_items(|item| format!("{item}1")).map_items(|item| format!("{item}2"));
+        let circuit = circuit(&["a"])
+            .map_items(|item| format!("{item}1"))
+            .map_items(|item| format!("{item}2"));
         let plan = match circuit.owned_definition.try_plan::<Chunks, String>(
             OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
-            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
-            Ok(plan) => plan, Err(_) => panic!("owned plan rejected"),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1),
+            None,
+        ) {
+            Ok(plan) => plan,
+            Err(_) => panic!("owned plan rejected"),
         };
-        let mut prepared = plan.prepare("".into(), std::time::Duration::from_secs(5), |stream| async move {
-            crate::streaming_recovery::StreamDriveResult { value: stream.collect::<Vec<_>>().await, terminal: crate::StreamConsumptionTerminal::Completed }
-        });
+        let mut prepared = plan.prepare(
+            "".into(),
+            std::time::Duration::from_secs(5),
+            |stream| async move {
+                crate::streaming_recovery::StreamDriveResult {
+                    value: stream.collect::<Vec<_>>().await,
+                    terminal: crate::StreamConsumptionTerminal::Completed,
+                }
+            },
+        );
         let root = crate::nested_custody::CustodyStore::new(1);
         let journal = crate::SagaRollbackJournal::new("owned-plan-parent");
-        plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+        plan.owner
+            .register_and_start(
+                root.client(),
+                &journal,
+                CancellationToken::new(),
+                &mut prepared,
+            )
+            .await
             .unwrap_or_else(|error| panic!("{}", error.signal));
         let holder = prepared.holder();
-        let joined = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
+        let joined = holder
+            .lock()
+            .await
+            .join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         match joined {
             Ok(StreamInitializationReport::Ready { value, .. }) => {
                 let consumed = value.consumption.unwrap();
                 assert_eq!(consumed.value, vec!["a12"]);
-                assert_eq!(consumed.terminal, crate::StreamConsumptionTerminal::Completed);
+                assert_eq!(
+                    consumed.terminal,
+                    crate::StreamConsumptionTerminal::Completed
+                );
             }
             _ => panic!("original report not ready"),
         }
@@ -612,27 +879,58 @@ mod tests {
             let permit = admission.reserve().unwrap();
             assert_eq!(admission.in_use().unwrap(), 1);
             assert!(admission.reserve().is_err());
-            if closed { admission.close().unwrap(); }
+            if closed {
+                admission.close().unwrap();
+            }
             let mut plan = match circuit.owned_definition.try_callable_plan_reserved(
-                OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(), &admission, None, permit) {
-                Ok(plan) => plan, Err(_) => panic!("reserved capacity must transfer without second reservation"),
+                OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
+                &admission,
+                None,
+                permit,
+            ) {
+                Ok(plan) => plan,
+                Err(_) => panic!("reserved capacity must transfer without second reservation"),
             };
             assert_eq!(admission.in_use().unwrap(), 1);
-            let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
-                Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
-            };
+            let (mut prepared, mut receiver) =
+                match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+                    Ok(prepared) => prepared,
+                    Err(_) => panic!("producer rejected"),
+                };
             let report = plan.report_handle(&prepared).unwrap();
             let root = crate::nested_custody::CustodyStore::new(1);
             let journal = crate::SagaRollbackJournal::new("reserved-parent");
-            plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+            plan.owner
+                .register_and_start(
+                    root.client(),
+                    &journal,
+                    CancellationToken::new(),
+                    &mut prepared,
+                )
+                .await
                 .unwrap_or_else(|error| panic!("{}", error.signal));
             assert_eq!(receiver.recv().await, Some("reserved".to_string()));
             assert_eq!(receiver.recv().await, None);
-            assert!(matches!(report.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await,
-                Ok(crate::streaming_report_handle::SupervisedStreamCompletion::Report(StreamInitializationReport::Ready { .. }))));
-            drop(plan); drop(prepared); drop(root); drop(report);
+            assert!(matches!(
+                report
+                    .take_report_until(
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(5)
+                    )
+                    .await,
+                Ok(
+                    crate::streaming_report_handle::SupervisedStreamCompletion::Report(
+                        StreamInitializationReport::Ready { .. }
+                    )
+                )
+            ));
+            drop(plan);
+            drop(prepared);
+            drop(root);
+            drop(report);
             assert_eq!(admission.in_use().unwrap(), 0);
-            if closed { assert!(admission.reserve().is_err()); }
+            if closed {
+                assert!(admission.reserve().is_err());
+            }
         }
     }
 
@@ -643,13 +941,21 @@ mod tests {
         let target = crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1);
         let permit = foreign.reserve().unwrap();
         let resources = Arc::new(());
-        let mut bus = Bus::new(); bus.insert(173u32);
+        let mut bus = Bus::new();
+        bus.insert(173u32);
         let rejected = match circuit.owned_definition.try_callable_plan_reserved(
-            OwnedStreamContext::try_new(resources.clone(), bus).unwrap(), &target, None, permit) {
+            OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
+            &target,
+            None,
+            permit,
+        ) {
             Err(OwnedStreamPlanRejected::Admission(rejected)) => rejected,
             _ => panic!("foreign permit must reject before owner construction"),
         };
-        assert_eq!(rejected.reason(), crate::streaming_recovery_admission::RecoveryAdmissionFailure::PermitMismatch);
+        assert_eq!(
+            rejected.reason(),
+            crate::streaming_recovery_admission::RecoveryAdmissionFailure::PermitMismatch
+        );
         let (_graph, context) = rejected.into_parts();
         let (returned, bus) = context.into_parts();
         assert!(Arc::ptr_eq(&returned, &resources));
@@ -666,39 +972,72 @@ mod tests {
         let resources = Arc::new(());
         let weak = Arc::downgrade(&resources);
         let mut plan = match circuit.owned_definition.try_callable_plan(
-            OwnedStreamContext::try_new(resources, Bus::new()).unwrap(), &admission, None) {
-            Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+            OwnedStreamContext::try_new(resources, Bus::new()).unwrap(),
+            &admission,
+            None,
+        ) {
+            Ok(plan) => plan,
+            Err(_) => panic!("plan rejected"),
         };
-        let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
-            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
-        };
+        let (mut prepared, mut receiver) =
+            match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+                Ok(prepared) => prepared,
+                Err(_) => panic!("producer rejected"),
+            };
         let handle = plan.report_handle(&prepared).unwrap();
         let clone = handle.clone();
-        assert_eq!(handle.settle_until(tokio::time::Instant::now()).await, Err(StreamReportWaitError::TimedOut));
+        assert_eq!(
+            handle.settle_until(tokio::time::Instant::now()).await,
+            Err(StreamReportWaitError::TimedOut)
+        );
         {
             use futures_util::FutureExt;
-            assert!(clone.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
-                .now_or_never().is_none());
+            assert!(
+                clone
+                    .take_report_until(
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(5)
+                    )
+                    .now_or_never()
+                    .is_none()
+            );
         }
         let root = crate::nested_custody::CustodyStore::new(1);
         let journal = crate::SagaRollbackJournal::new("public-report-parent");
-        plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+        plan.owner
+            .register_and_start(
+                root.client(),
+                &journal,
+                CancellationToken::new(),
+                &mut prepared,
+            )
+            .await
             .unwrap_or_else(|error| panic!("{}", error.signal));
         assert_eq!(receiver.recv().await, Some("a".to_string()));
         assert_eq!(receiver.recv().await, None);
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         handle.settle_until(deadline).await.unwrap();
-        drop(plan); drop(prepared); drop(root);
+        drop(plan);
+        drop(prepared);
+        drop(root);
         assert_eq!(admission.in_use().unwrap(), 1);
         assert!(weak.upgrade().is_some());
         match clone.take_report_until(deadline).await.unwrap() {
-            SupervisedStreamCompletion::Report(StreamInitializationReport::Ready { value, .. }) => {
-                assert!(matches!(value.consumption, Ok(crate::StreamConsumptionTerminal::Completed)));
+            SupervisedStreamCompletion::Report(StreamInitializationReport::Ready {
+                value, ..
+            }) => {
+                assert!(matches!(
+                    value.consumption,
+                    Ok(crate::StreamConsumptionTerminal::Completed)
+                ));
             }
             _ => panic!("original report lost"),
         }
-        assert!(matches!(handle.take_report_until(deadline).await, Err(StreamReportWaitError::AlreadyTaken)));
-        drop(handle); drop(clone);
+        assert!(matches!(
+            handle.take_report_until(deadline).await,
+            Err(StreamReportWaitError::AlreadyTaken)
+        ));
+        drop(handle);
+        drop(clone);
         assert_eq!(admission.in_use().unwrap(), 0);
         assert!(weak.upgrade().is_none());
     }
@@ -709,24 +1048,44 @@ mod tests {
         let circuit = circuit(&["a"]);
         let admission = crate::streaming_recovery_admission::StreamRecoveryAdmission::new(2);
         let make = || match circuit.owned_definition.try_callable_plan(
-            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(), &admission, None) {
-            Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
+            &admission,
+            None,
+        ) {
+            Ok(plan) => plan,
+            Err(_) => panic!("plan rejected"),
         };
         let mut plan = make();
         let other = make();
-        let (mut prepared, _receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
-            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
-        };
-        assert!(matches!(other.report_handle(&prepared), Err("execution.nested_task_owner_mismatch")));
+        let (mut prepared, _receiver) =
+            match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+                Ok(prepared) => prepared,
+                Err(_) => panic!("producer rejected"),
+            };
+        assert!(matches!(
+            other.report_handle(&prepared),
+            Err("execution.nested_task_owner_mismatch")
+        ));
         let handle = plan.report_handle(&prepared).unwrap();
         prepared.holder().lock().await.abort_frame();
-        match handle.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap() {
+        match handle
+            .take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+            .await
+            .unwrap()
+        {
             SupervisedStreamCompletion::FrameFailed(error) => assert!(error.is_cancelled()),
             _ => panic!("original JoinError lost"),
         }
-        assert_eq!(plan.owner.observe().borrow().phase, crate::streaming_recovery::SupervisorPhase::NotStarted);
-        assert!(matches!(prepared.reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await,
-            Err(crate::managed_stream_task::ManagedTaskWaitError::AlreadyJoined)));
+        assert_eq!(
+            plan.owner.observe().borrow().phase,
+            crate::streaming_recovery::SupervisorPhase::NotStarted
+        );
+        assert!(matches!(
+            prepared
+                .reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                .await,
+            Err(crate::managed_stream_task::ManagedTaskWaitError::AlreadyJoined)
+        ));
     }
 
     #[tokio::test]
@@ -735,20 +1094,41 @@ mod tests {
             let circuit = circuit(&["a"]);
             let mut plan = match circuit.owned_definition.try_callable_plan(
                 OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
-                &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
-                Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+                &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1),
+                None,
+            ) {
+                Ok(plan) => plan,
+                Err(_) => panic!("plan rejected"),
             };
-            let ((mut prepared, mut receiver), ready) = match plan.prepare_bounded_ready("".into(), std::time::Duration::from_secs(5)) {
-                Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
-            };
+            let ((mut prepared, mut receiver), ready) =
+                match plan.prepare_bounded_ready("".into(), std::time::Duration::from_secs(5)) {
+                    Ok(prepared) => prepared,
+                    Err(_) => panic!("producer rejected"),
+                };
             let mut ready = Some(ready);
-            if dropped { drop(ready.take()); } else {
+            if dropped {
+                drop(ready.take());
+            } else {
                 use futures_util::FutureExt;
-                assert!(ready.as_mut().unwrap().initialized().now_or_never().is_none());
+                assert!(
+                    ready
+                        .as_mut()
+                        .unwrap()
+                        .initialized()
+                        .now_or_never()
+                        .is_none()
+                );
             }
             let root = crate::nested_custody::CustodyStore::new(1);
             let journal = crate::SagaRollbackJournal::new("readiness-parent");
-            plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+            plan.owner
+                .register_and_start(
+                    root.client(),
+                    &journal,
+                    CancellationToken::new(),
+                    &mut prepared,
+                )
+                .await
                 .unwrap_or_else(|error| panic!("{}", error.signal));
             if let Some(ready) = ready.as_mut() {
                 assert_eq!(ready.initialized().await, Ok(()));
@@ -757,14 +1137,25 @@ mod tests {
             }
             assert_eq!(receiver.recv().await, None);
             let holder = prepared.holder();
-            let report = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
+            let report = holder
+                .lock()
+                .await
+                .join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
             match report {
                 Ok(StreamInitializationReport::Ready { value, .. }) => {
                     let terminal = value.consumption.unwrap().terminal;
                     if dropped {
-                        assert!(matches!(terminal, crate::StreamConsumptionTerminal::Cancelled(context)
-                            if context.reason == ranvier_core::CancellationReason::ClientDisconnected));
-                    } else { assert_eq!(terminal, crate::StreamConsumptionTerminal::Completed); }
+                        assert!(
+                            matches!(terminal, crate::StreamConsumptionTerminal::Cancelled(context)
+                            if context.reason == ranvier_core::CancellationReason::ClientDisconnected)
+                        );
+                    } else {
+                        assert_eq!(terminal, crate::StreamConsumptionTerminal::Completed);
+                    }
                 }
                 _ => panic!("original Ready report lost"),
             }
@@ -773,62 +1164,122 @@ mod tests {
 
     #[tokio::test]
     async fn readiness_unavailable_is_repeatable_without_consuming_original_prefix_fault() {
-        let circuit = Axon::<String, String, String>::start("readiness-fault").then(Fault)
-            .then_stream(Chunks { items: vec![], pending: false, include_input: false });
+        let circuit = Axon::<String, String, String>::start("readiness-fault")
+            .then(Fault)
+            .then_stream(Chunks {
+                items: vec![],
+                pending: false,
+                include_input: false,
+            });
         let mut plan = match circuit.owned_definition.try_callable_plan(
             OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
-            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
-            Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1),
+            None,
+        ) {
+            Ok(plan) => plan,
+            Err(_) => panic!("plan rejected"),
         };
-        let ((mut prepared, mut receiver), mut ready) = match plan.prepare_bounded_ready("".into(), std::time::Duration::from_secs(5)) {
-            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
-        };
+        let ((mut prepared, mut receiver), mut ready) =
+            match plan.prepare_bounded_ready("".into(), std::time::Duration::from_secs(5)) {
+                Ok(prepared) => prepared,
+                Err(_) => panic!("producer rejected"),
+            };
         let root = crate::nested_custody::CustodyStore::new(1);
         let journal = crate::SagaRollbackJournal::new("readiness-fault-parent");
-        plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+        plan.owner
+            .register_and_start(
+                root.client(),
+                &journal,
+                CancellationToken::new(),
+                &mut prepared,
+            )
+            .await
             .unwrap_or_else(|error| panic!("{}", error.signal));
-        assert_eq!(ready.initialized().await, Err(StreamReadinessError::Unavailable));
-        assert_eq!(ready.initialized().await, Err(StreamReadinessError::Unavailable));
+        assert_eq!(
+            ready.initialized().await,
+            Err(StreamReadinessError::Unavailable)
+        );
+        assert_eq!(
+            ready.initialized().await,
+            Err(StreamReadinessError::Unavailable)
+        );
         assert_eq!(receiver.recv().await, None);
         let holder = prepared.holder();
-        let report = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
-        assert!(matches!(report, Ok(StreamInitializationReport::Rejected { prefix: crate::ExecutionReport::Unpersisted {
+        let report = holder
+            .lock()
+            .await
+            .join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(report, Ok(StreamInitializationReport::Rejected { prefix: crate::ExecutionReport::Unpersisted {
             result: crate::ExecutionTerminal::Outcome(Outcome::Fault(error)), ..
-        } }) if error == "step failed"));
+        } }) if error == "step failed")
+        );
     }
 
     #[tokio::test]
     async fn callable_owned_factory_runs_current_maps_without_initializer_type_at_call_site() {
-        let circuit = circuit(&["a"]).map_items(|item| format!("{item}1"))
-            .with_buffer_size(1).map_items(|item| format!("{item}2")).clone();
+        let circuit = circuit(&["a"])
+            .map_items(|item| format!("{item}1"))
+            .with_buffer_size(1)
+            .map_items(|item| format!("{item}2"))
+            .clone();
         let mut plan = match circuit.owned_definition.try_callable_plan(
             OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
-            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
-            Ok(plan) => plan, Err(_) => panic!("callable plan rejected"),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1),
+            None,
+        ) {
+            Ok(plan) => plan,
+            Err(_) => panic!("callable plan rejected"),
         };
-        let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
-            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
-        };
+        let (mut prepared, mut receiver) =
+            match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+                Ok(prepared) => prepared,
+                Err(_) => panic!("producer rejected"),
+            };
         assert_eq!(receiver.max_capacity(), 1);
         let retry = "retry".repeat(20);
         let original = retry.as_ptr();
         let rejected = match plan.prepare_bounded(retry, std::time::Duration::from_secs(5)) {
-            Err(rejected) => rejected, Ok(_) => panic!("duplicate frame must reject"),
+            Err(rejected) => rejected,
+            Ok(_) => panic!("duplicate frame must reject"),
         };
         assert_eq!(rejected.signal, "execution.stream_preparation_decided");
         assert_eq!(rejected.input.as_ptr(), original);
-        assert_eq!(plan.owner.observe().borrow().phase, crate::streaming_recovery::SupervisorPhase::NotStarted);
+        assert_eq!(
+            plan.owner.observe().borrow().phase,
+            crate::streaming_recovery::SupervisorPhase::NotStarted
+        );
         let root = crate::nested_custody::CustodyStore::new(1);
         let journal = crate::SagaRollbackJournal::new("callable-parent");
-        plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+        plan.owner
+            .register_and_start(
+                root.client(),
+                &journal,
+                CancellationToken::new(),
+                &mut prepared,
+            )
+            .await
             .unwrap_or_else(|error| panic!("{}", error.signal));
         assert_eq!(receiver.recv().await, Some("a12".to_string()));
         assert_eq!(receiver.recv().await, None);
         let holder = prepared.holder();
-        let report = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
+        let report = holder
+            .lock()
+            .await
+            .join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         match report {
             Ok(StreamInitializationReport::Ready { value, .. }) => assert_eq!(
-                value.consumption.unwrap().terminal, crate::StreamConsumptionTerminal::Completed),
+                value.consumption.unwrap().terminal,
+                crate::StreamConsumptionTerminal::Completed
+            ),
             _ => panic!("original Ready report lost"),
         }
     }
@@ -842,45 +1293,92 @@ mod tests {
             type Item = String;
             type Error = String;
             type Resources = ();
-            async fn run_stream(&self, _: String, _: &(), _: &mut Bus) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, String> {
+            async fn run_stream(
+                &self,
+                _: String,
+                _: &(),
+                _: &mut Bus,
+            ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, String> {
                 std::future::pending().await
             }
         }
         let original = Axon::<String, String, String>::start("callable-timeout")
-            .then_stream(PendingCallableInit).with_timeout(StreamTimeoutConfig {
-                init: None, idle: None, total: Some(std::time::Duration::from_secs(10)),
+            .then_stream(PendingCallableInit)
+            .with_timeout(StreamTimeoutConfig {
+                init: None,
+                idle: None,
+                total: Some(std::time::Duration::from_secs(10)),
             });
-        let modified = original.clone().map_items(|item| item).with_buffer_size(2)
-            .with_timeout(StreamTimeoutConfig { init: None, idle: None, total: Some(std::time::Duration::from_secs(1)) }).clone();
+        let modified = original
+            .clone()
+            .map_items(|item| item)
+            .with_buffer_size(2)
+            .with_timeout(StreamTimeoutConfig {
+                init: None,
+                idle: None,
+                total: Some(std::time::Duration::from_secs(1)),
+            })
+            .clone();
         let mut plan = match modified.owned_definition.try_callable_plan(
             OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
-            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
-            Ok(plan) => plan, Err(_) => panic!("callable plan rejected"),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1),
+            None,
+        ) {
+            Ok(plan) => plan,
+            Err(_) => panic!("callable plan rejected"),
         };
-        let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
-            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
-        };
+        let (mut prepared, mut receiver) =
+            match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+                Ok(prepared) => prepared,
+                Err(_) => panic!("producer rejected"),
+            };
         assert_eq!(receiver.max_capacity(), 2);
         let root = crate::nested_custody::CustodyStore::new(1);
         let journal = crate::SagaRollbackJournal::new("callable-timeout-parent");
         let control = CancellationToken::new();
         let began = tokio::time::Instant::now();
-        plan.owner.register_and_start(root.client(), &journal, control.clone(), &mut prepared).await
+        plan.owner
+            .register_and_start(root.client(), &journal, control.clone(), &mut prepared)
+            .await
             .unwrap_or_else(|error| panic!("{}", error.signal));
         let holder = prepared.holder();
-        let report = holder.lock().await.join_until(began + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
+        let report = holder
+            .lock()
+            .await
+            .join_until(began + std::time::Duration::from_secs(5))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         match report {
-            Ok(StreamInitializationReport::Cancelled { context, initialization, .. }) => {
-                assert_eq!(context.reason, ranvier_core::CancellationReason::DeadlineExceeded);
+            Ok(StreamInitializationReport::Cancelled {
+                context,
+                initialization,
+                ..
+            }) => {
+                assert_eq!(
+                    context.reason,
+                    ranvier_core::CancellationReason::DeadlineExceeded
+                );
                 assert_eq!(initialization, crate::EffectBoundary::MayHaveRun);
             }
             _ => panic!("original cancellation report lost"),
         }
-        assert_eq!(tokio::time::Instant::now() - began, std::time::Duration::from_secs(1));
+        assert_eq!(
+            tokio::time::Instant::now() - began,
+            std::time::Duration::from_secs(1)
+        );
         assert!(!control.is_cancelled());
         assert_eq!(receiver.recv().await, None);
-        assert_eq!(original.owned_definition.timeout_config.as_ref().unwrap().total,
-            Some(std::time::Duration::from_secs(10)));
+        assert_eq!(
+            original
+                .owned_definition
+                .timeout_config
+                .as_ref()
+                .unwrap()
+                .total,
+            Some(std::time::Duration::from_secs(10))
+        );
     }
 
     #[tokio::test]
@@ -890,18 +1388,32 @@ mod tests {
         let resources = Arc::new(());
         let weak = Arc::downgrade(&resources);
         let mut plan = match circuit.owned_definition.try_callable_plan(
-            OwnedStreamContext::try_new(resources, Bus::new()).unwrap(), &admission, None) {
-            Ok(plan) => plan, Err(_) => panic!("callable plan rejected"),
+            OwnedStreamContext::try_new(resources, Bus::new()).unwrap(),
+            &admission,
+            None,
+        ) {
+            Ok(plan) => plan,
+            Err(_) => panic!("callable plan rejected"),
         };
         let observer = plan.owner.observe();
-        let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
-            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
-        };
+        let (mut prepared, mut receiver) =
+            match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+                Ok(prepared) => prepared,
+                Err(_) => panic!("producer rejected"),
+            };
         drop(plan);
         assert_eq!(admission.in_use().unwrap(), 1);
         assert!(weak.upgrade().is_some());
-        assert_eq!(observer.borrow().phase, crate::streaming_recovery::SupervisorPhase::NotStarted);
-        assert!(matches!(prepared.reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+        assert_eq!(
+            observer.borrow().phase,
+            crate::streaming_recovery::SupervisorPhase::NotStarted
+        );
+        assert!(matches!(
+            prepared
+                .reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                .await,
+            Ok(Ok(None))
+        ));
         assert_eq!(receiver.recv().await, None);
         assert_eq!(admission.in_use().unwrap(), 0);
         assert!(weak.upgrade().is_none());
@@ -915,7 +1427,9 @@ mod tests {
         bus.insert(157u32);
         let rejected = match circuit.owned_definition.try_callable_plan(
             OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
-            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(0), None) {
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(0),
+            None,
+        ) {
             Err(OwnedStreamPlanRejected::Admission(rejected)) => rejected,
             _ => panic!("capacity must reject before preparation"),
         };
@@ -931,19 +1445,28 @@ mod tests {
         let definition = OwnedStreamDefinition {
             prefix: original.owned_definition.prefix.clone(),
             callable_factory: original.owned_definition.callable_factory.clone(),
-            initializer: Arc::new(()), item_maps: Vec::new(), timeout_config: None, buffer_size: 64,
+            initializer: Arc::new(()),
+            item_maps: Vec::new(),
+            timeout_config: None,
+            buffer_size: 64,
         };
         let resources = Arc::new(());
         let mut bus = Bus::new();
         bus.insert(139u32);
         let context = OwnedStreamContext::try_new(resources.clone(), bus).unwrap();
-        let rejection = match definition.try_plan::<Chunks, String>(context,
-            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
+        let rejection = match definition.try_plan::<Chunks, String>(
+            context,
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1),
+            None,
+        ) {
             Err(OwnedStreamPlanRejected::InitializerType { context }) => context,
             _ => panic!("wrong initializer type must reject before admission"),
         };
-        let rejection = match definition.try_callable_plan(rejection,
-            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
+        let rejection = match definition.try_callable_plan(
+            rejection,
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1),
+            None,
+        ) {
             Err(OwnedStreamPlanRejected::InitializerType { context }) => context,
             _ => panic!("callable mismatch must return original context"),
         };
@@ -956,63 +1479,106 @@ mod tests {
         let circuit = circuit(&["a"]).with_buffer_size(0);
         let admission = crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1);
         let plan = match circuit.owned_definition.try_plan::<Chunks, String>(
-            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(), &admission, None) {
-            Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
+            &admission,
+            None,
+        ) {
+            Ok(plan) => plan,
+            Err(_) => panic!("plan rejected"),
         };
         let input = "retained-input".repeat(20);
         let pointer = input.as_ptr();
         let error = match plan.prepare_bounded(input, std::time::Duration::from_secs(5)) {
-            Err(error) => error, Ok(_) => panic!("zero buffer must reject"),
+            Err(error) => error,
+            Ok(_) => panic!("zero buffer must reject"),
         };
         assert_eq!(error.signal, "execution.stream_buffer_invalid");
         assert_eq!(error.input.as_ptr(), pointer);
         assert_eq!(error.input, "retained-input".repeat(20));
-        assert_eq!(plan.owner.observe().borrow().phase, crate::streaming_recovery::SupervisorPhase::NotStarted);
+        assert_eq!(
+            plan.owner.observe().borrow().phase,
+            crate::streaming_recovery::SupervisorPhase::NotStarted
+        );
         assert_eq!(admission.in_use().unwrap(), 1);
         drop(plan);
         assert_eq!(admission.in_use().unwrap(), 0);
     }
     #[tokio::test]
     async fn invalid_bounded_deadline_preserves_input_before_frame_creation() {
-        let circuit = circuit(&["a"]).with_timeout(StreamTimeoutConfig { init: None, idle: None, total: Some(std::time::Duration::MAX) });
+        let circuit = circuit(&["a"]).with_timeout(StreamTimeoutConfig {
+            init: None,
+            idle: None,
+            total: Some(std::time::Duration::MAX),
+        });
         let plan = match circuit.owned_definition.try_plan::<Chunks, String>(
             OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
-            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
-            Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1),
+            None,
+        ) {
+            Ok(plan) => plan,
+            Err(_) => panic!("plan rejected"),
         };
         let input = "original".repeat(20);
         let pointer = input.as_ptr();
         let error = match plan.prepare_bounded(input, std::time::Duration::from_secs(5)) {
-            Err(error) => error, Ok(_) => panic!("overflow must reject"),
+            Err(error) => error,
+            Ok(_) => panic!("overflow must reject"),
         };
         assert_eq!(error.signal, "execution.stream_deadline_invalid");
         assert_eq!(error.input.as_ptr(), pointer);
-        assert_eq!(plan.owner.observe().borrow().phase, crate::streaming_recovery::SupervisorPhase::NotStarted);
+        assert_eq!(
+            plan.owner.observe().borrow().phase,
+            crate::streaming_recovery::SupervisorPhase::NotStarted
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn owned_bounded_gate_wait_does_not_spend_invocation_total_budget() {
         let circuit = circuit(&["first"]).with_timeout(StreamTimeoutConfig {
-            init: None, idle: None, total: Some(std::time::Duration::from_secs(5)),
+            init: None,
+            idle: None,
+            total: Some(std::time::Duration::from_secs(5)),
         });
         let plan = match circuit.owned_definition.try_plan::<Chunks, String>(
             OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
-            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
-            Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1),
+            None,
+        ) {
+            Ok(plan) => plan,
+            Err(_) => panic!("plan rejected"),
         };
-        let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
-            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
-        };
+        let (mut prepared, mut receiver) =
+            match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+                Ok(prepared) => prepared,
+                Err(_) => panic!("producer rejected"),
+            };
         tokio::time::advance(std::time::Duration::from_secs(30)).await;
         let root = crate::nested_custody::CustodyStore::new(1);
         let journal = crate::SagaRollbackJournal::new("gate-budget-parent");
-        plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+        plan.owner
+            .register_and_start(
+                root.client(),
+                &journal,
+                CancellationToken::new(),
+                &mut prepared,
+            )
+            .await
             .unwrap_or_else(|error| panic!("{}", error.signal));
         let holder = prepared.holder();
-        let joined = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
+        let joined = holder
+            .lock()
+            .await
+            .join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         match joined {
             Ok(StreamInitializationReport::Ready { value, .. }) => {
-                assert_eq!(value.consumption.unwrap().terminal, crate::StreamConsumptionTerminal::Completed);
+                assert_eq!(
+                    value.consumption.unwrap().terminal,
+                    crate::StreamConsumptionTerminal::Completed
+                );
             }
             _ => panic!("original report lost"),
         }
@@ -1029,35 +1595,65 @@ mod tests {
             type Item = String;
             type Error = String;
             type Resources = ();
-            async fn run_stream(&self, _: String, _: &(), _: &mut Bus) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, String> {
+            async fn run_stream(
+                &self,
+                _: String,
+                _: &(),
+                _: &mut Bus,
+            ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, String> {
                 std::future::pending().await
             }
         }
-        let circuit = Axon::<String, String, String>::start("delayed-owned-total").then_stream(DelayedChunks)
-            .with_timeout(StreamTimeoutConfig { init: None, idle: None, total: Some(std::time::Duration::from_secs(5)) });
+        let circuit = Axon::<String, String, String>::start("delayed-owned-total")
+            .then_stream(DelayedChunks)
+            .with_timeout(StreamTimeoutConfig {
+                init: None,
+                idle: None,
+                total: Some(std::time::Duration::from_secs(5)),
+            });
         let plan = match circuit.owned_definition.try_plan::<DelayedChunks, String>(
             OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
-            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
-            Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1),
+            None,
+        ) {
+            Ok(plan) => plan,
+            Err(_) => panic!("plan rejected"),
         };
-        let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
-            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
-        };
+        let (mut prepared, mut receiver) =
+            match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+                Ok(prepared) => prepared,
+                Err(_) => panic!("producer rejected"),
+            };
         let root = crate::nested_custody::CustodyStore::new(1);
         let journal = crate::SagaRollbackJournal::new("delayed-total-parent");
         let control = CancellationToken::new();
         let began = tokio::time::Instant::now();
-        plan.owner.register_and_start(root.client(), &journal, control.clone(), &mut prepared).await
+        plan.owner
+            .register_and_start(root.client(), &journal, control.clone(), &mut prepared)
+            .await
             .unwrap_or_else(|error| panic!("{}", error.signal));
         let holder = prepared.holder();
-        let joined = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(20)).await.unwrap().unwrap().unwrap();
+        let joined = holder
+            .lock()
+            .await
+            .join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(20))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         match joined {
             Ok(StreamInitializationReport::Cancelled { context, .. }) => {
-                assert_eq!(context.reason, ranvier_core::CancellationReason::DeadlineExceeded);
+                assert_eq!(
+                    context.reason,
+                    ranvier_core::CancellationReason::DeadlineExceeded
+                );
             }
             _ => panic!("original report lost"),
         }
-        assert_eq!(tokio::time::Instant::now() - began, std::time::Duration::from_secs(5));
+        assert_eq!(
+            tokio::time::Instant::now() - began,
+            std::time::Duration::from_secs(5)
+        );
         assert!(!control.is_cancelled());
         assert_eq!(receiver.recv().await, None);
     }
@@ -1071,35 +1667,80 @@ mod tests {
             type Item = String;
             type Error = String;
             type Resources = ();
-            async fn run_stream(&self, _: String, _: &(), _: &mut Bus) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, String> {
-                let items = if self.0 { vec!["first".to_string()] } else { Vec::new() };
-                Ok(Box::pin(futures_util::stream::iter(items).chain(futures_util::stream::pending())))
+            async fn run_stream(
+                &self,
+                _: String,
+                _: &(),
+                _: &mut Bus,
+            ) -> Result<Pin<Box<dyn Stream<Item = String> + Send>>, String> {
+                let items = if self.0 {
+                    vec!["first".to_string()]
+                } else {
+                    Vec::new()
+                };
+                Ok(Box::pin(
+                    futures_util::stream::iter(items).chain(futures_util::stream::pending()),
+                ))
             }
         }
         for kind in [StreamTimeoutKind::Idle, StreamTimeoutKind::Total] {
-            let pending = Axon::<String, String, String>::start("owned-timeout-plan").then_stream(TimeoutChunks(kind == StreamTimeoutKind::Idle)).with_timeout(StreamTimeoutConfig {
-                init: None,
-                idle: if kind == StreamTimeoutKind::Idle { Some(std::time::Duration::from_secs(1)) } else { None },
-                total: if kind == StreamTimeoutKind::Total { Some(std::time::Duration::from_secs(1)) } else { None },
-            });
+            let pending = Axon::<String, String, String>::start("owned-timeout-plan")
+                .then_stream(TimeoutChunks(kind == StreamTimeoutKind::Idle))
+                .with_timeout(StreamTimeoutConfig {
+                    init: None,
+                    idle: if kind == StreamTimeoutKind::Idle {
+                        Some(std::time::Duration::from_secs(1))
+                    } else {
+                        None
+                    },
+                    total: if kind == StreamTimeoutKind::Total {
+                        Some(std::time::Duration::from_secs(1))
+                    } else {
+                        None
+                    },
+                });
             let plan = match pending.owned_definition.try_plan::<TimeoutChunks, String>(
                 OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
-                &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
-                Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+                &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1),
+                None,
+            ) {
+                Ok(plan) => plan,
+                Err(_) => panic!("plan rejected"),
             };
-            let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
-                Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
-            };
+            let (mut prepared, mut receiver) =
+                match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+                    Ok(prepared) => prepared,
+                    Err(_) => panic!("producer rejected"),
+                };
             let root = crate::nested_custody::CustodyStore::new(1);
             let journal = crate::SagaRollbackJournal::new("timeout-plan-parent");
-            plan.owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await
+            plan.owner
+                .register_and_start(
+                    root.client(),
+                    &journal,
+                    CancellationToken::new(),
+                    &mut prepared,
+                )
+                .await
                 .unwrap_or_else(|error| panic!("{}", error.signal));
-            if kind == StreamTimeoutKind::Idle { assert_eq!(receiver.recv().await, Some("first".to_string())); }
+            if kind == StreamTimeoutKind::Idle {
+                assert_eq!(receiver.recv().await, Some("first".to_string()));
+            }
             let holder = prepared.holder();
-            let joined = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
+            let joined = holder
+                .lock()
+                .await
+                .join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
             match joined {
                 Ok(StreamInitializationReport::Ready { value, .. }) => {
-                    assert_eq!(value.consumption.unwrap().terminal, crate::StreamConsumptionTerminal::TimedOut(kind));
+                    assert_eq!(
+                        value.consumption.unwrap().terminal,
+                        crate::StreamConsumptionTerminal::TimedOut(kind)
+                    );
                 }
                 _ => panic!("timeout report lost"),
             }
@@ -1108,30 +1749,48 @@ mod tests {
     #[tokio::test]
     async fn owned_bounded_producer_preserves_eof_and_disconnect_reports() {
         for mode in 0..3 {
-            let circuit = circuit(&["a", "b"]).with_buffer_size(1).map_items(|item| format!("{item}1"));
+            let circuit = circuit(&["a", "b"])
+                .with_buffer_size(1)
+                .map_items(|item| format!("{item}1"));
             let plan = match circuit.owned_definition.try_plan::<Chunks, String>(
                 OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
-                &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
-                Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+                &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1),
+                None,
+            ) {
+                Ok(plan) => plan,
+                Err(_) => panic!("plan rejected"),
             };
             let control = CancellationToken::new();
-            let (mut prepared, mut receiver) = match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
-                Ok(prepared) => prepared, Err(error) => panic!("{}", error.signal),
-            };
+            let (mut prepared, mut receiver) =
+                match plan.prepare_bounded("".into(), std::time::Duration::from_secs(5)) {
+                    Ok(prepared) => prepared,
+                    Err(error) => panic!("{}", error.signal),
+                };
             assert_eq!(receiver.max_capacity(), 1);
             let root = crate::nested_custody::CustodyStore::new(1);
             let journal = crate::SagaRollbackJournal::new("bounded-plan-parent");
-            plan.owner.register_and_start(root.client(), &journal, control.clone(), &mut prepared).await
+            plan.owner
+                .register_and_start(root.client(), &journal, control.clone(), &mut prepared)
+                .await
                 .unwrap_or_else(|error| panic!("{}", error.signal));
             assert_eq!(receiver.recv().await, Some("a1".to_string()));
-            if mode == 1 { drop(receiver); } else if mode == 2 {
+            if mode == 1 {
+                drop(receiver);
+            } else if mode == 2 {
                 control.cancel(ranvier_core::CancellationReason::Explicit);
             } else {
                 assert_eq!(receiver.recv().await, Some("b1".to_string()));
                 assert_eq!(receiver.recv().await, None);
             }
             let holder = prepared.holder();
-            let joined = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
+            let joined = holder
+                .lock()
+                .await
+                .join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
             match joined {
                 Ok(StreamInitializationReport::Ready { value, .. }) => {
                     if mode == 2 {
@@ -1142,9 +1801,16 @@ mod tests {
                     }
                     let consumed = value.consumption.unwrap();
                     if mode == 1 {
-                        assert!(matches!(consumed.terminal, crate::StreamConsumptionTerminal::Cancelled(context)
-                            if context.reason == ranvier_core::CancellationReason::ClientDisconnected));
-                    } else { assert_eq!(consumed.terminal, crate::StreamConsumptionTerminal::Completed); }
+                        assert!(
+                            matches!(consumed.terminal, crate::StreamConsumptionTerminal::Cancelled(context)
+                            if context.reason == ranvier_core::CancellationReason::ClientDisconnected)
+                        );
+                    } else {
+                        assert_eq!(
+                            consumed.terminal,
+                            crate::StreamConsumptionTerminal::Completed
+                        );
+                    }
                 }
                 _ => panic!("typed consumption report lost"),
             }
@@ -1153,19 +1819,29 @@ mod tests {
     #[test]
     fn owned_plan_configuration_tracks_modifiers_without_changing_original_clone() {
         let original = circuit(&["a"]);
-        let configured = original.clone().with_buffer_size(11).map_items(|item| item)
+        let configured = original
+            .clone()
+            .with_buffer_size(11)
+            .map_items(|item| item)
             .with_timeout(StreamTimeoutConfig {
                 init: Some(std::time::Duration::from_secs(3)),
                 idle: Some(std::time::Duration::from_secs(5)),
                 total: Some(std::time::Duration::from_secs(7)),
-            }).with_buffer_size(13);
+            })
+            .with_buffer_size(13);
         assert_eq!(original.owned_definition.buffer_size, 64);
         assert!(original.owned_definition.timeout_config.is_none());
-        assert!(Arc::ptr_eq(&original.owned_definition.initializer, &configured.owned_definition.initializer));
+        assert!(Arc::ptr_eq(
+            &original.owned_definition.initializer,
+            &configured.owned_definition.initializer
+        ));
         let plan = match configured.owned_definition.try_plan::<Chunks, String>(
             OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
-            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1), None) {
-            Ok(plan) => plan, Err(_) => panic!("configured plan rejected"),
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1),
+            None,
+        ) {
+            Ok(plan) => plan,
+            Err(_) => panic!("configured plan rejected"),
         };
         assert_eq!(plan.buffer_size, 13);
         let timeout = plan.timeout_config.unwrap();
@@ -1179,17 +1855,30 @@ mod tests {
         let original = circuit(&["a"]);
         let admission = crate::streaming_recovery_admission::StreamRecoveryAdmission::new(1);
         let plan = match original.owned_definition.try_plan::<Chunks, String>(
-            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(), &admission, None) {
-            Ok(plan) => plan, Err(_) => panic!("owned plan rejected"),
+            OwnedStreamContext::try_new(Arc::new(()), Bus::new()).unwrap(),
+            &admission,
+            None,
+        ) {
+            Ok(plan) => plan,
+            Err(_) => panic!("owned plan rejected"),
         };
         assert_eq!(admission.in_use().unwrap(), 1);
         let mut prepared = plan.prepare("".into(), std::time::Duration::from_secs(5), |_| async {
             panic!("rejected task cannot drive");
-            #[allow(unreachable_code)] crate::streaming_recovery::StreamDriveResult { value: (), terminal: crate::StreamConsumptionTerminal::Completed }
+            #[allow(unreachable_code)]
+            crate::streaming_recovery::StreamDriveResult {
+                value: (),
+                terminal: crate::StreamConsumptionTerminal::Completed,
+            }
         });
         drop(plan);
         assert_eq!(admission.in_use().unwrap(), 1);
-        assert!(matches!(prepared.reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+        assert!(matches!(
+            prepared
+                .reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                .await,
+            Ok(Ok(None))
+        ));
         assert_eq!(admission.in_use().unwrap(), 0);
         assert!(admission.reserve().is_ok());
     }
@@ -1200,13 +1889,19 @@ mod tests {
         let mut bus = Bus::new();
         bus.insert(149u32);
         let context = OwnedStreamContext::try_new(resources.clone(), bus).unwrap();
-        let rejection = match original.owned_definition.try_plan::<Chunks, String>(context,
-            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(0), None) {
+        let rejection = match original.owned_definition.try_plan::<Chunks, String>(
+            context,
+            &crate::streaming_recovery_admission::StreamRecoveryAdmission::new(0),
+            None,
+        ) {
             Err(OwnedStreamPlanRejected::Admission(rejection)) => rejection,
             _ => panic!("zero capacity must return recovery authority"),
         };
         let (graph, context) = rejection.into_parts();
-        assert_eq!(graph.schematic.nodes.len(), original.owned_definition.prefix.schematic.nodes.len());
+        assert_eq!(
+            graph.schematic.nodes.len(),
+            original.owned_definition.prefix.schematic.nodes.len()
+        );
         let (returned, bus) = context.into_parts();
         assert!(Arc::ptr_eq(&resources, &returned));
         assert_eq!(bus.read::<u32>(), Some(&149));
@@ -1543,19 +2238,34 @@ mod owned_context_tests {
         for store_present in [false, true] {
             let resources = Arc::new(MoveOnlyResource(19));
             let mut bus = Bus::new();
-            if store_present { bus.insert(crate::nested_custody::CustodyStore::new(1)); }
-            else { bus.insert(crate::nested_custody::RequiredOwnedCustody); }
-            bus.set_access_policy("deny-admission", Some(ranvier_core::BusAccessPolicy::allow_only(Vec::new())));
+            if store_present {
+                bus.insert(crate::nested_custody::CustodyStore::new(1));
+            } else {
+                bus.insert(crate::nested_custody::RequiredOwnedCustody);
+            }
+            bus.set_access_policy(
+                "deny-admission",
+                Some(ranvier_core::BusAccessPolicy::allow_only(Vec::new())),
+            );
             let rejected = match OwnedStreamContext::try_new(resources.clone(), bus) {
                 Err(rejected) => rejected,
                 Ok(_) => panic!("nested authority was detached"),
             };
             let (returned, mut bus) = rejected.into_parts();
             assert!(Arc::ptr_eq(&returned, &resources));
-            assert!(bus.get::<crate::nested_custody::RequiredOwnedCustody>().is_err());
+            assert!(
+                bus.get::<crate::nested_custody::RequiredOwnedCustody>()
+                    .is_err()
+            );
             let access = bus.take_access_scope();
-            assert_eq!(bus.has::<crate::nested_custody::CustodyStore>(), store_present);
-            assert_eq!(bus.has::<crate::nested_custody::RequiredOwnedCustody>(), !store_present);
+            assert_eq!(
+                bus.has::<crate::nested_custody::CustodyStore>(),
+                store_present
+            );
+            assert_eq!(
+                bus.has::<crate::nested_custody::RequiredOwnedCustody>(),
+                !store_present
+            );
             bus.restore_access_scope(access);
         }
     }
@@ -1567,14 +2277,20 @@ mod owned_context_tests {
         let resources = Arc::new(MoveOnlyResource(23));
         let mut bus = Bus::new();
         bus.insert(client);
-        bus.set_access_policy("deny-expired-client", Some(ranvier_core::BusAccessPolicy::allow_only(Vec::new())));
+        bus.set_access_policy(
+            "deny-expired-client",
+            Some(ranvier_core::BusAccessPolicy::allow_only(Vec::new())),
+        );
         let rejected = match OwnedStreamContext::try_new(resources.clone(), bus) {
             Err(rejected) => rejected,
             Ok(_) => panic!("expired client authority was detached"),
         };
         let (returned, mut bus) = rejected.into_parts();
         assert!(Arc::ptr_eq(&resources, &returned));
-        assert!(bus.get::<crate::nested_custody::WeakCustodyClient>().is_err());
+        assert!(
+            bus.get::<crate::nested_custody::WeakCustodyClient>()
+                .is_err()
+        );
         let access = bus.take_access_scope();
         assert!(bus.has::<crate::nested_custody::WeakCustodyClient>());
         bus.restore_access_scope(access);

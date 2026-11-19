@@ -43,7 +43,8 @@ pub(crate) async fn produce_bounded<Item: Send + 'static>(
     token: CancellationToken,
     sender: tokio::sync::mpsc::Sender<Item>,
 ) -> StreamDriveResult<()> {
-    produce_bounded_with_total_origin(source, config, token, sender, tokio::time::Instant::now()).await
+    produce_bounded_with_total_origin(source, config, token, sender, tokio::time::Instant::now())
+        .await
 }
 
 /// Consume against the actual gated invocation origin rather than restarting total.
@@ -55,7 +56,12 @@ pub(crate) async fn produce_bounded_with_total_origin<Item: Send + 'static>(
     invocation_started_at: tokio::time::Instant,
 ) -> StreamDriveResult<()> {
     use futures_util::{FutureExt, StreamExt};
-    let mut observed = crate::ObservedStream::with_total_origin(source, config, Some(token), invocation_started_at);
+    let mut observed = crate::ObservedStream::with_total_origin(
+        source,
+        config,
+        Some(token),
+        invocation_started_at,
+    );
     let terminal = loop {
         let permit = tokio::select! {
             biased;
@@ -357,7 +363,10 @@ where
 }
 
 #[derive(Clone)]
-pub(crate) struct ParentStreamCustody(crate::nested_custody::WeakCustody, Option<CancellationToken>);
+pub(crate) struct ParentStreamCustody(
+    crate::nested_custody::WeakCustody,
+    Option<CancellationToken>,
+);
 
 /// A single invocation's exact graph, typed resources and request Bus. An external
 /// clone must outlive the supervisor, including forced task abort. No replay API.
@@ -387,15 +396,26 @@ impl<'a> LocalCompensationBusScope<'a> {
         let access = bus.take_access_scope();
         let operation_token = CancellationToken::new();
         let previous_token = bus.replace_cancellation_token(Some(operation_token.clone()));
-        Self { bus, access: Some(access), previous_token, operation_token }
+        Self {
+            bus,
+            access: Some(access),
+            previous_token,
+            operation_token,
+        }
     }
-    fn bus(&mut self) -> &mut Bus { self.bus }
+    fn bus(&mut self) -> &mut Bus {
+        self.bus
+    }
 }
 impl Drop for LocalCompensationBusScope<'_> {
     fn drop(&mut self) {
-        self.operation_token.cancel(ranvier_core::CancellationReason::Explicit);
-        self.bus.replace_cancellation_token(self.previous_token.take());
-        if let Some(access) = self.access.take() { self.bus.restore_access_scope(access); }
+        self.operation_token
+            .cancel(ranvier_core::CancellationReason::Explicit);
+        self.bus
+            .replace_cancellation_token(self.previous_token.take());
+        if let Some(access) = self.access.take() {
+            self.bus.restore_access_scope(access);
+        }
     }
 }
 impl<In, Out, E, Res> Drop for RecoveryInner<In, Out, E, Res> {
@@ -406,8 +426,10 @@ impl<In, Out, E, Res> Drop for RecoveryInner<In, Out, E, Res> {
         let stack_pending = bus
             .read::<ranvier_core::saga::SagaStack>()
             .is_some_and(|stack| !stack.is_empty());
-        let journal_pending = bus.read::<crate::SagaRollbackJournal>()
-            .map(|journal| journal.try_retained_work_pending(256)).transpose();
+        let journal_pending = bus
+            .read::<crate::SagaRollbackJournal>()
+            .map(|journal| journal.try_retained_work_pending(256))
+            .transpose();
         bus.restore_access_scope(access);
         self.observation.send_modify(|state| {
             state.custody = if stack_pending || matches!(journal_pending, Ok(Some(true))) {
@@ -443,7 +465,9 @@ impl<In, Out, E, Res> std::fmt::Debug for StreamRecoveryAdmissionRejected<In, Ou
     }
 }
 impl<In, Out, E, Res> StreamRecoveryAdmissionRejected<In, Out, E, Res> {
-    pub(crate) fn reason(&self) -> RecoveryAdmissionFailure { self.reason }
+    pub(crate) fn reason(&self) -> RecoveryAdmissionFailure {
+        self.reason
+    }
     pub(crate) fn into_parts(self) -> (Axon<In, Out, E, Res>, OwnedStreamContext<Res>) {
         (self.graph, self.context)
     }
@@ -482,11 +506,18 @@ where
     }
     /// Consume one exact pre-admitted permit, without allocating another slot.
     pub(crate) fn try_new_reserved(
-        mut graph: Axon<In, Out, E, Res>, context: OwnedStreamContext<Res>,
-        admission: &StreamRecoveryAdmission, expires: Option<std::time::Instant>, permit: RecoveryPermit,
+        mut graph: Axon<In, Out, E, Res>,
+        context: OwnedStreamContext<Res>,
+        admission: &StreamRecoveryAdmission,
+        expires: Option<std::time::Instant>,
+        permit: RecoveryPermit,
     ) -> Result<Self, StreamRecoveryAdmissionRejected<In, Out, E, Res>> {
         if let Err(reason) = admission.validate_permit(&permit) {
-            return Err(StreamRecoveryAdmissionRejected { graph, context, reason });
+            return Err(StreamRecoveryAdmissionRejected {
+                graph,
+                context,
+                reason,
+            });
         }
         // An owned recovery owner freezes the policy selection beside its
         // handler registry. A later Bus mutation or hot reload must not grant
@@ -548,7 +579,8 @@ where
     /// Parent owns this exact complete graph/resource/Bus context before effects.
     /// The child contains only weak links back to the authoritative parent store.
     pub(crate) async fn admit_to_parent(
-        &self, client: crate::nested_custody::WeakCustodyClient,
+        &self,
+        client: crate::nested_custody::WeakCustodyClient,
     ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
         self.admit_to_parent_with_control(client, None).await
     }
@@ -574,7 +606,10 @@ where
         if self.inner.started.load(Ordering::Acquire) {
             return Err("execution.nested_stream_already_started");
         }
-        let mut context = self.inner.context.try_lock()
+        let mut context = self
+            .inner
+            .context
+            .try_lock()
             .map_err(|_| "execution.nested_stream_context_busy")?;
         if self.inner.started.load(Ordering::Acquire) {
             return Err("execution.nested_stream_already_started");
@@ -589,14 +624,24 @@ where
                 return Err("execution.nested_stream_already_bound");
             }
             let admission = match (reservation, journal, task) {
-                (Some(reservation), Some(journal), Some(task)) =>
-                    reservation.finalize_stream(&client, self.inner.clone(), task, journal, self.observe())?,
+                (Some(reservation), Some(journal), Some(task)) => reservation.finalize_stream(
+                    &client,
+                    self.inner.clone(),
+                    task,
+                    journal,
+                    self.observe(),
+                )?,
                 (Some(_), _, _) => return Err("execution.nested_reservation_missing_frame"),
-                (None, Some(journal), task) => client.reserve_stream(self.inner.clone(), journal, task, self.observe())?,
+                (None, Some(journal), task) => {
+                    client.reserve_stream(self.inner.clone(), journal, task, self.observe())?
+                }
                 (None, None, _) => client.reserve(self.inner.clone())?,
             };
             bus.insert(client);
-            bus.insert(ParentStreamCustody(admission.clone(), parent.map(|token| token.child_token())));
+            bus.insert(ParentStreamCustody(
+                admission.clone(),
+                parent.map(|token| token.child_token()),
+            ));
             Ok(admission)
         })();
         bus.restore_access_scope(access);
@@ -610,7 +655,8 @@ where
         client: crate::nested_custody::WeakCustodyClient,
         journal: &crate::SagaRollbackJournal,
     ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
-        self.admit_to_parent_journal_with_control(client, journal, None).await
+        self.admit_to_parent_journal_with_control(client, journal, None)
+            .await
     }
 
     pub(crate) async fn admit_to_parent_journal_with_control(
@@ -619,7 +665,8 @@ where
         journal: &crate::SagaRollbackJournal,
         parent: Option<CancellationToken>,
     ) -> Result<crate::nested_custody::WeakCustody, &'static str> {
-        self.bind_parent(client, parent, Some(journal), None, None).await
+        self.bind_parent(client, parent, Some(journal), None, None)
+            .await
     }
 
     /// Register exact child owner, indexed observation and actual task holder
@@ -634,33 +681,57 @@ where
         if !prepared.matches_owner(&(self.inner.clone() as crate::nested_custody::Capability)) {
             return Err("execution.nested_task_owner_mismatch");
         }
-        self.bind_parent(client, Some(parent), Some(journal), Some(prepared.holder()), None).await
+        self.bind_parent(
+            client,
+            Some(parent),
+            Some(journal),
+            Some(prepared.holder()),
+            None,
+        )
+        .await
     }
 
     /// Register and grant the exact preparation, retaining registration on a
     /// failed grant. Caller retains preparation and must join rejected tasks.
     pub(crate) async fn register_and_start<T: Send + 'static>(
-        &self, client: crate::nested_custody::WeakCustodyClient,
-        journal: &crate::SagaRollbackJournal, parent: CancellationToken,
+        &self,
+        client: crate::nested_custody::WeakCustodyClient,
+        journal: &crate::SagaRollbackJournal,
+        parent: CancellationToken,
         prepared: &mut crate::managed_stream_task::PreparedStreamTask<T>,
     ) -> Result<crate::nested_custody::WeakCustody, ManagedStreamStartError> {
         if !prepared.has_open_start() {
-            return Err(ManagedStreamStartError { signal: "execution.nested_task_start_decided", custody: None });
+            return Err(ManagedStreamStartError {
+                signal: "execution.nested_task_start_decided",
+                custody: None,
+            });
         }
-        let custody = match self.admit_managed_to_parent(client, journal, parent, prepared).await {
+        let custody = match self
+            .admit_managed_to_parent(client, journal, parent, prepared)
+            .await
+        {
             Ok(custody) => custody,
             Err(signal) => {
                 let _ = prepared.reject_start();
-                return Err(ManagedStreamStartError { signal, custody: None });
+                return Err(ManagedStreamStartError {
+                    signal,
+                    custody: None,
+                });
             }
         };
         if let Err(signal) = custody.attach_settlement(prepared.settlement()) {
             let _ = prepared.reject_start();
-            return Err(ManagedStreamStartError { signal, custody: Some(custody) });
+            return Err(ManagedStreamStartError {
+                signal,
+                custody: Some(custody),
+            });
         }
         if let Err(signal) = prepared.grant_registered_start(&custody) {
             let _ = prepared.reject_start();
-            return Err(ManagedStreamStartError { signal, custody: Some(custody) });
+            return Err(ManagedStreamStartError {
+                signal,
+                custody: Some(custody),
+            });
         }
         Ok(custody)
     }
@@ -669,75 +740,137 @@ where
     /// Rejected frames remain caller-owned and must be joined; failed grants
     /// return the finalized custody receipt for explicit cleanup.
     pub(crate) async fn register_reserved_and_start<T: Send + 'static>(
-        &self, client: crate::nested_custody::WeakCustodyClient,
+        &self,
+        client: crate::nested_custody::WeakCustodyClient,
         reservation: &mut crate::nested_custody::CustodyReservation,
-        journal: &crate::SagaRollbackJournal, parent: CancellationToken,
+        journal: &crate::SagaRollbackJournal,
+        parent: CancellationToken,
         prepared: &mut crate::managed_stream_task::PreparedStreamTask<T>,
     ) -> Result<crate::nested_custody::WeakCustody, ManagedStreamStartError> {
         if !prepared.has_open_start() {
-            return Err(ManagedStreamStartError { signal: "execution.nested_task_start_decided", custody: None });
+            return Err(ManagedStreamStartError {
+                signal: "execution.nested_task_start_decided",
+                custody: None,
+            });
         }
         let admission = if prepared.matches_owner(&self.retention_capability()) {
-            self.bind_parent(client, Some(parent), Some(journal), Some(prepared.holder()), Some(reservation)).await
-        } else { Err("execution.nested_task_owner_mismatch") };
+            self.bind_parent(
+                client,
+                Some(parent),
+                Some(journal),
+                Some(prepared.holder()),
+                Some(reservation),
+            )
+            .await
+        } else {
+            Err("execution.nested_task_owner_mismatch")
+        };
         let custody = match admission {
             Ok(custody) => custody,
             Err(signal) => {
                 let _ = prepared.reject_start();
-                return Err(ManagedStreamStartError { signal, custody: None });
+                return Err(ManagedStreamStartError {
+                    signal,
+                    custody: None,
+                });
             }
         };
         if let Err(signal) = custody.attach_settlement(prepared.settlement()) {
             let _ = prepared.reject_start();
-            return Err(ManagedStreamStartError { signal, custody: Some(custody) });
+            return Err(ManagedStreamStartError {
+                signal,
+                custody: Some(custody),
+            });
         }
         if let Err(signal) = prepared.grant_registered_start(&custody) {
             let _ = prepared.reject_start();
-            return Err(ManagedStreamStartError { signal, custody: Some(custody) });
+            return Err(ManagedStreamStartError {
+                signal,
+                custody: Some(custody),
+            });
         }
         Ok(custody)
     }
 
     /// Publish the exact unopened frame before preparation can be abandoned.
-    pub(crate) fn stage_reserved<T: Send + 'static>(&self, client: &crate::nested_custody::WeakCustodyClient,
-        slot: &mut crate::nested_custody::CustodyReservation, journal: &crate::SagaRollbackJournal,
+    pub(crate) fn stage_reserved<T: Send + 'static>(
+        &self,
+        client: &crate::nested_custody::WeakCustodyClient,
+        slot: &mut crate::nested_custody::CustodyReservation,
+        journal: &crate::SagaRollbackJournal,
         prepared: &mut crate::managed_stream_task::PreparedStreamTask<T>,
     ) -> Result<crate::nested_custody::WeakCustody, ManagedStreamStartError> {
         if !prepared.matches_owner(&self.retention_capability()) || !prepared.has_open_start() {
             let _ = prepared.reject_start();
-            return Err(ManagedStreamStartError { signal: "execution.nested_task_owner_mismatch", custody: None });
+            return Err(ManagedStreamStartError {
+                signal: "execution.nested_task_owner_mismatch",
+                custody: None,
+            });
         }
-        let custody = match slot.finalize_managed(client, self.inner.clone(), prepared, journal, self.observe()) {
+        let custody = match slot.finalize_managed(
+            client,
+            self.inner.clone(),
+            prepared,
+            journal,
+            self.observe(),
+        ) {
             Ok(custody) => custody,
-            Err(signal) => { let _ = prepared.reject_start(); return Err(ManagedStreamStartError { signal, custody: None }); }
+            Err(signal) => {
+                let _ = prepared.reject_start();
+                return Err(ManagedStreamStartError {
+                    signal,
+                    custody: None,
+                });
+            }
         };
         Ok(custody)
     }
-    pub(crate) fn start_staged<T: Send + 'static>(&self, client: crate::nested_custody::WeakCustodyClient,
-        custody: &crate::nested_custody::WeakCustody, parent: CancellationToken,
+    pub(crate) fn start_staged<T: Send + 'static>(
+        &self,
+        client: crate::nested_custody::WeakCustodyClient,
+        custody: &crate::nested_custody::WeakCustody,
+        parent: CancellationToken,
         prepared: &mut crate::managed_stream_task::PreparedStreamTask<T>,
     ) -> Result<(), &'static str> {
         let result = (|| {
             if !prepared.has_open_start() || !prepared.matches_owner(&self.retention_capability()) {
                 return Err("execution.nested_task_start_decided");
             }
-            let mut context = self.inner.context.try_lock().map_err(|_| "execution.nested_stream_context_busy")?;
-            if self.inner.started.load(Ordering::Acquire) { return Err("execution.nested_stream_already_started"); }
+            let mut context = self
+                .inner
+                .context
+                .try_lock()
+                .map_err(|_| "execution.nested_stream_context_busy")?;
+            if self.inner.started.load(Ordering::Acquire) {
+                return Err("execution.nested_stream_already_started");
+            }
             let bus = &mut context.1;
             let access = bus.take_access_scope();
             let bound = (|| {
-                if bus.has::<ParentStreamCustody>() || bus.has::<crate::nested_custody::WeakCustodyClient>() || bus.has::<crate::nested_custody::CustodyStore>() {
+                if bus.has::<ParentStreamCustody>()
+                    || bus.has::<crate::nested_custody::WeakCustodyClient>()
+                    || bus.has::<crate::nested_custody::CustodyStore>()
+                {
                     return Err("execution.nested_stream_already_bound");
                 }
-                client.validate_staged_task(custody, &self.retention_capability(), &(prepared.holder() as crate::nested_custody::Capability))?;
+                client.validate_staged_task(
+                    custody,
+                    &self.retention_capability(),
+                    &(prepared.holder() as crate::nested_custody::Capability),
+                )?;
                 bus.insert(client);
-                bus.insert(ParentStreamCustody(custody.clone(), Some(parent.child_token())));
+                bus.insert(ParentStreamCustody(
+                    custody.clone(),
+                    Some(parent.child_token()),
+                ));
                 prepared.grant_registered_start(custody)
             })();
             bus.restore_access_scope(access);
             bound
         })();
-        if result.is_err() { let _ = prepared.reject_start(); }
+        if result.is_err() {
+            let _ = prepared.reject_start();
+        }
         result
     }
 
@@ -746,17 +879,34 @@ where
         Arc::new(move |deadline| {
             let owner = owner.clone();
             Box::pin(async move {
-                use crate::streaming_report_handle::{StreamLiveRecoveryState, StreamRecoveryProbeError as Error};
-                if tokio::time::Instant::now() >= deadline { return Err(Error::TimedOut); }
-                let mut context = tokio::time::timeout_at(deadline, owner.inner.context.lock()).await.map_err(|_| Error::TimedOut)?;
-                if tokio::time::Instant::now() >= deadline { return Err(Error::TimedOut); }
+                use crate::streaming_report_handle::{
+                    StreamLiveRecoveryState, StreamRecoveryProbeError as Error,
+                };
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(Error::TimedOut);
+                }
+                let mut context = tokio::time::timeout_at(deadline, owner.inner.context.lock())
+                    .await
+                    .map_err(|_| Error::TimedOut)?;
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(Error::TimedOut);
+                }
                 let bus = &mut context.1;
                 let access = bus.take_access_scope();
                 let result = (|| {
-                    let saga_stack_nonempty = bus.read::<ranvier_core::saga::SagaStack>().is_some_and(|stack| !stack.is_empty());
+                    let saga_stack_nonempty = bus
+                        .read::<ranvier_core::saga::SagaStack>()
+                        .is_some_and(|stack| !stack.is_empty());
                     let journal = bus.read::<crate::SagaRollbackJournal>();
-                    let recovery_pending = match journal { Some(journal) => journal.try_recovery_pending(256)?, None => false };
-                    Ok(StreamLiveRecoveryState { saga_stack_nonempty, journal_present: journal.is_some(), recovery_pending })
+                    let recovery_pending = match journal {
+                        Some(journal) => journal.try_recovery_pending(256)?,
+                        None => false,
+                    };
+                    Ok(StreamLiveRecoveryState {
+                        saga_stack_nonempty,
+                        journal_present: journal.is_some(),
+                        recovery_pending,
+                    })
                 })();
                 bus.restore_access_scope(access);
                 result
@@ -775,7 +925,9 @@ where
             let report = report.clone();
             Box::pin(async move {
                 report.require_reported_frame(deadline).await?;
-                owner.reconcile_next_local_compensation_until(deadline).await
+                owner
+                    .reconcile_next_local_compensation_until(deadline)
+                    .await
             })
         })
     }
@@ -797,25 +949,32 @@ where
                         crate::streaming_report_handle::StreamExternalRecoveryError::FrameNotReported,
                     _ => crate::streaming_report_handle::StreamExternalRecoveryError::Unavailable,
                 })?;
-                owner.readback_next_external_compensation_until(deadline).await
+                owner
+                    .readback_next_external_compensation_until(deadline)
+                    .await
             })
         })
     }
     async fn reconcile_next_local_compensation_until(
         &self,
         deadline: tokio::time::Instant,
-    ) -> Result<crate::SagaRollbackOutcome, crate::streaming_report_handle::StreamLocalRecoveryError> {
-        use crate::streaming_report_handle::{StreamLocalRecoveryError as Error, StreamReportWaitError};
+    ) -> Result<crate::SagaRollbackOutcome, crate::streaming_report_handle::StreamLocalRecoveryError>
+    {
         use crate::saga_report::LocalTaskClaimError;
+        use crate::streaming_report_handle::{
+            StreamLocalRecoveryError as Error, StreamReportWaitError,
+        };
         if tokio::time::Instant::now() >= deadline {
             return Err(Error::Wait(StreamReportWaitError::TimedOut));
         }
-        let _operation = tokio::time::timeout_at(deadline, self.inner.reconciliation.lock()).await
+        let _operation = tokio::time::timeout_at(deadline, self.inner.reconciliation.lock())
+            .await
             .map_err(|_| Error::Wait(StreamReportWaitError::TimedOut))?;
         if !self.inner.started.load(Ordering::Acquire) {
             return Err(Error::FrameNotReported);
         }
-        let mut context = tokio::time::timeout_at(deadline, self.inner.context.lock()).await
+        let mut context = tokio::time::timeout_at(deadline, self.inner.context.lock())
+            .await
             .map_err(|_| Error::Wait(StreamReportWaitError::TimedOut))?;
         if tokio::time::Instant::now() >= deadline {
             return Err(Error::Wait(StreamReportWaitError::TimedOut));
@@ -824,13 +983,18 @@ where
         let mut scope = LocalCompensationBusScope::begin(bus);
         let bus = scope.bus();
         if self.inner.graph.saga_policy != ranvier_core::saga::SagaPolicy::Enabled
-            || !bus.read::<ranvier_core::saga::SagaPolicy>()
-            .is_some_and(|policy| *policy == ranvier_core::saga::SagaPolicy::Enabled) {
+            || !bus
+                .read::<ranvier_core::saga::SagaPolicy>()
+                .is_some_and(|policy| *policy == ranvier_core::saga::SagaPolicy::Enabled)
+        {
             return Err(Error::RecoveryBlocked);
         }
         let journal = if let Some(journal) = bus.read::<crate::SagaRollbackJournal>().cloned() {
             journal
-        } else if bus.read::<ranvier_core::saga::SagaStack>().is_some_and(|stack| !stack.is_empty()) {
+        } else if bus
+            .read::<ranvier_core::saga::SagaStack>()
+            .is_some_and(|stack| !stack.is_empty())
+        {
             let trace = bus.id.to_string();
             let journal = crate::SagaRollbackJournal::new(&trace);
             bus.insert(journal.clone());
@@ -851,46 +1015,71 @@ where
                 }
             }
         }
-        let mut claim = journal.claim_next_not_invoked().map_err(|error| match error {
-            LocalTaskClaimError::Unavailable => Error::Unavailable,
-            LocalTaskClaimError::TimedOut => Error::Wait(StreamReportWaitError::TimedOut),
-            LocalTaskClaimError::Missing | LocalTaskClaimError::NotEligible
-            | LocalTaskClaimError::Claimed | LocalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
-        })?;
-        let handler = self.inner.graph.saga_compensation_registry.try_read()
+        let mut claim = journal
+            .claim_next_not_invoked()
+            .map_err(|error| match error {
+                LocalTaskClaimError::Unavailable => Error::Unavailable,
+                LocalTaskClaimError::TimedOut => Error::Wait(StreamReportWaitError::TimedOut),
+                LocalTaskClaimError::Missing
+                | LocalTaskClaimError::NotEligible
+                | LocalTaskClaimError::Claimed
+                | LocalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
+            })?;
+        let handler = self
+            .inner
+            .graph
+            .saga_compensation_registry
+            .try_read()
             .map_err(|_| Error::HandlerRegistryUnavailable)?
             .get(claim.node_id());
         let Some(handler) = handler else {
-            claim.mark_missing_handler().map_err(|_| Error::Unavailable)?;
+            claim
+                .mark_missing_handler()
+                .map_err(|_| Error::Unavailable)?;
             return Ok(crate::SagaRollbackOutcome::MissingHandler);
         };
-        claim.invoke(handler, resources.as_ref(), scope.bus(), deadline).await.map_err(|error| match error {
-            LocalTaskClaimError::Unavailable => Error::Unavailable,
-            LocalTaskClaimError::TimedOut => Error::Wait(StreamReportWaitError::TimedOut),
-            LocalTaskClaimError::Missing | LocalTaskClaimError::NotEligible
-            | LocalTaskClaimError::Claimed | LocalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
-        })
+        claim
+            .invoke(handler, resources.as_ref(), scope.bus(), deadline)
+            .await
+            .map_err(|error| match error {
+                LocalTaskClaimError::Unavailable => Error::Unavailable,
+                LocalTaskClaimError::TimedOut => Error::Wait(StreamReportWaitError::TimedOut),
+                LocalTaskClaimError::Missing
+                | LocalTaskClaimError::NotEligible
+                | LocalTaskClaimError::Claimed
+                | LocalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
+            })
     }
     async fn readback_next_external_compensation_until(
         &self,
         deadline: tokio::time::Instant,
-    ) -> Result<crate::streaming_report_handle::StreamExternalReadback, crate::streaming_report_handle::StreamExternalRecoveryError> {
+    ) -> Result<
+        crate::streaming_report_handle::StreamExternalReadback,
+        crate::streaming_report_handle::StreamExternalRecoveryError,
+    > {
         use crate::saga_report::ExternalTaskClaimError;
-        use crate::streaming_report_handle::{StreamExternalRecoveryError as Error, StreamReportWaitError};
+        use crate::streaming_report_handle::{
+            StreamExternalRecoveryError as Error, StreamReportWaitError,
+        };
         if tokio::time::Instant::now() >= deadline {
             return Err(Error::Wait(StreamReportWaitError::TimedOut));
         }
-        let _operation = tokio::time::timeout_at(deadline, self.inner.reconciliation.lock()).await
+        let _operation = tokio::time::timeout_at(deadline, self.inner.reconciliation.lock())
+            .await
             .map_err(|_| Error::Wait(StreamReportWaitError::TimedOut))?;
         if !self.inner.started.load(Ordering::Acquire) {
             return Err(Error::FrameNotReported);
         }
-        let context = tokio::time::timeout_at(deadline, self.inner.context.lock()).await
+        let context = tokio::time::timeout_at(deadline, self.inner.context.lock())
+            .await
             .map_err(|_| Error::Wait(StreamReportWaitError::TimedOut))?;
         if tokio::time::Instant::now() >= deadline {
             return Err(Error::Wait(StreamReportWaitError::TimedOut));
         }
-        let journal = context.1.read::<crate::SagaRollbackJournal>().cloned()
+        let journal = context
+            .1
+            .read::<crate::SagaRollbackJournal>()
+            .cloned()
             .ok_or(Error::JournalUnavailable)?;
         // The journal claim retains the exact capability. Marker I/O does not
         // need the mutable owner Bus/resources context, so release it before
@@ -900,48 +1089,77 @@ where
         let claim = journal.claim_next_external().map_err(|error| match error {
             ExternalTaskClaimError::Unavailable => Error::Unavailable,
             ExternalTaskClaimError::TimedOut => Error::Wait(StreamReportWaitError::TimedOut),
-            ExternalTaskClaimError::Missing | ExternalTaskClaimError::NotEligible
-            | ExternalTaskClaimError::Claimed | ExternalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
+            ExternalTaskClaimError::Missing
+            | ExternalTaskClaimError::NotEligible
+            | ExternalTaskClaimError::Claimed
+            | ExternalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
         })?;
-        claim.readback_until(deadline).await.map_err(|error| match error {
-            ExternalTaskClaimError::Unavailable => Error::Unavailable,
-            ExternalTaskClaimError::TimedOut => Error::Wait(StreamReportWaitError::TimedOut),
-            ExternalTaskClaimError::Missing | ExternalTaskClaimError::NotEligible
-            | ExternalTaskClaimError::Claimed | ExternalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
-        })
+        claim
+            .readback_until(deadline)
+            .await
+            .map_err(|error| match error {
+                ExternalTaskClaimError::Unavailable => Error::Unavailable,
+                ExternalTaskClaimError::TimedOut => Error::Wait(StreamReportWaitError::TimedOut),
+                ExternalTaskClaimError::Missing
+                | ExternalTaskClaimError::NotEligible
+                | ExternalTaskClaimError::Claimed
+                | ExternalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
+            })
     }
     /// Constructed only beside the exact staged report and receipt. The captured
     /// report has no retirement callback, so this lease cannot form a cycle.
-    pub(crate) fn local_retirement(&self,
+    pub(crate) fn local_retirement(
+        &self,
         receipt: crate::nested_custody::WeakCustody,
         report: crate::streaming_report_handle::StreamReportHandle<Out, E>,
     ) -> crate::streaming_report_handle::LocalRetirement {
         let owner = self.clone();
         let decision = Arc::new(Mutex::new(false));
         Arc::new(move |deadline| {
-            let owner = owner.clone(); let receipt = receipt.clone();
-            let report = report.clone(); let decision = decision.clone();
+            let owner = owner.clone();
+            let receipt = receipt.clone();
+            let report = report.clone();
+            let decision = decision.clone();
             Box::pin(async move {
-                use crate::streaming_report_handle::{StreamLocalRetirementError as Error, StreamReportWaitError};
+                use crate::streaming_report_handle::{
+                    StreamLocalRetirementError as Error, StreamReportWaitError,
+                };
                 let timeout = || Error::Wait(StreamReportWaitError::TimedOut);
-                if tokio::time::Instant::now() >= deadline { return Err(timeout()); }
-                let mut retired = tokio::time::timeout_at(deadline, decision.lock()).await.map_err(|_| timeout())?;
-                if tokio::time::Instant::now() >= deadline { return Err(timeout()); }
-                if *retired { return Ok(()); }
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(timeout());
+                }
+                let mut retired = tokio::time::timeout_at(deadline, decision.lock())
+                    .await
+                    .map_err(|_| timeout())?;
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(timeout());
+                }
+                if *retired {
+                    return Ok(());
+                }
                 report.prove_completed_local(deadline).await?;
-                let mut context = tokio::time::timeout_at(deadline, owner.inner.context.lock()).await.map_err(|_| timeout())?;
-                if tokio::time::Instant::now() >= deadline { return Err(timeout()); }
+                let mut context = tokio::time::timeout_at(deadline, owner.inner.context.lock())
+                    .await
+                    .map_err(|_| timeout())?;
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(timeout());
+                }
                 let bus = &mut context.1;
                 let access = bus.take_access_scope();
                 // A clear snapshot of a clonable journal is not sealed authority.
                 // Refuse every journal until child mutation/recovery is sealed.
                 let pending = bus.has::<crate::SagaRollbackJournal>()
-                    || bus.read::<ranvier_core::saga::SagaStack>().is_some_and(|stack| !stack.is_empty());
+                    || bus
+                        .read::<ranvier_core::saga::SagaStack>()
+                        .is_some_and(|stack| !stack.is_empty());
                 bus.restore_access_scope(access);
-                if pending { return Err(Error::RecoveryReviewRequired); }
+                if pending {
+                    return Err(Error::RecoveryReviewRequired);
+                }
                 // No await between the guarded live check, exact removal and
                 // cached success. Dropping a waiter cannot lose the decision.
-                receipt.release_exact_task(&owner.retention_capability(), &report.holder_capability())
+                receipt
+                    .release_exact_task(&owner.retention_capability(), &report.holder_capability())
                     .map_err(|signal| match signal {
                         "execution.parent_custody_released" => Error::CustodyReleased,
                         "execution.nested_task_registration_mismatch" => Error::CustodyMismatch,
@@ -960,8 +1178,17 @@ where
     /// Build the gated future from this exact recovery owner and owned inputs.
     /// The supervisor must register this owner's holder before granting start.
     pub(crate) fn prepare_managed<Item, SErr, S, T, F, Fut>(
-        &self, input: In, streaming: S, cleanup_grace: std::time::Duration, drive: F,
-    ) -> crate::managed_stream_task::PreparedStreamTask<Result<StreamInitializationReport<Out, StreamReadyResult<T>, E>, StreamInvocationAlreadyStarted>>
+        &self,
+        input: In,
+        streaming: S,
+        cleanup_grace: std::time::Duration,
+        drive: F,
+    ) -> crate::managed_stream_task::PreparedStreamTask<
+        Result<
+            StreamInitializationReport<Out, StreamReadyResult<T>, E>,
+            StreamInvocationAlreadyStarted,
+        >,
+    >
     where
         Item: Send + 'static,
         SErr: Send + Sync + std::fmt::Debug + 'static,
@@ -972,15 +1199,27 @@ where
     {
         let child = self.clone();
         crate::managed_stream_task::PreparedStreamTask::new_owned(self.inner.clone(), async move {
-            child.initialize_and_drive(input, &streaming, None, cleanup_grace, drive).await
+            child
+                .initialize_and_drive(input, &streaming, None, cleanup_grace, drive)
+                .await
         })
     }
 
     /// Build the gated future from this exact recovery owner and owned inputs.
     /// The supervisor must register this owner's holder before granting start.
     pub(crate) fn prepare_managed_controlled<Item, SErr, S, T, F, Fut>(
-        &self, input: In, streaming: S, cleanup_grace: std::time::Duration, total: Option<std::time::Duration>, drive: F,
-    ) -> crate::managed_stream_task::PreparedStreamTask<Result<StreamInitializationReport<Out, StreamReadyResult<T>, E>, StreamInvocationAlreadyStarted>>
+        &self,
+        input: In,
+        streaming: S,
+        cleanup_grace: std::time::Duration,
+        total: Option<std::time::Duration>,
+        drive: F,
+    ) -> crate::managed_stream_task::PreparedStreamTask<
+        Result<
+            StreamInitializationReport<Out, StreamReadyResult<T>, E>,
+            StreamInvocationAlreadyStarted,
+        >,
+    >
     where
         Item: Send + 'static,
         SErr: Send + Sync + std::fmt::Debug + 'static,
@@ -991,7 +1230,16 @@ where
     {
         let child = self.clone();
         crate::managed_stream_task::PreparedStreamTask::new_owned(self.inner.clone(), async move {
-            child.initialize_and_drive_controlled(input, &streaming, None, cleanup_grace, total, drive).await
+            child
+                .initialize_and_drive_controlled(
+                    input,
+                    &streaming,
+                    None,
+                    cleanup_grace,
+                    total,
+                    drive,
+                )
+                .await
         })
     }
 
@@ -1013,7 +1261,15 @@ where
         F: FnOnce(RawStream<Item>) -> Fut,
         Fut: Future<Output = StreamDriveResult<T>>,
     {
-        self.initialize_and_drive_controlled(input, streaming, token, cleanup_grace, None, |source, _control, _origin| drive(source)).await
+        self.initialize_and_drive_controlled(
+            input,
+            streaming,
+            token,
+            cleanup_grace,
+            None,
+            |source, _control, _origin| drive(source),
+        )
+        .await
     }
 
     pub(crate) async fn initialize_and_drive_controlled<Item, SErr, S, T, F, Fut>(
@@ -1054,38 +1310,62 @@ where
         let (resources, bus) = &mut *context;
         let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
         let parent_admission = owner.bus().read::<ParentStreamCustody>().cloned();
-        let parent_client = owner.bus().read::<crate::nested_custody::WeakCustodyClient>().cloned();
-        let inherited = parent_admission.as_ref().and_then(|admission| admission.1.clone());
+        let parent_client = owner
+            .bus()
+            .read::<crate::nested_custody::WeakCustodyClient>()
+            .cloned();
+        let inherited = parent_admission
+            .as_ref()
+            .and_then(|admission| admission.1.clone());
         let validation = if inherited.is_some() && token.is_some() {
             Err("execution.nested_stream_control_override")
-        } else { match (parent_admission, parent_client) {
-            (Some(admission), Some(client)) => client.validate_member(&admission.0, &(self.inner.clone() as Arc<dyn std::any::Any + Send + Sync>)),
-            (None, None) => Ok(()),
-            _ => Err("execution.nested_stream_custody_mismatch"),
-        } };
+        } else {
+            match (parent_admission, parent_client) {
+                (Some(admission), Some(client)) => client.validate_member(
+                    &admission.0,
+                    &(self.inner.clone() as Arc<dyn std::any::Any + Send + Sync>),
+                ),
+                (None, None) => Ok(()),
+                _ => Err("execution.nested_stream_custody_mismatch"),
+            }
+        };
         if let Err(signal) = validation {
-            let prefix = owner.finish(crate::ExecutionTerminal::Outcome(ranvier_core::Outcome::emit(signal, None)));
+            let prefix = owner.finish(crate::ExecutionTerminal::Outcome(
+                ranvier_core::Outcome::emit(signal, None),
+            ));
             observation.returned(SupervisorDisposition::PrefixRejected, None);
             return Ok(StreamInitializationReport::Rejected { prefix });
         }
         let parent = inherited.or(token).unwrap_or_default();
         let token = match self.inner.expires {
-            Some(expires) => parent.child_with_deadline(
-                expires.saturating_duration_since(std::time::Instant::now())),
+            Some(expires) => parent
+                .child_with_deadline(expires.saturating_duration_since(std::time::Instant::now())),
             None => parent,
         };
         // Consumption observes this same total origin. Only initialization needs
         // a child deadline token; do not leak its local control into the parent.
         let initialization_token = match total {
             Some(duration) => token.child_with_deadline_at(
-                invocation_started_at.checked_add(duration).unwrap_or(invocation_started_at)),
+                invocation_started_at
+                    .checked_add(duration)
+                    .unwrap_or(invocation_started_at),
+            ),
             None => token.clone(),
         };
-        owner.bus().insert(crate::nested_custody::RequiredOwnedCustody);
-        if !owner.bus().has::<crate::nested_custody::WeakCustodyClient>() {
-            owner.bus().insert(crate::nested_custody::CustodyStore::new(128));
+        owner
+            .bus()
+            .insert(crate::nested_custody::RequiredOwnedCustody);
+        if !owner
+            .bus()
+            .has::<crate::nested_custody::WeakCustodyClient>()
+        {
+            owner
+                .bus()
+                .insert(crate::nested_custody::CustodyStore::new(128));
         }
-        owner.bus().insert(crate::nested_custody::OwnedResources(resources.clone()));
+        owner
+            .bus()
+            .insert(crate::nested_custody::OwnedResources(resources.clone()));
         if let Some(active) = owner
             .bus()
             .read::<crate::execution_observation::ActiveObservation>()
@@ -1236,9 +1516,12 @@ mod tests {
         bus.insert(41u32);
         let original = CancellationToken::new();
         bus.set_cancellation_token(original.clone());
-        bus.set_access_policy("original-scope", Some(ranvier_core::BusAccessPolicy::allow_only(
-            vec![ranvier_core::BusTypeRef::of::<u32>()],
-        )));
+        bus.set_access_policy(
+            "original-scope",
+            Some(ranvier_core::BusAccessPolicy::allow_only(vec![
+                ranvier_core::BusTypeRef::of::<u32>(),
+            ])),
+        );
         assert!(bus.get::<SagaStack>().is_err());
         let operation = {
             let mut scope = LocalCompensationBusScope::begin(&mut bus);
@@ -1251,7 +1534,10 @@ mod tests {
         assert!(bus.get::<SagaStack>().is_err());
         assert_eq!(*bus.get::<u32>().unwrap(), 41);
         original.cancel(ranvier_core::CancellationReason::ClientDisconnected);
-        assert!(bus.cancellation_token().is_some_and(CancellationToken::is_cancelled));
+        assert!(
+            bus.cancellation_token()
+                .is_some_and(CancellationToken::is_cancelled)
+        );
     }
     #[tokio::test]
     async fn full_queue_observes_cancel_disconnect_and_deadline_without_extra_source_poll() {
@@ -1724,7 +2010,13 @@ mod tests {
                 assert_eq!(pending[0].context.circuit, "external-abort-circuit");
                 assert!(Arc::ptr_eq(&pending[0].handle.hook(), &hook));
                 assert!(pending[0].invoked.load(Ordering::SeqCst));
-                assert!(pending[0].idempotency.as_ref().unwrap().shares_store_with(&marker));
+                assert!(
+                    pending[0]
+                        .idempotency
+                        .as_ref()
+                        .unwrap()
+                        .shares_store_with(&marker)
+                );
                 assert!(!format!("{journal:?}").contains("external-abort-circuit"));
                 assert!(!journal.snapshot().finished);
                 assert_eq!(
@@ -1754,10 +2046,12 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            assert!(!trace
-                .events
-                .iter()
-                .any(|event| event.outcome_kind == "Compensated"));
+            assert!(
+                !trace
+                    .events
+                    .iter()
+                    .any(|event| event.outcome_kind == "Compensated")
+            );
             assert_eq!(trace.completion, None);
             assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
             drop(retained);
@@ -1780,7 +2074,12 @@ mod tests {
     impl Transition<u32, u32> for NestedExternalFault {
         type Error = String;
         type Resources = Resources;
-        async fn run(&self, input: u32, resources: &Resources, bus: &mut Bus) -> Outcome<u32, String> {
+        async fn run(
+            &self,
+            input: u32,
+            resources: &Resources,
+            bus: &mut Bus,
+        ) -> Outcome<u32, String> {
             if self.seed_parent {
                 let trace = bus
                     .read::<crate::execution_observation::InvocationTrace>()
@@ -1945,13 +2244,15 @@ mod tests {
         let store = StreamRecoveryStore::new(1, std::time::Duration::from_secs(60));
         let (id, owner) = store
             .admit(
-                Axon::<u32, u32, String, Resources>::start("parent-abort").then(NestedExternalFault {
-                    hook: hook.clone(),
-                    parent: parent.clone(),
-                    child_trace: Arc::new(std::sync::Mutex::new(None)),
-                    seed_parent: true,
-                    incomplete: true,
-                }),
+                Axon::<u32, u32, String, Resources>::start("parent-abort").then(
+                    NestedExternalFault {
+                        hook: hook.clone(),
+                        parent: parent.clone(),
+                        child_trace: Arc::new(std::sync::Mutex::new(None)),
+                        seed_parent: true,
+                        incomplete: true,
+                    },
+                ),
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
             )
             .unwrap();
@@ -1983,12 +2284,14 @@ mod tests {
             let context = retained.inner.context.lock().await;
             assert!(Arc::ptr_eq(&context.0, &resources));
             let journal = context.1.read::<crate::SagaRollbackJournal>().unwrap();
-            assert!(parent
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .shares_report_with(journal));
+            assert!(
+                parent
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .shares_report_with(journal)
+            );
             let children = journal.retained_children();
             assert_eq!(children.len(), 1);
             assert_eq!(
@@ -2019,7 +2322,12 @@ mod tests {
     impl Transition<u32, u32> for DropNestedSaga {
         type Error = String;
         type Resources = Resources;
-        async fn run(&self, input: u32, resources: &Resources, bus: &mut Bus) -> Outcome<u32, String> {
+        async fn run(
+            &self,
+            input: u32,
+            resources: &Resources,
+            bus: &mut Bus,
+        ) -> Outcome<u32, String> {
             let entered = Arc::new(Notify::new());
             let child = Axon::<u32, u32, String, Resources>::start("nested-saga-remaining")
                 .with_saga_policy(SagaPolicy::Enabled)
@@ -2079,8 +2387,11 @@ mod tests {
             .retained_children();
         assert_eq!(children.len(), 1);
         let child = &children[0].1;
-        let custody = child.retained_custody().unwrap()
-            .downcast::<crate::nested_custody::NestedSagaCustody<String, Resources>>().unwrap_or_else(|_| panic!("wrong typed custody"));
+        let custody = child
+            .retained_custody()
+            .unwrap()
+            .downcast::<crate::nested_custody::NestedSagaCustody<String, Resources>>()
+            .unwrap_or_else(|_| panic!("wrong typed custody"));
         assert!(Arc::ptr_eq(&custody.resources, &resources));
         let pending = child.unresolved_tasks();
         assert_eq!(
@@ -2090,7 +2401,11 @@ mod tests {
         );
         assert_eq!(pending[0].input_snapshot, b"172");
         assert_eq!(pending[1].input_snapshot, b"171");
-        assert!(pending.iter().all(|task| custody.handlers.get(&task.node_id).is_some()));
+        assert!(
+            pending
+                .iter()
+                .all(|task| custody.handlers.get(&task.node_id).is_some())
+        );
         let report = child.snapshot();
         assert!(!report.finished);
         assert_eq!(
@@ -2114,18 +2429,40 @@ mod tests {
     #[tokio::test]
     async fn required_nested_custody_rejects_mismatch_capacity_and_busy_registry_before_effects() {
         for mode in 0..3 {
-            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
-            let graph = Axon::<u32, u32, String, Resources>::start("custody-pre-effect").then(FailingEffect);
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
+            let graph = Axon::<u32, u32, String, Resources>::start("custody-pre-effect")
+                .then(FailingEffect);
             let mut bus = Bus::new();
             bus.insert(crate::nested_custody::RequiredOwnedCustody);
-            let configured = if mode == 0 { Arc::new(Resources { effects: AtomicUsize::new(0) }) } else { resources.clone() };
+            let configured = if mode == 0 {
+                Arc::new(Resources {
+                    effects: AtomicUsize::new(0),
+                })
+            } else {
+                resources.clone()
+            };
             bus.insert(crate::nested_custody::OwnedResources(configured));
-            bus.insert(crate::nested_custody::CustodyStore::new(if mode == 1 { 0 } else { 1 }));
-            bus.set_access_policy("deny-framework-fixture", Some(ranvier_core::BusAccessPolicy::allow_only(Vec::new())));
-            let held = if mode == 2 { Some(graph.saga_compensation_registry.write().unwrap()) } else { None };
+            bus.insert(crate::nested_custody::CustodyStore::new(if mode == 1 {
+                0
+            } else {
+                1
+            }));
+            bus.set_access_policy(
+                "deny-framework-fixture",
+                Some(ranvier_core::BusAccessPolicy::allow_only(Vec::new())),
+            );
+            let held = if mode == 2 {
+                Some(graph.saga_compensation_registry.write().unwrap())
+            } else {
+                None
+            };
             let report = graph.execute(181, resources.as_ref(), &mut bus).await;
-            assert!(matches!(report, crate::ExecutionReport::Unpersisted { result: Outcome::Emit(signal, _), .. }
-                if signal == match mode { 0 => "execution.nested_resources_unowned", 1 => "execution.nested_custody_capacity", _ => "execution.nested_registry_unavailable" }));
+            assert!(
+                matches!(report, crate::ExecutionReport::Unpersisted { result: Outcome::Emit(signal, _), .. }
+                if signal == match mode { 0 => "execution.nested_resources_unowned", 1 => "execution.nested_custody_capacity", _ => "execution.nested_registry_unavailable" })
+            );
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             drop(held);
         }
@@ -2155,7 +2492,12 @@ mod tests {
     impl Transition<u32, ()> for DistinctChildUndo {
         type Error = String;
         type Resources = DistinctChildResources;
-        async fn run(&self, _: u32, _: &DistinctChildResources, bus: &mut Bus) -> Outcome<(), String> {
+        async fn run(
+            &self,
+            _: u32,
+            _: &DistinctChildResources,
+            bus: &mut Bus,
+        ) -> Outcome<(), String> {
             assert!(!bus.cancellation_token().unwrap().is_cancelled());
             self.0.notify_one();
             std::future::pending().await
@@ -2167,7 +2509,12 @@ mod tests {
     impl Transition<u32, u32> for DistinctChildStop {
         type Error = String;
         type Resources = DistinctChildResources;
-        async fn run(&self, _: u32, _: &DistinctChildResources, _: &mut Bus) -> Outcome<u32, String> {
+        async fn run(
+            &self,
+            _: u32,
+            _: &DistinctChildResources,
+            _: &mut Bus,
+        ) -> Outcome<u32, String> {
             if let Some(token) = &self.0 {
                 token.cancel(ranvier_core::CancellationReason::Explicit);
                 std::future::pending().await
@@ -2187,7 +2534,12 @@ mod tests {
     impl Transition<u32, u32> for DistinctOwnedChild {
         type Error = String;
         type Resources = Resources;
-        async fn run(&self, input: u32, resources: &Resources, bus: &mut Bus) -> Outcome<u32, String> {
+        async fn run(
+            &self,
+            input: u32,
+            resources: &Resources,
+            bus: &mut Bus,
+        ) -> Outcome<u32, String> {
             let allocation = Arc::new(DistinctChildResources {
                 effects: AtomicUsize::new(0),
             });
@@ -2221,9 +2573,10 @@ mod tests {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => panic!("distinct child did not enter undo"),
                 }
             }
-            assert!(bus
-                .read::<crate::nested_custody::OwnedResources<DistinctChildResources>>()
-                .is_none());
+            assert!(
+                bus.read::<crate::nested_custody::OwnedResources<DistinctChildResources>>()
+                    .is_none()
+            );
             assert!(std::ptr::eq(
                 bus.read::<crate::nested_custody::OwnedResources<Resources>>()
                     .unwrap()
@@ -2235,7 +2588,8 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn distinct_owned_child_resource_and_handlers_survive_child_future_drop_and_owner_transfer() {
+    async fn distinct_owned_child_resource_and_handlers_survive_child_future_drop_and_owner_transfer()
+     {
         for cancellable in [false, true] {
             let allocation = Arc::new(std::sync::Mutex::new(None));
             let resources = Arc::new(Resources {
@@ -2297,10 +2651,12 @@ mod tests {
                     child.snapshot().steps[0].outcome,
                     crate::SagaRollbackOutcome::InProgress
                 );
-                assert!(context
-                    .1
-                    .read::<crate::nested_custody::OwnedResources<DistinctChildResources>>()
-                    .is_none());
+                assert!(
+                    context
+                        .1
+                        .read::<crate::nested_custody::OwnedResources<DistinctChildResources>>()
+                        .is_none()
+                );
             }
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             let observer = retained.observe();
@@ -2372,10 +2728,12 @@ mod tests {
                         .0,
                     &resources
                 ));
-                assert!(context
-                    .1
-                    .read::<crate::nested_custody::OwnedResources<DistinctChildResources>>()
-                    .is_none());
+                assert!(
+                    context
+                        .1
+                        .read::<crate::nested_custody::OwnedResources<DistinctChildResources>>()
+                        .is_none()
+                );
                 let journal = context.1.read::<crate::SagaRollbackJournal>().unwrap();
                 let children = journal.retained_children();
                 assert_eq!(children.len(), 1);
@@ -2453,7 +2811,9 @@ mod tests {
     #[tokio::test]
     async fn weak_parent_client_reuses_completed_slots_and_blocks_effects_after_parent_close() {
         let root = crate::nested_custody::CustodyStore::new(1);
-        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
         let mut bus = Bus::new();
         bus.insert(crate::nested_custody::RequiredOwnedCustody);
         bus.insert(root.client());
@@ -2461,46 +2821,83 @@ mod tests {
         let mut parent = crate::execution_observation::InvocationOwner::begin(&mut bus);
         let graph = Axon::<u32, u32, String, Resources>::start("weak-client-child").then(Effect);
         for input in [211, 212] {
-            assert!(matches!(graph.execute_owned_child(input, resources.clone(), parent.bus()).await,
-                crate::ExecutionReport::Unpersisted { result: Outcome::Next(_), .. }));
+            assert!(matches!(
+                graph
+                    .execute_owned_child(input, resources.clone(), parent.bus())
+                    .await,
+                crate::ExecutionReport::Unpersisted {
+                    result: Outcome::Next(_),
+                    ..
+                }
+            ));
         }
         assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
         drop(root);
-        assert!(matches!(graph.execute_owned_child(213, resources.clone(), parent.bus()).await,
+        assert!(
+            matches!(graph.execute_owned_child(213, resources.clone(), parent.bus()).await,
             crate::ExecutionReport::Unpersisted { result: Outcome::Emit(signal, _), .. }
-                if signal == "execution.parent_custody_released"));
+                if signal == "execution.parent_custody_released")
+        );
         assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
         let report = parent.finish(());
         assert!(report.cleanup().is_none());
     }
     #[tokio::test]
-    async fn parent_store_retains_full_stream_child_graph_resources_bus_after_actual_driver_abort() {
+    async fn parent_store_retains_full_stream_child_graph_resources_bus_after_actual_driver_abort()
+    {
         let parent = crate::nested_custody::CustodyStore::new(1);
-        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
         let weak = Arc::downgrade(&resources);
         let mut bus = Bus::new();
         bus.insert(9876u64);
         let child = OwnedStreamRecovery::try_new(
-            Axon::<u32, u32, String, Resources>::start("full-owned-child").with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
-            OwnedStreamContext::try_new(resources.clone(), bus).unwrap(), &StreamRecoveryAdmission::new(1), None).unwrap();
+            Axon::<u32, u32, String, Resources>::start("full-owned-child")
+                .with_saga_policy(SagaPolicy::Enabled)
+                .then_compensated(Effect, Undo),
+            OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
+            &StreamRecoveryAdmission::new(1),
+            None,
+        )
+        .unwrap();
         let parent_journal = crate::SagaRollbackJournal::new("parent-stream-report");
-        parent_journal.push("prior-parent-hook".into(), crate::SagaRollbackOutcome::Completed);
+        parent_journal.push(
+            "prior-parent-hook".into(),
+            crate::SagaRollbackOutcome::Completed,
+        );
         let parent_clone = parent_journal.clone();
-        let admission = child.admit_to_parent_journal(parent.client(), &parent_journal).await.unwrap();
+        let admission = child
+            .admit_to_parent_journal(parent.client(), &parent_journal)
+            .await
+            .unwrap();
         assert!(parent_journal.has_unresolved_tasks());
         assert!(!parent_journal.snapshot().is_complete());
-        assert!(matches!(parent.reserve(Arc::new(())), Err("execution.nested_custody_capacity")));
+        assert!(matches!(
+            parent.reserve(Arc::new(())),
+            Err("execution.nested_custody_capacity")
+        ));
         let observer = child.observe();
         let entered = Arc::new(Notify::new());
         let signal = entered.clone();
         let task = tokio::spawn(async move {
-            child.initialize_and_drive(233, &Init, None, std::time::Duration::from_secs(30), move |source| async move {
-                let _source = source;
-                signal.notify_one();
-                std::future::pending::<StreamDriveResult<()>>().await
-            }).await
+            child
+                .initialize_and_drive(
+                    233,
+                    &Init,
+                    None,
+                    std::time::Duration::from_secs(30),
+                    move |source| async move {
+                        let _source = source;
+                        signal.notify_one();
+                        std::future::pending::<StreamDriveResult<()>>().await
+                    },
+                )
+                .await
         });
-        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
         task.abort();
         assert!(matches!(task.await, Err(error) if error.is_cancelled()));
         assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
@@ -2508,10 +2905,16 @@ mod tests {
         assert_eq!(observations.len(), 1);
         assert_eq!(observations[0].0, 1);
         assert_eq!(parent_clone.retained_stream_observations()[0].0, 1);
-        assert_eq!(parent_journal.snapshot().steps[0].outcome, crate::SagaRollbackOutcome::Completed);
+        assert_eq!(
+            parent_journal.snapshot().steps[0].outcome,
+            crate::SagaRollbackOutcome::Completed
+        );
         assert_eq!(observations[0].1.phase, SupervisorPhase::Interrupted);
         assert_eq!(observer.borrow().custody, RecoveryCustody::Held);
-        let inner = admission.upgrade().unwrap().downcast::<RecoveryInner<u32, u32, String, Resources>>()
+        let inner = admission
+            .upgrade()
+            .unwrap()
+            .downcast::<RecoveryInner<u32, u32, String, Resources>>()
             .unwrap_or_else(|_| panic!("wrong full child owner"));
         let retained = OwnedStreamRecovery { inner };
         {
@@ -2522,7 +2925,16 @@ mod tests {
             assert!(!context.1.has::<crate::nested_custody::CustodyStore>());
             let task = &context.1.read::<SagaStack>().unwrap().tasks[0];
             assert_eq!(task.input_snapshot, b"233");
-            assert!(retained.inner.graph.saga_compensation_registry.read().unwrap().get(&task.node_id).is_some());
+            assert!(
+                retained
+                    .inner
+                    .graph
+                    .saga_compensation_registry
+                    .read()
+                    .unwrap()
+                    .get(&task.node_id)
+                    .is_some()
+            );
         }
         assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
         drop(resources);
@@ -2530,44 +2942,91 @@ mod tests {
         assert!(weak.upgrade().is_some());
         drop(parent);
         assert!(weak.upgrade().is_none());
-        assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
-        assert_eq!(parent_clone.retained_stream_observations()[0].1.custody, RecoveryCustody::ReleasedWithPendingTasks);
+        assert_eq!(
+            observer.borrow().custody,
+            RecoveryCustody::ReleasedWithPendingTasks
+        );
+        assert_eq!(
+            parent_clone.retained_stream_observations()[0].1.custody,
+            RecoveryCustody::ReleasedWithPendingTasks
+        );
         assert!(parent_journal.has_unresolved_tasks());
         assert!(!parent_journal.snapshot().is_complete());
     }
     #[tokio::test]
     async fn released_parent_admission_cannot_restart_stream_child_as_new_root() {
         let parent = crate::nested_custody::CustodyStore::new(1);
-        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
         let child = OwnedStreamRecovery::try_new(
             Axon::<u32, u32, String, Resources>::start("released-full-child").then(Effect),
-            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(), &StreamRecoveryAdmission::new(1), None).unwrap();
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1),
+            None,
+        )
+        .unwrap();
         let admission = child.admit_to_parent(parent.client()).await.unwrap();
         admission.release();
-        let report = child.initialize_and_drive(239, &Init, None, std::time::Duration::from_secs(5), |_| async {
-            panic!("unregistered child must not start driver");
-            #[allow(unreachable_code)] completed()
-        }).await.unwrap();
-        assert!(matches!(report, StreamInitializationReport::Rejected { prefix:
+        let report = child
+            .initialize_and_drive(
+                239,
+                &Init,
+                None,
+                std::time::Duration::from_secs(5),
+                |_| async {
+                    panic!("unregistered child must not start driver");
+                    #[allow(unreachable_code)]
+                    completed()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(report, StreamInitializationReport::Rejected { prefix:
             crate::ExecutionReport::Unpersisted { result: crate::ExecutionTerminal::Outcome(Outcome::Emit(signal, _)), .. } }
-                if signal == "execution.parent_custody_released"));
+                if signal == "execution.parent_custody_released")
+        );
         assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
-        assert!(!child.inner.context.lock().await.1.has::<crate::nested_custody::CustodyStore>());
+        assert!(
+            !child
+                .inner
+                .context
+                .lock()
+                .await
+                .1
+                .has::<crate::nested_custody::CustodyStore>()
+        );
     }
     #[tokio::test]
     async fn parent_stream_binding_preserves_policy_and_rejects_busy_started_and_duplicate() {
         let parent = crate::nested_custody::CustodyStore::new(1);
-        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
         let mut bus = Bus::new();
-        bus.set_access_policy("deny-framework-fixture", Some(ranvier_core::BusAccessPolicy::allow_only(Vec::new())));
+        bus.set_access_policy(
+            "deny-framework-fixture",
+            Some(ranvier_core::BusAccessPolicy::allow_only(Vec::new())),
+        );
         let child = OwnedStreamRecovery::try_new(
             Axon::<u32, u32, String, Resources>::start("binding-policy").then(Effect),
-            OwnedStreamContext::try_new(resources.clone(), bus).unwrap(), &StreamRecoveryAdmission::new(1), None).unwrap();
+            OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
+            &StreamRecoveryAdmission::new(1),
+            None,
+        )
+        .unwrap();
         let held = child.inner.context.lock().await;
-        assert!(matches!(child.admit_to_parent(parent.client()).await, Err("execution.nested_stream_context_busy")));
+        assert!(matches!(
+            child.admit_to_parent(parent.client()).await,
+            Err("execution.nested_stream_context_busy")
+        ));
         drop(held);
         let admission = child.admit_to_parent(parent.client()).await.unwrap();
-        assert!(matches!(child.admit_to_parent(parent.client()).await, Err("execution.nested_stream_already_bound")));
+        assert!(matches!(
+            child.admit_to_parent(parent.client()).await,
+            Err("execution.nested_stream_already_bound")
+        ));
         {
             let mut context = child.inner.context.lock().await;
             assert!(!context.1.has::<ParentStreamCustody>());
@@ -2576,7 +3035,10 @@ mod tests {
             assert!(context.1.has::<crate::nested_custody::WeakCustodyClient>());
             context.1.restore_access_scope(access);
             child.inner.started.store(true, Ordering::Release);
-            assert!(matches!(child.admit_to_parent(parent.client()).await, Err("execution.nested_stream_already_started")));
+            assert!(matches!(
+                child.admit_to_parent(parent.client()).await,
+                Err("execution.nested_stream_already_started")
+            ));
         }
         assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
         admission.release();
@@ -2584,17 +3046,23 @@ mod tests {
     #[tokio::test]
     async fn parent_store_retains_child_after_actual_initializer_abort_without_driver_poll() {
         let parent = crate::nested_custody::CustodyStore::new(1);
-        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
         let weak = Arc::downgrade(&resources);
         let mut bus = Bus::new();
         bus.insert(9911u64);
         let graph = Axon::<u32, u32, String, Resources>::start("parent-child-init-abort")
-            .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo);
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Undo);
         let external_registry = graph.saga_compensation_registry.clone();
         let child = OwnedStreamRecovery::try_new(
             graph,
             OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
-            &StreamRecoveryAdmission::new(1), None).unwrap();
+            &StreamRecoveryAdmission::new(1),
+            None,
+        )
+        .unwrap();
         let admission = child.admit_to_parent(parent.client()).await.unwrap();
         // External graph mutation must not remove the actual frozen recovery handler.
         external_registry.write().unwrap().handlers.clear();
@@ -2605,13 +3073,22 @@ mod tests {
         let drivers = Arc::new(AtomicUsize::new(0));
         let driver_calls = drivers.clone();
         let task = tokio::spawn(async move {
-            child.initialize_and_drive(251, &PendingInit(signal), None,
-                std::time::Duration::from_secs(30), move |_| async move {
-                    driver_calls.fetch_add(1, Ordering::SeqCst);
-                    completed()
-                }).await
+            child
+                .initialize_and_drive(
+                    251,
+                    &PendingInit(signal),
+                    None,
+                    std::time::Duration::from_secs(30),
+                    move |_| async move {
+                        driver_calls.fetch_add(1, Ordering::SeqCst);
+                        completed()
+                    },
+                )
+                .await
         });
-        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
         assert_eq!(observer.borrow().phase, SupervisorPhase::Initializing);
         task.abort();
         assert!(matches!(task.await, Err(error) if error.is_cancelled()));
@@ -2619,7 +3096,9 @@ mod tests {
         assert_eq!(observer.borrow().custody, RecoveryCustody::Held);
         assert_eq!(drivers.load(Ordering::SeqCst), 0);
         assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
-        let inner = admission.upgrade().unwrap()
+        let inner = admission
+            .upgrade()
+            .unwrap()
             .downcast::<RecoveryInner<u32, u32, String, Resources>>()
             .unwrap_or_else(|_| panic!("wrong initializer recovery owner"));
         {
@@ -2630,7 +3109,15 @@ mod tests {
             assert_eq!(stack.tasks.len(), 1);
             let retained = &stack.tasks[0];
             assert_eq!(retained.input_snapshot, b"251");
-            assert!(inner.graph.saga_compensation_registry.read().unwrap().get(&retained.node_id).is_some());
+            assert!(
+                inner
+                    .graph
+                    .saga_compensation_registry
+                    .read()
+                    .unwrap()
+                    .get(&retained.node_id)
+                    .is_some()
+            );
         }
         let registry = Arc::downgrade(&inner.graph.saga_compensation_registry);
         drop(inner);
@@ -2640,43 +3127,71 @@ mod tests {
         drop(parent);
         assert!(weak.upgrade().is_none());
         assert!(registry.upgrade().is_none());
-        assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
+        assert_eq!(
+            observer.borrow().custody,
+            RecoveryCustody::ReleasedWithPendingTasks
+        );
     }
     #[tokio::test]
     async fn parent_store_retains_actual_child_pending_undo_and_remaining_input_after_abort() {
         let parent = crate::nested_custody::CustodyStore::new(1);
-        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
         let weak = Arc::downgrade(&resources);
         let entered = Arc::new(Notify::new());
         let captured = Arc::new(std::sync::Mutex::new(None));
         let graph = Axon::<u32, u32, String, Resources>::start("parent-child-undo-abort")
             .with_saga_policy(SagaPolicy::Enabled)
             .then_compensated(AdvancingEffect, Undo)
-            .then_compensated(AdvancingEffect, PendingUndo(entered.clone(), captured.clone()))
+            .then_compensated(
+                AdvancingEffect,
+                PendingUndo(entered.clone(), captured.clone()),
+            )
             .then(StopPrefix(None));
-        let child = OwnedStreamRecovery::try_new(graph,
+        let child = OwnedStreamRecovery::try_new(
+            graph,
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-            &StreamRecoveryAdmission::new(1), None).unwrap();
+            &StreamRecoveryAdmission::new(1),
+            None,
+        )
+        .unwrap();
         let admission = child.admit_to_parent(parent.client()).await.unwrap();
         let observer = child.observe();
         let task = tokio::spawn(async move {
-            child.initialize_and_drive(263, &Init, None, std::time::Duration::from_secs(30), |_| async {
-                panic!("faulted prefix must not start driver");
-                #[allow(unreachable_code)] completed()
-            }).await
+            child
+                .initialize_and_drive(
+                    263,
+                    &Init,
+                    None,
+                    std::time::Duration::from_secs(30),
+                    |_| async {
+                        panic!("faulted prefix must not start driver");
+                        #[allow(unreachable_code)]
+                        completed()
+                    },
+                )
+                .await
         });
-        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
         task.abort();
         assert!(matches!(task.await, Err(error) if error.is_cancelled()));
         assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
         let journal = captured.lock().unwrap().clone().unwrap();
         assert!(!journal.snapshot().is_complete());
-        assert_eq!(journal.snapshot().steps[0].outcome, crate::SagaRollbackOutcome::InProgress);
+        assert_eq!(
+            journal.snapshot().steps[0].outcome,
+            crate::SagaRollbackOutcome::InProgress
+        );
         let unresolved = journal.unresolved_tasks();
         assert_eq!(unresolved.len(), 1);
         assert_eq!(unresolved[0].input_snapshot, b"264");
         assert_eq!(journal.snapshot().steps.len(), 1);
-        let inner = admission.upgrade().unwrap()
+        let inner = admission
+            .upgrade()
+            .unwrap()
             .downcast::<RecoveryInner<u32, u32, String, Resources>>()
             .unwrap_or_else(|_| panic!("wrong child cleanup owner"));
         {
@@ -2684,11 +3199,27 @@ mod tests {
             assert!(Arc::ptr_eq(&context.0, &resources));
             assert!(!context.1.has::<crate::nested_custody::CustodyStore>());
             assert!(context.1.has::<crate::nested_custody::WeakCustodyClient>());
-            assert!(inner.graph.saga_compensation_registry.read().unwrap().get(&unresolved[0].node_id).is_some());
+            assert!(
+                inner
+                    .graph
+                    .saga_compensation_registry
+                    .read()
+                    .unwrap()
+                    .get(&unresolved[0].node_id)
+                    .is_some()
+            );
             let stack = context.1.read::<SagaStack>().unwrap();
             assert_eq!(stack.tasks.len(), 1);
             assert_eq!(stack.tasks[0].input_snapshot, b"263");
-            assert!(inner.graph.saga_compensation_registry.read().unwrap().get(&stack.tasks[0].node_id).is_some());
+            assert!(
+                inner
+                    .graph
+                    .saga_compensation_registry
+                    .read()
+                    .unwrap()
+                    .get(&stack.tasks[0].node_id)
+                    .is_some()
+            );
         }
         assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
         drop(unresolved);
@@ -2699,21 +3230,32 @@ mod tests {
         drop(parent);
         assert!(weak.upgrade().is_none());
         assert!(registry.upgrade().is_none());
-        assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
-        assert_eq!(journal.snapshot().steps[0].outcome, crate::SagaRollbackOutcome::InProgress);
+        assert_eq!(
+            observer.borrow().custody,
+            RecoveryCustody::ReleasedWithPendingTasks
+        );
+        assert_eq!(
+            journal.snapshot().steps[0].outcome,
+            crate::SagaRollbackOutcome::InProgress
+        );
     }
     #[tokio::test]
     async fn parent_store_retains_child_when_actual_bounded_producer_aborts_at_full_queue() {
         struct Source(Arc<AtomicUsize>, Arc<AtomicUsize>);
         impl futures_core::Stream for Source {
             type Item = u32;
-            fn poll_next(self: Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<Option<u32>> {
+            fn poll_next(
+                self: Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Option<u32>> {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 std::task::Poll::Ready(Some(277))
             }
         }
         impl Drop for Source {
-            fn drop(&mut self) { self.1.fetch_add(1, Ordering::SeqCst); }
+            fn drop(&mut self) {
+                self.1.fetch_add(1, Ordering::SeqCst);
+            }
         }
         struct QueueInit(Arc<AtomicUsize>, Arc<AtomicUsize>);
         #[async_trait::async_trait]
@@ -2721,18 +3263,29 @@ mod tests {
             type Item = u32;
             type Error = String;
             type Resources = Resources;
-            async fn run_stream(&self, _: u32, _: &Resources, _: &mut Bus) -> Result<RawStream<u32>, String> {
+            async fn run_stream(
+                &self,
+                _: u32,
+                _: &Resources,
+                _: &mut Bus,
+            ) -> Result<RawStream<u32>, String> {
                 Ok(Box::pin(Source(self.0.clone(), self.1.clone())))
             }
         }
         let parent = crate::nested_custody::CustodyStore::new(1);
-        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
         let weak = Arc::downgrade(&resources);
         let child = OwnedStreamRecovery::try_new(
             Axon::<u32, u32, String, Resources>::start("parent-full-queue")
-                .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+                .with_saga_policy(SagaPolicy::Enabled)
+                .then_compensated(Effect, Undo),
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-            &StreamRecoveryAdmission::new(1), None).unwrap();
+            &StreamRecoveryAdmission::new(1),
+            None,
+        )
+        .unwrap();
         let admission = child.admit_to_parent(parent.client()).await.unwrap();
         let observer = child.observe();
         let polls = Arc::new(AtomicUsize::new(0));
@@ -2741,24 +3294,56 @@ mod tests {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
         let token = CancellationToken::new();
         let task = tokio::spawn(async move {
-            child.initialize_and_drive(277, &initializer, None, std::time::Duration::from_secs(30), move |source| {
-                produce_bounded(source, ranvier_core::streaming::StreamTimeoutConfig {
-                    init: None, idle: None, total: None,
-                }, token, sender)
-            }).await
+            child
+                .initialize_and_drive(
+                    277,
+                    &initializer,
+                    None,
+                    std::time::Duration::from_secs(30),
+                    move |source| {
+                        produce_bounded(
+                            source,
+                            ranvier_core::streaming::StreamTimeoutConfig {
+                                init: None,
+                                idle: None,
+                                total: None,
+                            },
+                            token,
+                            sender,
+                        )
+                    },
+                )
+                .await
         });
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while receiver.len() != 1 { tokio::task::yield_now().await; }
-        }).await.unwrap();
+            while receiver.len() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
         assert_eq!(observer.borrow().phase, SupervisorPhase::Consuming);
         task.abort();
         assert!(matches!(task.await, Err(error) if error.is_cancelled()));
         assert_eq!(polls.load(Ordering::SeqCst), 1);
         assert_eq!(drops.load(Ordering::SeqCst), 1);
-        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.unwrap(), Some(277));
-        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.unwrap(), None);
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
+                .await
+                .unwrap(),
+            Some(277)
+        );
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
+                .await
+                .unwrap(),
+            None
+        );
         assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
-        let inner = admission.upgrade().unwrap().downcast::<RecoveryInner<u32, u32, String, Resources>>()
+        let inner = admission
+            .upgrade()
+            .unwrap()
+            .downcast::<RecoveryInner<u32, u32, String, Resources>>()
             .unwrap_or_else(|_| panic!("wrong full-queue child owner"));
         {
             let context = inner.context.lock().await;
@@ -2766,7 +3351,15 @@ mod tests {
             let stack = context.1.read::<SagaStack>().unwrap();
             assert_eq!(stack.tasks.len(), 1);
             assert_eq!(stack.tasks[0].input_snapshot, b"277");
-            assert!(inner.graph.saga_compensation_registry.read().unwrap().get(&stack.tasks[0].node_id).is_some());
+            assert!(
+                inner
+                    .graph
+                    .saga_compensation_registry
+                    .read()
+                    .unwrap()
+                    .get(&stack.tasks[0].node_id)
+                    .is_some()
+            );
             assert!(context.1.has::<crate::nested_custody::WeakCustodyClient>());
             assert!(!context.1.has::<crate::nested_custody::CustodyStore>());
         }
@@ -2778,7 +3371,10 @@ mod tests {
         drop(parent);
         assert!(weak.upgrade().is_none());
         assert!(registry.upgrade().is_none());
-        assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
+        assert_eq!(
+            observer.borrow().custody,
+            RecoveryCustody::ReleasedWithPendingTasks
+        );
     }
     #[tokio::test]
     async fn parent_store_retains_child_during_actual_prefix_effect_abort_before_initializer() {
@@ -2788,7 +3384,12 @@ mod tests {
         impl Transition<u32, u32> for PendingPrefix {
             type Error = String;
             type Resources = Resources;
-            async fn run(&self, _: u32, resources: &Resources, bus: &mut Bus) -> Outcome<u32, String> {
+            async fn run(
+                &self,
+                _: u32,
+                resources: &Resources,
+                bus: &mut Bus,
+            ) -> Outcome<u32, String> {
                 resources.effects.fetch_add(1, Ordering::SeqCst);
                 bus.insert(9922u64);
                 self.0.notify_one();
@@ -2796,32 +3397,52 @@ mod tests {
             }
         }
         let parent = crate::nested_custody::CustodyStore::new(1);
-        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
         let weak = Arc::downgrade(&resources);
         let entered = Arc::new(Notify::new());
         let child = OwnedStreamRecovery::try_new(
             Axon::<u32, u32, String, Resources>::start("parent-prefix-abort")
-                .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo)
+                .with_saga_policy(SagaPolicy::Enabled)
+                .then_compensated(Effect, Undo)
                 .then(PendingPrefix(entered.clone())),
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-            &StreamRecoveryAdmission::new(1), None).unwrap();
+            &StreamRecoveryAdmission::new(1),
+            None,
+        )
+        .unwrap();
         let admission = child.admit_to_parent(parent.client()).await.unwrap();
         let observer = child.observe();
         let initialized = Arc::new(Notify::new());
         let init_signal = initialized.clone();
         let task = tokio::spawn(async move {
-            child.initialize_and_drive(281, &PendingInit(init_signal), None, std::time::Duration::from_secs(30), |_| async {
-                panic!("pending prefix must not start driver");
-                #[allow(unreachable_code)] completed()
-            }).await
+            child
+                .initialize_and_drive(
+                    281,
+                    &PendingInit(init_signal),
+                    None,
+                    std::time::Duration::from_secs(30),
+                    |_| async {
+                        panic!("pending prefix must not start driver");
+                        #[allow(unreachable_code)]
+                        completed()
+                    },
+                )
+                .await
         });
-        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
         task.abort();
         assert!(matches!(task.await, Err(error) if error.is_cancelled()));
         assert_eq!(observer.borrow().phase, SupervisorPhase::Interrupted);
         // The cancelled task is terminal: no remaining producer can signal initializer entry.
         assert!(futures_util::FutureExt::now_or_never(initialized.notified()).is_none());
-        let inner = admission.upgrade().unwrap().downcast::<RecoveryInner<u32, u32, String, Resources>>()
+        let inner = admission
+            .upgrade()
+            .unwrap()
+            .downcast::<RecoveryInner<u32, u32, String, Resources>>()
             .unwrap_or_else(|_| panic!("wrong prefix child owner"));
         {
             let context = inner.context.lock().await;
@@ -2832,7 +3453,15 @@ mod tests {
             let stack = context.1.read::<SagaStack>().unwrap();
             assert_eq!(stack.tasks.len(), 1);
             assert_eq!(stack.tasks[0].input_snapshot, b"281");
-            assert!(inner.graph.saga_compensation_registry.read().unwrap().get(&stack.tasks[0].node_id).is_some());
+            assert!(
+                inner
+                    .graph
+                    .saga_compensation_registry
+                    .read()
+                    .unwrap()
+                    .get(&stack.tasks[0].node_id)
+                    .is_some()
+            );
         }
         assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
         let registry = Arc::downgrade(&inner.graph.saga_compensation_registry);
@@ -2842,24 +3471,39 @@ mod tests {
         drop(parent);
         assert!(weak.upgrade().is_none());
         assert!(registry.upgrade().is_none());
-        assert_eq!(observer.borrow().custody, RecoveryCustody::ReleasedWithPendingTasks);
+        assert_eq!(
+            observer.borrow().custody,
+            RecoveryCustody::ReleasedWithPendingTasks
+        );
     }
     #[tokio::test]
     async fn parent_stream_journal_rejects_admission_without_adding_phantom_rows() {
         for closed in [false, true] {
             let parent = crate::nested_custody::CustodyStore::new(0);
             let client = parent.client();
-            let retained = if closed { drop(parent); None } else { Some(parent) };
-            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let retained = if closed {
+                drop(parent);
+                None
+            } else {
+                Some(parent)
+            };
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
             let child = OwnedStreamRecovery::try_new(
                 Axon::<u32, u32, String, Resources>::start("rejected-parent-report").then(Effect),
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-                &StreamRecoveryAdmission::new(1), None).unwrap();
+                &StreamRecoveryAdmission::new(1),
+                None,
+            )
+            .unwrap();
             let journal = crate::SagaRollbackJournal::new("parent-admission-failure");
             journal.finish();
             let before = journal.snapshot();
-            assert!(matches!(child.admit_to_parent_journal(client, &journal).await,
-                Err(signal) if signal == if closed { "execution.parent_custody_released" } else { "execution.nested_custody_capacity" }));
+            assert!(
+                matches!(child.admit_to_parent_journal(client, &journal).await,
+                Err(signal) if signal == if closed { "execution.parent_custody_released" } else { "execution.nested_custody_capacity" })
+            );
             assert_eq!(journal.snapshot(), before);
             assert!(journal.retained_stream_observations().is_empty());
             assert!(!journal.has_unresolved_tasks());
@@ -2879,36 +3523,88 @@ mod tests {
             type Item = u32;
             type Error = String;
             type Resources = Resources;
-            async fn run_stream(&self, _: u32, _: &Resources, _: &mut Bus) -> Result<RawStream<u32>, String> {
+            async fn run_stream(
+                &self,
+                _: u32,
+                _: &Resources,
+                _: &mut Bus,
+            ) -> Result<RawStream<u32>, String> {
                 Ok(Box::pin(futures_util::stream::empty()))
             }
         }
         let parent = crate::nested_custody::CustodyStore::new(1);
-        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
         let weak = Arc::downgrade(&resources);
         let child = OwnedStreamRecovery::try_new(
             Axon::<u32, u32, String, Resources>::start("returned-child-report")
-                .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+                .with_saga_policy(SagaPolicy::Enabled)
+                .then_compensated(Effect, Undo),
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-            &StreamRecoveryAdmission::new(1), None).unwrap();
+            &StreamRecoveryAdmission::new(1),
+            None,
+        )
+        .unwrap();
         let journal = crate::SagaRollbackJournal::new("parent-returned-child");
-        let admission = child.admit_to_parent_journal(parent.client(), &journal).await.unwrap();
+        let admission = child
+            .admit_to_parent_journal(parent.client(), &journal)
+            .await
+            .unwrap();
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-        let report = child.initialize_and_drive(293, &EofInit, None, std::time::Duration::from_secs(5), move |source| {
-            produce_bounded(source, ranvier_core::streaming::StreamTimeoutConfig {
-                init: None, idle: None, total: None,
-            }, CancellationToken::new(), sender)
-        }).await.unwrap();
-        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.unwrap(), None);
+        let report = child
+            .initialize_and_drive(
+                293,
+                &EofInit,
+                None,
+                std::time::Duration::from_secs(5),
+                move |source| {
+                    produce_bounded(
+                        source,
+                        ranvier_core::streaming::StreamTimeoutConfig {
+                            init: None,
+                            idle: None,
+                            total: None,
+                        },
+                        CancellationToken::new(),
+                        sender,
+                    )
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
+                .await
+                .unwrap(),
+            None
+        );
         assert!(matches!(report, StreamInitializationReport::Ready { .. }));
         let observations = journal.retained_stream_observations();
         assert_eq!(observations[0].1.phase, SupervisorPhase::Returned);
-        assert_eq!(observations[0].1.disposition, Some(SupervisorDisposition::Consumption(crate::StreamConsumptionTerminal::Completed)));
+        assert_eq!(
+            observations[0].1.disposition,
+            Some(SupervisorDisposition::Consumption(
+                crate::StreamConsumptionTerminal::Completed
+            ))
+        );
         journal.finish();
         assert!(!journal.snapshot().is_complete());
         assert!(journal.has_unresolved_tasks());
         assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
-        assert_eq!(child.inner.context.lock().await.1.read::<SagaStack>().unwrap().tasks[0].input_snapshot, b"293");
+        assert_eq!(
+            child
+                .inner
+                .context
+                .lock()
+                .await
+                .1
+                .read::<SagaStack>()
+                .unwrap()
+                .tasks[0]
+                .input_snapshot,
+            b"293"
+        );
         drop(child);
         drop(resources);
         assert!(weak.upgrade().is_some());
@@ -2916,123 +3612,244 @@ mod tests {
         assert!(weak.upgrade().is_none());
         assert!(journal.has_unresolved_tasks());
         assert!(!journal.snapshot().is_complete());
-        assert_eq!(journal.retained_stream_observations()[0].1.custody, RecoveryCustody::ReleasedWithPendingTasks);
+        assert_eq!(
+            journal.retained_stream_observations()[0].1.custody,
+            RecoveryCustody::ReleasedWithPendingTasks
+        );
     }
     #[tokio::test]
-    async fn bound_parent_control_cancels_actual_child_initializer_and_rejects_override_before_effects() {
+    async fn bound_parent_control_cancels_actual_child_initializer_and_rejects_override_before_effects()
+     {
         for override_control in [false, true] {
             let parent = crate::nested_custody::CustodyStore::new(1);
             let control = CancellationToken::new();
-            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
             let child = OwnedStreamRecovery::try_new(
                 Axon::<u32, u32, String, Resources>::start("inherited-child-control")
-                    .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+                    .with_saga_policy(SagaPolicy::Enabled)
+                    .then_compensated(Effect, Undo),
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-                &StreamRecoveryAdmission::new(1), None).unwrap();
+                &StreamRecoveryAdmission::new(1),
+                None,
+            )
+            .unwrap();
             let journal = crate::SagaRollbackJournal::new("inherited-control-parent");
-            let admission = child.admit_to_parent_journal_with_control(parent.client(), &journal, Some(control.clone())).await.unwrap();
+            let admission = child
+                .admit_to_parent_journal_with_control(
+                    parent.client(),
+                    &journal,
+                    Some(control.clone()),
+                )
+                .await
+                .unwrap();
             parent.close_admission().unwrap();
-            assert!(matches!(parent.reserve(Arc::new(())), Err("execution.nested_custody_admission_closed")));
+            assert!(matches!(
+                parent.reserve(Arc::new(())),
+                Err("execution.nested_custody_admission_closed")
+            ));
             let entered = Arc::new(Notify::new());
             let signal = entered.clone();
             let task = tokio::spawn(async move {
-                child.initialize_and_drive(307, &PendingInit(signal),
-                    override_control.then(CancellationToken::new), std::time::Duration::from_secs(5), |_| async {
-                        panic!("cancelled or rejected initializer cannot run driver");
-                        #[allow(unreachable_code)] completed()
-                    }).await
+                child
+                    .initialize_and_drive(
+                        307,
+                        &PendingInit(signal),
+                        override_control.then(CancellationToken::new),
+                        std::time::Duration::from_secs(5),
+                        |_| async {
+                            panic!("cancelled or rejected initializer cannot run driver");
+                            #[allow(unreachable_code)]
+                            completed()
+                        },
+                    )
+                    .await
             });
             if !override_control {
-                tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+                tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+                    .await
+                    .unwrap();
                 control.cancel(ranvier_core::CancellationReason::OperatorShutdown);
             }
-            assert_eq!(journal.drain_stream_children(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(()));
-            let report = tokio::time::timeout(std::time::Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
+            assert_eq!(
+                journal
+                    .drain_stream_children(
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(5)
+                    )
+                    .await,
+                Ok(())
+            );
+            let report = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
             if override_control {
-                assert!(matches!(report, StreamInitializationReport::Rejected { prefix:
+                assert!(
+                    matches!(report, StreamInitializationReport::Rejected { prefix:
                     crate::ExecutionReport::Unpersisted { result: crate::ExecutionTerminal::Outcome(Outcome::Emit(signal, _)), .. } }
-                        if signal == "execution.nested_stream_control_override"));
+                        if signal == "execution.nested_stream_control_override")
+                );
                 assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
                 assert!(!control.is_cancelled());
             } else {
-                assert!(matches!(report, StreamInitializationReport::Cancelled { context, .. }
-                    if context.reason == ranvier_core::CancellationReason::OperatorShutdown));
+                assert!(
+                    matches!(report, StreamInitializationReport::Cancelled { context, .. }
+                    if context.reason == ranvier_core::CancellationReason::OperatorShutdown)
+                );
                 assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
-                assert_eq!(control.context().unwrap().reason, ranvier_core::CancellationReason::OperatorShutdown);
-                assert_eq!(journal.retained_stream_observations()[0].1.disposition, Some(SupervisorDisposition::InitializationCancelled));
+                assert_eq!(
+                    control.context().unwrap().reason,
+                    ranvier_core::CancellationReason::OperatorShutdown
+                );
+                assert_eq!(
+                    journal.retained_stream_observations()[0].1.disposition,
+                    Some(SupervisorDisposition::InitializationCancelled)
+                );
             }
             admission.release();
         }
     }
     #[tokio::test]
-    async fn bound_parent_control_precancel_and_local_cancel_reject_effects_without_upward_propagation() {
+    async fn bound_parent_control_precancel_and_local_cancel_reject_effects_without_upward_propagation()
+     {
         for cancel_parent in [false, true] {
             let parent = crate::nested_custody::CustodyStore::new(1);
             let control = CancellationToken::new();
-            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
             let child = OwnedStreamRecovery::try_new(
-                Axon::<u32, u32, String, Resources>::start("bound-control-before-effect").then(Effect),
+                Axon::<u32, u32, String, Resources>::start("bound-control-before-effect")
+                    .then(Effect),
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-                &StreamRecoveryAdmission::new(1), None).unwrap();
+                &StreamRecoveryAdmission::new(1),
+                None,
+            )
+            .unwrap();
             let journal = crate::SagaRollbackJournal::new("precancel-parent-observation");
-            let admission = child.admit_to_parent_journal_with_control(parent.client(), &journal, Some(control.clone())).await.unwrap();
+            let admission = child
+                .admit_to_parent_journal_with_control(
+                    parent.client(),
+                    &journal,
+                    Some(control.clone()),
+                )
+                .await
+                .unwrap();
             if cancel_parent {
                 control.cancel(ranvier_core::CancellationReason::OperatorShutdown);
             } else {
                 let context = child.inner.context.lock().await;
-                context.1.read::<ParentStreamCustody>().unwrap().1.as_ref().unwrap()
+                context
+                    .1
+                    .read::<ParentStreamCustody>()
+                    .unwrap()
+                    .1
+                    .as_ref()
+                    .unwrap()
                     .cancel(ranvier_core::CancellationReason::Explicit);
             }
-            let report = child.initialize_and_drive(311, &Init, None, std::time::Duration::from_secs(5), |_| async {
-                panic!("pre-cancelled bound child must not start driver");
-                #[allow(unreachable_code)] completed()
-            }).await.unwrap();
-            assert!(matches!(report, StreamInitializationReport::Rejected { prefix:
+            let report = child
+                .initialize_and_drive(
+                    311,
+                    &Init,
+                    None,
+                    std::time::Duration::from_secs(5),
+                    |_| async {
+                        panic!("pre-cancelled bound child must not start driver");
+                        #[allow(unreachable_code)]
+                        completed()
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(
+                matches!(report, StreamInitializationReport::Rejected { prefix:
                 crate::ExecutionReport::Unpersisted { result: crate::ExecutionTerminal::Cancelled(context), .. } }
                     if context.reason == if cancel_parent { ranvier_core::CancellationReason::OperatorShutdown }
-                        else { ranvier_core::CancellationReason::Explicit }));
+                        else { ranvier_core::CancellationReason::Explicit })
+            );
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             assert_eq!(control.is_cancelled(), cancel_parent);
-            if !cancel_parent { assert!(control.context().is_none()); }
+            if !cancel_parent {
+                assert!(control.context().is_none());
+            }
             let observed = journal.retained_stream_observations();
             assert_eq!(observed[0].1.phase, SupervisorPhase::Returned);
-            assert_eq!(observed[0].1.disposition, Some(SupervisorDisposition::PrefixRejected));
+            assert_eq!(
+                observed[0].1.disposition,
+                Some(SupervisorDisposition::PrefixRejected)
+            );
             assert!(journal.has_unresolved_tasks());
             assert!(!journal.snapshot().is_complete());
             admission.release();
         }
     }
     #[tokio::test(start_paused = true)]
-    async fn bound_parent_deadline_interrupts_actual_initializer_without_extending_original_deadline() {
+    async fn bound_parent_deadline_interrupts_actual_initializer_without_extending_original_deadline()
+     {
         let parent = crate::nested_custody::CustodyStore::new(1);
         let root = CancellationToken::new();
         let control = root.child_with_deadline(std::time::Duration::from_secs(60));
-        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
         let child = OwnedStreamRecovery::try_new(
             Axon::<u32, u32, String, Resources>::start("inherited-parent-deadline")
-                .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+                .with_saga_policy(SagaPolicy::Enabled)
+                .then_compensated(Effect, Undo),
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-            &StreamRecoveryAdmission::new(1), None).unwrap();
+            &StreamRecoveryAdmission::new(1),
+            None,
+        )
+        .unwrap();
         let journal = crate::SagaRollbackJournal::new("deadline-parent-observation");
-        let admission = child.admit_to_parent_journal_with_control(parent.client(), &journal, Some(control.clone())).await.unwrap();
+        let admission = child
+            .admit_to_parent_journal_with_control(parent.client(), &journal, Some(control.clone()))
+            .await
+            .unwrap();
         let entered = Arc::new(Notify::new());
         let signal = entered.clone();
         let task = tokio::spawn(async move {
-            child.initialize_and_drive(313, &PendingInit(signal), None, std::time::Duration::from_secs(5), |_| async {
-                panic!("deadline-cancelled initializer must not start driver");
-                #[allow(unreachable_code)] completed()
-            }).await
+            child
+                .initialize_and_drive(
+                    313,
+                    &PendingInit(signal),
+                    None,
+                    std::time::Duration::from_secs(5),
+                    |_| async {
+                        panic!("deadline-cancelled initializer must not start driver");
+                        #[allow(unreachable_code)]
+                        completed()
+                    },
+                )
+                .await
         });
-        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
         tokio::time::advance(std::time::Duration::from_secs(60)).await;
-        let report = tokio::time::timeout(std::time::Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
-        let StreamInitializationReport::Cancelled { context, .. } = report else { panic!("expected inherited deadline cancellation"); };
-        assert_eq!(context.reason, ranvier_core::CancellationReason::DeadlineExceeded);
+        let report = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let StreamInitializationReport::Cancelled { context, .. } = report else {
+            panic!("expected inherited deadline cancellation");
+        };
+        assert_eq!(
+            context.reason,
+            ranvier_core::CancellationReason::DeadlineExceeded
+        );
         assert_eq!(context, control.context().unwrap());
         assert!(context.deadline_ms.is_some());
         assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
         assert!(!root.is_cancelled());
-        assert_eq!(journal.retained_stream_observations()[0].1.disposition, Some(SupervisorDisposition::InitializationCancelled));
+        assert_eq!(
+            journal.retained_stream_observations()[0].1.disposition,
+            Some(SupervisorDisposition::InitializationCancelled)
+        );
         admission.release();
     }
     #[tokio::test(start_paused = true)]
@@ -3041,45 +3858,91 @@ mod tests {
         let control = CancellationToken::new();
         let child = OwnedStreamRecovery::try_new(
             Axon::<u32, u32, String, Resources>::start("drain-unstarted"),
-            OwnedStreamContext::try_new(Arc::new(Resources { effects: AtomicUsize::new(0) }), Bus::new()).unwrap(),
-            &StreamRecoveryAdmission::new(1), None).unwrap();
+            OwnedStreamContext::try_new(
+                Arc::new(Resources {
+                    effects: AtomicUsize::new(0),
+                }),
+                Bus::new(),
+            )
+            .unwrap(),
+            &StreamRecoveryAdmission::new(1),
+            None,
+        )
+        .unwrap();
         let journal = crate::SagaRollbackJournal::new("drain-timeout");
-        let admission = child.admit_to_parent_journal_with_control(parent.client(), &journal, Some(control.clone())).await.unwrap();
-        assert_eq!(journal.drain_stream_children(tokio::time::Instant::now() + std::time::Duration::from_secs(3)).await, Err(1));
+        let admission = child
+            .admit_to_parent_journal_with_control(parent.client(), &journal, Some(control.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            journal
+                .drain_stream_children(
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(3)
+                )
+                .await,
+            Err(1)
+        );
         assert!(!control.is_cancelled());
         assert!(!child.inner.started.load(Ordering::Acquire));
         assert!(admission.upgrade().is_some());
         drop(child);
         admission.release();
-        assert_eq!(journal.drain_stream_children(tokio::time::Instant::now()).await, Ok(()));
+        assert_eq!(
+            journal
+                .drain_stream_children(tokio::time::Instant::now())
+                .await,
+            Ok(())
+        );
         assert!(journal.has_unresolved_tasks());
         assert!(!journal.snapshot().is_complete());
     }
     #[tokio::test]
     async fn coordinated_unavailable_start_retains_registration_and_original_join_error() {
         let parent = crate::nested_custody::CustodyStore::new(1);
-        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
         let child = OwnedStreamRecovery::try_new(
             Axon::<u32, u32, String, Resources>::start("unavailable-coordinated-child"),
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-            &StreamRecoveryAdmission::new(1), None).unwrap();
-        let mut prepared = child.prepare_managed(137, PendingInit(Arc::new(Notify::new())),
-            std::time::Duration::from_secs(5), |_| async { completed() });
+            &StreamRecoveryAdmission::new(1),
+            None,
+        )
+        .unwrap();
+        let mut prepared = child.prepare_managed(
+            137,
+            PendingInit(Arc::new(Notify::new())),
+            std::time::Duration::from_secs(5),
+            |_| async { completed() },
+        );
         let holder = prepared.holder();
         {
             let mut task = holder.lock().await;
             task.abort_frame();
-            task.settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+            task.settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                .await
+                .unwrap();
         }
         let journal = crate::SagaRollbackJournal::new("unavailable-coordinated-parent");
-        let error = match child.register_and_start(parent.client(), &journal, CancellationToken::new(), &mut prepared).await {
-            Ok(_) => panic!("terminated frame cannot start"), Err(error) => error,
+        let error = match child
+            .register_and_start(
+                parent.client(),
+                &journal,
+                CancellationToken::new(),
+                &mut prepared,
+            )
+            .await
+        {
+            Ok(_) => panic!("terminated frame cannot start"),
+            Err(error) => error,
         };
         assert_eq!(error.signal, "execution.nested_task_start_unavailable");
         let admission = error.custody.unwrap();
         parent.close_admission().unwrap();
         assert_eq!(parent.closed_tasks().unwrap()[0].0, admission.id());
-        assert!(matches!(holder.lock().await.take_joined().unwrap(), Err(error) if error.is_cancelled()));
+        assert!(
+            matches!(holder.lock().await.take_joined().unwrap(), Err(error) if error.is_cancelled())
+        );
         assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
         assert_eq!(journal.retained_stream_observations().len(), 1);
         assert!(journal.has_unresolved_tasks());
@@ -3090,33 +3953,60 @@ mod tests {
     #[tokio::test]
     async fn coordinated_start_collects_actual_cancelled_child_report() {
         let parent = crate::nested_custody::CustodyStore::new(1);
-        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
         let child = OwnedStreamRecovery::try_new(
             Axon::<u32, u32, String, Resources>::start("coordinated-child")
-                .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+                .with_saga_policy(SagaPolicy::Enabled)
+                .then_compensated(Effect, Undo),
             OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-            &StreamRecoveryAdmission::new(1), None).unwrap();
+            &StreamRecoveryAdmission::new(1),
+            None,
+        )
+        .unwrap();
         let entered = Arc::new(Notify::new());
-        let mut prepared = child.prepare_managed(131, PendingInit(entered.clone()),
-            std::time::Duration::from_secs(5), |_| async {
+        let mut prepared = child.prepare_managed(
+            131,
+            PendingInit(entered.clone()),
+            std::time::Duration::from_secs(5),
+            |_| async {
                 panic!("cancelled initializer must not drive");
-                #[allow(unreachable_code)] completed()
-            });
+                #[allow(unreachable_code)]
+                completed()
+            },
+        );
         let journal = crate::SagaRollbackJournal::new("coordinated-parent");
         let control = CancellationToken::new();
-        let admission = child.register_and_start(parent.client(), &journal, control.clone(), &mut prepared).await
+        let admission = child
+            .register_and_start(parent.client(), &journal, control.clone(), &mut prepared)
+            .await
             .unwrap_or_else(|error| panic!("{}", error.signal));
         parent.close_admission().unwrap();
-        type Report = Result<StreamInitializationReport<u32, StreamReadyResult<()>, String>, StreamInvocationAlreadyStarted>;
+        type Report = Result<
+            StreamInitializationReport<u32, StreamReadyResult<()>, String>,
+            StreamInvocationAlreadyStarted,
+        >;
         let mut family = parent.closed_typed_family::<Report>().unwrap();
         drop(prepared);
-        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
         control.cancel(ranvier_core::CancellationReason::OperatorShutdown);
-        family.settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await;
+        family
+            .settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+            .await;
         assert_eq!(family[0].1, Ok(()));
-        let report = family.take_joined(admission.id(), tokio::time::Instant::now()).await.unwrap().unwrap().unwrap();
-        assert!(matches!(report, Some(Ok(StreamInitializationReport::Cancelled { context, .. }))
-            if context.reason == ranvier_core::CancellationReason::OperatorShutdown));
+        let report = family
+            .take_joined(admission.id(), tokio::time::Instant::now())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(report, Some(Ok(StreamInitializationReport::Cancelled { context, .. }))
+            if context.reason == ranvier_core::CancellationReason::OperatorShutdown)
+        );
         assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
         assert_eq!(journal.retained_stream_observations().len(), 1);
     }
@@ -3126,42 +4016,73 @@ mod tests {
         for failure in 0..4 {
             let parent = crate::nested_custody::CustodyStore::new(if failure == 0 { 0 } else { 1 });
             let client = parent.client();
-            if failure == 1 { parent.close_admission().unwrap(); }
-            if failure == 2 { drop(parent); }
-            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            if failure == 1 {
+                parent.close_admission().unwrap();
+            }
+            if failure == 2 {
+                drop(parent);
+            }
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
             let weak = Arc::downgrade(&resources);
             let child = OwnedStreamRecovery::try_new(
                 Axon::<u32, u32, String, Resources>::start("rejected-managed-child")
-                    .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+                    .with_saga_policy(SagaPolicy::Enabled)
+                    .then_compensated(Effect, Undo),
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-                &StreamRecoveryAdmission::new(1), None).unwrap();
-            let mut prepared = child.prepare_managed(107, PendingInit(Arc::new(Notify::new())),
-                std::time::Duration::from_secs(5), |_| async {
+                &StreamRecoveryAdmission::new(1),
+                None,
+            )
+            .unwrap();
+            let mut prepared = child.prepare_managed(
+                107,
+                PendingInit(Arc::new(Notify::new())),
+                std::time::Duration::from_secs(5),
+                |_| async {
                     panic!("rejected registration must not initialize driver");
-                    #[allow(unreachable_code)] completed()
-                });
+                    #[allow(unreachable_code)]
+                    completed()
+                },
+            );
             let journal = crate::SagaRollbackJournal::new("rejected-managed-parent");
             let target = if failure == 3 {
                 OwnedStreamRecovery::try_new(
                     Axon::<u32, u32, String, Resources>::start("foreign-registration-owner"),
                     OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-                    &StreamRecoveryAdmission::new(1), None).unwrap()
-            } else { child.clone() };
-            let result = target.register_and_start(client, &journal, CancellationToken::new(), &mut prepared).await;
+                    &StreamRecoveryAdmission::new(1),
+                    None,
+                )
+                .unwrap()
+            } else {
+                child.clone()
+            };
+            let result = target
+                .register_and_start(client, &journal, CancellationToken::new(), &mut prepared)
+                .await;
             let signal = match failure {
                 0 => "execution.nested_custody_capacity",
                 1 => "execution.nested_custody_admission_closed",
                 2 => "execution.parent_custody_released",
                 _ => "execution.nested_task_owner_mismatch",
             };
-            assert!(matches!(result, Err(actual) if actual.signal == signal && actual.custody.is_none()));
-            assert!(matches!(prepared.reject_until( tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Ok(Ok(None))));
+            assert!(
+                matches!(result, Err(actual) if actual.signal == signal && actual.custody.is_none())
+            );
+            assert!(matches!(
+                prepared
+                    .reject_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                    .await,
+                Ok(Ok(None))
+            ));
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             assert!(!child.inner.started.load(Ordering::Acquire));
             assert!(journal.retained_stream_observations().is_empty());
             let retry_root = crate::nested_custody::CustodyStore::new(1);
-            assert!(matches!(child.register_and_start(retry_root.client(), &journal, CancellationToken::new(), &mut prepared).await,
-                Err(error) if error.signal == "execution.nested_task_start_decided" && error.custody.is_none()));
+            assert!(
+                matches!(child.register_and_start(retry_root.client(), &journal, CancellationToken::new(), &mut prepared).await,
+                Err(error) if error.signal == "execution.nested_task_start_decided" && error.custody.is_none())
+            );
             retry_root.close_admission().unwrap();
             assert!(retry_root.closed_tasks().unwrap().is_empty());
             assert!(journal.retained_stream_observations().is_empty());
@@ -3174,46 +4095,76 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn managed_task_preserves_actual_child_initialization_report_and_rejected_start_has_no_effects() {
+    async fn managed_task_preserves_actual_child_initialization_report_and_rejected_start_has_no_effects()
+     {
         for (grant_start, retire_root) in [(false, false), (true, false), (true, true)] {
             let parent = crate::nested_custody::CustodyStore::new(1);
             let control = CancellationToken::new();
-            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
             let weak = Arc::downgrade(&resources);
             let child = OwnedStreamRecovery::try_new(
                 Axon::<u32, u32, String, Resources>::start("managed-actual-child")
-                    .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo),
+                    .with_saga_policy(SagaPolicy::Enabled)
+                    .then_compensated(Effect, Undo),
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-                &StreamRecoveryAdmission::new(1), None).unwrap();
+                &StreamRecoveryAdmission::new(1),
+                None,
+            )
+            .unwrap();
             let entered = Arc::new(Notify::new());
             let signal = entered.clone();
-            let mut prepared = child.prepare_managed(331, PendingInit(signal),
-                std::time::Duration::from_secs(5), |_| async {
+            let mut prepared = child.prepare_managed(
+                331,
+                PendingInit(signal),
+                std::time::Duration::from_secs(5),
+                |_| async {
                     panic!("cancelled initializer must not run driver");
-                    #[allow(unreachable_code)] completed()
-                });
+                    #[allow(unreachable_code)]
+                    completed()
+                },
+            );
             let task = prepared.holder();
             let journal = crate::SagaRollbackJournal::new("managed-actual-parent");
-            let admission = child.admit_managed_to_parent(parent.client(), &journal, control.clone(), &prepared).await.unwrap();
+            let admission = child
+                .admit_managed_to_parent(parent.client(), &journal, control.clone(), &prepared)
+                .await
+                .unwrap();
             let task_weak = Arc::downgrade(&task);
             drop(task);
-            let task = task_weak.upgrade().expect("parent must own actual task holder");
-            assert!(matches!(parent.closed_tasks(), Err("execution.nested_custody_admission_open")));
+            let task = task_weak
+                .upgrade()
+                .expect("parent must own actual task holder");
+            assert!(matches!(
+                parent.closed_tasks(),
+                Err("execution.nested_custody_admission_open")
+            ));
             parent.close_admission().unwrap();
             let registered_tasks = parent.closed_tasks().unwrap();
             assert_eq!(registered_tasks.len(), 1);
-            assert!(Arc::ptr_eq(&registered_tasks[0].1, &(task.clone() as crate::nested_custody::Capability)));
+            assert!(Arc::ptr_eq(
+                &registered_tasks[0].1,
+                &(task.clone() as crate::nested_custody::Capability)
+            ));
             drop(registered_tasks);
-            type ChildReport = Result<StreamInitializationReport<u32, StreamReadyResult<()>, String>, StreamInvocationAlreadyStarted>;
+            type ChildReport = Result<
+                StreamInitializationReport<u32, StreamReadyResult<()>, String>,
+                StreamInvocationAlreadyStarted,
+            >;
             let mut settled = parent.closed_typed_family::<ChildReport>().unwrap();
             drop(task);
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             assert!(!child.inner.started.load(Ordering::Acquire));
             if grant_start {
                 prepared.grant_registered_start(&admission).unwrap();
-                tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+                tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+                    .await
+                    .unwrap();
                 {
-                    let wait = settled.settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
+                    let wait = settled.settle_until(
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+                    );
                     tokio::pin!(wait);
                     assert!(futures_util::poll!(&mut wait).is_pending());
                 }
@@ -3223,16 +4174,33 @@ mod tests {
                 }
                 control.cancel(ranvier_core::CancellationReason::OperatorShutdown);
                 drop(prepared);
-            } else { drop(prepared); }
-            settled.settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await;
+            } else {
+                drop(prepared);
+            }
+            settled
+                .settle_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                .await;
             assert_eq!(settled.len(), 1);
             assert_eq!(settled[0].1, Ok(()));
-            let joined = settled.take_joined(admission.id(), tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap();
+            let joined = settled
+                .take_joined(
+                    admission.id(),
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
             if grant_start {
-                assert!(matches!(joined, Some(Ok(StreamInitializationReport::Cancelled { context, .. }))
-                    if context.reason == ranvier_core::CancellationReason::OperatorShutdown));
+                assert!(
+                    matches!(joined, Some(Ok(StreamInitializationReport::Cancelled { context, .. }))
+                    if context.reason == ranvier_core::CancellationReason::OperatorShutdown)
+                );
                 assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
-                assert_eq!(journal.retained_stream_observations()[0].1.disposition, Some(SupervisorDisposition::InitializationCancelled));
+                assert_eq!(
+                    journal.retained_stream_observations()[0].1.disposition,
+                    Some(SupervisorDisposition::InitializationCancelled)
+                );
             } else {
                 assert!(joined.is_none());
                 assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
@@ -3753,71 +4721,146 @@ mod tests {
     #[tokio::test]
     async fn final_owner_drop_preserves_unknown_journal_loss_and_original_observation() {
         let admission = StreamRecoveryAdmission::new(1);
-        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
         let weak = Arc::downgrade(&resources);
-        let owner = OwnedStreamRecovery::try_new(Axon::<u32, u32, String, Resources>::start("unknown custody loss"),
-            OwnedStreamContext::try_new(resources, Bus::new()).unwrap(), &admission, None).unwrap();
+        let owner = OwnedStreamRecovery::try_new(
+            Axon::<u32, u32, String, Resources>::start("unknown custody loss"),
+            OwnedStreamContext::try_new(resources, Bus::new()).unwrap(),
+            &admission,
+            None,
+        )
+        .unwrap();
         let journal = crate::SagaRollbackJournal::new("private unknown journal");
         journal.poison_retention_for_test();
         owner.inner.context.lock().await.1.insert(journal.clone());
         let observer = owner.observe();
         let original = observer.borrow().clone();
         drop(owner);
-        assert!(weak.upgrade().is_none()); assert_eq!(admission.in_use(), Ok(0));
+        assert!(weak.upgrade().is_none());
+        assert_eq!(admission.in_use(), Ok(0));
         let lost = observer.borrow().clone();
         assert_eq!(lost.custody, RecoveryCustody::ReleasedWithUnknownState);
-        assert_eq!(lost.phase, original.phase); assert_eq!(lost.disposition, original.disposition);
+        assert_eq!(lost.phase, original.phase);
+        assert_eq!(lost.disposition, original.disposition);
         assert_eq!(lost.cleanup_complete, original.cleanup_complete);
         assert_eq!(lost.cleanup_timed_out, original.cleanup_timed_out);
-        assert_eq!(journal.try_retained_work_pending(256), Err(crate::saga_report::JournalRetentionError::Unavailable));
+        assert_eq!(
+            journal.try_retained_work_pending(256),
+            Err(crate::saga_report::JournalRetentionError::Unavailable)
+        );
     }
     #[tokio::test(start_paused = true)]
     async fn local_retirement_context_timeout_drop_and_changed_state_preserve_authority() {
-        use crate::streaming_report_handle::{StreamReportHandle, StreamLocalRetirementError as Error, StreamReportWaitError};
+        use crate::streaming_report_handle::{
+            StreamLocalRetirementError as Error, StreamReportHandle, StreamReportWaitError,
+        };
         use futures_util::FutureExt as _;
         for changed in [false, true] {
             let root = crate::nested_custody::CustodyStore::new(1);
             let admission = StreamRecoveryAdmission::new(1);
-            let mut bus = Bus::new(); bus.insert(367u32);
-            let owner = OwnedStreamRecovery::try_new(Axon::<u32, u32, String, Resources>::start("context-retirement").then(Effect),
-                OwnedStreamContext::try_new(Arc::new(Resources { effects: AtomicUsize::new(0) }), bus).unwrap(), &admission, None).unwrap();
-            let mut prepared = owner.prepare_managed(373, Init, std::time::Duration::from_secs(1), |_| async { completed() });
+            let mut bus = Bus::new();
+            bus.insert(367u32);
+            let owner = OwnedStreamRecovery::try_new(
+                Axon::<u32, u32, String, Resources>::start("context-retirement").then(Effect),
+                OwnedStreamContext::try_new(
+                    Arc::new(Resources {
+                        effects: AtomicUsize::new(0),
+                    }),
+                    bus,
+                )
+                .unwrap(),
+                &admission,
+                None,
+            )
+            .unwrap();
+            let mut prepared =
+                owner.prepare_managed(373, Init, std::time::Duration::from_secs(1), |_| async {
+                    completed()
+                });
             let report = StreamReportHandle::new(prepared.holder(), owner.retention_capability());
             let journal = crate::SagaRollbackJournal::new("local parent");
-            let receipt = owner.register_and_start(root.client(), &journal, CancellationToken::new(), &mut prepared).await.unwrap_or_else(|e| panic!("{}", e.signal));
+            let receipt = owner
+                .register_and_start(
+                    root.client(),
+                    &journal,
+                    CancellationToken::new(),
+                    &mut prepared,
+                )
+                .await
+                .unwrap_or_else(|e| panic!("{}", e.signal));
             let callback = owner.local_retirement(receipt, report.clone());
             let report = report.with_local_retirement(callback);
-            report.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+            report
+                .take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                .await
+                .unwrap();
             let foreign_root = crate::nested_custody::CustodyStore::new(1);
             let foreign_receipt = foreign_root.reserve(owner.retention_capability()).unwrap();
             let foreign = owner.local_retirement(foreign_receipt, report.clone());
-            assert_eq!(foreign(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await, Err(Error::CustodyMismatch));
-            drop(foreign); drop(foreign_root);
+            assert_eq!(
+                foreign(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await,
+                Err(Error::CustodyMismatch)
+            );
+            drop(foreign);
+            drop(foreign_root);
             let mut context = owner.inner.context.lock().await;
-            context.1.set_access_policy("retirement guard", Some(ranvier_core::BusAccessPolicy::allow_only(vec![ranvier_core::BusTypeRef::of::<String>()])));
+            context.1.set_access_policy(
+                "retirement guard",
+                Some(ranvier_core::BusAccessPolicy::allow_only(vec![
+                    ranvier_core::BusTypeRef::of::<String>(),
+                ])),
+            );
             {
-                let wait = report.retire_completed_local_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
+                let wait = report.retire_completed_local_until(
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+                );
                 tokio::pin!(wait);
                 assert!(wait.as_mut().now_or_never().is_none());
                 // Drop pending wait: original decision/context/frame are retained.
             }
-            assert_eq!(report.retire_completed_local_until(tokio::time::Instant::now() + std::time::Duration::from_secs(1)).await,
-                Err(Error::Wait(StreamReportWaitError::TimedOut)));
+            assert_eq!(
+                report
+                    .retire_completed_local_until(
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(1)
+                    )
+                    .await,
+                Err(Error::Wait(StreamReportWaitError::TimedOut))
+            );
             assert!(root.reserve_stream_slot().is_err());
             if changed {
                 let access = context.1.take_access_scope();
-                let journal = crate::SagaRollbackJournal::new("changed after wait"); journal.finish(); context.1.insert(journal);
+                let journal = crate::SagaRollbackJournal::new("changed after wait");
+                journal.finish();
+                context.1.insert(journal);
                 context.1.restore_access_scope(access);
             }
             drop(context);
-            let result = report.retire_completed_local_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await;
-            assert_eq!(result, if changed { Err(Error::RecoveryReviewRequired) } else { Ok(()) });
+            let result = report
+                .retire_completed_local_until(
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+                )
+                .await;
+            assert_eq!(
+                result,
+                if changed {
+                    Err(Error::RecoveryReviewRequired)
+                } else {
+                    Ok(())
+                }
+            );
             let mut context = owner.inner.context.lock().await;
             assert!(context.1.get::<u32>().is_err());
-            context.1.clear_access_policy(); assert_eq!(*context.1.read::<u32>().unwrap(), 367);
-            drop(context); drop(prepared); drop(owner); drop(root);
+            context.1.clear_access_policy();
+            assert_eq!(*context.1.read::<u32>().unwrap(), 367);
+            drop(context);
+            drop(prepared);
+            drop(owner);
+            drop(root);
             assert_eq!(admission.in_use(), Ok(1));
-            drop(report); assert_eq!(admission.in_use(), Ok(0));
+            drop(report);
+            assert_eq!(admission.in_use(), Ok(0));
         }
     }
     #[async_trait::async_trait]
@@ -3836,21 +4879,46 @@ mod tests {
     #[tokio::test]
     async fn live_owner_probe_times_out_restores_guard_and_retains_exact_owner() {
         let admission = StreamRecoveryAdmission::new(1);
-        let mut bus = Bus::new(); bus.insert(337u32);
-        bus.set_access_policy("live probe guard", Some(ranvier_core::BusAccessPolicy::allow_only(vec![ranvier_core::BusTypeRef::of::<String>()])));
-        let owner = OwnedStreamRecovery::try_new(Axon::<u32, u32, String, Resources>::start("live-owner-probe"),
-            OwnedStreamContext::try_new(Arc::new(Resources { effects: AtomicUsize::new(0) }), bus).unwrap(), &admission, None).unwrap();
+        let mut bus = Bus::new();
+        bus.insert(337u32);
+        bus.set_access_policy(
+            "live probe guard",
+            Some(ranvier_core::BusAccessPolicy::allow_only(vec![
+                ranvier_core::BusTypeRef::of::<String>(),
+            ])),
+        );
+        let owner = OwnedStreamRecovery::try_new(
+            Axon::<u32, u32, String, Resources>::start("live-owner-probe"),
+            OwnedStreamContext::try_new(
+                Arc::new(Resources {
+                    effects: AtomicUsize::new(0),
+                }),
+                bus,
+            )
+            .unwrap(),
+            &admission,
+            None,
+        )
+        .unwrap();
         let probe = owner.recovery_probe();
         let locked = owner.inner.context.lock().await;
-        assert_eq!(probe(tokio::time::Instant::now()).await, Err(crate::streaming_report_handle::StreamRecoveryProbeError::TimedOut));
+        assert_eq!(
+            probe(tokio::time::Instant::now()).await,
+            Err(crate::streaming_report_handle::StreamRecoveryProbeError::TimedOut)
+        );
         drop(locked);
-        let state = probe(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
-        assert!(!state.saga_stack_nonempty); assert!(!state.journal_present); assert!(!state.recovery_pending);
+        let state = probe(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(!state.saga_stack_nonempty);
+        assert!(!state.journal_present);
+        assert!(!state.recovery_pending);
         let mut context = owner.inner.context.lock().await;
         assert!(context.1.get::<u32>().is_err());
         context.1.clear_access_policy();
         assert_eq!(*context.1.read::<u32>().unwrap(), 337);
-        drop(context); drop(owner);
+        drop(context);
+        drop(owner);
         assert_eq!(admission.in_use(), Ok(1));
         drop(probe);
         assert_eq!(admission.in_use(), Ok(0));
@@ -3864,40 +4932,89 @@ mod tests {
             type Item = u32;
             type Error = String;
             type Resources = Resources;
-            async fn run_stream(&self, input: u32, _: &Resources, _: &mut Bus) -> Result<RawStream<u32>, String> {
+            async fn run_stream(
+                &self,
+                input: u32,
+                _: &Resources,
+                _: &mut Bus,
+            ) -> Result<RawStream<u32>, String> {
                 Ok(Box::pin(futures_util::stream::iter([input])))
             }
         }
-        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
         let root = crate::nested_custody::CustodyStore::new(1);
         let mut slot = root.reserve_stream_slot().unwrap();
         let admission = StreamRecoveryAdmission::new(1);
         let permit = admission.reserve().unwrap();
         let circuit = Axon::<u32, u32, String, Resources>::start("reserved-recovery")
-            .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo).then_stream(FiniteInit);
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Undo)
+            .then_stream(FiniteInit);
         let mut plan = match circuit.owned_definition.try_callable_plan_reserved(
-            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(), &admission, None, permit) {
-            Ok(plan) => plan, Err(_) => panic!("reserved plan rejected"),
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &admission,
+            None,
+            permit,
+        ) {
+            Ok(plan) => plan,
+            Err(_) => panic!("reserved plan rejected"),
         };
-        let ((mut prepared, mut receiver), mut readiness) = match plan.prepare_bounded_ready(197, std::time::Duration::from_secs(5)) {
-            Ok(frame) => frame, Err(_) => panic!("preparation rejected"),
-        };
+        let ((mut prepared, mut receiver), mut readiness) =
+            match plan.prepare_bounded_ready(197, std::time::Duration::from_secs(5)) {
+                Ok(frame) => frame,
+                Err(_) => panic!("preparation rejected"),
+            };
         let handle = plan.report_handle(&prepared).unwrap();
         let journal = crate::SagaRollbackJournal::new("reserved-recovery-parent");
-        let receipt = plan.owner.register_reserved_and_start(root.client(), &mut slot, &journal,
-            CancellationToken::new(), &mut prepared).await.unwrap_or_else(|e| panic!("{}", e.signal));
-        tokio::time::timeout(std::time::Duration::from_secs(5), readiness.initialized()).await.unwrap().unwrap();
-        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.unwrap(), Some(197));
-        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.unwrap(), None);
-        let report = handle.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
+        let receipt = plan
+            .owner
+            .register_reserved_and_start(
+                root.client(),
+                &mut slot,
+                &journal,
+                CancellationToken::new(),
+                &mut prepared,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{}", e.signal));
+        tokio::time::timeout(std::time::Duration::from_secs(5), readiness.initialized())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
+                .await
+                .unwrap(),
+            Some(197)
+        );
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
+                .await
+                .unwrap(),
+            None
+        );
+        let report = handle
+            .take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+            .await
+            .unwrap();
         match report {
-            crate::streaming_report_handle::SupervisedStreamCompletion::Report(StreamInitializationReport::Ready { value, .. }) => {
-                assert!(matches!(value.consumption, Ok(crate::StreamConsumptionTerminal::Completed)));
+            crate::streaming_report_handle::SupervisedStreamCompletion::Report(
+                StreamInitializationReport::Ready { value, .. },
+            ) => {
+                assert!(matches!(
+                    value.consumption,
+                    Ok(crate::StreamConsumptionTerminal::Completed)
+                ));
                 assert!(value.cleanup.is_none());
             }
             _ => panic!("original ready report lost"),
         }
-        assert_eq!(journal.retained_stream_observations()[0].1.phase, SupervisorPhase::Returned);
+        assert_eq!(
+            journal.retained_stream_observations()[0].1.phase,
+            SupervisorPhase::Returned
+        );
         assert_eq!(resources.effects.load(Ordering::SeqCst), 1);
         assert_eq!(journal.retained_stream_observations().len(), 1);
         assert!(root.reserve_stream_slot().is_err());
@@ -3908,91 +5025,172 @@ mod tests {
     #[tokio::test]
     async fn reserved_recovery_rejections_keep_context_and_frame_without_effects() {
         for mode in 0..5 {
-            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
             let root = crate::nested_custody::CustodyStore::new(1);
             let foreign = crate::nested_custody::CustodyStore::new(1);
             let mut slot = root.reserve_stream_slot().unwrap();
-            let client = if mode == 0 { foreign.client() } else { root.client() };
+            let client = if mode == 0 {
+                foreign.client()
+            } else {
+                root.client()
+            };
             let admission = StreamRecoveryAdmission::new(2);
             let circuit = Axon::<u32, u32, String, Resources>::start("reserved-rejection")
-                .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo).then_stream(Init);
+                .with_saga_policy(SagaPolicy::Enabled)
+                .then_compensated(Effect, Undo)
+                .then_stream(Init);
             let make = || {
-                let mut bus = Bus::new(); bus.insert(199u32);
+                let mut bus = Bus::new();
+                bus.insert(199u32);
                 match circuit.owned_definition.try_callable_plan(
-                    OwnedStreamContext::try_new(resources.clone(), bus).unwrap(), &admission, None) {
-                    Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+                    OwnedStreamContext::try_new(resources.clone(), bus).unwrap(),
+                    &admission,
+                    None,
+                ) {
+                    Ok(plan) => plan,
+                    Err(_) => panic!("plan rejected"),
                 }
             };
             let mut plan = make();
             let other = if mode == 4 { Some(make()) } else { None };
-            let ((mut prepared, _receiver), mut readiness) = match plan.prepare_bounded_ready(199, std::time::Duration::from_secs(5)) {
-                Ok(frame) => frame, Err(_) => panic!("preparation rejected"),
-            };
+            let ((mut prepared, _receiver), mut readiness) =
+                match plan.prepare_bounded_ready(199, std::time::Duration::from_secs(5)) {
+                    Ok(frame) => frame,
+                    Err(_) => panic!("preparation rejected"),
+                };
             let handle = plan.report_handle(&prepared).unwrap();
             let journal = crate::SagaRollbackJournal::new("reserved-rejected-parent");
-            if mode == 1 { root.close_admission().unwrap(); }
-            let root = if mode == 2 { drop(root); None } else { Some(root) };
-            let guard = if mode == 3 { Some(plan.owner.inner.context.lock().await) } else { None };
-            let target = other.as_ref().map(|plan| &plan.owner).unwrap_or(&plan.owner);
-            let error = match target.register_reserved_and_start(client, &mut slot, &journal,
-                CancellationToken::new(), &mut prepared).await {
-                Err(error) => error, Ok(_) => panic!("invalid reservation admitted"),
+            if mode == 1 {
+                root.close_admission().unwrap();
+            }
+            let root = if mode == 2 {
+                drop(root);
+                None
+            } else {
+                Some(root)
             };
-            assert_eq!(error.signal, match mode {
-                0 => "execution.nested_custody_mismatch",
-                1 => "execution.nested_custody_admission_closed",
-                2 => "execution.parent_custody_released",
-                3 => "execution.nested_stream_context_busy",
-                _ => "execution.nested_task_owner_mismatch",
-            });
+            let guard = if mode == 3 {
+                Some(plan.owner.inner.context.lock().await)
+            } else {
+                None
+            };
+            let target = other
+                .as_ref()
+                .map(|plan| &plan.owner)
+                .unwrap_or(&plan.owner);
+            let error = match target
+                .register_reserved_and_start(
+                    client,
+                    &mut slot,
+                    &journal,
+                    CancellationToken::new(),
+                    &mut prepared,
+                )
+                .await
+            {
+                Err(error) => error,
+                Ok(_) => panic!("invalid reservation admitted"),
+            };
+            assert_eq!(
+                error.signal,
+                match mode {
+                    0 => "execution.nested_custody_mismatch",
+                    1 => "execution.nested_custody_admission_closed",
+                    2 => "execution.parent_custody_released",
+                    3 => "execution.nested_stream_context_busy",
+                    _ => "execution.nested_task_owner_mismatch",
+                }
+            );
             assert!(error.custody.is_none());
             drop(guard);
             assert!(journal.retained_stream_observations().is_empty());
-            assert_eq!(plan.owner.observe().borrow().phase, SupervisorPhase::NotStarted);
+            assert_eq!(
+                plan.owner.observe().borrow().phase,
+                SupervisorPhase::NotStarted
+            );
             let context = plan.owner.inner.context.lock().await;
             assert!(Arc::ptr_eq(&context.0, &resources));
             assert_eq!(*context.1.read::<u32>().unwrap(), 199);
             assert!(!context.1.has::<ParentStreamCustody>());
             drop(context);
-            let report = handle.take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap();
-            assert!(matches!(report, crate::streaming_report_handle::SupervisedStreamCompletion::RejectedBeforeStart));
-            assert!(tokio::time::timeout(std::time::Duration::from_secs(5), readiness.initialized()).await.unwrap().is_err());
+            let report = handle
+                .take_report_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+                .await
+                .unwrap();
+            assert!(matches!(
+                report,
+                crate::streaming_report_handle::SupervisedStreamCompletion::RejectedBeforeStart
+            ));
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(5), readiness.initialized())
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             drop(slot);
             if let Some(root) = root {
-                if mode == 1 { assert!(root.reserve_stream_slot().is_err()); }
-                else { assert!(root.reserve_stream_slot().is_ok()); }
+                if mode == 1 {
+                    assert!(root.reserve_stream_slot().is_err());
+                } else {
+                    assert!(root.reserve_stream_slot().is_ok());
+                }
             }
         }
     }
 
     #[tokio::test]
     async fn dropped_readiness_receiver_runs_actual_shielded_prefix_cleanup() {
-        let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+        let resources = Arc::new(Resources {
+            effects: AtomicUsize::new(0),
+        });
         let circuit = Axon::<u32, u32, String, Resources>::start("readiness-cleanup")
-            .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo).then_stream(Init);
+            .with_saga_policy(SagaPolicy::Enabled)
+            .then_compensated(Effect, Undo)
+            .then_stream(Init);
         let mut plan = match circuit.owned_definition.try_callable_plan(
-            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(), &StreamRecoveryAdmission::new(1), None) {
-            Ok(plan) => plan, Err(_) => panic!("plan rejected"),
+            OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
+            &StreamRecoveryAdmission::new(1),
+            None,
+        ) {
+            Ok(plan) => plan,
+            Err(_) => panic!("plan rejected"),
         };
-        let ((mut prepared, mut receiver), readiness) = match plan.prepare_bounded_ready(163, std::time::Duration::from_secs(5)) {
-            Ok(prepared) => prepared, Err(_) => panic!("producer rejected"),
-        };
+        let ((mut prepared, mut receiver), readiness) =
+            match plan.prepare_bounded_ready(163, std::time::Duration::from_secs(5)) {
+                Ok(prepared) => prepared,
+                Err(_) => panic!("producer rejected"),
+            };
         drop(readiness);
         let root = crate::nested_custody::CustodyStore::new(1);
         let journal = crate::SagaRollbackJournal::new("readiness-cleanup-parent");
         let control = CancellationToken::new();
-        plan.owner.register_and_start(root.client(), &journal, control.clone(), &mut prepared).await
+        plan.owner
+            .register_and_start(root.client(), &journal, control.clone(), &mut prepared)
+            .await
             .unwrap_or_else(|error| panic!("{}", error.signal));
         let holder = prepared.holder();
-        let report = holder.lock().await.join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap().unwrap();
+        let report = holder
+            .lock()
+            .await
+            .join_until(tokio::time::Instant::now() + std::time::Duration::from_secs(5))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .unwrap();
         match report {
             StreamInitializationReport::Ready { prefix, value } => {
-                assert!(matches!(prefix, crate::ExecutionReport::Unpersisted {
-                    result: (), ..
-                }));
-                assert!(matches!(value.consumption.unwrap().terminal, crate::StreamConsumptionTerminal::Cancelled(context)
-                    if context.reason == ranvier_core::CancellationReason::ClientDisconnected));
+                assert!(matches!(
+                    prefix,
+                    crate::ExecutionReport::Unpersisted { result: (), .. }
+                ));
+                assert!(
+                    matches!(value.consumption.unwrap().terminal, crate::StreamConsumptionTerminal::Cancelled(context)
+                    if context.reason == ranvier_core::CancellationReason::ClientDisconnected)
+                );
                 assert!(value.cleanup.unwrap().is_complete());
             }
             _ => panic!("original report lost"),
@@ -4000,7 +5198,17 @@ mod tests {
         assert_eq!(receiver.recv().await, None);
         assert_eq!(resources.effects.load(Ordering::SeqCst), 2);
         assert!(!control.is_cancelled());
-        assert!(plan.owner.inner.context.try_lock().unwrap().1.read::<SagaStack>().unwrap().is_empty());
+        assert!(
+            plan.owner
+                .inner
+                .context
+                .try_lock()
+                .unwrap()
+                .1
+                .read::<SagaStack>()
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -4011,12 +5219,17 @@ mod tests {
             type Item = u32;
             type Error = String;
             type Resources = Resources;
-            async fn run_stream(&self, _: u32, resources: &Resources, _: &mut Bus) -> Result<RawStream<u32>, String> {
+            async fn run_stream(
+                &self,
+                _: u32,
+                resources: &Resources,
+                _: &mut Bus,
+            ) -> Result<RawStream<u32>, String> {
                 resources.effects.fetch_add(100, Ordering::SeqCst);
                 Ok(Box::pin(futures_util::stream::empty()))
             }
         }
-        use ranvier_core::CancellationReason::{Explicit, OperatorShutdown, ClientDisconnected};
+        use ranvier_core::CancellationReason::{ClientDisconnected, Explicit, OperatorShutdown};
         for (reason, total) in [
             (None, std::time::Duration::ZERO),
             (Some(Explicit), std::time::Duration::ZERO),
@@ -4026,37 +5239,78 @@ mod tests {
             (Some(OperatorShutdown), std::time::Duration::from_secs(60)),
             (Some(ClientDisconnected), std::time::Duration::from_secs(60)),
         ] {
-            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
             let graph = Axon::<u32, u32, String, Resources>::start("zero-total-admission")
-                .with_saga_policy(SagaPolicy::Enabled).then_compensated(Effect, Undo);
-            let owner = OwnedStreamRecovery::try_new(graph,
+                .with_saga_policy(SagaPolicy::Enabled)
+                .then_compensated(Effect, Undo);
+            let owner = OwnedStreamRecovery::try_new(
+                graph,
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-                &StreamRecoveryAdmission::new(1), None).unwrap();
+                &StreamRecoveryAdmission::new(1),
+                None,
+            )
+            .unwrap();
             let control = CancellationToken::new();
-            if let Some(reason) = reason { control.cancel(reason); }
+            if let Some(reason) = reason {
+                control.cancel(reason);
+            }
             let original = control.context();
-            let mut prepared = owner.prepare_managed_controlled(149, CountingInit,
-                std::time::Duration::from_secs(2), Some(total),
-                |_, _, _| async { panic!("expired prefix must not consume"); #[allow(unreachable_code)] completed() });
+            let mut prepared = owner.prepare_managed_controlled(
+                149,
+                CountingInit,
+                std::time::Duration::from_secs(2),
+                Some(total),
+                |_, _, _| async {
+                    panic!("expired prefix must not consume");
+                    #[allow(unreachable_code)]
+                    completed()
+                },
+            );
             let root = crate::nested_custody::CustodyStore::new(1);
             let journal = crate::SagaRollbackJournal::new("zero-total-parent");
             let began = tokio::time::Instant::now();
-            owner.register_and_start(root.client(), &journal, control.clone(), &mut prepared).await
+            owner
+                .register_and_start(root.client(), &journal, control.clone(), &mut prepared)
+                .await
                 .unwrap_or_else(|error| panic!("{}", error.signal));
             let holder = prepared.holder();
-            let report = holder.lock().await.join_until(began + std::time::Duration::from_secs(5)).await.unwrap().unwrap().unwrap().unwrap();
-            let StreamInitializationReport::Rejected { prefix } = report else { panic!("original rejection lost"); };
+            let report = holder
+                .lock()
+                .await
+                .join_until(began + std::time::Duration::from_secs(5))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let StreamInitializationReport::Rejected { prefix } = report else {
+                panic!("original rejection lost");
+            };
             match prefix {
-                crate::ExecutionReport::Unpersisted { result: crate::ExecutionTerminal::Cancelled(context), .. } => {
-                    if let Some(original) = original { assert_eq!(context, original); }
-                    else { assert_eq!(context.reason, ranvier_core::CancellationReason::DeadlineExceeded); }
+                crate::ExecutionReport::Unpersisted {
+                    result: crate::ExecutionTerminal::Cancelled(context),
+                    ..
+                } => {
+                    if let Some(original) = original {
+                        assert_eq!(context, original);
+                    } else {
+                        assert_eq!(
+                            context.reason,
+                            ranvier_core::CancellationReason::DeadlineExceeded
+                        );
+                    }
                 }
                 _ => panic!("original terminal lost"),
             }
             assert_eq!(resources.effects.load(Ordering::SeqCst), 0);
             assert_eq!(tokio::time::Instant::now(), began);
             assert_eq!(control.context().map(|context| context.reason), reason);
-            assert_eq!(owner.observe().borrow().disposition, Some(SupervisorDisposition::PrefixRejected));
+            assert_eq!(
+                owner.observe().borrow().disposition,
+                Some(SupervisorDisposition::PrefixRejected)
+            );
         }
     }
 
@@ -4074,47 +5328,93 @@ mod tests {
         }
         for pending_undo in [false, true] {
             let captured = Arc::new(std::sync::Mutex::new(None));
-            let resources = Arc::new(Resources { effects: AtomicUsize::new(0) });
+            let resources = Arc::new(Resources {
+                effects: AtomicUsize::new(0),
+            });
             let prefix = Axon::<u32, u32, String, Resources>::start("gated-prefix-deadline")
                 .with_saga_policy(SagaPolicy::Enabled);
             let graph = if pending_undo {
-                prefix.then_compensated(Effect, PendingUndo(Arc::new(Notify::new()), captured.clone()))
+                prefix.then_compensated(
+                    Effect,
+                    PendingUndo(Arc::new(Notify::new()), captured.clone()),
+                )
             } else {
                 prefix.then_compensated(Effect, Undo)
-            }.then(PendingDeadlinePrefix);
-            let owner = OwnedStreamRecovery::try_new(graph,
+            }
+            .then(PendingDeadlinePrefix);
+            let owner = OwnedStreamRecovery::try_new(
+                graph,
                 OwnedStreamContext::try_new(resources.clone(), Bus::new()).unwrap(),
-                &StreamRecoveryAdmission::new(1), None).unwrap();
-            let mut prepared = owner.prepare_managed_controlled(137, Init,
-                std::time::Duration::from_secs(2), Some(std::time::Duration::from_secs(5)),
-                |_, _, _| async { panic!("rejected prefix must not consume"); #[allow(unreachable_code)] completed() });
+                &StreamRecoveryAdmission::new(1),
+                None,
+            )
+            .unwrap();
+            let mut prepared = owner.prepare_managed_controlled(
+                137,
+                Init,
+                std::time::Duration::from_secs(2),
+                Some(std::time::Duration::from_secs(5)),
+                |_, _, _| async {
+                    panic!("rejected prefix must not consume");
+                    #[allow(unreachable_code)]
+                    completed()
+                },
+            );
             let root = crate::nested_custody::CustodyStore::new(1);
             let journal = crate::SagaRollbackJournal::new("gated-prefix-parent");
             let control = CancellationToken::new();
             let began = tokio::time::Instant::now();
-            owner.register_and_start(root.client(), &journal, control.clone(), &mut prepared).await
+            owner
+                .register_and_start(root.client(), &journal, control.clone(), &mut prepared)
+                .await
                 .unwrap_or_else(|error| panic!("{}", error.signal));
             let holder = prepared.holder();
-            let report = holder.lock().await.join_until(began + std::time::Duration::from_secs(10)).await.unwrap().unwrap().unwrap().unwrap();
-            let StreamInitializationReport::Rejected { prefix } = report else { panic!("original rejection lost"); };
-            assert_eq!(tokio::time::Instant::now() - began, std::time::Duration::from_secs(if pending_undo { 7 } else { 5 }));
+            let report = holder
+                .lock()
+                .await
+                .join_until(began + std::time::Duration::from_secs(10))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let StreamInitializationReport::Rejected { prefix } = report else {
+                panic!("original rejection lost");
+            };
+            assert_eq!(
+                tokio::time::Instant::now() - began,
+                std::time::Duration::from_secs(if pending_undo { 7 } else { 5 })
+            );
             assert!(!control.is_cancelled());
             assert_eq!(prefix.cleanup().unwrap().is_complete(), !pending_undo);
             if pending_undo {
                 assert!(!prefix.cleanup().unwrap().finished);
-                assert_eq!(prefix.cleanup().unwrap().steps[0].outcome, crate::SagaRollbackOutcome::InProgress);
+                assert_eq!(
+                    prefix.cleanup().unwrap().steps[0].outcome,
+                    crate::SagaRollbackOutcome::InProgress
+                );
             }
             assert_eq!(prefix.cleanup().unwrap().steps.len(), 1);
             assert!(matches!(prefix, crate::ExecutionReport::Unpersisted {
                 result: crate::ExecutionTerminal::Cancelled(context), ..
             } if context.reason == ranvier_core::CancellationReason::DeadlineExceeded));
-            assert_eq!(resources.effects.load(Ordering::SeqCst), if pending_undo { 1 } else { 2 });
-            assert_eq!(owner.observe().borrow().disposition, Some(SupervisorDisposition::PrefixRejected));
+            assert_eq!(
+                resources.effects.load(Ordering::SeqCst),
+                if pending_undo { 1 } else { 2 }
+            );
+            assert_eq!(
+                owner.observe().borrow().disposition,
+                Some(SupervisorDisposition::PrefixRejected)
+            );
             let context = owner.inner.context.try_lock().unwrap();
             assert!(Arc::ptr_eq(&context.0, &resources));
             assert!(context.1.read::<SagaStack>().unwrap().is_empty());
             if pending_undo {
-                let retained = context.1.read::<crate::SagaRollbackJournal>().unwrap().unresolved_tasks();
+                let retained = context
+                    .1
+                    .read::<crate::SagaRollbackJournal>()
+                    .unwrap()
+                    .unresolved_tasks();
                 assert_eq!(retained.len(), 1);
                 assert_eq!(retained[0].input_snapshot, b"137");
                 assert!(captured.lock().unwrap().is_some());

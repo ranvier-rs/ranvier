@@ -223,9 +223,9 @@ impl TestAxon {
     ///
     /// ```rust,ignore
     /// let report = TestAxon::run_stream(streaming_axon, input, &(), TestBus::new()).await;
-/// let ranvier_runtime::StreamInitializationReport::Ready { value: items, prefix } = report else {
-///     panic!("inspect the retained rejection report");
-/// };
+    /// let ranvier_runtime::StreamInitializationReport::Ready { value: items, prefix } = report else {
+    ///     panic!("inspect the retained rejection report");
+    /// };
     /// assert_stream_items!(items, 5);
     /// ```
     pub async fn run_stream<In, Out, Item, E, Res>(
@@ -233,7 +233,11 @@ impl TestAxon {
         input: In,
         resources: &Res,
         test_bus: TestBus,
-    ) -> ranvier_runtime::StreamInitializationReport<Out, ranvier_runtime::StreamConsumptionReport<Item>, E>
+    ) -> ranvier_runtime::StreamInitializationReport<
+        Out,
+        ranvier_runtime::StreamConsumptionReport<Item>,
+        E,
+    >
     where
         In: Send + Sync + 'static,
         Out: Send + Sync + 'static,
