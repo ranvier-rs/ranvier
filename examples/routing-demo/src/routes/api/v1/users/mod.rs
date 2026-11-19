@@ -14,10 +14,10 @@ pub async fn route_users(
     let path = path.trim_start_matches('/');
 
     // Check for dynamic segment (User ID)
-    if let Some((id, rest)) = extract_segment(path) {
-        if id.chars().all(char::is_numeric) {
-            return by_id::route_user_by_id(req, id, rest).await;
-        }
+    if let Some((id, rest)) = extract_segment(path)
+        && id.chars().all(char::is_numeric)
+    {
+        return by_id::route_user_by_id(req, id, rest).await;
     }
 
     // Static routes for /api/v1/users

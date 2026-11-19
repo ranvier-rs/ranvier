@@ -2590,7 +2590,7 @@ mod tests {
                     circuit: "AuditTest".to_string(),
                     schematic_version: axon.schematic.schema_version.clone(),
                     event_sequence: 0,
-                    event_type: crate::persistence::persistence_event_type_for(&outcome_kind, None),
+                    event_type: crate::persistence::persistence_event_type_for(outcome_kind, None),
                     step: 0,
                     node_id: None,
                     outcome_kind: outcome_kind.to_string(),

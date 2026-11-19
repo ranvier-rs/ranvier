@@ -87,10 +87,10 @@ async fn main() -> anyhow::Result<()> {
     // Wait for the remaining requests to finish
     while let Some(res) = set.join_next().await {
         total_requests += 1;
-        if let Ok(success) = res {
-            if success {
-                successful_requests += 1;
-            }
+        if let Ok(success) = res
+            && success
+        {
+            successful_requests += 1;
         }
     }
 

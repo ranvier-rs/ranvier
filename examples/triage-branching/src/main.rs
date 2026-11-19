@@ -148,9 +148,9 @@ impl Transition<Patient, Patient> for ClassifySeverity {
 
         let severity = if complaint_lower.contains("chest pain")
             || complaint_lower.contains("breathing")
+            || complaint_lower.contains("fracture")
+            || complaint_lower.contains("severe pain")
         {
-            Severity::Urgent
-        } else if complaint_lower.contains("fracture") || complaint_lower.contains("severe pain") {
             Severity::Urgent
         } else if complaint_lower.contains("fever") || complaint_lower.contains("infection") {
             Severity::Standard

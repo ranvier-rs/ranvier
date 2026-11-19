@@ -140,11 +140,10 @@ impl Transition<ProcessedOrder, OrderConfirmation> for FormatOutput {
 
 fn rand_id() -> u32 {
     use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hash, Hasher};
+    use std::hash::BuildHasher;
     let state = RandomState::new();
-    let mut hasher = state.build_hasher();
-    std::time::SystemTime::now().hash(&mut hasher);
-    (hasher.finish() % 10000) as u32
+
+    (state.hash_one(std::time::SystemTime::now()) % 10000) as u32
 }
 
 // ============================================================================

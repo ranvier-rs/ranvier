@@ -144,7 +144,7 @@ async fn test_saga_automated_rollback_with_state_mapping() {
     assert!(matches!(outcome, Outcome::Fault(_)));
 
     // 2. Verify rollbacks happened in LIFO order
-    let final_results = results.lock().unwrap();
+    let final_results = results.lock().unwrap().clone();
     assert_eq!(final_results.len(), 2);
 
     // Reverse order: Step 2 then Step 1
@@ -153,7 +153,6 @@ async fn test_saga_automated_rollback_with_state_mapping() {
 
     assert_eq!(final_results[0], "Comp_2:1");
     assert_eq!(final_results[1], "Comp_1:0");
-    drop(final_results);
     let cleanup = bus
         .read::<ranvier_runtime::saga_report::SagaRollbackReport>()
         .unwrap();

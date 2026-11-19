@@ -82,7 +82,7 @@ struct ActuatorCommand {
 enum Action {
     IrrigateHigh,  // Full irrigation
     IrrigateLow,   // Light irrigation
-    NoAction,      // Everything normal
+    Hold,          // Everything normal
     AlertOperator, // Abnormal conditions
 }
 
@@ -206,7 +206,7 @@ impl Transition<EvaluatedReading, ActuatorCommand> for MakeDecision {
             ),
             // Normal conditions
             (MoistureStatus::Normal, TempStatus::Normal) => {
-                (Action::NoAction, "All readings normal".to_string())
+                (Action::Hold, "All readings normal".to_string())
             }
             // Hot but moisture OK → alert
             (MoistureStatus::Normal, TempStatus::Hot) => (
@@ -218,7 +218,7 @@ impl Transition<EvaluatedReading, ActuatorCommand> for MakeDecision {
             ),
             // High moisture → no irrigation
             (MoistureStatus::High, _) => (
-                Action::NoAction,
+                Action::Hold,
                 format!(
                     "Moisture already high ({:.2}) — no irrigation",
                     reading.soil_moisture
@@ -226,7 +226,7 @@ impl Transition<EvaluatedReading, ActuatorCommand> for MakeDecision {
             ),
             // Cold but moisture OK → no action
             (MoistureStatus::Normal, TempStatus::Cold) => (
-                Action::NoAction,
+                Action::Hold,
                 "Moisture normal, temperature cold — monitoring only".to_string(),
             ),
         };

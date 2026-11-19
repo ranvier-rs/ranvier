@@ -27,12 +27,12 @@ pub async fn process_payment(
     let payment_id = format!("PAY-{}", uuid::Uuid::new_v4());
 
     // Update order with payment info
-    if let Ok(store) = bus.get_cloned::<AppStore>() {
-        if let Some(mut order) = store.get_order(order_id) {
-            order.status = OrderStatus::Paid;
-            order.payment_id = Some(payment_id.clone());
-            store.save_order(&order);
-        }
+    if let Ok(store) = bus.get_cloned::<AppStore>()
+        && let Some(mut order) = store.get_order(order_id)
+    {
+        order.status = OrderStatus::Paid;
+        order.payment_id = Some(payment_id.clone());
+        store.save_order(&order);
     }
 
     tracing::info!(order_id, %payment_id, amount = total, "Payment processed");

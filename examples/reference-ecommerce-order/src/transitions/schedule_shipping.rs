@@ -24,12 +24,12 @@ pub async fn schedule_shipping(
     let shipping_id = format!("SHIP-{}", uuid::Uuid::new_v4());
 
     // Update order status
-    if let Ok(store) = bus.get_cloned::<AppStore>() {
-        if let Some(mut order) = store.get_order(order_id) {
-            order.status = OrderStatus::Shipped;
-            order.shipping_id = Some(shipping_id.clone());
-            store.save_order(&order);
-        }
+    if let Ok(store) = bus.get_cloned::<AppStore>()
+        && let Some(mut order) = store.get_order(order_id)
+    {
+        order.status = OrderStatus::Shipped;
+        order.shipping_id = Some(shipping_id.clone());
+        store.save_order(&order);
     }
 
     tracing::info!(order_id, %shipping_id, "Shipping scheduled");

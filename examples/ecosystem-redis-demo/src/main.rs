@@ -325,6 +325,11 @@ async fn run_demo() -> Result<()> {
     Ok(())
 }
 
+#[tokio::main]
+async fn main() -> Result<()> {
+    run_demo().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,9 +346,4 @@ mod tests {
             routes.iter().map(|route| route_slot(route)).collect();
         assert_eq!(keys.len(), routes.len());
     }
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    run_demo().await
 }

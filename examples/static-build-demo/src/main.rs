@@ -412,11 +412,9 @@ fn main() -> Result<()> {
             "--static-build" => {
                 static_build = true;
             }
-            "--output-dir" => {
-                if i + 1 < args.len() {
-                    output_dir = &args[i + 1];
-                    i += 1;
-                }
+            "--output-dir" if i + 1 < args.len() => {
+                output_dir = &args[i + 1];
+                i += 1;
             }
             _ => {}
         }

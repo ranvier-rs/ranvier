@@ -1126,7 +1126,7 @@ mod tests {
         );
         assert_eq!(fixture.marker_reads.load(Ordering::SeqCst), 2);
         assert_eq!(fixture.marker_writes.load(Ordering::SeqCst), 1);
-        let keys = fixture.marker_keys.lock().unwrap();
+        let keys = fixture.marker_keys.lock().unwrap().clone();
         assert_eq!(keys.len(), 3);
         assert_eq!(keys[0], keys[1]);
         assert_eq!(keys[1], keys[2]);

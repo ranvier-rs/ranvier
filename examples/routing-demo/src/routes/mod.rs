@@ -30,6 +30,10 @@ pub struct RouteRequest {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::upper_case_acronyms,
+    reason = "variant names are the HTTP method tokens and their serialized form"
+)]
 pub enum HttpMethod {
     GET,
     POST,

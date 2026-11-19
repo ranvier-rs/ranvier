@@ -256,7 +256,7 @@ async fn demo_execution(
         let jwt_secret = &resources.jwt_secret;
 
         // Create test token (in real app, this comes from login endpoint)
-        let token = create_test_token("alice", vec!["admin".into(), "user".into()], &jwt_secret)?;
+        let token = create_test_token("alice", vec!["admin".into(), "user".into()], jwt_secret)?;
 
         let mut bus = Bus::new();
         bus.insert(token); // Put token in Bus (simulating HTTP middleware)
@@ -276,7 +276,7 @@ async fn demo_execution(
         tracing::info!("\nScenario 2: Valid token, no admin role");
         let jwt_secret = &resources.jwt_secret;
 
-        let token = create_test_token("bob", vec!["user".into()], &jwt_secret)?;
+        let token = create_test_token("bob", vec!["user".into()], jwt_secret)?;
 
         let mut bus = Bus::new();
         bus.insert(token);

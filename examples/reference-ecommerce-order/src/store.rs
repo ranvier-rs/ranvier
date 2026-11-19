@@ -52,11 +52,11 @@ impl AppStore {
 
     pub fn reserve_inventory(&self, product_id: &str, quantity: u32) -> bool {
         let mut inv = self.inventory.lock().unwrap();
-        if let Some(stock) = inv.get_mut(product_id) {
-            if *stock >= quantity {
-                *stock -= quantity;
-                return true;
-            }
+        if let Some(stock) = inv.get_mut(product_id)
+            && *stock >= quantity
+        {
+            *stock -= quantity;
+            return true;
         }
         false
     }
