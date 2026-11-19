@@ -91,7 +91,7 @@ where
     ///
     /// Test-only until production nested owned-child execution (M427 OR1–OR5) is
     /// wired; see the M425–M432 work plan backlog.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "streaming"))]
     pub(crate) async fn execute_owned_child(
         &self,
         input: In,
@@ -107,7 +107,7 @@ where
         self.execute(input, resources.as_ref(), scope.bus()).await
     }
     /// Cancellable variant of [`Self::execute_owned_child`]; test-only for the same reason.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "streaming"))]
     pub(crate) async fn execute_owned_child_cancellable(
         &self,
         input: In,
@@ -1151,14 +1151,15 @@ where
                     journal.mark_unfinished();
                     bus.insert(journal);
                     bus.set_cancellation_token(CancellationToken::new());
-                    if deadline <= tokio::time::Instant::now() {
-                        active.0.cleanup_expired();
-                    } else if tokio::time::timeout_at(
-                        deadline,
-                        self.rollback_saga_unbounded(resources, bus, trace_id),
-                    )
-                    .await
-                    .is_err()
+                    // Short-circuit: the bounded rollback runs only when the
+                    // deadline has not already passed.
+                    if deadline <= tokio::time::Instant::now()
+                        || tokio::time::timeout_at(
+                            deadline,
+                            self.rollback_saga_unbounded(resources, bus, trace_id),
+                        )
+                        .await
+                        .is_err()
                     {
                         active.0.cleanup_expired();
                     }

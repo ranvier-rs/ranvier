@@ -24,6 +24,13 @@ impl<Res> Clone for OwnedResources<Res> {
 pub(crate) struct OwnedResourceScope<'a> {
     bus: &'a mut ranvier_core::Bus,
     scope: Option<ranvier_core::bus::BusResourceScope>,
+    #[cfg_attr(
+        not(feature = "streaming"),
+        expect(
+            dead_code,
+            reason = "read only by the streaming-gated owned-child tests"
+        )
+    )]
     pub(crate) eligible: bool,
 }
 #[cfg(test)]
@@ -64,7 +71,7 @@ impl Drop for OwnedResourceScope<'_> {
 /// the reader (operator recovery / nested drain) is M427 backlog work.
 pub(crate) struct NestedSagaCustody<E, Res> {
     #[cfg_attr(
-        not(test),
+        not(all(test, feature = "streaming")),
         expect(
             dead_code,
             reason = "retained for M427 nested compensation; reader not wired yet"
@@ -72,7 +79,7 @@ pub(crate) struct NestedSagaCustody<E, Res> {
     )]
     pub(crate) resources: Arc<Res>,
     #[cfg_attr(
-        not(test),
+        not(all(test, feature = "streaming")),
         expect(
             dead_code,
             reason = "retained for M427 nested compensation; reader not wired yet"
@@ -83,6 +90,13 @@ pub(crate) struct NestedSagaCustody<E, Res> {
 pub(crate) type Capability = Arc<dyn Any + Send + Sync>;
 struct CustodyRecord {
     owner: Capability,
+    #[cfg_attr(
+        not(any(test, feature = "streaming")),
+        expect(
+            dead_code,
+            reason = "task custody is read only by the streaming runtime"
+        )
+    )]
     task: Option<Capability>,
     #[cfg(feature = "streaming")]
     settlement: Option<crate::managed_stream_task::TaskSettlement>,
@@ -294,6 +308,7 @@ impl CustodyStore {
             marker,
         })
     }
+    #[cfg(any(test, feature = "streaming"))]
     pub(crate) fn new(capacity: usize) -> Self {
         Self(Arc::new(StoreOwner(Arc::new(StoreInner {
             closed: AtomicBool::new(false),
@@ -304,6 +319,7 @@ impl CustodyStore {
     }
     /// Stop future admission while retaining existing recovery capabilities.
     /// Serialize with reserve; final owner Drop remains a separate retirement.
+    #[cfg(any(test, feature = "streaming"))]
     pub(crate) fn close_admission(&self) -> Result<(), &'static str> {
         let _records = self
             .0
@@ -389,6 +405,7 @@ impl CustodyStore {
             reserved,
         })
     }
+    #[cfg(any(test, feature = "streaming"))]
     pub(crate) fn client(&self) -> WeakCustodyClient {
         WeakCustodyClient(Arc::downgrade(&self.0.0))
     }
@@ -475,6 +492,7 @@ impl WeakCustodyClient {
             journal.retain_stream_child(observer)
         })
     }
+    #[cfg(any(test, feature = "streaming"))]
     pub(crate) fn validate_member(
         &self,
         admission: &WeakCustody,

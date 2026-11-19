@@ -49,15 +49,29 @@ impl SagaRollbackReport {
 /// Sensitive local recovery capability; no automatic retry or serialization.
 #[derive(Clone)]
 pub(crate) struct ExternalCompensationRecovery {
+    #[cfg_attr(
+        not(feature = "streaming"),
+        expect(
+            dead_code,
+            reason = "read only by streaming recovery until M427 operator recovery is wired"
+        )
+    )]
     pub(crate) context: crate::persistence::CompensationContext,
     #[cfg_attr(
-        not(test),
+        not(all(test, feature = "streaming")),
         expect(
             dead_code,
             reason = "retained for M427 operator recovery; reader gated by COMPENSATION-IDENTITY-01"
         )
     )]
     pub(crate) handle: crate::persistence::CompensationHandle,
+    #[cfg_attr(
+        not(feature = "streaming"),
+        expect(
+            dead_code,
+            reason = "read only by streaming recovery until M427 operator recovery is wired"
+        )
+    )]
     pub(crate) idempotency: Option<crate::persistence::CompensationIdempotencyHandle>,
     pub(crate) invoked: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -789,7 +803,7 @@ impl SagaRollbackJournal {
             released.release();
         }
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "streaming"))]
     pub(crate) fn retained_custody(
         &self,
     ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
@@ -946,7 +960,7 @@ impl SagaRollbackJournal {
     pub(crate) fn shares_report_with(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.0, &other.0)
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "streaming"))]
     pub(crate) fn retained_children(&self) -> Vec<(usize, Self)> {
         self.3.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }

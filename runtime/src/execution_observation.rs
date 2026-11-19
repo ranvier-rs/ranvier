@@ -1043,7 +1043,7 @@ impl Session {
                 bus.read::<crate::saga_report::SagaRollbackReport>()
                     .cloned()
             });
-        let report = if self.original.is_some() || self.original_compensation.is_some() {
+        if self.original.is_some() || self.original_compensation.is_some() {
             self.observation.report(result, self.original.is_some())
         } else {
             ExecutionReport::Unpersisted {
@@ -1051,8 +1051,7 @@ impl Session {
                 cleanup: None,
             }
         }
-        .with_cleanup(cleanup);
-        report
+        .with_cleanup(cleanup)
     }
 
     fn restore(self, bus: &mut Bus) {

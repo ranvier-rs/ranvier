@@ -16,7 +16,7 @@ pub const PERSISTENCE_FORMAT_VERSION: u16 = 2;
 ///
 /// `step` remains the logical schematic step. `event_sequence` provides a
 /// unique, ordered identity when several protocol events belong to one step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PersistenceEventType {
     Enter,
@@ -28,13 +28,8 @@ pub enum PersistenceEventType {
     Compensation,
     /// Used only when decoding an unversioned legacy Redis value. Such a trace
     /// is rejected by the v2 runtime before recovery or effects.
+    #[default]
     LegacyUnknown,
-}
-
-impl Default for PersistenceEventType {
-    fn default() -> Self {
-        Self::LegacyUnknown
-    }
 }
 
 pub(crate) fn persistence_event_type_for(
