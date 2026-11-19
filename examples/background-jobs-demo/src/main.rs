@@ -118,10 +118,22 @@ async fn main() -> anyhow::Result<()> {
             }
             // A panic or cancelled callback leaves future ticks stopped.
             *stopped = true;
-            let Ok(previous) = counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
-                value.checked_add(1)
-            }) else {
-                return;
+            // Checked increment without `fetch_update` (deprecated on newer stable)
+            // or `try_update` (unstable on the 1.93 MSRV).
+            let mut current = counter.load(Ordering::SeqCst);
+            let previous = loop {
+                let Some(next) = current.checked_add(1) else {
+                    return;
+                };
+                match counter.compare_exchange_weak(
+                    current,
+                    next,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(previous) => break previous,
+                    Err(actual) => current = actual,
+                }
             };
             let run = previous + 1;
             let mut bus = Bus::new();
