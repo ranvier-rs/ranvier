@@ -28,10 +28,10 @@
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2904,
+  "public_item_count": 2905,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2710,
+    "Experimental": 2711,
     "Stable Candidate": 186
   },
   "crates": [
@@ -29987,7 +29987,7 @@
         "schema",
         "streaming"
       ],
-      "public_item_count": 683,
+      "public_item_count": 684,
       "counts_by_kind": {
         "constant": 3,
         "enum": 79,
@@ -29997,10 +29997,10 @@
         "struct_field": 93,
         "trait": 18,
         "type_alias": 9,
-        "variant": 164
+        "variant": 165
       },
       "counts_by_stability": {
-        "Experimental": 666,
+        "Experimental": 667,
         "Stable Candidate": 17
       },
       "facade_reexport_count": 0,
@@ -32164,6 +32164,20 @@
         },
         {
           "path": "ranvier_runtime::execution_report::PersistenceOperation::Result",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/execution_report.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::execution_report::PersistenceOperation::ResumeInput",
           "kind": "variant",
           "origin": "direct",
           "target": null,

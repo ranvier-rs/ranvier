@@ -457,6 +457,31 @@ fn compensation_retry_policy(bus: &Bus) -> CompensationRetryPolicy {
 /// Events serialize the full
 /// Outcome enum, e.g. `{"Next": {"order_id": "1001", ...}}`. The resumption
 /// handler expects the raw inner value, so we extract it here.
+/// Decode the stored checkpoint of the resumed node. A missing or incompatible
+/// payload blocks the effect for reconciliation instead of falling back to
+/// caller input (D-RESUME).
+pub(crate) fn resume_checkpoint<T: serde::de::DeserializeOwned>(bus: &Bus) -> Option<T> {
+    let state = bus
+        .read::<ResumptionState>()
+        .and_then(|resumption| resumption.payload.clone())
+        .and_then(|payload| serde_json::from_value::<T>(payload).ok());
+    if state.is_none() {
+        if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>() {
+            active.0.block(crate::PersistenceOperation::RecoveryPayload);
+        }
+        tracing::error!(
+            operation = "resume_checkpoint_decode",
+            "Stored resume checkpoint is missing or does not match the step input type"
+        );
+    }
+    state
+}
+
+/// `Enter` payloads record the trace input, never a step checkpoint.
+fn is_checkpoint_candidate(event: &crate::persistence::PersistenceEnvelope) -> bool {
+    event.event_type != crate::persistence::PersistenceEventType::Enter
+}
+
 fn unwrap_outcome_payload(payload: Option<&serde_json::Value>) -> Option<serde_json::Value> {
     payload.map(|p| {
         p.get("Next")
@@ -513,6 +538,57 @@ fn has_unusable_recovery_payload(trace: &crate::persistence::PersistedTrace) -> 
     })
 }
 
+/// Input identity of a persisted trace, read once at load.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct ResumeOrigin {
+    /// Input recorded by the latest step-0 `Enter` (`{"input": ...}`).
+    pub(crate) recorded_input: Option<serde_json::Value>,
+    /// The trace holds an event other than `Enter`.
+    pub(crate) has_progress: bool,
+}
+
+impl ResumeOrigin {
+    pub(crate) fn of(trace: &crate::persistence::PersistedTrace) -> Self {
+        let recorded_input = trace
+            .events
+            .iter()
+            .rev()
+            .find(|event| {
+                event.event_type == crate::persistence::PersistenceEventType::Enter
+                    && event.step == 0
+            })
+            .and_then(|event| event.payload.as_ref())
+            .and_then(|payload| payload.get("input"))
+            .cloned();
+        let has_progress = trace
+            .events
+            .iter()
+            .any(|event| event.event_type != crate::persistence::PersistenceEventType::Enter);
+        Self {
+            recorded_input,
+            has_progress,
+        }
+    }
+
+    /// The caller continues the trace with the input it was started with.
+    pub(crate) fn accepts(&self, caller_input: Option<&serde_json::Value>) -> bool {
+        matches!((&self.recorded_input, caller_input), (Some(recorded), Some(caller)) if recorded == caller)
+    }
+}
+
+/// Caller input as JSON for the step-0 `Enter` record and the resume check.
+/// `None` when serialization fails or panics.
+pub(crate) fn caller_input_json<In: serde::Serialize>(input: &In) -> Option<serde_json::Value> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serde_json::to_value(input)))
+        .ok()
+        .and_then(Result::ok)
+}
+
+/// Payload of a step-0 `Enter` event.
+pub(crate) fn enter_input_payload(caller_input: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "input": caller_input })
+}
+
 async fn load_persistence_version(
     handle: &PersistenceHandle,
     trace_id: &str,
@@ -523,6 +599,7 @@ async fn load_persistence_version(
     Option<String>,
     Option<serde_json::Value>,
     Option<CompletionState>,
+    ResumeOrigin,
 )> {
     let store = handle.store();
     match store.load(trace_id).await {
@@ -554,6 +631,7 @@ async fn load_persistence_version(
                         .events
                         .iter()
                         .rev()
+                        .filter(|event| is_checkpoint_candidate(event))
                         .find(|event| {
                             event.step <= resume_from_step
                                 && event.outcome_kind == "Next"
@@ -561,14 +639,17 @@ async fn load_persistence_version(
                         })
                         .or_else(|| {
                             trace.events.iter().rev().find(|event| {
-                                event.step <= resume_from_step
+                                is_checkpoint_candidate(event)
+                                    && event.step <= resume_from_step
                                     && event.outcome_kind != "Fault"
                                     && event.payload.is_some()
                             })
                         })
                         .or_else(|| {
                             trace.events.iter().rev().find(|event| {
-                                event.step <= resume_from_step && event.payload.is_some()
+                                is_checkpoint_candidate(event)
+                                    && event.step <= resume_from_step
+                                    && event.payload.is_some()
                             })
                         })
                         .or_else(|| trace.events.last());
@@ -577,6 +658,7 @@ async fn load_persistence_version(
                         resume_from_step.saturating_add(1),
                         anchor_event.and_then(|event| event.node_id.clone()),
                         anchor_event
+                            .filter(|event| is_checkpoint_candidate(event))
                             .and_then(|event| unwrap_outcome_payload(event.payload.as_ref())),
                     )
                 } else {
@@ -586,10 +668,13 @@ async fn load_persistence_version(
                             .map(|event| event.step.saturating_add(1))
                             .unwrap_or(0),
                         last_event.and_then(|event| event.node_id.clone()),
-                        last_event.and_then(|event| unwrap_outcome_payload(event.payload.as_ref())),
+                        last_event
+                            .filter(|event| is_checkpoint_candidate(event))
+                            .and_then(|event| unwrap_outcome_payload(event.payload.as_ref())),
                     )
                 };
 
+            let origin = ResumeOrigin::of(&trace);
             Ok((
                 next_step,
                 Some(trace.schematic_version),
@@ -597,11 +682,12 @@ async fn load_persistence_version(
                 last_node_id,
                 last_payload,
                 trace.completion,
+                origin,
             ))
         }
         Ok(None) => {
             handle.set_next_event_sequence(0);
-            Ok((0, None, None, None, None, None))
+            Ok((0, None, None, None, None, None, ResumeOrigin::default()))
         }
         Err(_) => {
             tracing::warn!(
@@ -2096,7 +2182,7 @@ mod tests {
                 crate::execution_report::StoreConfirmation::Confirmed
             );
             let before = serde_json::to_value(store.load("nullable").await.unwrap()).unwrap();
-            let (step, _, _, node, restored, completion) =
+            let (step, _, _, node, restored, completion, _) =
                 load_persistence_version(&handle, "nullable").await.unwrap();
             assert_eq!(step, 2);
             assert_eq!(node.as_deref(), Some("node"));
@@ -2430,7 +2516,9 @@ mod tests {
                 outcome_kind: "Enter".into(),
                 timestamp_ms: 0,
                 payload_hash: None,
-                payload: None,
+                payload: Some(super::enter_input_payload(
+                    &serde_json::to_value(PrivateJumpInput).unwrap(),
+                )),
             };
             store.append(seed.clone()).await.unwrap();
             let intervention = crate::persistence::Intervention {
@@ -2628,7 +2716,9 @@ mod tests {
                     outcome_kind: outcome_kind.to_string(),
                     timestamp_ms: 0,
                     payload_hash: None,
-                    payload: None,
+                    // The entry records the input that execute(10) continues with.
+                    payload: (outcome_kind == "Enter")
+                        .then(|| super::enter_input_payload(&serde_json::json!(10))),
                 })
                 .await
                 .unwrap();
@@ -3142,7 +3232,9 @@ mod tests {
         else {
             panic!("unexpected execution durability");
         };
-        let outcome2 = axon.execute(8, &(), &mut bus).await;
+        // The duplicate uses the trace's own input; a different input would be
+        // refused earlier with ResumeInput.
+        let outcome2 = axon.execute(7, &(), &mut bus).await;
         assert!(matches!(
             outcome2,
             crate::ExecutionReport::BlockedBeforeEffect {
@@ -3449,7 +3541,7 @@ mod tests {
                 outcome_kind: "Enter".to_string(),
                 timestamp_ms: 0,
                 payload_hash: None,
-                payload: None,
+                payload: Some(super::enter_input_payload(&serde_json::json!(10))),
             })
             .await
             .unwrap();

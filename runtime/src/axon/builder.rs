@@ -466,18 +466,9 @@ where
                         && step_idx == start.0
                         && bus.read::<ResumptionState>().is_some()
                     {
-                        // Prefer fresh input (In → Out via JSON round-trip).
-                        // The caller provides updated state (e.g., corrected data after a fault).
-                        // Falls back to persisted checkpoint state when types are incompatible.
-                        let fresh_state = serde_json::to_value(&input)
-                            .ok()
-                            .and_then(|v| serde_json::from_value::<Out>(v).ok());
-                        let persisted_state = bus
-                            .read::<ResumptionState>()
-                            .and_then(|r| r.payload.clone())
-                            .and_then(|p| serde_json::from_value::<Out>(p).ok());
-
-                        if let Some(s) = fresh_state.or(persisted_state) {
+                        // The stored checkpoint is authoritative; caller input
+                        // never replaces it (D-RESUME).
+                        if let Some(s) = super::resume_checkpoint::<Out>(bus) {
                             tracing::info!(node_id = %timeline_node_id, "Resuming at checkpoint");
                             return run_this_step::<Out, Next, E, Res>(
                                 &trans,
@@ -1093,15 +1084,9 @@ where
                         && step_idx == start.0
                         && bus.read::<ResumptionState>().is_some()
                     {
-                        let fresh_state = serde_json::to_value(&input)
-                            .ok()
-                            .and_then(|v| serde_json::from_value::<Out>(v).ok());
-                        let persisted_state = bus
-                            .read::<ResumptionState>()
-                            .and_then(|r| r.payload.clone())
-                            .and_then(|p| serde_json::from_value::<Out>(p).ok());
-
-                        if let Some(s) = fresh_state.or(persisted_state) {
+                        // The stored checkpoint is authoritative; caller input
+                        // never replaces it (D-RESUME).
+                        if let Some(s) = super::resume_checkpoint::<Out>(bus) {
                             tracing::info!(node_id = %timeline_node_id, "Resuming at checkpoint (compensated)");
                             return run_this_compensated_step::<Out, Next, E, Res, Comp>(
                                 &trans,

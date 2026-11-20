@@ -258,9 +258,14 @@ async fn parallel_intent_encoding_failure_blocks_every_branch_before_effect() {
     assert_eq!(effects.load(Ordering::SeqCst), 0);
     let trace = backing.load("parallel-encoding").await.unwrap().unwrap();
     assert_eq!(trace.completion, None);
-    assert_eq!(trace.events.len(), 2);
+    // The probe encodes once: the step-0 entry marker records that input, so
+    // the parallel intent is the failing encode and is never appended.
+    assert_eq!(trace.events.len(), 1);
     assert_eq!(trace.events[0].outcome_kind, "Enter");
-    assert_eq!(trace.events[1].outcome_kind, "Intent");
+    assert_eq!(
+        trace.events[0].payload,
+        Some(serde_json::json!({"input": 7}))
+    );
 }
 
 #[derive(Clone)]
@@ -715,14 +720,23 @@ async fn verify_cancelled_write(
 #[derive(Clone)]
 struct Count(Arc<AtomicUsize>);
 
-// Characterize the pre-existing fresh-input checkpoint policy. This is not
-// acceptance of recovery from an incompatible persisted typed value.
+// D-RESUME: a stored checkpoint is the resumed step's input. Caller input
+// never replaces it; an incompatible checkpoint or a different caller input
+// blocks before the effect. (Before P2-3 a caller input of a compatible shape
+// silently replaced the checkpoint: evidence 5551c6c/d084dee.)
 #[tokio::test]
-async fn checkpoint_fresh_input_can_mask_incompatible_persisted_value() {
+async fn stored_checkpoint_is_authoritative_and_mismatches_block() {
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Case {
+        Valid,
+        IncompatibleCheckpoint,
+        DifferentInput,
+    }
     for compensated in [false, true] {
-        for payload in [
-            serde_json::json!({"Next": "invalid-u32"}),
-            serde_json::json!({"Next": 99}),
+        for case in [
+            Case::Valid,
+            Case::IncompatibleCheckpoint,
+            Case::DifferentInput,
         ] {
             let backing = InMemoryPersistenceStore::new();
             let effects = Arc::new(AtomicUsize::new(0));
@@ -736,71 +750,116 @@ async fn checkpoint_fresh_input_can_mask_incompatible_persisted_value() {
             } else {
                 prefix.then(Count(effects.clone()))
             };
-            backing
-                .append(PersistenceEnvelope {
-                    trace_id: "typed-checkpoint".into(),
-                    circuit: axon.schematic().name.clone(),
-                    schematic_version: axon.schematic().schema_version.clone(),
-                    event_sequence: 0,
-                    event_type: PersistenceEventType::Enter,
-                    step: 0,
-                    node_id: axon.schematic().nodes.first().map(|node| node.id.clone()),
-                    outcome_kind: "Enter".into(),
-                    timestamp_ms: 0,
-                    payload_hash: None,
-                    payload: None,
-                })
-                .await
-                .unwrap();
-            backing
-                .append(PersistenceEnvelope {
-                    trace_id: "typed-checkpoint".into(),
-                    circuit: axon.schematic().name.clone(),
-                    schematic_version: axon.schematic().schema_version.clone(),
-                    event_sequence: 1,
-                    event_type: PersistenceEventType::Intent,
-                    step: 1,
-                    node_id: Some(axon.schematic().nodes[1].id.to_string()),
-                    outcome_kind: "Intent".into(),
-                    timestamp_ms: 0,
-                    payload_hash: None,
-                    payload: Some(serde_json::json!(7)),
-                })
-                .await
-                .unwrap();
-            backing
-                .append(PersistenceEnvelope {
-                    trace_id: "typed-checkpoint".into(),
-                    circuit: axon.schematic().name.clone(),
-                    schematic_version: axon.schematic().schema_version.clone(),
-                    event_sequence: 2,
-                    event_type: PersistenceEventType::Result,
-                    step: 1,
-                    node_id: Some(axon.schematic().nodes[1].id.to_string()),
-                    outcome_kind: "Next".into(),
-                    timestamp_ms: 0,
-                    payload_hash: None,
-                    payload: Some(payload.clone()),
-                })
-                .await
-                .unwrap();
+            let checkpoint = if case == Case::IncompatibleCheckpoint {
+                serde_json::json!({"Next": "invalid-u32"})
+            } else {
+                serde_json::json!({"Next": 99})
+            };
+            let seeded = [
+                (
+                    0,
+                    PersistenceEventType::Enter,
+                    0,
+                    "Enter",
+                    Some(serde_json::json!({"input": 7})),
+                ),
+                (
+                    1,
+                    PersistenceEventType::Intent,
+                    1,
+                    "Intent",
+                    Some(serde_json::json!(7)),
+                ),
+                (
+                    2,
+                    PersistenceEventType::Result,
+                    1,
+                    "Next",
+                    Some(checkpoint.clone()),
+                ),
+            ];
+            for (sequence, event_type, step, outcome_kind, payload) in seeded {
+                backing
+                    .append(PersistenceEnvelope {
+                        trace_id: "typed-checkpoint".into(),
+                        circuit: axon.schematic().name.clone(),
+                        schematic_version: axon.schematic().schema_version.clone(),
+                        event_sequence: sequence,
+                        event_type,
+                        step,
+                        node_id: if step == 0 {
+                            axon.schematic().nodes.first().map(|node| node.id.clone())
+                        } else {
+                            Some(axon.schematic().nodes[1].id.to_string())
+                        },
+                        outcome_kind: outcome_kind.into(),
+                        timestamp_ms: 0,
+                        payload_hash: None,
+                        payload,
+                    })
+                    .await
+                    .unwrap();
+            }
+            let before = backing.load("typed-checkpoint").await.unwrap().unwrap();
             let mut bus = Bus::new();
             bus.insert(PersistenceTraceId::new("typed-checkpoint"));
             bus.insert(PersistenceHandle::from_store(backing.clone()));
-            assert!(matches!(
-                axon.execute(7, &(), &mut bus).await,
-                ExecutionReport::Recorded {
-                    result: Outcome::Next(8),
-                    completion: CompletionConfirmation::Confirmed,
-                    ..
+            let caller_input = if case == Case::DifferentInput { 8 } else { 7 };
+            let report = axon.execute(caller_input, &(), &mut bus).await;
+            let trace = backing.load("typed-checkpoint").await.unwrap().unwrap();
+            match case {
+                Case::Valid => {
+                    assert!(
+                        matches!(
+                            report,
+                            ExecutionReport::Recorded {
+                                result: Outcome::Next(100),
+                                completion: CompletionConfirmation::Confirmed,
+                                ..
+                            }
+                        ),
+                        "compensated={compensated}: {report:?}"
+                    );
+                    assert_eq!(effects.load(Ordering::SeqCst), 1);
+                    assert_eq!(trace.completion, Some(CompletionState::Success));
                 }
-            ));
-            assert_eq!(effects.load(Ordering::SeqCst), 1);
+                Case::IncompatibleCheckpoint => {
+                    assert!(
+                        matches!(
+                            report,
+                            ExecutionReport::BlockedBeforeEffect {
+                                operation: PersistenceOperation::RecoveryPayload,
+                                ..
+                            }
+                        ),
+                        "compensated={compensated}: {report:?}"
+                    );
+                    assert_eq!(effects.load(Ordering::SeqCst), 0);
+                    assert_eq!(trace.completion, None);
+                    // Only this invocation's entry marker is added.
+                    assert_eq!(trace.events.len(), before.events.len() + 1);
+                    assert_eq!(trace.events[..3], before.events[..]);
+                }
+                Case::DifferentInput => {
+                    assert!(
+                        matches!(
+                            report,
+                            ExecutionReport::BlockedBeforeEffect {
+                                operation: PersistenceOperation::ResumeInput,
+                                effect: EffectBoundary::NotInvoked,
+                                ..
+                            }
+                        ),
+                        "compensated={compensated}: {report:?}"
+                    );
+                    assert_eq!(effects.load(Ordering::SeqCst), 0);
+                    // Refused before the entry marker: the trace is untouched.
+                    assert_eq!(trace, before);
+                }
+            }
             assert_eq!(previous_effects.load(Ordering::SeqCst), 0);
             assert!(undo_inputs.lock().unwrap().is_empty());
-            let trace = backing.load("typed-checkpoint").await.unwrap().unwrap();
-            assert_eq!(trace.completion, Some(CompletionState::Success));
-            assert_eq!(trace.events[2].payload, Some(payload));
+            assert_eq!(trace.events[2].payload, Some(checkpoint));
         }
     }
 }

@@ -23,6 +23,10 @@ pub enum PersistenceOperation {
     Load,
     /// Loaded history contains an unusable recovery payload; operator reconciliation is required.
     RecoveryPayload,
+    /// The caller's input differs from the input recorded when the trace
+    /// started, or none was recorded. Stored checkpoints are authoritative; an
+    /// operator jump with `payload_override` is the correction path.
+    ResumeInput,
     /// The stored format or event sequence is not valid for this release.
     UnsupportedFormat,
     /// A confirmed intent has no confirmed matching result; never replay it automatically.

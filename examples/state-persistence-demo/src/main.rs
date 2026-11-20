@@ -270,7 +270,8 @@ async fn seed_interrupted_checkpoint(
             0,
             Some(entry_node_id),
             "Enter",
-            None,
+            // Typed resume compares the caller input with the recorded entry input.
+            Some(serde_json::json!({ "input": serde_json::to_value(input)? })),
         ),
         envelope(
             1,

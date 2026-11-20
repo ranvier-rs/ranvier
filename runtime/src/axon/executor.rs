@@ -220,6 +220,13 @@ where
         // cleanup. Do not promote its generated identity to caller-owned
         // PersistenceTraceId: that would leak into later uses of this Bus.
         let caller_owned_timeline = bus.read::<Timeline>().is_some();
+        // A pre-cancelled token wins before execute_domain checks the caller
+        // input against a persisted trace, so cleanup repeats that check.
+        let caller_input = if bus.has::<PersistenceHandle>() {
+            super::caller_input_json(&input)
+        } else {
+            None
+        };
 
         let race = {
             let execution = self.execute_domain(input, resources, bus);
@@ -243,7 +250,7 @@ where
                 // context; compensation code receives a fresh control plane
                 // until an outer managed-drain deadline aborts this task.
                 bus.set_cancellation_token(CancellationToken::new());
-                self.finish_cancellation(resources, bus, context.clone())
+                self.finish_cancellation(resources, bus, context.clone(), caller_input)
                     .await;
                 if !caller_owned_timeline {
                     let _ = bus.remove::<Timeline>();
@@ -745,6 +752,11 @@ where
             .read::<ranvier_core::schematic::MigrationRegistry>()
             .cloned();
 
+        let caller_input = if persistence_handle.is_some() {
+            super::caller_input_json(&input)
+        } else {
+            None
+        };
         if let Some(handle) = persistence_handle.as_ref() {
             let (
                 mut start_step,
@@ -753,6 +765,7 @@ where
                 last_node_id,
                 mut last_payload,
                 completion,
+                origin,
             ) = match load_persistence_version(handle, &trace_id).await {
                 Ok(cursor) => cursor,
                 Err(error) => {
@@ -782,6 +795,26 @@ where
             // An authoritative terminal trace cannot authorize further effects.
             if completion.is_some() {
                 return Outcome::emit("execution.resumption.completed_trace", None);
+            }
+
+            // Stored checkpoints are authoritative: a trace is continued only
+            // with the input that started it. A registered version migration
+            // is the owner's authority and skips this check.
+            if trace_version.as_deref() == Some(version.as_str()) {
+                if !origin.accepts(caller_input.as_ref()) {
+                    if let Some(active) =
+                        bus.read::<crate::execution_observation::ActiveObservation>()
+                    {
+                        active.0.block(crate::PersistenceOperation::ResumeInput);
+                    }
+                    return Outcome::emit("execution.resumption.input_mismatch", None);
+                }
+                // Only an entry marker was recorded: no effect has started, so
+                // the trace restarts from the beginning with the same input.
+                if !origin.has_progress && intervention.is_none() {
+                    start_step = 0;
+                    last_payload = None;
+                }
             }
 
             if let Some(interv) = intervention {
@@ -1000,6 +1033,15 @@ where
                 );
             }
 
+            // A step-0 entry records the input that later continuations must
+            // match. An input that cannot be encoded is recorded as absent: the
+            // first effect intent then fails closed on the same encoding, and a
+            // later continuation is refused for want of a recorded input.
+            let entry_payload = if start_step == 0 {
+                caller_input.as_ref().map(super::enter_input_payload)
+            } else {
+                None
+            };
             let ingress_node_id = self.schematic.nodes.first().map(|n| n.id.clone());
             let confirmation = persist_execution_event(
                 handle,
@@ -1009,7 +1051,7 @@ where
                 start_step,
                 ingress_node_id,
                 "Enter",
-                None,
+                entry_payload,
             )
             .await;
 
@@ -1476,6 +1518,7 @@ where
         resources: &Res,
         bus: &mut Bus,
         context: CancellationContext,
+        caller_input: Option<serde_json::Value>,
     ) {
         if bus
             .read::<crate::execution_observation::ActiveObservation>()
@@ -1543,6 +1586,18 @@ where
                         );
                         return;
                     }
+                    // Cleanup of a continued trace belongs to the input that
+                    // started it (same rule as execute_domain).
+                    if trace.schematic_version == version
+                        && !super::ResumeOrigin::of(&trace).accepts(caller_input.as_ref())
+                    {
+                        if let Some(active) =
+                            bus.read::<crate::execution_observation::ActiveObservation>()
+                        {
+                            active.0.block(crate::PersistenceOperation::ResumeInput);
+                        }
+                        return;
+                    }
                     handle.set_next_event_sequence(u64::try_from(trace.events.len()).unwrap_or(0));
                     (
                         trace
@@ -1583,7 +1638,7 @@ where
                     0,
                     ingress_node_id,
                     "Enter",
-                    None,
+                    caller_input.as_ref().map(super::enter_input_payload),
                 )
                 .await;
                 if confirmation == crate::execution_report::StoreConfirmation::Unconfirmed {

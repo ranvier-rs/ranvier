@@ -354,7 +354,8 @@ async fn test_migration_migrate_active_node() {
     assert!(matches!(
         axon_v11.execute(0, &(), &mut bus_v11).await,
         ExecutionReport::Recorded {
-            result: Outcome::Next(1),
+            // The stored node-1 result (1), not caller input 0, feeds the mapped node.
+            result: Outcome::Next(2),
             completion: CompletionConfirmation::Confirmed,
             ..
         }
@@ -432,7 +433,8 @@ async fn test_migration_fallback_to_node() {
     assert!(matches!(
         axon_v11.execute(0, &(), &mut bus_v11).await,
         ExecutionReport::Recorded {
-            result: Outcome::Next(1),
+            // The stored node-1 result (1), not caller input 0, feeds the mapped node.
+            result: Outcome::Next(2),
             completion: CompletionConfirmation::Confirmed,
             ..
         }
