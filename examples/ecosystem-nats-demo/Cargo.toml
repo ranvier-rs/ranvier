@@ -16,3 +16,5 @@ ranvier-runtime = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 async-nats = "0.49.1"
 
+[lints]
+workspace = true

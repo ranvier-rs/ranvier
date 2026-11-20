@@ -12,7 +12,6 @@ path = "src/main.rs"
 [dependencies]
 ranvier-core = { workspace = true }
 ranvier-runtime = { workspace = true }
-ranvier-http = { workspace = true }
 ranvier-macros = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }

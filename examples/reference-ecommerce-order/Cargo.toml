@@ -14,7 +14,6 @@ ranvier-core    = { path = "../../core", version = "0.51.0" }
 ranvier-macros  = { path = "../../macros", version = "0.51.0" }
 ranvier-runtime = { path = "../../runtime", version = "0.51.0" }
 ranvier-http    = { path = "../../http", version = "0.51.0" }
-ranvier-audit   = { path = "../../extensions/audit", version = "0.51.0" }
 async-trait     = "0.1"
 anyhow          = "1.0"
 http            = "1"
@@ -28,3 +27,6 @@ thiserror       = "2"
 uuid            = { version = "1.6", features = ["v4"] }
 chrono          = { version = "0.4", features = ["serde"] }
 schemars        = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

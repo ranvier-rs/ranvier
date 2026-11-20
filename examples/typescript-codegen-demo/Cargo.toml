@@ -6,7 +6,6 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-ranvier-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ts-rs = { version = "10", features = ["serde-json-impl"] }

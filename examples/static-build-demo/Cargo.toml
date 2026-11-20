@@ -17,3 +17,5 @@ chrono = { version = "0.4", features = ["serde"] }
 name = "static-build-demo"
 path = "src/main.rs"
 
+[lints]
+workspace = true
