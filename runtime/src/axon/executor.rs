@@ -1143,12 +1143,13 @@ where
             && let Some(compensation) = compensation_handle.as_ref()
             && compensation_auto_trigger(bus)
         {
-            let context = CompensationContext {
+            let mut context = CompensationContext {
                 trace_id: trace_id.clone(),
                 circuit: label.clone(),
                 fault_kind: outcome_kind_name(&outcome).to_string(),
                 fault_step,
                 timestamp_ms: now_ms(),
+                intent_sequence: None,
             };
 
             let compensation_step = fault_step.saturating_add(1);
@@ -1158,7 +1159,7 @@ where
                     "fault_kind": outcome_kind_name(&outcome),
                     "fault_step": fault_step,
                 });
-                if !super::persist_effect_intent(
+                match super::persist_effect_intent_sequence(
                     &intent_payload,
                     bus,
                     "external-compensation",
@@ -1166,7 +1167,8 @@ where
                 )
                 .await
                 {
-                    return outcome;
+                    Ok(sequence) => context.intent_sequence = sequence,
+                    Err(()) => return outcome,
                 }
             }
 
@@ -1613,12 +1615,13 @@ where
         if let Some(compensation) = compensation_handle.as_ref()
             && compensation_auto_trigger(bus)
         {
-            let compensation_context = CompensationContext {
+            let mut compensation_context = CompensationContext {
                 trace_id: trace_id.clone(),
                 circuit: label.clone(),
                 fault_kind: "Cancelled".to_string(),
                 fault_step: cancellation_step,
                 timestamp_ms: now_ms(),
+                intent_sequence: None,
             };
 
             let compensation_step = cancellation_step.saturating_add(1);
@@ -1628,7 +1631,7 @@ where
                     "fault_kind": "Cancelled",
                     "fault_step": cancellation_step,
                 });
-                if !super::persist_effect_intent(
+                match super::persist_effect_intent_sequence(
                     &intent_payload,
                     bus,
                     "external-compensation",
@@ -1636,7 +1639,8 @@ where
                 )
                 .await
                 {
-                    return;
+                    Ok(sequence) => compensation_context.intent_sequence = sequence,
+                    Err(()) => return,
                 }
             }
 

@@ -28,10 +28,10 @@
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2903,
+  "public_item_count": 2904,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2709,
+    "Experimental": 2710,
     "Stable Candidate": 186
   },
   "crates": [
@@ -29987,20 +29987,20 @@
         "schema",
         "streaming"
       ],
-      "public_item_count": 682,
+      "public_item_count": 683,
       "counts_by_kind": {
         "constant": 3,
         "enum": 79,
         "function": 173,
         "module": 18,
         "struct": 126,
-        "struct_field": 92,
+        "struct_field": 93,
         "trait": 18,
         "type_alias": 9,
         "variant": 164
       },
       "counts_by_stability": {
-        "Experimental": 665,
+        "Experimental": 666,
         "Stable Candidate": 17
       },
       "facade_reexport_count": 0,
@@ -33060,6 +33060,20 @@
         },
         {
           "path": "ranvier_runtime::persistence::CompensationContext::fault_step",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/persistence.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::persistence::CompensationContext::intent_sequence",
           "kind": "struct_field",
           "origin": "direct",
           "target": null,

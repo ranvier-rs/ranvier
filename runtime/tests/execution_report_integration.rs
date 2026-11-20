@@ -1966,7 +1966,8 @@ async fn compensation_marker_write_does_not_claim_execution_trace_recorded() {
             ..
         } if message == "business-fault"
     ));
-    let marker_key = "trace-marker-only:compensation-marker-only:Fault";
+    // No trace store: the unjournaled v2 key names the fault step (node count) and kind.
+    let marker_key = "v2:u:2:5:Fault:17:trace-marker-only:24:compensation-marker-only";
     assert!(idempotency.was_compensated(marker_key).await.unwrap());
 }
 

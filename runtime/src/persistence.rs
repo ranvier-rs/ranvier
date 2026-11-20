@@ -368,16 +368,51 @@ pub struct CompensationContext {
     pub fault_kind: String,
     pub fault_step: u64,
     pub timestamp_ms: u64,
+    /// `event_sequence` of the acknowledged `external-compensation` intent in
+    /// the execution trace store, or `None` when no trace store is configured.
+    ///
+    /// The value is stable for one compensation effect: the intent is written
+    /// before the hook runs and a later invocation of the same trace stops at
+    /// the open intent instead of creating a new one. Hooks can pass it,
+    /// together with `trace_id` and `circuit`, to a provider as an
+    /// idempotency key.
+    #[serde(default)]
+    pub intent_sequence: Option<u64>,
 }
 
-/// Stable key shared by automatic compensation and report-bound readback.
-/// Keep the current encoding until the separate durable key-version migration
-/// is approved; a missing marker never authorizes a retry by itself.
+/// Marker key shared by automatic compensation and report-bound readback.
+///
+/// Version 2 framing: every variable field is preceded by its UTF-8 byte
+/// length, so distinct contexts cannot produce the same key.
+///
+/// - journaled (trace store configured): `v2:j:<intent_sequence>:<trace>:<circuit>`
+/// - unjournaled (no trace store): `v2:u:<fault_step>:<fault_kind>:<trace>:<circuit>`
+///
+/// where each text field is written as `<len>:<value>`. Version 1 keys
+/// (`trace:circuit:fault_kind`) are neither read nor written. A missing
+/// marker never authorizes a retry by itself.
 pub(crate) fn compensation_idempotency_key(context: &CompensationContext) -> String {
-    format!(
-        "{}:{}:{}",
-        context.trace_id, context.circuit, context.fault_kind
-    )
+    fn push_field(key: &mut String, value: &str) {
+        key.push(':');
+        key.push_str(&value.len().to_string());
+        key.push(':');
+        key.push_str(value);
+    }
+    let mut key = String::from("v2");
+    match context.intent_sequence {
+        Some(sequence) => {
+            key.push_str(":j:");
+            key.push_str(&sequence.to_string());
+        }
+        None => {
+            key.push_str(":u:");
+            key.push_str(&context.fault_step.to_string());
+            push_field(&mut key, &context.fault_kind);
+        }
+    }
+    push_field(&mut key, &context.trace_id);
+    push_field(&mut key, &context.circuit);
+    key
 }
 
 /// Controls whether compensation hooks should run automatically on `Fault`.
@@ -459,6 +494,13 @@ impl CompensationHandle {
 /// Lost acknowledgements and concurrent callers require reconciliation or
 /// downstream deduplication before retry; this trait alone cannot guarantee
 /// at-most-once external actions across failures or process restarts.
+///
+/// Keys are opaque runtime strings (see `CompensationContext::intent_sequence`
+/// for the identity they encode). When an execution trace store is
+/// configured, an expired or purged marker does not by itself re-enable the
+/// hook: the trace's open compensation intent or its `Compensated` event
+/// still stops a later invocation for reconciliation.
+///
 /// Built-in adapters: [`InMemoryCompensationIdempotencyStore`],
 /// [`PostgresCompensationIdempotencyStore`] (feature `persistence-postgres`),
 /// [`RedisCompensationIdempotencyStore`] (feature `persistence-redis`).
@@ -910,14 +952,15 @@ impl CompensationIdempotencyStore for RedisCompensationIdempotencyStore {
     }
 
     async fn mark_compensated(&self, key: &str) -> Result<()> {
-        use redis::AsyncCommands;
         let mut conn = self.manager.clone();
         let redis_key = self.key(key);
-        let inserted: bool = conn.set_nx(&redis_key, "1").await?;
-        if inserted && let Some(ttl_seconds) = self.ttl_seconds {
-            let ttl_i64 = i64::try_from(ttl_seconds)?;
-            let _: bool = conn.expire(&redis_key, ttl_i64).await?;
+        // One command, so a marker can never be left without its configured TTL.
+        let mut command = redis::cmd("SET");
+        command.arg(&redis_key).arg("1").arg("NX");
+        if let Some(ttl_seconds) = self.ttl_seconds {
+            command.arg("EX").arg(ttl_seconds);
         }
+        let _: Option<String> = command.query_async(&mut conn).await?;
         Ok(())
     }
 }
@@ -2518,58 +2561,123 @@ mod tests {
         assert!(store.was_compensated(key).await.unwrap());
     }
 
-    fn compensation_context(fault_step: u64) -> CompensationContext {
+    fn compensation_context(
+        trace_id: &str,
+        circuit: &str,
+        fault_kind: &str,
+        fault_step: u64,
+        intent_sequence: Option<u64>,
+    ) -> CompensationContext {
         CompensationContext {
-            trace_id: "trace-a".to_string(),
-            circuit: "OrderFlow".to_string(),
-            fault_kind: "Fault".to_string(),
+            trace_id: trace_id.to_string(),
+            circuit: circuit.to_string(),
+            fault_kind: fault_kind.to_string(),
             fault_step,
             timestamp_ms: 1_700_000_000_000,
+            intent_sequence,
         }
     }
 
-    #[tokio::test]
-    async fn legacy_compensation_idempotency_key_aliases_fault_steps() {
-        // Preserve the existing persisted format until an owner-approved versioned
-        // migration can safely replace this characterization with non-collision proof.
-        let first = compensation_idempotency_key(&compensation_context(4));
-        let second = compensation_idempotency_key(&compensation_context(5));
-        let keys_alias = first == second;
-        let store = InMemoryCompensationIdempotencyStore::new();
-        let observations: anyhow::Result<(bool, bool)> = async {
-            let absent_before_write = !store.was_compensated(&first).await?;
-            store.mark_compensated(&first).await?;
-            let alias_reads_marker = store.was_compensated(&second).await?;
-            Ok((absent_before_write, alias_reads_marker))
-        }
-        .await;
-        let (absent_before_write, alias_reads_marker) = observations.unwrap();
-        assert!(keys_alias);
-        assert!(absent_before_write);
-        assert!(alias_reads_marker);
+    /// Pairs of compensation contexts that name different effects. Each pair
+    /// aliased under the version 1 encoding or differs in one framed field.
+    fn distinct_compensation_key_pairs(trace: &str) -> Vec<(String, String)> {
+        let a_b = format!("{trace}a:b");
+        let a = format!("{trace}a");
+        let multibyte_colon = format!("{trace}\u{c8fc}\u{bb38}:");
+        let multibyte = format!("{trace}\u{c8fc}\u{bb38}");
+        let cases = [
+            // Same trace, circuit and fault kind; different intent sequence.
+            (
+                compensation_context(trace, "OrderFlow", "Fault", 3, Some(4)),
+                compensation_context(trace, "OrderFlow", "Fault", 3, Some(5)),
+            ),
+            // Same trace, circuit and fault kind; different step, no trace store.
+            (
+                compensation_context(trace, "OrderFlow", "Fault", 4, None),
+                compensation_context(trace, "OrderFlow", "Fault", 5, None),
+            ),
+            // Delimiter partitions of trace and circuit.
+            (
+                compensation_context(&a_b, "c", "d", 1, Some(1)),
+                compensation_context(&a, "b:c", "d", 1, Some(1)),
+            ),
+            (
+                compensation_context(&a_b, "c", "d", 1, None),
+                compensation_context(&a, "b:c", "d", 1, None),
+            ),
+            // Fault kind and circuit partition without a trace store.
+            (
+                compensation_context(trace, "k:x", "Fault", 1, None),
+                compensation_context(trace, "x", "Fault:1:k", 1, None),
+            ),
+            // Journaled and unjournaled keys never meet.
+            (
+                compensation_context(trace, "OrderFlow", "Fault", 7, Some(7)),
+                compensation_context(trace, "OrderFlow", "Fault", 7, None),
+            ),
+            // Multi-byte text is framed by UTF-8 byte length.
+            (
+                compensation_context(&multibyte_colon, "flow", "Fault", 1, Some(2)),
+                compensation_context(&multibyte, ":flow", "Fault", 1, Some(2)),
+            ),
+        ];
+        cases
+            .iter()
+            .map(|(first, second)| {
+                (
+                    compensation_idempotency_key(first),
+                    compensation_idempotency_key(second),
+                )
+            })
+            .collect()
     }
 
     #[test]
-    fn legacy_compensation_idempotency_key_aliases_delimiter_partitions() {
-        let first = CompensationContext {
-            trace_id: "a:b".to_string(),
-            circuit: "c".to_string(),
-            fault_kind: "d".to_string(),
-            fault_step: 1,
-            timestamp_ms: 1,
-        };
-        let second = CompensationContext {
-            trace_id: "a".to_string(),
-            circuit: "b:c".to_string(),
-            fault_kind: "d".to_string(),
-            fault_step: 2,
-            timestamp_ms: 2,
-        };
-
+    fn compensation_idempotency_key_v2_framing() {
         assert_eq!(
-            compensation_idempotency_key(&first),
-            compensation_idempotency_key(&second)
+            compensation_idempotency_key(&compensation_context(
+                "trace-a",
+                "OrderFlow",
+                "Fault",
+                3,
+                Some(7)
+            )),
+            "v2:j:7:7:trace-a:9:OrderFlow"
         );
+        assert_eq!(
+            compensation_idempotency_key(&compensation_context(
+                "trace-a",
+                "OrderFlow",
+                "Cancelled",
+                3,
+                None
+            )),
+            "v2:u:3:9:Cancelled:7:trace-a:9:OrderFlow"
+        );
+        // The timestamp and, for journaled keys, the step and kind are not identity.
+        let mut later = compensation_context("trace-a", "OrderFlow", "Fault", 3, Some(7));
+        later.timestamp_ms += 1;
+        later.fault_step = 9;
+        later.fault_kind = "Cancelled".to_string();
+        assert_eq!(
+            compensation_idempotency_key(&later),
+            "v2:j:7:7:trace-a:9:OrderFlow"
+        );
+    }
+
+    #[tokio::test]
+    async fn compensation_idempotency_keys_do_not_collide() {
+        let store = InMemoryCompensationIdempotencyStore::new();
+        for (first, second) in distinct_compensation_key_pairs("") {
+            assert_ne!(first, second);
+            store.mark_compensated(&first).await.unwrap();
+            assert!(store.was_compensated(&first).await.unwrap());
+            assert!(
+                !store.was_compensated(&second).await.unwrap(),
+                "{first} must not mark {second}"
+            );
+            store.keys.write().await.clear();
+        }
     }
 
     #[cfg(feature = "persistence-postgres")]
@@ -3303,7 +3411,7 @@ mod tests {
     #[cfg(feature = "persistence-postgres")]
     #[tokio::test]
     #[ignore = "requires explicitly isolated backend fixture URL"]
-    async fn postgres_legacy_compensation_marker_aliases_fault_steps_when_configured() {
+    async fn postgres_compensation_marker_keys_do_not_collide_when_configured() {
         let url = std::env::var("RANVIER_PERSISTENCE_POSTGRES_URL")
             .unwrap_or_else(|_| panic!("explicit isolated backend fixture URL required"));
         assert!(
@@ -3321,24 +3429,30 @@ mod tests {
             PostgresCompensationIdempotencyStore::with_table_prefix(pool.clone(), &table_prefix);
         store.ensure_schema().await.unwrap();
 
-        let first = compensation_idempotency_key(&compensation_context(4));
-        let second = compensation_idempotency_key(&compensation_context(5));
-        let keys_alias = first == second;
-        let observations: anyhow::Result<(bool, bool)> = async {
-            let absent_before_write = !store.was_compensated(&first).await?;
-            store.mark_compensated(&first).await?;
-            let alias_reads_marker = store.was_compensated(&second).await?;
-            Ok((absent_before_write, alias_reads_marker))
+        let trace = format!("trace-{}-", Uuid::new_v4().simple());
+        let pairs = distinct_compensation_key_pairs(&trace);
+        let observations: anyhow::Result<()> = async {
+            for (first, second) in &pairs {
+                anyhow::ensure!(first != second);
+                anyhow::ensure!(!store.was_compensated(first).await?);
+                anyhow::ensure!(!store.was_compensated(second).await?);
+                store.mark_compensated(first).await?;
+                anyhow::ensure!(store.was_compensated(first).await?);
+                anyhow::ensure!(
+                    !store.was_compensated(second).await?,
+                    "{first} must not mark {second}"
+                );
+                store.mark_compensated(second).await?;
+                anyhow::ensure!(store.was_compensated(second).await?);
+            }
+            Ok(())
         }
         .await;
 
         let drop_table = format!("DROP TABLE IF EXISTS {}", store.table.sql().unwrap());
         let cleanup = sqlx::query(&drop_table).execute(&pool).await;
-        let (absent_before_write, alias_reads_marker) = observations.unwrap();
+        observations.unwrap();
         cleanup.unwrap();
-        assert!(keys_alias);
-        assert!(absent_before_write);
-        assert!(alias_reads_marker);
     }
 
     #[cfg(feature = "persistence-postgres")]
@@ -3423,7 +3537,7 @@ mod tests {
     #[cfg(feature = "persistence-redis")]
     #[tokio::test]
     #[ignore = "requires explicitly isolated backend fixture URL"]
-    async fn redis_legacy_compensation_marker_aliases_fault_steps_when_configured() {
+    async fn redis_compensation_marker_keys_do_not_collide_when_configured() {
         let url = std::env::var("RANVIER_PERSISTENCE_REDIS_URL")
             .unwrap_or_else(|_| panic!("explicit isolated backend fixture URL required"));
         assert!(
@@ -3440,25 +3554,38 @@ mod tests {
         );
         let store = RedisCompensationIdempotencyStore::with_prefix(base.manager.clone(), prefix);
 
-        let first = compensation_idempotency_key(&compensation_context(4));
-        let second = compensation_idempotency_key(&compensation_context(5));
-        let keys_alias = first == second;
-        let observations: anyhow::Result<(bool, bool)> = async {
-            let absent_before_write = !store.was_compensated(&first).await?;
-            store.mark_compensated(&first).await?;
-            let alias_reads_marker = store.was_compensated(&second).await?;
-            Ok((absent_before_write, alias_reads_marker))
+        let trace = format!("trace-{}-", Uuid::new_v4().simple());
+        let pairs = distinct_compensation_key_pairs(&trace);
+        let observations: anyhow::Result<()> = async {
+            for (first, second) in &pairs {
+                anyhow::ensure!(first != second);
+                anyhow::ensure!(!store.was_compensated(first).await?);
+                anyhow::ensure!(!store.was_compensated(second).await?);
+                store.mark_compensated(first).await?;
+                anyhow::ensure!(store.was_compensated(first).await?);
+                anyhow::ensure!(
+                    !store.was_compensated(second).await?,
+                    "{first} must not mark {second}"
+                );
+                store.mark_compensated(second).await?;
+                anyhow::ensure!(store.was_compensated(second).await?);
+            }
+            Ok(())
         }
         .await;
 
         use redis::AsyncCommands;
         let mut conn = store.manager.clone();
-        let cleanup: redis::RedisResult<usize> = conn.del(store.key(&first)).await;
-        let (absent_before_write, alias_reads_marker) = observations.unwrap();
+        let mut cleanup: redis::RedisResult<usize> = Ok(0);
+        for (first, second) in &pairs {
+            let deleted: redis::RedisResult<usize> =
+                conn.del(&[store.key(first), store.key(second)]).await;
+            if cleanup.is_ok() {
+                cleanup = deleted;
+            }
+        }
+        observations.unwrap();
         cleanup.unwrap();
-        assert!(keys_alias);
-        assert!(absent_before_write);
-        assert!(alias_reads_marker);
     }
 
     #[cfg(feature = "persistence-redis")]
@@ -3486,6 +3613,15 @@ mod tests {
         assert!(!store.was_compensated(&key).await.unwrap());
         store.mark_compensated(&key).await.unwrap();
         assert!(store.was_compensated(&key).await.unwrap());
+        // The TTL is applied by the same SET command that creates the marker.
+        let ttl: i64 = redis::cmd("TTL")
+            .arg(store.key(&key))
+            .query_async(&mut store.manager.clone())
+            .await
+            .unwrap();
+        assert!((0..=1).contains(&ttl), "ttl = {ttl}");
+        // A repeated mark is a no-op and keeps the original expiry.
+        store.mark_compensated(&key).await.unwrap();
 
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         assert!(!store.was_compensated(&key).await.unwrap());

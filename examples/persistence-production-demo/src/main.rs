@@ -169,6 +169,7 @@ async fn scenario_compensation_hook() -> Result<()> {
         fault_kind: "inventory_unavailable".to_string(),
         fault_step: 2,
         timestamp_ms: now_ms(),
+        intent_sequence: None,
     };
     hook.compensate(ctx).await?;
 

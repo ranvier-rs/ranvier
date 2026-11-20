@@ -28,6 +28,36 @@ const MAX_RESP_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RESP_LINE_BYTES: usize = 4096;
 const MAX_RESP_ELEMENTS: usize = 100_000;
 
+/// Documented v2 marker key for a compensation with a trace store.
+fn v2_journaled_marker_key(trace_id: &str, circuit: &str, intent_sequence: u64) -> String {
+    format!(
+        "v2:j:{intent_sequence}:{}:{trace_id}:{}:{circuit}",
+        trace_id.len(),
+        circuit.len()
+    )
+}
+
+/// `event_sequence` of the trace's external-compensation intent.
+async fn compensation_intent_sequence(
+    store: &impl PersistenceStore,
+    trace_id: &str,
+) -> Result<u64> {
+    let trace = store
+        .load(trace_id)
+        .await?
+        .context("compensation trace was not persisted")?;
+    trace
+        .events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.node_id.as_deref() == Some("external-compensation")
+                && event.outcome_kind == "Intent"
+        })
+        .map(|event| event.event_sequence)
+        .context("external compensation intent was not persisted")
+}
+
 #[derive(Debug)]
 struct DroppedCommandReply {
     command: String,
@@ -831,21 +861,17 @@ async fn redis_compensation_marker_ack_loss_over_tcp_reports_uncertainty() -> Re
         let reader = RedisCompensationIdempotencyStore::connect(&backend_url).await?;
         let trace_id = format!("redis-compensation-marker-ack-{}", uuid::Uuid::new_v4().simple());
         let circuit = "RedisWireCompensationMarkerAckLossFixture";
-        let key = format!("{trace_id}:{circuit}:Fault");
-        ensure!(
-            !reader.was_compensated(&key).await?,
-            "unique compensation marker key already exists"
-        );
 
         let (proxy_url, mut dropped_reply, proxy) =
-            start_proxy_for_command(backend_address, "SETNX", 1).await?;
+            start_proxy_for_command(backend_address, "SET", 1).await?;
         let marker_store = RedisCompensationIdempotencyStore::connect(&proxy_url).await?;
         let effects = Arc::new(AtomicUsize::new(0));
         let compensation_calls = Arc::new(AtomicUsize::new(0));
         let axon = Axon::<u32, u32, String, ()>::new(circuit).then(CountFault(effects.clone()));
         let mut bus = Bus::new();
+        let trace_store = InMemoryPersistenceStore::new();
         bus.insert(PersistenceTraceId::new(trace_id.clone()));
-        bus.insert(PersistenceHandle::from_store(InMemoryPersistenceStore::new()));
+        bus.insert(PersistenceHandle::from_store(trace_store.clone()));
         bus.insert(CompensationHandle::from_hook(CountCompensation(
             compensation_calls.clone(),
         )));
@@ -854,15 +880,15 @@ async fn redis_compensation_marker_ack_loss_over_tcp_reports_uncertainty() -> Re
         let report = axon.execute(7, &(), &mut bus).await;
         let observed_drop = timeout(Duration::from_secs(5), dropped_reply.recv())
             .await?
-            .context("Redis TCP proxy did not drop the compensation marker SETNX reply")?;
+            .context("Redis TCP proxy did not drop the compensation marker SET NX reply")?;
         ensure!(
-            observed_drop.command.eq_ignore_ascii_case("SETNX")
+            observed_drop.command.eq_ignore_ascii_case("SET")
                 && observed_drop.ordinal == 1,
             "proxy dropped a different Redis command"
         );
         ensure!(
-            observed_drop.response == b":1\r\n",
-            "Redis did not apply a new SETNX marker"
+            observed_drop.response == b"+OK\r\n",
+            "Redis did not apply a new SET NX marker"
         );
         ensure!(
             matches!(
@@ -893,12 +919,17 @@ async fn redis_compensation_marker_ack_loss_over_tcp_reports_uncertainty() -> Re
         );
         proxy.stop().await?;
 
+        let key = v2_journaled_marker_key(
+            &trace_id,
+            circuit,
+            compensation_intent_sequence(&trace_store, &trace_id).await?,
+        );
         ensure!(
             reader.was_compensated(&key).await?,
             "marker applied by Redis disappeared after its acknowledgement was lost"
         );
         println!(
-            "REDIS_TCP_COMPENSATION_MARKER_ACK_LOST dropped=SETNX-1 effect=MayHaveRun effects=1 hook_calls=1 marker_present=true cleanup=Fault trace_store=InMemory redis_trace_store=false"
+            "REDIS_TCP_COMPENSATION_MARKER_ACK_LOST dropped=SET-NX-1 effect=MayHaveRun effects=1 hook_calls=1 marker_present=true cleanup=Fault trace_store=InMemory redis_trace_store=false"
         );
         Ok::<_, anyhow::Error>(())
     })
@@ -989,11 +1020,6 @@ async fn redis_compensation_marker_read_ack_loss_over_tcp_fails_closed() -> Resu
             uuid::Uuid::new_v4().simple()
         );
         let circuit = "RedisWireCompensationMarkerReadAckLossFixture";
-        let key = format!("{trace_id}:{circuit}:Fault");
-        ensure!(
-            !reader.was_compensated(&key).await?,
-            "unique compensation marker key already exists"
-        );
 
         let (proxy_url, mut dropped_reply, proxy) =
             start_proxy_for_command(backend_address, "EXISTS", 1).await?;
@@ -1053,6 +1079,11 @@ async fn redis_compensation_marker_read_ack_loss_over_tcp_fails_closed() -> Resu
         );
         proxy.stop().await?;
 
+        let key = v2_journaled_marker_key(
+            &trace_id,
+            circuit,
+            compensation_intent_sequence(&trace_reader, &trace_id).await?,
+        );
         ensure!(
             !reader.was_compensated(&key).await?,
             "marker was written after the unconfirmed read"

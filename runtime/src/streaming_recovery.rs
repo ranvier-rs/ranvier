@@ -2053,7 +2053,6 @@ mod tests {
                 assert_eq!(pending.len(), 1);
                 assert_eq!(pending[0].context.trace_id, "external-abort-trace");
                 assert_eq!(pending[0].context.circuit, "external-abort-circuit");
-                assert!(Arc::ptr_eq(&pending[0].handle.hook(), &hook));
                 assert!(pending[0].invoked.load(Ordering::SeqCst));
                 assert!(
                     pending[0]
@@ -2231,7 +2230,6 @@ mod tests {
                         let pending = children[0].1.unresolved_external();
                         assert_eq!(pending.len(), 1);
                         assert_eq!(pending[0].context.circuit, "private-child-external");
-                        assert!(Arc::ptr_eq(&pending[0].handle.hook(), &hook));
                         assert!(journal.has_unresolved_tasks());
                         assert!(!journal.snapshot().is_complete());
                         assert!(!format!("{journal:?}").contains("private-child-external"));
@@ -2347,7 +2345,6 @@ mod tests {
             assert_eq!(pending.len(), 1);
             assert_eq!(pending[0].context.circuit, "private-child-external");
             assert_ne!(pending[0].context.trace_id, journal.snapshot().trace_id);
-            assert!(Arc::ptr_eq(&pending[0].handle.hook(), &hook));
             assert_eq!(
                 children[0].1.snapshot().steps[0].outcome,
                 crate::SagaRollbackOutcome::InProgress
@@ -4405,7 +4402,6 @@ mod tests {
             assert_eq!(retained[0].context.trace_id, "external-grace-trace");
             assert_eq!(retained[0].context.circuit, "private-external-circuit");
             assert_eq!(retained[0].context.fault_kind, "Fault");
-            assert!(Arc::ptr_eq(&retained[0].handle.hook(), &hook));
             assert!(retained[0].idempotency.is_some());
             assert_eq!(
                 retained[0].invoked.load(Ordering::SeqCst),
@@ -4558,7 +4554,6 @@ mod tests {
             "shared-cleanup-deadline"
         );
         assert_eq!(retained_external[0].context.fault_kind, "Fault");
-        assert!(Arc::ptr_eq(&retained_external[0].handle.hook(), &hook));
         assert!(retained_external[0].idempotency.is_some());
         assert!(!retained_external[0].invoked.load(Ordering::SeqCst));
         assert_eq!(calls.load(Ordering::SeqCst), 0);

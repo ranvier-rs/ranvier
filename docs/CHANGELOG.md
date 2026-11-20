@@ -12,9 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Durable streaming under a configured store (ranvier-runtime, ranvier-http):** a stream initializer after a prefix that ends in `Next` now runs under a configured `PersistenceHandle` instead of being rejected. The whole stream is journaled as one effect of the stream node: an `Intent` (payload: prefix output) is acknowledged before the initializer runs; after the consumption terminal, a `Result` (`StreamCompleted`, `StreamTimedOut`, `StreamCancelled`, `StreamInitFailed`, `StreamInitCancelled`, `StreamAbandoned`; payload: terminal kind and item count, never the items), the `Terminal` and the optional completion are recorded. The prefix no longer writes its own `Terminal` in that case. Streams are never replayed: a stream dropped before EOF leaves its `Intent` open and a later invocation of the trace is blocked with `PendingIntent`.
 - **SSE (ranvier-http):** the end record is written before `[DONE]`; an unacknowledged end record produces a `stream_durability_unconfirmed` error frame instead of `[DONE]`. A client disconnect records the stream as abandoned.
+- **Compensation marker keys, version 2 (ranvier-runtime):** with an execution-trace store, a compensation marker is keyed by the `event_sequence` of its acknowledged `external-compensation` intent. Without a trace store, the key uses the fault step and kind. Every text field is framed by its byte length, so two compensations in the same trace, circuit and fault kind, or contexts that differ only in where `:` falls, no longer share a marker. Version 1 markers (`trace:circuit:fault_kind`) are neither read nor migrated: they are ignored.
+- **Redis compensation marker TTL (ranvier-runtime):** `RedisCompensationIdempotencyStore` applies the TTL in the same `SET … NX EX` command that creates the marker, so a marker can no longer be left without its configured expiry.
 
 ### Added
 - `StreamDurability`, `ObservedStream::durability()`, `ObservedStream::abandon()` and `StreamConsumptionReport::durability` (ranvier-runtime).
+- **Breaking:** `CompensationContext::intent_sequence: Option<u64>`, the journal identity of the compensation, for use as a provider idempotency key. Code that builds `CompensationContext` with a struct literal must set it (ranvier-runtime).
 
 ### Removed
 - **Breaking:** `PersistenceOperation::UnsupportedEffect`. Configured-store streaming no longer reports it.

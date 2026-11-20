@@ -633,11 +633,25 @@ async fn persist_effect_intent<In: serde::Serialize>(
     node_id: &str,
     step_idx: u64,
 ) -> bool {
+    persist_effect_intent_sequence(state, bus, node_id, step_idx)
+        .await
+        .is_ok()
+}
+
+/// Like [`persist_effect_intent`], but also returns the acknowledged intent's
+/// `event_sequence`: `Ok(None)` when no trace store is configured, `Err(())`
+/// when the effect must not start.
+async fn persist_effect_intent_sequence<In: serde::Serialize>(
+    state: &In,
+    bus: &Bus,
+    node_id: &str,
+    step_idx: u64,
+) -> Result<Option<u64>, ()> {
     let Some(handle) = bus.read::<PersistenceHandle>() else {
-        return true;
+        return Ok(None);
     };
     let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>() else {
-        return false;
+        return Err(());
     };
     let payload = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         serde_json::to_value(state)
@@ -645,7 +659,7 @@ async fn persist_effect_intent<In: serde::Serialize>(
         Ok(Ok(payload)) => payload,
         Ok(Err(_)) | Err(_) => {
             active.0.block(crate::PersistenceOperation::Intent);
-            return false;
+            return Err(());
         }
     };
     let (circuit, version) = bus
@@ -653,7 +667,8 @@ async fn persist_effect_intent<In: serde::Serialize>(
         .map(|schematic| (schematic.name.clone(), schematic.schema_version.clone()))
         .unwrap_or_default();
     let trace_id = persistence_trace_id(bus);
-    let confirmation = persist_execution_event(
+    let event_type = crate::persistence::persistence_event_type_for("Intent", Some(node_id));
+    let (confirmation, event_sequence) = persist_execution_event_with_type(
         handle,
         &trace_id,
         &circuit,
@@ -662,13 +677,14 @@ async fn persist_effect_intent<In: serde::Serialize>(
         Some(node_id.to_string()),
         "Intent",
         Some(payload),
+        event_type,
     )
     .await;
     if confirmation == crate::execution_report::StoreConfirmation::Confirmed {
-        true
+        Ok(Some(event_sequence))
     } else {
         active.0.block(crate::PersistenceOperation::Intent);
-        false
+        Err(())
     }
 }
 
@@ -1495,6 +1511,7 @@ pub async fn persist_execution_event(
         event_type,
     )
     .await
+    .0
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1508,13 +1525,14 @@ async fn persist_execution_event_with_type(
     outcome_kind: &str,
     payload: Option<serde_json::Value>,
     event_type: crate::PersistenceEventType,
-) -> crate::execution_report::StoreConfirmation {
+) -> (crate::execution_report::StoreConfirmation, u64) {
     let store = handle.store();
+    let event_sequence = handle.allocate_event_sequence();
     let envelope = PersistenceEnvelope {
         trace_id: trace_id.to_string(),
         circuit: circuit.to_string(),
         schematic_version: schematic_version.to_string(),
-        event_sequence: handle.allocate_event_sequence(),
+        event_sequence,
         event_type,
         step,
         node_id,
@@ -1533,9 +1551,15 @@ async fn persist_execution_event_with_type(
             store_operation = "append",
             "Failed to append persistence envelope"
         );
-        crate::execution_report::StoreConfirmation::Unconfirmed
+        (
+            crate::execution_report::StoreConfirmation::Unconfirmed,
+            event_sequence,
+        )
     } else {
-        crate::execution_report::StoreConfirmation::Confirmed
+        (
+            crate::execution_report::StoreConfirmation::Confirmed,
+            event_sequence,
+        )
     }
 }
 
@@ -1579,7 +1603,6 @@ async fn run_compensation(
     use futures_util::FutureExt as _;
     let recovery = ExternalCompensationRecovery {
         context: context.clone(),
-        handle: handle.clone(),
         idempotency: idempotency.clone(),
         invoked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
@@ -2533,6 +2556,7 @@ mod tests {
                     fault_kind: "Fault".to_string(),
                     fault_step: 2,
                     timestamp_ms: 0,
+                    intent_sequence: None,
                 },
                 CompensationRetryPolicy::default(),
                 None,
@@ -3157,6 +3181,7 @@ mod tests {
             fault_kind: "Fault".into(),
             fault_step: 1,
             timestamp_ms: 0,
+            intent_sequence: None,
         };
         let key = crate::persistence::compensation_idempotency_key(&context);
         idempotency.mark_compensated(&key).await.unwrap();

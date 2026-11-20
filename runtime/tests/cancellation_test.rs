@@ -97,6 +97,20 @@ impl CompensationIdempotencyStore for CompensationMarkerWriteFailure {
     }
 }
 
+/// Documented version 2 compensation marker key.
+fn v2_marker_key(context: &CompensationContext) -> String {
+    let framed = |value: &str| format!("{}:{value}", value.len());
+    let identity = match context.intent_sequence {
+        Some(sequence) => format!("j:{sequence}"),
+        None => format!("u:{}:{}", context.fault_step, framed(&context.fault_kind)),
+    };
+    format!(
+        "v2:{identity}:{}:{}",
+        framed(&context.trace_id),
+        framed(&context.circuit)
+    )
+}
+
 #[tokio::test]
 async fn pre_cancelled_cleanup_reports_applied_compensation_without_ack() {
     for with_trace_store in [false, true] {
@@ -140,11 +154,7 @@ async fn pre_cancelled_cleanup_reports_applied_compensation_without_ack() {
         let recorded = calls.lock().await;
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].fault_kind, "Cancelled");
-        // Current key contract; separate identity migration remains open.
-        let key = format!(
-            "{}:{}:{}",
-            recorded[0].trace_id, recorded[0].circuit, recorded[0].fault_kind
-        );
+        let key = v2_marker_key(&recorded[0]);
         assert!(backing.was_compensated(&key).await.unwrap());
         let restored = bus.read::<CompensationIdempotencyHandle>().unwrap().store();
         assert!(Arc::ptr_eq(&restored, &original));
@@ -244,10 +254,7 @@ async fn pre_cancelled_compensation_marker_write_failure_requires_reconciliation
         let recorded = calls.lock().await;
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].fault_kind, "Cancelled");
-        let key = format!(
-            "{}:{}:{}",
-            recorded[0].trace_id, recorded[0].circuit, recorded[0].fault_kind
-        );
+        let key = v2_marker_key(&recorded[0]);
         assert_eq!(
             backing.was_compensated(&key).await.unwrap(),
             apply_before_error

@@ -58,14 +58,6 @@ pub(crate) struct ExternalCompensationRecovery {
     )]
     pub(crate) context: crate::persistence::CompensationContext,
     #[cfg_attr(
-        not(all(test, feature = "streaming")),
-        expect(
-            dead_code,
-            reason = "retained for M427 operator recovery; reader gated by COMPENSATION-IDENTITY-01"
-        )
-    )]
-    pub(crate) handle: crate::persistence::CompensationHandle,
-    #[cfg_attr(
         not(feature = "streaming"),
         expect(
             dead_code,
@@ -1436,51 +1428,25 @@ mod tests {
         );
     }
     use super::*;
-    struct ReleaseProbe {
-        report: std::sync::Weak<std::sync::Mutex<SagaRollbackReport>>,
-        retained: std::sync::Weak<std::sync::Mutex<Vec<(usize, ExternalCompensationRecovery)>>>,
-        released: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    }
-    impl Drop for ReleaseProbe {
-        fn drop(&mut self) {
-            assert!(self.report.upgrade().unwrap().try_lock().is_ok());
-            assert!(self.retained.upgrade().unwrap().try_lock().is_ok());
-            self.released
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-    #[async_trait::async_trait]
-    impl crate::persistence::CompensationHook for ReleaseProbe {
-        async fn compensate(
-            &self,
-            _: crate::persistence::CompensationContext,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-    }
     #[test]
-    fn completed_external_release_drops_user_hook_outside_journal_locks() {
+    fn completed_external_settlement_releases_retained_recovery() {
         let journal = SagaRollbackJournal::new("release-probe");
-        let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let context = crate::persistence::CompensationContext {
+            trace_id: "release-probe".into(),
+            circuit: "private-circuit".into(),
+            fault_kind: "Fault".into(),
+            fault_step: 1,
+            timestamp_ms: 0,
+            intent_sequence: Some(3),
+        };
         let recovery = ExternalCompensationRecovery {
-            context: crate::persistence::CompensationContext {
-                trace_id: "release-probe".into(),
-                circuit: "private-circuit".into(),
-                fault_kind: "Fault".into(),
-                fault_step: 1,
-                timestamp_ms: 0,
-            },
-            handle: crate::persistence::CompensationHandle::from_hook(ReleaseProbe {
-                report: std::sync::Arc::downgrade(&journal.0),
-                retained: std::sync::Arc::downgrade(&journal.2),
-                released: released.clone(),
-            }),
+            context,
             idempotency: None,
             invoked: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let index = journal.push_external(recovery);
+        assert_eq!(journal.unresolved_external().len(), 1);
         journal.settle_external(index, SagaRollbackOutcome::Completed);
-        assert!(released.load(std::sync::atomic::Ordering::SeqCst));
         assert!(journal.unresolved_external().is_empty());
     }
     #[test]
