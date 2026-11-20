@@ -341,8 +341,8 @@ async fn initializer_failure_and_cancel_cleanup_use_nonclone_resources_lifo_and_
 }
 
 #[tokio::test]
-async fn configured_store_rejects_unjournaled_stream_initializer() {
-    use ranvier_runtime::{StreamInitializationReport, persistence::*};
+async fn configured_store_journals_failed_initializer_before_saga_cleanup() {
+    use ranvier_runtime::{EffectBoundary, StreamInitializationReport, persistence::*};
     let effects = Arc::new(AtomicUsize::new(0));
     let undo = Arc::new(AtomicUsize::new(0));
     let init = Arc::new(AtomicUsize::new(0));
@@ -357,29 +357,37 @@ async fn configured_store_rejects_unjournaled_stream_initializer() {
         .execute((), &(), &mut bus)
         .await;
     match report {
-        StreamInitializationReport::Rejected {
+        StreamInitializationReport::Failed {
             prefix:
-                ExecutionReport::Unconfirmed {
-                    result: ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Next(())),
-                    operation: ranvier_runtime::PersistenceOperation::UnsupportedEffect,
-                    effect: ranvier_runtime::EffectBoundary::MayHaveRun,
+                ExecutionReport::Recorded {
+                    completion: ranvier_runtime::CompletionConfirmation::Confirmed,
                     ..
                 },
-        } => {}
-        _ => panic!("configured storage must reject the unjournaled initializer"),
+            initialization: EffectBoundary::MayHaveRun,
+            initialization_cleanup: Some(cleanup),
+            ..
+        } => assert!(cleanup.is_complete()),
+        _ => panic!("configured storage must journal the failed initializer"),
     }
     assert_eq!(effects.load(Ordering::SeqCst), 1);
-    assert_eq!(undo.load(Ordering::SeqCst), 0);
-    assert_eq!(init.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        backing
-            .load("stored-initializer-cleanup")
-            .await
-            .unwrap()
-            .unwrap()
-            .completion,
-        None
-    );
+    assert_eq!(undo.load(Ordering::SeqCst), 1);
+    assert_eq!(init.load(Ordering::SeqCst), 1);
+    let trace = backing
+        .load("stored-initializer-cleanup")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(trace.completion, Some(CompletionState::Fault));
+    // The stream Result precedes compensation, which precedes the Terminal.
+    let kinds = trace
+        .events
+        .iter()
+        .map(|event| event.outcome_kind.as_str())
+        .collect::<Vec<_>>();
+    let result = kinds.iter().position(|k| *k == "StreamInitFailed").unwrap();
+    let compensation = kinds.iter().position(|k| *k == "SagaCompensation").unwrap();
+    assert!(result < compensation);
+    assert_eq!(kinds.last(), Some(&"Fault"));
 }
 
 #[derive(Clone)]

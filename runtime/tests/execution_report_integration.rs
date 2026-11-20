@@ -1065,7 +1065,7 @@ impl ranvier_core::streaming::StreamingTransition<u32> for CountStream {
 
 #[cfg(feature = "streaming")]
 #[tokio::test]
-async fn collected_stream_prefix_terminal_failure_blocks_initialization_and_retains_known_result() {
+async fn collected_stream_intent_failure_blocks_initialization_and_retains_known_result() {
     let backing = InMemoryPersistenceStore::new();
     let writes = Arc::new(AtomicUsize::new(0));
     let effects = Arc::new(AtomicUsize::new(0));
@@ -1083,14 +1083,15 @@ async fn collected_stream_prefix_terminal_failure_blocks_initialization_and_reta
     let report = axon.execute(7, &(), &mut bus).await;
     let prefix = match &report {
         ranvier_runtime::StreamInitializationReport::Rejected { prefix } => prefix,
-        _ => panic!("terminal append failure must reject stream initialization"),
+        _ => panic!("stream Intent append failure must reject stream initialization"),
     };
+    // The second append is the stream Intent (the prefix defers its Terminal).
     assert!(
         matches!(
             prefix,
             ExecutionReport::Unconfirmed {
                 result: ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Next(7)),
-                operation: PersistenceOperation::Terminal,
+                operation: PersistenceOperation::Intent,
                 effect: EffectBoundary::NotInvoked,
                 ..
             }
@@ -1107,7 +1108,7 @@ async fn collected_stream_prefix_terminal_failure_blocks_initialization_and_reta
 
 #[cfg(feature = "streaming")]
 #[tokio::test]
-async fn configured_store_blocks_stream_initializer_without_a_journal_contract() {
+async fn configured_store_journals_stream_initializer_and_consumption() {
     let backing = InMemoryPersistenceStore::new();
     let prefix_effects = Arc::new(AtomicUsize::new(0));
     let initializer_effects = Arc::new(AtomicUsize::new(0));
@@ -1121,29 +1122,44 @@ async fn configured_store_blocks_stream_initializer_without_a_journal_contract()
 
     let report = axon.execute(7, &(), &mut bus).await;
 
-    assert!(matches!(
-        report,
-        ranvier_runtime::StreamInitializationReport::Rejected {
-            prefix: ExecutionReport::Unconfirmed {
-                result: ranvier_runtime::ExecutionTerminal::Outcome(Outcome::Next(8)),
-                operation: PersistenceOperation::UnsupportedEffect,
-                effect: EffectBoundary::MayHaveRun,
-                ..
-            }
+    match report {
+        ranvier_runtime::StreamInitializationReport::Ready {
+            prefix:
+                ExecutionReport::Recorded {
+                    completion: ranvier_runtime::CompletionConfirmation::NotRequested,
+                    ..
+                },
+            value,
+        } => {
+            assert_eq!(value.items, vec![8, 9]);
+            assert_eq!(
+                value.durability,
+                ranvier_runtime::StreamDurability::Recorded {
+                    completion: ranvier_runtime::CompletionConfirmation::Confirmed
+                }
+            );
         }
-    ));
+        _ => panic!("configured store did not journal the stream"),
+    }
     assert_eq!(prefix_effects.load(Ordering::SeqCst), 1);
-    assert_eq!(initializer_effects.load(Ordering::SeqCst), 0);
+    assert_eq!(initializer_effects.load(Ordering::SeqCst), 1);
     assert!(bus.read::<PersistenceAutoComplete>().is_none());
     let trace = backing.load("stream-store-gate").await.unwrap().unwrap();
-    assert_eq!(trace.completion, None);
+    assert_eq!(trace.completion, Some(CompletionState::Success));
     assert_eq!(
         trace
             .events
             .iter()
             .map(|event| event.outcome_kind.as_str())
             .collect::<Vec<_>>(),
-        vec!["Enter", "Intent", "Next", "Next"]
+        vec![
+            "Enter",
+            "Intent",
+            "Next",
+            "Intent",
+            "StreamCompleted",
+            "Next"
+        ]
     );
 }
 

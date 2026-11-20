@@ -76,6 +76,121 @@ async fn disconnected_peer_releases_pending_stream_without_shutdown_or_timeout()
         assert_disconnect(first).await;
     }
 }
+/// D-STREAM-DESIGN S8: a disconnect after partial delivery is journaled as an
+/// abandoned stream instead of leaving an unexplained open Intent.
+#[tokio::test]
+async fn disconnected_peer_records_abandoned_stream_under_configured_store() {
+    use ranvier_runtime::persistence::{
+        CompletionState, InMemoryPersistenceStore, PersistenceEventType, PersistenceHandle,
+        PersistenceStore, PersistenceTraceId,
+    };
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let pending = Arc::new(tokio::sync::Notify::new());
+    let dropped = Arc::new(tokio::sync::Notify::new());
+    let drops = Arc::new(AtomicUsize::new(0));
+    let store = InMemoryPersistenceStore::new();
+    let injected = store.clone();
+    let stream = Axon::<(), (), String>::start("disconnect-stored").then_stream(Init(
+        pending.clone(),
+        dropped.clone(),
+        drops.clone(),
+        true,
+    ));
+    let ingress = HttpIngress::<()>::new()
+        .bind(address.to_string())
+        .bus_injector(move |_, bus| {
+            bus.insert(PersistenceHandle::from_store(injected.clone()));
+            bus.insert(PersistenceTraceId::new("sse-abandoned"));
+        })
+        .post_sse("/stream", stream);
+    let shutdown = CancellationToken::new();
+    let server_token = shutdown.clone();
+    let mut server = AbortOnDrop(tokio::spawn(async move {
+        ingress.run_with_cancellation((), server_token).await
+    }));
+    let socket = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            match tokio::net::TcpStream::connect(address).await {
+                Ok(socket) => break socket,
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(socket))
+        .await
+        .unwrap();
+    let driver = AbortOnDrop(tokio::spawn(connection));
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        sender.send_request(
+            http::Request::builder()
+                .method("POST")
+                .uri("/stream")
+                .header("host", "fixture")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(response.status(), 200);
+    let mut body = response.into_body();
+    let frame = tokio::time::timeout(Duration::from_secs(3), body.frame())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        std::str::from_utf8(frame.data_ref().unwrap())
+            .unwrap()
+            .contains("first")
+    );
+    tokio::time::timeout(Duration::from_secs(3), pending.notified())
+        .await
+        .unwrap();
+    drop(body);
+    drop(sender);
+    drop(driver);
+    // The end record follows source release; wait for the completion write.
+    let trace = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(trace) = store.load("sse-abandoned").await.unwrap()
+                && trace.completion.is_some()
+            {
+                break trace;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("abandoned stream end was not recorded");
+    shutdown.cancel(CancellationReason::OperatorShutdown);
+    let _ = tokio::time::timeout(Duration::from_secs(3), &mut server.0).await;
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(trace.completion, Some(CompletionState::Cancelled));
+    let result = trace
+        .events
+        .iter()
+        .find(|event| {
+            event.event_type == PersistenceEventType::Result
+                && event.outcome_kind == "StreamAbandoned"
+        })
+        .expect("StreamAbandoned result");
+    assert_eq!(
+        result.payload,
+        Some(serde_json::json!({"terminal": "abandoned", "items_observed": 1}))
+    );
+    assert_eq!(
+        trace.events.last().map(|event| event.event_type),
+        Some(PersistenceEventType::Terminal)
+    );
+}
+
 async fn assert_disconnect(first: bool) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

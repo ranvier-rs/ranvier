@@ -457,7 +457,7 @@ where
     }
 }
 
-pub type StreamExecutorType<In, Out, Item, E, Res> = Arc<
+pub(crate) type StreamExecutorType<In, Out, Item, E, Res> = Arc<
     dyn for<'a> Fn(
             In,
             &'a Res,
@@ -465,7 +465,7 @@ pub type StreamExecutorType<In, Out, Item, E, Res> = Arc<
             Option<CancellationToken>,
         ) -> BoxFuture<
             'a,
-            StreamInitializationReport<Out, Pin<Box<dyn Stream<Item = Item> + Send>>, E>,
+            StreamInitializationReport<Out, crate::streaming_journal::InitializedStream<Item>, E>,
         > + Send
         + Sync,
 >;
@@ -520,11 +520,11 @@ where
     }
     fn wrap_stream(
         &self,
-        stream: Pin<Box<dyn Stream<Item = Item> + Send>>,
+        stream: crate::streaming_journal::InitializedStream<Item>,
         token: Option<CancellationToken>,
     ) -> ObservedStream<Item> {
         ObservedStream::new(
-            stream,
+            stream.source,
             self.timeout_config.clone().unwrap_or(StreamTimeoutConfig {
                 init: None,
                 idle: None,
@@ -532,6 +532,7 @@ where
             }),
             token,
         )
+        .with_journal(stream.journal)
     }
     pub fn with_buffer_size(mut self, size: usize) -> Self {
         self.buffer_size = size;
@@ -582,8 +583,10 @@ where
                     previous(input, resources, bus, token)
                         .await
                         .map_value(|stream| {
-                            Box::pin(stream.map(move |item| f(item)))
-                                as Pin<Box<dyn Stream<Item = Item> + Send>>
+                            stream.map_source(|source| {
+                                Box::pin(source.map(move |item| f(item)))
+                                    as Pin<Box<dyn Stream<Item = Item> + Send>>
+                            })
                         })
                 })
             });

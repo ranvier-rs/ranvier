@@ -25,8 +25,6 @@ pub enum PersistenceOperation {
     RecoveryPayload,
     /// The stored format or event sequence is not valid for this release.
     UnsupportedFormat,
-    /// This effect has no event-journal contract in the configured persistence mode.
-    UnsupportedEffect,
     /// A confirmed intent has no confirmed matching result; never replay it automatically.
     PendingIntent,
     Intent,

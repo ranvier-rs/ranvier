@@ -409,6 +409,14 @@ fn outcome_target<Out, E>(outcome: &Outcome<Out, E>) -> Option<String> {
     }
 }
 
+/// Invocation-local request from stream initialization: when this exact prefix
+/// Axon ends in `Next`, it must not write Terminal or completion, because the
+/// stream node's Intent/Result follow in the same trace. The address binds the
+/// request to one graph so nested child executions never consume it.
+#[cfg(feature = "streaming")]
+#[derive(Clone, Copy)]
+pub(crate) struct DeferStreamTerminal(pub(crate) usize);
+
 fn completion_from_outcome<Out, E>(outcome: &Outcome<Out, E>) -> CompletionState {
     match outcome {
         Outcome::Fault(_) => CompletionState::Fault,
@@ -1531,7 +1539,7 @@ async fn persist_execution_event_with_type(
     }
 }
 
-async fn persist_completion(
+pub(crate) async fn persist_completion(
     handle: &PersistenceHandle,
     trace_id: &str,
     completion: CompletionState,

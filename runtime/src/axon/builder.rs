@@ -1406,6 +1406,7 @@ where
             .unwrap_or_default();
 
         schematic.nodes.push(stream_node);
+        let journal_node_id = stream_node_id.clone();
         schematic.edges.push(Edge {
             from: last_node_id,
             to: stream_node_id,
@@ -1427,9 +1428,17 @@ where
             Arc::new(move |input, resources, bus, token| {
                 let prefix = prefix.clone();
                 let streaming = streaming.clone();
+                let node_id = journal_node_id.clone();
                 Box::pin(async move {
                     prefix
-                        .initialize_stream(input, resources, bus, &streaming, token)
+                        .initialize_stream_node(
+                            input,
+                            resources,
+                            bus,
+                            &streaming,
+                            token,
+                            Some(node_id),
+                        )
                         .await
                 })
             });

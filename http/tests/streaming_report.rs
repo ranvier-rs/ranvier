@@ -13,11 +13,18 @@ const PRIVATE: &str = "private-prefix-value-should-not-enter-SSE-rejection";
 struct Store {
     backing: InMemoryPersistenceStore,
     fail_load: bool,
+    /// Commit the Terminal event but lose its acknowledgement.
+    lose_terminal: bool,
 }
 #[async_trait::async_trait]
 impl PersistenceStore for Store {
     async fn append(&self, event: PersistenceEnvelope) -> anyhow::Result<()> {
-        self.backing.append(event).await
+        let lose = self.lose_terminal && event.event_type == PersistenceEventType::Terminal;
+        self.backing.append(event).await?;
+        if lose {
+            anyhow::bail!("synthetic lost terminal acknowledgement");
+        }
+        Ok(())
     }
     async fn load(&self, trace: &str) -> anyhow::Result<Option<PersistedTrace>> {
         if self.fail_load {
@@ -119,7 +126,7 @@ impl StreamingTransition<String> for Init {
     }
 }
 #[tokio::test]
-async fn configured_persistence_blocks_unjournaled_stream_initialization() {
+async fn configured_persistence_journals_sse_stream_and_blocks_unknown_history() {
     for fail_load in [false, true] {
         let effects = Arc::new(AtomicUsize::new(0));
         let compensations = Arc::new(AtomicUsize::new(0));
@@ -128,6 +135,7 @@ async fn configured_persistence_blocks_unjournaled_stream_initialization() {
         let store: Arc<dyn PersistenceStore> = Arc::new(Store {
             backing: backing.clone(),
             fail_load,
+            lose_terminal: false,
         });
         let prefix =
             Axon::<(), (), String>::start("http-prefix-report").then(Effect(effects.clone()));
@@ -147,39 +155,88 @@ async fn configured_persistence_blocks_unjournaled_stream_initialization() {
         .await
         .unwrap()
         .unwrap();
-        assert_eq!(
-            response.status().as_u16(),
-            if fail_load { 503 } else { 409 },
-            "fail_load={fail_load}"
-        );
         let body = response.text().unwrap();
         assert!(!body.contains(PRIVATE));
         assert!(!body.contains("private-history-error"));
-        assert!(!body.contains("private-completion-error"));
-        assert!(!body.contains("private-compensation-error"));
-        assert!(!body.contains("private-init-error"));
-        assert!(!body.contains("private-init-panic"));
-        assert_eq!(response.header("cache-control").unwrap(), "no-store");
-        assert!(!body.contains("data:"));
-        let report: serde_json::Value = serde_json::from_str(body).unwrap();
-        assert!(report.get("result").is_none_or(serde_json::Value::is_null));
-        assert_eq!(initialized.load(Ordering::SeqCst), 0);
-        assert_eq!(effects.load(Ordering::SeqCst), usize::from(!fail_load));
         assert_eq!(compensations.load(Ordering::SeqCst), 0);
-        assert_eq!(report["reconciliation_required"], !fail_load);
         if fail_load {
+            assert_eq!(response.status().as_u16(), 503);
+            assert_eq!(response.header("cache-control").unwrap(), "no-store");
+            assert!(!body.contains("data:"));
+            let report: serde_json::Value = serde_json::from_str(body).unwrap();
+            assert!(report.get("result").is_none_or(serde_json::Value::is_null));
+            assert_eq!(report["reconciliation_required"], false);
             assert_eq!(report["durability"], "blocked_before_effect");
             assert_eq!(report["operation"], "load");
             assert_eq!(report["effect"], "not_invoked");
+            assert_eq!(initialized.load(Ordering::SeqCst), 0);
+            assert_eq!(effects.load(Ordering::SeqCst), 0);
         } else {
-            assert_eq!(report["durability"], "unconfirmed");
-            assert_eq!(report["operation"], "unsupported_effect");
-            assert_eq!(report["effect"], "may_have_run");
+            // Intent before the initializer, end record before DONE.
+            assert_eq!(response.status().as_u16(), 200);
+            assert!(body.contains("public-item"));
+            assert!(body.contains("data: [DONE]"), "body: {body}");
+            assert!(!body.contains("event: error"), "body: {body}");
+            assert_eq!(initialized.load(Ordering::SeqCst), 1);
+            assert_eq!(effects.load(Ordering::SeqCst), 1);
             let trace = backing.load("sse-report").await.unwrap().unwrap();
-            assert_eq!(trace.completion, None);
-            assert_eq!(trace.events.last().unwrap().outcome_kind, "Next");
+            assert_eq!(trace.completion, Some(CompletionState::Success));
+            assert_eq!(
+                trace
+                    .events
+                    .iter()
+                    .map(|event| event.outcome_kind.as_str())
+                    .collect::<Vec<_>>(),
+                vec![
+                    "Enter",
+                    "Intent",
+                    "Next",
+                    "Intent",
+                    "StreamCompleted",
+                    "Next"
+                ]
+            );
         }
     }
+}
+
+#[tokio::test]
+async fn unacknowledged_stream_end_is_never_announced_as_done() {
+    let initialized = Arc::new(AtomicUsize::new(0));
+    let backing = InMemoryPersistenceStore::new();
+    let store: Arc<dyn PersistenceStore> = Arc::new(Store {
+        backing: backing.clone(),
+        fail_load: false,
+        lose_terminal: true,
+    });
+    let prefix =
+        Axon::<(), (), String>::start("http-lost-end").then(Effect(Arc::new(AtomicUsize::new(0))));
+    let app = TestApp::new(
+        Ranvier::http::<()>()
+            .bus_injector(move |_, bus| {
+                bus.insert(PersistenceHandle::from_arc(store.clone()));
+                bus.insert(PersistenceTraceId::new("sse-lost-end"));
+            })
+            .post_sse("/stream", prefix.then_stream(Init(initialized.clone(), 0))),
+        (),
+    );
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        app.send(TestRequest::post("/stream")),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(response.status(), 200);
+    let body = response.text().unwrap();
+    assert!(body.contains("public-item"));
+    assert!(!body.contains("[DONE]"));
+    assert_eq!(body.matches("event: error").count(), 1);
+    assert!(body.contains("stream_durability_unconfirmed"));
+    assert_eq!(initialized.load(Ordering::SeqCst), 1);
+    let trace = backing.load("sse-lost-end").await.unwrap().unwrap();
+    // The Terminal committed but its acknowledgement was lost: no completion.
+    assert_eq!(trace.completion, None);
 }
 
 #[tokio::test]

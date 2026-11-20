@@ -170,7 +170,7 @@ impl StreamingTransition<usize> for FailInit {
     }
 }
 #[tokio::test]
-async fn configured_store_blocks_initializer_without_a_durable_journal_contract() {
+async fn configured_store_journals_failed_initializer_as_one_stream_effect() {
     let initialized = Arc::new(AtomicUsize::new(0));
     let backing = InMemoryPersistenceStore::new();
     let mut bus = Bus::new();
@@ -182,21 +182,22 @@ async fn configured_store_blocks_initializer_without_a_durable_journal_contract(
         .await;
     assert!(matches!(
         &report,
-        StreamInitializationReport::Rejected {
-            prefix: ExecutionReport::BlockedBeforeEffect {
-                operation: PersistenceOperation::UnsupportedEffect,
-                effect: EffectBoundary::NotInvoked,
+        StreamInitializationReport::Failed {
+            prefix: ExecutionReport::Recorded {
+                completion: ranvier_runtime::CompletionConfirmation::Confirmed,
                 ..
-            }
+            },
+            initialization: EffectBoundary::MayHaveRun,
+            ..
         }
     ));
-    assert_eq!(initialized.load(Ordering::SeqCst), 0);
+    assert_eq!(initialized.load(Ordering::SeqCst), 1);
     let persisted = backing
         .load("prefix-only")
         .await
         .unwrap()
-        .expect("the non-effect prefix terminal is persisted");
-    assert_eq!(persisted.completion, None);
+        .expect("the stream effect is persisted");
+    assert_eq!(persisted.completion, Some(CompletionState::Fault));
     assert_eq!(
         persisted
             .events
@@ -205,8 +206,17 @@ async fn configured_store_blocks_initializer_without_a_durable_journal_contract(
             .collect::<Vec<_>>(),
         vec![
             (PersistenceEventType::Enter, "Enter"),
-            (PersistenceEventType::Terminal, "Next")
+            (PersistenceEventType::Intent, "Intent"),
+            (PersistenceEventType::Result, "StreamInitFailed"),
+            (PersistenceEventType::Terminal, "Fault")
         ]
+    );
+    // The Intent carries the prefix output; no private initializer detail is stored.
+    assert_eq!(persisted.events[1].payload, Some(serde_json::json!(42)));
+    assert!(
+        !serde_json::to_string(&persisted)
+            .unwrap()
+            .contains("owned-private-init-detail")
     );
 }
 

@@ -3462,6 +3462,9 @@ where
                                 biased;
                                 _ = tx.closed() => {
                                     tracing::info!("SSE client disconnected");
+                                    // Record the partial delivery; a failed write
+                                    // leaves the stream Intent open for reconciliation.
+                                    let _ = pinned.abandon().await;
                                     return;
                                 }
                                 item = futures_util::StreamExt::next(&mut pinned) => {
@@ -3472,6 +3475,7 @@ where
                                 Ok(json) => format!("data: {}\n\n", json),
                                 Err(_) => {
                                     tracing::error!(failure_source = "stream_item_encode", "SSE item encoding failed");
+                                    let _ = pinned.abandon().await;
                                     let err_text = "event: error\ndata: {\"message\":\"serialization error\",\"code\":\"serialize_error\"}\n\n".to_string();
                                     let _ = tx.send(Bytes::from(err_text)).await;
                                     return;
@@ -3479,8 +3483,16 @@ where
                             };
                             if tx.send(Bytes::from(text)).await.is_err() {
                                 tracing::info!("SSE client disconnected");
+                                let _ = pinned.abandon().await;
                                 return;
                             }
+                        }
+                        // An unacknowledged end record is never announced as DONE;
+                        // items already sent cannot be withdrawn.
+                        if matches!(pinned.durability(), Some(ranvier_runtime::StreamDurability::Unconfirmed { .. })) {
+                            tracing::error!(failure_source = "stream_durability", "Stream end record was not acknowledged");
+                            let _ = tx.send(Bytes::from_static(b"event: error\ndata: {\"code\":\"stream_durability_unconfirmed\",\"reconciliation_required\":true}\n\n")).await;
+                            return;
                         }
                         // Only an observed normal source end announces DONE. Prefix
                         // acknowledgment never certifies this consumption terminal.

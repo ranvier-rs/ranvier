@@ -289,12 +289,13 @@ mod tests {
             let token = ranvier_core::CancellationToken::new();
             let mut bus = Bus::new();
             let init = Init(initialized.clone());
-            let execution = prefix.initialize_stream(
+            let execution = prefix.initialize_stream_node(
                 42,
                 &(),
                 &mut bus,
                 &init,
                 cancelled.then(|| token.clone()),
+                None,
             );
             let report = if cancelled {
                 let cancel = async {
@@ -397,7 +398,7 @@ mod tests {
         parent.bus().insert(IamToken("fixture".into()));
         let pointer = parent.bus().read::<IamIdentity>().unwrap() as *const _;
         let report = prefix
-            .initialize_stream(42, &(), parent.bus(), &VerifyInit, None)
+            .initialize_stream_node(42, &(), parent.bus(), &VerifyInit, None, None)
             .await;
         let StreamInitializationReport::Ready {
             prefix:
@@ -410,7 +411,8 @@ mod tests {
         else {
             panic!("handoff was not ready")
         };
-        assert_eq!(value.collect::<Vec<_>>().await, vec![42]);
+        assert!(value.journal.is_none());
+        assert_eq!(value.source.collect::<Vec<_>>().await, vec![42]);
         assert_eq!(verified.load(Ordering::SeqCst), 1);
         assert_eq!(
             parent.bus().read::<IamIdentity>().unwrap() as *const _,
@@ -459,7 +461,7 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn configured_store_blocks_unjournaled_initializer_and_retains_prefix_result() {
+    async fn configured_store_journals_initializer_intent_and_retains_blocked_prefix() {
         use crate::PersistenceStore;
         for mode in [0, 1, 3] {
             for cancellable in [false, true] {
@@ -478,32 +480,40 @@ mod tests {
                     bus.insert(crate::PersistenceTraceId::new("ack-handoff"));
                     bus.insert(crate::PersistenceAutoComplete(auto_complete));
                     let report = prefix
-                        .initialize_stream(
+                        .initialize_stream_node(
                             42,
                             &(),
                             &mut bus,
                             &Init(initialized.clone()),
                             cancellable.then(ranvier_core::CancellationToken::new),
+                            None,
                         )
                         .await;
                     match (mode, report) {
                         (
                             0,
-                            StreamInitializationReport::Rejected {
+                            StreamInitializationReport::Ready {
                                 prefix:
-                                    ExecutionReport::Unconfirmed {
-                                        result: ExecutionTerminal::Outcome(Outcome::Next(42)),
-                                        operation: PersistenceOperation::UnsupportedEffect,
-                                        effect: EffectBoundary::MayHaveRun,
+                                    ExecutionReport::Recorded {
+                                        completion: CompletionConfirmation::NotRequested,
                                         ..
                                     },
-                                ..
+                                value,
                             },
                         ) => {
-                            assert_eq!(initialized.load(Ordering::SeqCst), 0);
+                            // Intent acknowledged before the initializer; the
+                            // prefix left Terminal and completion to the stream.
+                            assert_eq!(initialized.load(Ordering::SeqCst), 1);
+                            assert!(value.journal.is_some());
                             let trace = backing.load("ack-handoff").await.unwrap().unwrap();
                             assert_eq!(trace.completion, None);
-                            assert_eq!(trace.events.last().unwrap().outcome_kind, "Next");
+                            let last = trace.events.last().unwrap();
+                            assert_eq!(last.event_type, crate::PersistenceEventType::Intent);
+                            assert_eq!(last.step, 2);
+                            assert!(
+                                trace.events.iter().all(|event| event.event_type
+                                    != crate::PersistenceEventType::Terminal)
+                            );
                         }
                         (
                             1,
@@ -529,7 +539,7 @@ mod tests {
                         ) => {}
                         _ => panic!("unexpected admission state for mode {mode}"),
                     }
-                    assert_eq!(initialized.load(Ordering::SeqCst), 0);
+                    assert_eq!(initialized.load(Ordering::SeqCst), usize::from(mode == 0));
                     assert_eq!(effects.load(Ordering::SeqCst), usize::from(mode == 0));
                     assert!(Arc::ptr_eq(
                         &bus.read::<crate::PersistenceHandle>().unwrap().store(),
@@ -572,8 +582,14 @@ mod tests {
             let prefix = Axon::<usize, usize, String>::start("pending-init");
             let init = PendingInit(entered.clone());
             {
-                let future =
-                    prefix.initialize_stream(42, &(), parent.bus(), &init, Some(token.clone()));
+                let future = prefix.initialize_stream_node(
+                    42,
+                    &(),
+                    parent.bus(),
+                    &init,
+                    Some(token.clone()),
+                    None,
+                );
                 tokio::pin!(future);
                 tokio::select! {
                     _ = entered.notified() => {},

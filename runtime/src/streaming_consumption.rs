@@ -1,7 +1,12 @@
 //! Owned consumption observations, separate from prefix durability and cleanup.
 //! A completed source is not proof of durable business completion. Dropping a
 //! consumer does not await cleanup and produces no terminal observation.
+//!
+//! Under a configured store the owner also records the stream effect's end
+//! (Result, Terminal, completion) before yielding EOF; see [`StreamDurability`].
+//! Dropping it before EOF records nothing and leaves the stream Intent open.
 use crate::StreamTimeoutKind;
+use crate::streaming_journal::{StreamDurability, StreamEnd, StreamJournal};
 use futures_core::Stream;
 use futures_util::StreamExt;
 use ranvier_core::{CancellationContext, CancellationToken, streaming::StreamTimeoutConfig};
@@ -29,7 +34,11 @@ pub enum StreamConsumptionTerminal {
 pub struct StreamConsumptionReport<Item> {
     pub items: Vec<Item>,
     pub terminal: StreamConsumptionTerminal,
+    /// Durability of the stream effect's end, separate from `terminal`.
+    pub durability: StreamDurability,
 }
+
+type Recording = Pin<Box<dyn Future<Output = StreamDurability> + Send>>;
 
 /// An owned stream whose EOF has an explicit terminal observation.
 /// This low-level owner will be used by the report-aware Axon consumer cutover.
@@ -43,6 +52,11 @@ pub struct ObservedStream<Item> {
     timer: Option<Pin<Box<Sleep>>>,
     cancellation: Option<Pin<Box<dyn Future<Output = CancellationContext> + Send>>>,
     terminal: Option<StreamConsumptionTerminal>,
+    journal: Option<StreamJournal>,
+    recording: Option<Recording>,
+    durability: Option<StreamDurability>,
+    items_observed: u64,
+    abandoned: bool,
 }
 impl<Item> ObservedStream<Item> {
     pub fn new(
@@ -73,10 +87,78 @@ impl<Item> ObservedStream<Item> {
                     as Pin<Box<dyn Future<Output = CancellationContext> + Send>>
             }),
             terminal: None,
+            journal: None,
+            recording: None,
+            durability: None,
+            items_observed: 0,
+            abandoned: false,
         }
+    }
+    /// Attach the stream effect's journal; its Intent was acknowledged already.
+    pub(crate) fn with_journal(mut self, journal: Option<StreamJournal>) -> Self {
+        self.journal = journal;
+        self
     }
     pub fn terminal(&self) -> Option<&StreamConsumptionTerminal> {
         self.terminal.as_ref()
+    }
+    /// Durability of the stream effect's end. `None` until EOF (or
+    /// [`Self::abandon`]) has returned; the consumption terminal does not imply it.
+    pub fn durability(&self) -> Option<&StreamDurability> {
+        self.durability.as_ref()
+    }
+    /// Stop consuming before EOF and record the end as abandoned, for example
+    /// after a client disconnect. Already delivered items are not reverted.
+    /// Returns the existing durability when the end was already recorded. A
+    /// failed write leaves the stream Intent open for reconciliation.
+    pub async fn abandon(&mut self) -> StreamDurability {
+        if self.terminal.is_some() || self.abandoned {
+            futures_util::future::poll_fn(|cx| self.poll_record(cx)).await;
+            return self
+                .durability
+                .clone()
+                .expect("recording finishes with durability");
+        }
+        self.abandoned = true;
+        self.inner = None;
+        self.timer = None;
+        self.cancellation = None;
+        let items = self.items_observed;
+        self.recording = Some(match self.journal.take() {
+            None => Box::pin(async { StreamDurability::Unpersisted }),
+            Some(journal) => {
+                Box::pin(async move { journal.finish(StreamEnd::Abandoned, Some(items)).await })
+            }
+        });
+        futures_util::future::poll_fn(|cx| self.poll_record(cx)).await;
+        self.durability
+            .clone()
+            .expect("recording finishes with durability")
+    }
+    /// Record the observed terminal once, before EOF is yielded.
+    fn poll_record(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        if self.durability.is_some() {
+            return Poll::Ready(());
+        }
+        if self.recording.is_none() {
+            let journal = self.journal.take();
+            let end = self.terminal.as_ref().map(StreamEnd::from_terminal);
+            let items = self.items_observed;
+            self.recording = Some(match (journal, end) {
+                (Some(journal), Some(end)) => {
+                    Box::pin(async move { journal.finish(end, Some(items)).await })
+                }
+                _ => Box::pin(async { StreamDurability::Unpersisted }),
+            });
+        }
+        let recording = self
+            .recording
+            .as_mut()
+            .expect("recording was just installed");
+        let durability = std::task::ready!(recording.as_mut().poll(cx));
+        self.recording = None;
+        self.durability = Some(durability);
+        Poll::Ready(())
     }
     fn finish(&mut self, terminal: StreamConsumptionTerminal) -> Poll<Option<Item>> {
         self.terminal = Some(terminal);
@@ -93,10 +175,11 @@ impl<Item> ObservedStream<Item> {
         while let Some(item) = self.next().await {
             items.push(item);
         }
-        // All EOF branches set terminal; callers cannot replace the source.
+        // All EOF branches set terminal and durability; callers cannot replace the source.
         StreamConsumptionReport {
             items,
             terminal: self.terminal.take().expect("EOF records its terminal"),
+            durability: self.durability.take().expect("EOF records its durability"),
         }
     }
 }
@@ -181,23 +264,30 @@ impl<Item> Stream for ObservedStream<Item> {
     type Item = Item;
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Item>> {
         let this = self.get_mut();
-        if this.poll_stop(cx).is_ready() {
-            return Poll::Ready(None);
+        if this.abandoned {
+            return this.poll_record(cx).map(|()| None);
         }
-        match this
-            .inner
-            .as_mut()
-            .expect("unfinished owner has a source")
-            .as_mut()
-            .poll_next(cx)
-        {
-            Poll::Ready(Some(item)) => {
-                this.last_item_at = Some(Instant::now());
-                Poll::Ready(Some(item))
+        if this.poll_stop(cx).is_pending() {
+            match this
+                .inner
+                .as_mut()
+                .expect("unfinished owner has a source")
+                .as_mut()
+                .poll_next(cx)
+            {
+                Poll::Ready(Some(item)) => {
+                    this.last_item_at = Some(Instant::now());
+                    this.items_observed = this.items_observed.saturating_add(1);
+                    return Poll::Ready(Some(item));
+                }
+                Poll::Ready(None) => {
+                    let _ = this.finish(StreamConsumptionTerminal::Completed);
+                }
+                Poll::Pending => return Poll::Pending,
             }
-            Poll::Ready(None) => this.finish(StreamConsumptionTerminal::Completed),
-            Poll::Pending => Poll::Pending,
         }
+        // The terminal is observed; EOF waits for the journal's acknowledgments.
+        this.poll_record(cx).map(|()| None)
     }
 }
 

@@ -117,6 +117,10 @@ pub mod streaming_consumption;
 pub use streaming_consumption::{
     ObservedStream, StreamConsumptionReport, StreamConsumptionTerminal,
 };
+#[cfg(feature = "streaming")]
+mod streaming_journal;
+#[cfg(feature = "streaming")]
+pub use streaming_journal::StreamDurability;
 
 #[cfg(feature = "streaming")]
 mod managed_stream_task;

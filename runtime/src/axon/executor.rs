@@ -254,19 +254,21 @@ where
         }
     }
 
-    /// Execute a whole configured prefix and its initializer under one context owner.
-    /// The builder/consumer cutover wires this typed boundary instead of the raw executor.
+    /// Execute a whole configured prefix and its initializer under one context
+    /// owner. Under a configured store the stream effect is journaled with the
+    /// schematic's stream node id (fallback `stream:<step>`).
     #[cfg(feature = "streaming")]
-    pub(crate) async fn initialize_stream<Item, SErr, S>(
+    pub(crate) async fn initialize_stream_node<Item, SErr, S>(
         &self,
         input: In,
         resources: &Res,
         bus: &mut Bus,
         streaming: &S,
         cancellation: Option<CancellationToken>,
+        stream_node_id: Option<String>,
     ) -> crate::streaming_initialization::StreamInitializationReport<
         Out,
-        std::pin::Pin<Box<dyn futures_core::Stream<Item = Item> + Send>>,
+        crate::streaming_journal::InitializedStream<Item>,
         E,
     >
     where
@@ -280,42 +282,14 @@ where
             >,
     {
         let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
-        self.initialize_stream_in_scope(input, resources, &mut owner, streaming, cancellation)
-            .await
-    }
-
-    /// Initialize without consuming/restoring the caller's invocation owner.
-    /// The supervisor must retain this owner through consumption and cleanup.
-    #[cfg(feature = "streaming")]
-    pub(crate) async fn initialize_stream_in_scope<Item, SErr, S>(
-        &self,
-        input: In,
-        resources: &Res,
-        owner: &mut crate::execution_observation::InvocationOwner<'_>,
-        streaming: &S,
-        cancellation: Option<CancellationToken>,
-    ) -> crate::streaming_initialization::StreamInitializationReport<
-        Out,
-        std::pin::Pin<Box<dyn futures_core::Stream<Item = Item> + Send>>,
-        E,
-    >
-    where
-        Item: Send + 'static,
-        SErr: Send + Sync + std::fmt::Debug + 'static,
-        S: ranvier_core::streaming::StreamingTransition<
-                Out,
-                Item = Item,
-                Error = SErr,
-                Resources = Res,
-            >,
-    {
         self.initialize_stream_in_scope_with_cleanup_grace(
             input,
             resources,
-            owner,
+            &mut owner,
             streaming,
             cancellation,
             None,
+            stream_node_id,
         )
         .await
     }
@@ -331,9 +305,10 @@ where
         streaming: &S,
         cancellation: Option<CancellationToken>,
         cleanup_grace: Option<std::time::Duration>,
+        stream_node_id: Option<String>,
     ) -> crate::streaming_initialization::StreamInitializationReport<
         Out,
-        std::pin::Pin<Box<dyn futures_core::Stream<Item = Item> + Send>>,
+        crate::streaming_journal::InitializedStream<Item>,
         E,
     >
     where
@@ -359,19 +334,17 @@ where
                 active.0.configure_cleanup(grace);
             }
         }
-        // The prefix shares this trace with a later stream initializer. Do not
-        // mark the persisted trace complete before deciding whether that
-        // configured-store effect has a supported journal contract.
-        let deferred_completion = if owner.bus().has::<crate::PersistenceHandle>() {
-            let previous = owner
+        use crate::streaming_journal::StreamEnd;
+        // A configured store journals the stream node in the prefix's trace
+        // (D-STREAM-DESIGN S1-S3). A prefix ending in Next leaves Terminal and
+        // completion to the stream journal; any other end records its own.
+        let stream_identity = self as *const Self as usize;
+        let store_configured = owner.bus().has::<crate::PersistenceHandle>();
+        if store_configured {
+            owner
                 .bus()
-                .read::<crate::PersistenceAutoComplete>()
-                .copied();
-            owner.bus().insert(crate::PersistenceAutoComplete(false));
-            Some(previous)
-        } else {
-            None
-        };
+                .insert(super::DeferStreamTerminal(stream_identity));
+        }
         let terminal = match &cancellation {
             Some(token) => {
                 self.execute_terminal_domain(input, resources, owner.bus(), token.clone())
@@ -381,12 +354,13 @@ where
                 ExecutionTerminal::Outcome(self.execute_domain(input, resources, owner.bus()).await)
             }
         };
-        if let Some(previous) = deferred_completion {
-            if let Some(previous) = previous {
-                owner.bus().insert(previous);
-            } else {
-                let _ = owner.bus().remove::<crate::PersistenceAutoComplete>();
-            }
+        // A pre-cancelled token can win before execute_domain consumes the request.
+        if owner
+            .bus()
+            .read::<super::DeferStreamTerminal>()
+            .is_some_and(|marker| marker.0 == stream_identity)
+        {
+            let _ = owner.bus().remove::<super::DeferStreamTerminal>();
         }
         // Snapshot while the prefix's IAM, Saga and other context are still owned.
         // Unknown acknowledgments and non-Next results retain their original typed value.
@@ -398,36 +372,70 @@ where
             .bus()
             .read::<SagaPolicy>()
             .is_some_and(|policy| *policy == SagaPolicy::Enabled);
+        let journal = if store_configured {
+            self.stream_journal(owner.bus(), stream_node_id)
+        } else {
+            None
+        };
         if let Some(context) = cancellation.as_ref().and_then(CancellationToken::context) {
+            let initialization_cleanup = self
+                .cleanup_stream_initialization_with_grace(
+                    resources,
+                    owner.bus(),
+                    initialization_saga_enabled,
+                    cleanup_grace,
+                )
+                .await;
+            // No stream Intent was written: only the deferred Terminal remains.
+            if let Some(journal) = &journal
+                && !Self::stream_journal_blocked(owner.bus())
+            {
+                let _ = journal.terminal(StreamEnd::InitCancelled).await;
+            }
             return StreamInitializationReport::Cancelled {
-                prefix,
+                prefix: Self::refresh_stream_prefix(owner, prefix, journal.is_some()),
                 context,
                 initialization: EffectBoundary::NotInvoked,
-                initialization_cleanup: self
-                    .cleanup_stream_initialization_with_grace(
-                        resources,
-                        owner.bus(),
-                        initialization_saga_enabled,
-                        cleanup_grace,
-                    )
-                    .await,
+                initialization_cleanup,
             };
         }
-        if owner.bus().has::<crate::PersistenceHandle>() {
+        if let Some(journal) = &journal {
+            // S3: the initializer runs only after its Intent is acknowledged.
+            // A failed Intent leaves no Terminal; the trace needs reconciliation.
+            if !super::persist_effect_intent(
+                &output,
+                owner.bus(),
+                journal.node_id(),
+                journal.step(),
+            )
+            .await
+            {
+                // The prefix result is known even when no prefix effect ran;
+                // keep it rather than reporting a result-less block.
+                let cleanup = prefix.cleanup().cloned();
+                let result = ExecutionTerminal::Outcome(Outcome::Next(output));
+                let prefix = match owner.prefix_report(()) {
+                    crate::ExecutionReport::BlockedBeforeEffect {
+                        operation, effect, ..
+                    }
+                    | crate::ExecutionReport::Unconfirmed {
+                        operation, effect, ..
+                    } => crate::ExecutionReport::Unconfirmed {
+                        result,
+                        operation,
+                        effect,
+                        cleanup,
+                    },
+                    other => other.map_result(|()| result).with_cleanup(cleanup),
+                };
+                return StreamInitializationReport::Rejected { prefix };
+            }
             if let Some(active) = owner
                 .bus()
                 .read::<crate::execution_observation::ActiveObservation>()
             {
-                active
-                    .0
-                    .block(crate::PersistenceOperation::UnsupportedEffect);
+                active.0.effect();
             }
-            // Returning the typed prefix result makes the unsupported
-            // initializer visible to callers; it is never invoked without an
-            // intent/result representation in the same persistence contract.
-            return StreamInitializationReport::Rejected {
-                prefix: owner.prefix_report(ExecutionTerminal::Outcome(Outcome::Next(output))),
-            };
         }
         let result = {
             // Construct the user future inside the unwind boundary: manual trait
@@ -456,35 +464,137 @@ where
                 None => Ok(initialization.await),
             }
         };
+        let journaled = journal.is_some();
         match result {
-            Ok(Ok(value)) => StreamInitializationReport::Ready { prefix, value },
-            Ok(Err(error)) => StreamInitializationReport::Failed {
-                prefix,
-                error,
-                initialization: EffectBoundary::MayHaveRun,
-                initialization_cleanup: self
-                    .cleanup_stream_initialization_with_grace(
+            Ok(Ok(value)) => StreamInitializationReport::Ready {
+                prefix: Self::refresh_stream_prefix(owner, prefix, journaled),
+                value: crate::streaming_journal::InitializedStream {
+                    source: value,
+                    journal,
+                },
+            },
+            Ok(Err(error)) => {
+                let initialization_cleanup = self
+                    .finish_unready_stream(
                         resources,
                         owner.bus(),
+                        journal.as_ref(),
+                        StreamEnd::InitFailed,
                         initialization_saga_enabled,
                         cleanup_grace,
                     )
-                    .await,
-            },
-            Err(context) => StreamInitializationReport::Cancelled {
-                prefix,
-                context,
-                initialization: EffectBoundary::MayHaveRun,
-                initialization_cleanup: self
-                    .cleanup_stream_initialization_with_grace(
+                    .await;
+                StreamInitializationReport::Failed {
+                    prefix: Self::refresh_stream_prefix(owner, prefix, journaled),
+                    error,
+                    initialization: EffectBoundary::MayHaveRun,
+                    initialization_cleanup,
+                }
+            }
+            Err(context) => {
+                let initialization_cleanup = self
+                    .finish_unready_stream(
                         resources,
                         owner.bus(),
+                        journal.as_ref(),
+                        StreamEnd::InitCancelled,
                         initialization_saga_enabled,
                         cleanup_grace,
                     )
-                    .await,
-            },
+                    .await;
+                StreamInitializationReport::Cancelled {
+                    prefix: Self::refresh_stream_prefix(owner, prefix, journaled),
+                    context,
+                    initialization: EffectBoundary::MayHaveRun,
+                    initialization_cleanup,
+                }
+            }
         }
+    }
+
+    /// Journal for the stream node at the step after the prefix graph.
+    #[cfg(feature = "streaming")]
+    fn stream_journal(
+        &self,
+        bus: &Bus,
+        stream_node_id: Option<String>,
+    ) -> Option<crate::streaming_journal::StreamJournal> {
+        let handle = bus.read::<PersistenceHandle>()?.clone();
+        // Same circuit identity as persist_effect_intent, which reads the Bus schematic.
+        let (circuit, version) = bus
+            .read::<ranvier_core::schematic::Schematic>()
+            .map(|schematic| (schematic.name.clone(), schematic.schema_version.clone()))
+            .unwrap_or_else(|| {
+                (
+                    self.schematic.name.clone(),
+                    self.schematic.schema_version.clone(),
+                )
+            });
+        let step = u64::try_from(self.schematic.nodes.len()).unwrap_or(u64::MAX);
+        Some(crate::streaming_journal::StreamJournal::new(
+            handle,
+            persistence_trace_id(bus),
+            circuit,
+            version,
+            step,
+            stream_node_id.unwrap_or_else(|| format!("stream:{step}")),
+            persistence_auto_complete(bus),
+        ))
+    }
+
+    /// An unacknowledged or failed earlier write forbids later terminal history.
+    #[cfg(feature = "streaming")]
+    fn stream_journal_blocked(bus: &Bus) -> bool {
+        bus.read::<crate::execution_observation::ActiveObservation>()
+            .is_some_and(|active| active.0.has_failure())
+    }
+
+    /// Prefix durability including the stream journal's initialization-phase
+    /// writes, keeping the prefix's own cleanup snapshot.
+    #[cfg(feature = "streaming")]
+    fn refresh_stream_prefix(
+        owner: &mut crate::execution_observation::InvocationOwner<'_>,
+        prefix: crate::ExecutionReport<()>,
+        journaled: bool,
+    ) -> crate::ExecutionReport<()> {
+        if !journaled {
+            return prefix;
+        }
+        let cleanup = prefix.cleanup().cloned();
+        owner.prefix_report(()).with_cleanup(cleanup)
+    }
+
+    /// Result before Saga cleanup, then Terminal (S4, S6). As in ordinary
+    /// execution, compensation runs only after the faulting Result is confirmed.
+    #[cfg(feature = "streaming")]
+    async fn finish_unready_stream(
+        &self,
+        resources: &Res,
+        bus: &mut Bus,
+        journal: Option<&crate::streaming_journal::StreamJournal>,
+        end: crate::streaming_journal::StreamEnd,
+        saga_enabled: bool,
+        grace: Option<std::time::Duration>,
+    ) -> Option<crate::SagaRollbackReport> {
+        let result_confirmed = match journal {
+            Some(journal) => {
+                journal.result(end, Some(0)).await
+                    == crate::execution_report::StoreConfirmation::Confirmed
+            }
+            None => true,
+        };
+        if !result_confirmed {
+            return None;
+        }
+        let cleanup = self
+            .cleanup_stream_initialization_with_grace(resources, bus, saga_enabled, grace)
+            .await;
+        if let Some(journal) = journal
+            && !Self::stream_journal_blocked(bus)
+        {
+            let _ = journal.terminal(end).await;
+        }
+        cleanup
     }
 
     /// A separate cooperative compensation budget; never reuse a cancelled workflow token.
@@ -539,6 +649,17 @@ where
     }
 
     async fn execute_domain(&self, input: In, resources: &Res, bus: &mut Bus) -> Outcome<Out, E> {
+        // Consume a stream initializer's deferral only when it names this graph.
+        #[cfg(feature = "streaming")]
+        let defer_stream_terminal = match bus.read::<super::DeferStreamTerminal>() {
+            Some(marker) if marker.0 == self as *const Self as usize => {
+                let _ = bus.remove::<super::DeferStreamTerminal>();
+                true
+            }
+            _ => false,
+        };
+        #[cfg(not(feature = "streaming"))]
+        let defer_stream_terminal = false;
         if let ExecutionMode::Singleton {
             lock_key,
             ttl_ms,
@@ -1099,7 +1220,10 @@ where
             return outcome;
         }
 
-        if let Some(handle) = persistence_handle.as_ref() {
+        // A stream node follows this prefix in the same trace (S2). Its own
+        // Intent/Result and the Terminal after it are written by the stream journal.
+        let stream_follows = defer_stream_terminal && matches!(outcome, Outcome::Next(_));
+        if let Some(handle) = persistence_handle.as_ref().filter(|_| !stream_follows) {
             terminal_event_confirmed = persist_encoded_execution_event(
                 handle,
                 &trace_id,
@@ -1749,7 +1873,15 @@ mod scoped_stream_tests {
             let child_trace = persistence_trace_id(child.bus());
             assert_ne!(child_trace, parent_trace);
             let report = prefix
-                .initialize_stream_in_scope((), &resources, &mut child, &Init, None)
+                .initialize_stream_in_scope_with_cleanup_grace(
+                    (),
+                    &resources,
+                    &mut child,
+                    &Init,
+                    None,
+                    None,
+                    None,
+                )
                 .await;
             assert!(matches!(
                 report,
@@ -1785,12 +1917,20 @@ mod scoped_stream_tests {
             let mut owner = crate::execution_observation::InvocationOwner::begin(&mut bus);
             let trace = persistence_trace_id(owner.bus());
             let report = prefix
-                .initialize_stream_in_scope((), &resources, &mut owner, &Init, None)
+                .initialize_stream_in_scope_with_cleanup_grace(
+                    (),
+                    &resources,
+                    &mut owner,
+                    &Init,
+                    None,
+                    None,
+                    None,
+                )
                 .await;
             let crate::StreamInitializationReport::Ready { mut value, .. } = report else {
                 panic!("expected Ready");
             };
-            assert!(value.next().await.is_none());
+            assert!(value.source.next().await.is_none());
             assert_eq!(persistence_trace_id(owner.bus()), trace);
             assert_eq!(owner.bus().read::<SagaPolicy>(), Some(&SagaPolicy::Enabled));
             assert_eq!(owner.bus().read::<SagaStack>().unwrap().tasks.len(), 1);

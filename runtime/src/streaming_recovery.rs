@@ -1407,10 +1407,15 @@ where
                 streaming,
                 Some(initialization_token),
                 Some(cleanup_grace),
+                None,
             )
             .await;
         let mapped = match report {
             StreamInitializationReport::Ready { prefix, value } => {
+                let crate::streaming_journal::InitializedStream {
+                    source: value,
+                    journal,
+                } = value;
                 observation.phase(SupervisorPhase::Consuming);
                 let saga_enabled = owner
                     .bus()
@@ -1444,6 +1449,22 @@ where
                     // Source exhaustion is not an effect acknowledgment. Keep pending tasks.
                     None
                 };
+                // Record the stream effect's end after cleanup, as the public
+                // consumer does before EOF. The driver does not count items.
+                if let Some(journal) = journal {
+                    let end = match &consumption {
+                        Ok(observed) => {
+                            crate::streaming_journal::StreamEnd::from_terminal(&observed.terminal)
+                        }
+                        Err(StreamDriverError::Cancelled(_)) => {
+                            crate::streaming_journal::StreamEnd::Cancelled
+                        }
+                        Err(StreamDriverError::Panicked) => {
+                            crate::streaming_journal::StreamEnd::DriverPanicked
+                        }
+                    };
+                    let _ = journal.finish(end, None).await;
+                }
                 StreamInitializationReport::Ready {
                     prefix,
                     value: StreamReadyResult {
