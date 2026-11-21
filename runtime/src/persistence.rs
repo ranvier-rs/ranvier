@@ -104,9 +104,7 @@ fn completion_already_set(
     match existing {
         None => Ok(false),
         Some(current) if current == requested => Ok(true),
-        Some(_) => Err(anyhow!(
-            "trace_id {trace_id} already has a different completion state"
-        )),
+        Some(_) => Err(conflict(trace_id, PersistenceConflictKind::Completed)),
     }
 }
 
@@ -121,13 +119,17 @@ pub(crate) fn validate_persistence_append(
         .iter()
         .any(|event| event.event_type == PersistenceEventType::Terminal)
     {
-        return Err(anyhow!("cannot append an event after a terminal event"));
+        return Err(conflict(
+            &incoming.trace_id,
+            PersistenceConflictKind::Terminal,
+        ));
     }
     let expected = u64::try_from(previous.len())?;
     if incoming.event_sequence != expected {
-        return Err(anyhow!(
-            "expected event sequence {expected}, got {}",
-            incoming.event_sequence
+        return Err(stale_revision(
+            &incoming.trace_id,
+            incoming.event_sequence,
+            expected,
         ));
     }
     let mut pending = validate_event_sequence(previous, false)
@@ -218,6 +220,117 @@ pub(crate) enum TraceValidationError {
     MissingTerminal,
 }
 
+/// A conditional persistence write that lost to the trace's current state.
+///
+/// Every write to a trace is valid only on top of the revision (event count)
+/// the writer read. Built-in stores return this value inside
+/// [`anyhow::Error`] when that revision is stale or the trace no longer
+/// accepts the write; recover it with
+/// `error.downcast_ref::<PersistenceConflict>()`. The stored trace is
+/// unchanged. The runtime never retries a conflicting write: reload the trace
+/// and decide again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistenceConflict {
+    pub trace_id: String,
+    pub kind: PersistenceConflictKind,
+}
+
+/// Why a [`PersistenceConflict`] was raised.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PersistenceConflictKind {
+    /// The write was based on `expected` events; the trace has `actual`.
+    StaleRevision { expected: u64, actual: u64 },
+    /// The trace already has its terminal event.
+    Terminal,
+    /// The trace is completed, or already has a different completion state.
+    Completed,
+    /// Another intervention is already bound to this revision.
+    InterventionExists { revision: u64 },
+    /// The stored value changed between read and write (compare-and-set).
+    ConcurrentUpdate,
+}
+
+impl std::fmt::Display for PersistenceConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let trace_id = &self.trace_id;
+        match &self.kind {
+            PersistenceConflictKind::StaleRevision { expected, actual } => write!(
+                f,
+                "trace_id {trace_id} expected event sequence {actual}, got {expected}"
+            ),
+            PersistenceConflictKind::Terminal => write!(
+                f,
+                "trace_id {trace_id} cannot append an event after a terminal event"
+            ),
+            PersistenceConflictKind::Completed => write!(
+                f,
+                "trace_id {trace_id} is already completed and cannot accept new events or changes"
+            ),
+            PersistenceConflictKind::InterventionExists { revision } => write!(
+                f,
+                "trace_id {trace_id} already has an intervention at revision {revision}"
+            ),
+            PersistenceConflictKind::ConcurrentUpdate => {
+                write!(f, "concurrent persistence update for trace_id {trace_id}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PersistenceConflict {}
+
+fn conflict(trace_id: &str, kind: PersistenceConflictKind) -> anyhow::Error {
+    anyhow::Error::new(PersistenceConflict {
+        trace_id: trace_id.to_owned(),
+        kind,
+    })
+}
+
+fn stale_revision(trace_id: &str, expected: u64, actual: u64) -> anyhow::Error {
+    conflict(
+        trace_id,
+        PersistenceConflictKind::StaleRevision { expected, actual },
+    )
+}
+
+/// An intervention is accepted only on the revision it was decided on, before
+/// the trace ends, and once per revision.
+fn ensure_intervention_accepted(trace: &PersistedTrace, intervention: &Intervention) -> Result<()> {
+    if trace.completion.is_some() {
+        return Err(conflict(
+            &trace.trace_id,
+            PersistenceConflictKind::Completed,
+        ));
+    }
+    if trace
+        .events
+        .iter()
+        .any(|event| event.event_type == PersistenceEventType::Terminal)
+    {
+        return Err(conflict(&trace.trace_id, PersistenceConflictKind::Terminal));
+    }
+    let actual = u64::try_from(trace.events.len())?;
+    if intervention.expected_event_sequence != actual {
+        return Err(stale_revision(
+            &trace.trace_id,
+            intervention.expected_event_sequence,
+            actual,
+        ));
+    }
+    if trace
+        .interventions
+        .iter()
+        .any(|existing| existing.expected_event_sequence == actual)
+    {
+        return Err(conflict(
+            &trace.trace_id,
+            PersistenceConflictKind::InterventionExists { revision: actual },
+        ));
+    }
+    Ok(())
+}
+
 /// Minimal persisted envelope for Axon execution checkpoints.
 ///
 /// M148 baseline contract fields:
@@ -248,11 +361,18 @@ pub struct PersistenceEnvelope {
 }
 
 /// Manual intervention command for a trace.
+///
+/// An intervention is bound to the revision it was decided on:
+/// `expected_event_sequence` must equal the trace's event count when it is
+/// saved, and the runtime applies it only while the trace is still at that
+/// revision. The run that applies it appends events, so it is applied once.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Intervention {
     pub target_node: String,
     pub payload_override: Option<serde_json::Value>,
     pub timestamp_ms: u64,
+    /// Event count of the trace this intervention was decided on.
+    pub expected_event_sequence: u64,
 }
 
 /// Final completion state tracked for a persisted trace.
@@ -330,6 +450,16 @@ pub struct PersistedTrace {
 
 fn legacy_persistence_format_version() -> u16 {
     1
+}
+
+impl PersistedTrace {
+    /// The intervention bound to the trace's current revision, if any.
+    pub(crate) fn pending_intervention(&self) -> Option<&Intervention> {
+        let revision = u64::try_from(self.events.len()).ok()?;
+        self.interventions
+            .iter()
+            .find(|intervention| intervention.expected_event_sequence == revision)
+    }
 }
 
 /// Resume cursor returned from [`PersistenceStore::resume`].
@@ -981,6 +1111,28 @@ impl CompensationIdempotencyStore for RedisCompensationIdempotencyStore {
 /// | [`PostgresPersistenceStore`] | `persistence-postgres` | durable prod storage |
 /// | [`RedisPersistenceStore`] | `persistence-redis` | ephemeral/fast checkpoints |
 ///
+/// # Concurrent writers
+///
+/// Several processes may execute the same trace. Stores must make every write
+/// conditional on the trace's revision (its event count) and apply it
+/// atomically:
+///
+/// - `append` succeeds only when `event_sequence` equals the current event
+///   count, the trace has no terminal event, and it is not completed.
+/// - `complete` requires a terminal event and never replaces a different
+///   completion state.
+/// - `save_intervention` succeeds only when
+///   [`Intervention::expected_event_sequence`] equals the current event count,
+///   the trace has not ended, and no other intervention is bound to that
+///   revision.
+///
+/// A losing write leaves the trace unchanged and should return a
+/// [`PersistenceConflict`]. The built-in PostgreSQL and Redis (single node)
+/// adapters provide this across processes; [`InMemoryPersistenceStore`]
+/// provides it within one process. Custom stores are not verified by the
+/// runtime. Effects that already ran are not fenced: a writer that loses after
+/// its effect reports the outcome as unconfirmed.
+///
 /// # See also
 ///
 /// - `docs/03_guides/persistence_ops_runbook.md` — operational playbook
@@ -1078,10 +1230,10 @@ impl PersistenceStore for InMemoryPersistenceStore {
         let mut guard = self.inner.write().await;
         if !guard.contains_key(&envelope.trace_id) {
             if envelope.event_sequence != 0 {
-                return Err(anyhow!(
-                    "trace_id {} expected event sequence 0, got {}",
-                    envelope.trace_id,
-                    envelope.event_sequence
+                return Err(stale_revision(
+                    &envelope.trace_id,
+                    envelope.event_sequence,
+                    0,
                 ));
             }
             if envelope.event_type == PersistenceEventType::LegacyUnknown {
@@ -1116,9 +1268,9 @@ impl PersistenceStore for InMemoryPersistenceStore {
             ));
         }
         if entry.completion.is_some() {
-            return Err(anyhow!(
-                "trace_id {} is already completed and cannot accept new events",
-                envelope.trace_id
+            return Err(conflict(
+                &envelope.trace_id,
+                PersistenceConflictKind::Completed,
             ));
         }
         if entry.format_version != PERSISTENCE_FORMAT_VERSION {
@@ -1130,11 +1282,10 @@ impl PersistenceStore for InMemoryPersistenceStore {
         }
         let expected_sequence = u64::try_from(entry.events.len())?;
         if envelope.event_sequence != expected_sequence {
-            return Err(anyhow!(
-                "trace_id {} expected event sequence {}, got {}",
-                envelope.trace_id,
+            return Err(stale_revision(
+                &envelope.trace_id,
+                envelope.event_sequence,
                 expected_sequence,
-                envelope.event_sequence
             ));
         }
         if envelope.event_type == PersistenceEventType::LegacyUnknown {
@@ -1160,10 +1311,7 @@ impl PersistenceStore for InMemoryPersistenceStore {
             .get_mut(trace_id)
             .ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
         if trace.completion.is_some() {
-            return Err(anyhow!(
-                "trace_id {} is already completed and cannot be resumed",
-                trace_id
-            ));
+            return Err(conflict(trace_id, PersistenceConflictKind::Completed));
         }
         ensure_trace_lifecycle_safe(trace, "resume")?;
         trace.resumed_from_step = Some(resume_from_step);
@@ -1192,9 +1340,7 @@ impl PersistenceStore for InMemoryPersistenceStore {
         let trace = guard
             .get_mut(trace_id)
             .ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
-
-        // If trace is completed, we might want to "un-complete" it for resumption if it's a force resume
-        // For now, just add the intervention.
+        ensure_intervention_accepted(trace, &intervention)?;
         trace.interventions.push(intervention);
         Ok(())
     }
@@ -1247,6 +1393,7 @@ struct PostgresInterventionRow {
     target_node: String,
     payload_override: Option<serde_json::Value>,
     timestamp_ms: i64,
+    expected_event_sequence: i64,
 }
 
 #[cfg(feature = "persistence-postgres")]
@@ -1376,13 +1523,27 @@ impl PostgresPersistenceStore {
                 target_node TEXT NOT NULL,
                 payload_override JSONB NULL,
                 timestamp_ms BIGINT NOT NULL,
-                FOREIGN KEY (trace_id) REFERENCES {} (trace_id)
+                expected_event_sequence BIGINT NOT NULL,
+                FOREIGN KEY (trace_id) REFERENCES {} (trace_id),
+                UNIQUE (trace_id, expected_event_sequence)
             )",
             interventions_table, state_table
         );
         sqlx::query(&create_interventions)
             .execute(&self.pool)
             .await?;
+        // `CREATE TABLE IF NOT EXISTS` keeps a table created by an earlier
+        // build. Such tables are not migrated (no prior data is supported);
+        // refuse them here instead of failing on the first intervention.
+        let probe = format!(
+            "SELECT expected_event_sequence FROM {} LIMIT 0",
+            interventions_table
+        );
+        sqlx::query(&probe).execute(&self.pool).await.map_err(|error| {
+            anyhow!(
+                "interventions table {interventions_table} predates revision-bound interventions; recreate the persistence tables: {error}"
+            )
+        })?;
 
         Ok(())
     }
@@ -1443,9 +1604,9 @@ impl PersistenceStore for PostgresPersistenceStore {
             ));
         }
         if completion.is_some() {
-            return Err(anyhow!(
-                "trace_id {} is already completed and cannot accept new events",
-                envelope.trace_id
+            return Err(conflict(
+                &envelope.trace_id,
+                PersistenceConflictKind::Completed,
             ));
         }
         if format_version != i32::from(PERSISTENCE_FORMAT_VERSION) {
@@ -1470,11 +1631,10 @@ impl PersistenceStore for PostgresPersistenceStore {
         }
         let expected_sequence = u64::try_from(event_state.0)?;
         if envelope.event_sequence != expected_sequence {
-            return Err(anyhow!(
-                "trace_id {} expected event sequence {}, got {}",
-                envelope.trace_id,
+            return Err(stale_revision(
+                &envelope.trace_id,
+                envelope.event_sequence,
                 expected_sequence,
-                envelope.event_sequence
             ));
         }
         let existing_query = format!(
@@ -1603,10 +1763,10 @@ impl PersistenceStore for PostgresPersistenceStore {
         };
 
         let interventions_query = format!(
-            "SELECT trace_id, target_node, payload_override, timestamp_ms
+            "SELECT trace_id, target_node, payload_override, timestamp_ms, expected_event_sequence
              FROM {}
              WHERE trace_id = $1
-             ORDER BY timestamp_ms ASC",
+             ORDER BY expected_event_sequence ASC",
             interventions_table
         );
         let intervention_rows: Vec<PostgresInterventionRow> = sqlx::query_as(&interventions_query)
@@ -1620,6 +1780,7 @@ impl PersistenceStore for PostgresPersistenceStore {
                 target_node: row.target_node,
                 payload_override: row.payload_override,
                 timestamp_ms: u64::try_from(row.timestamp_ms)?,
+                expected_event_sequence: u64::try_from(row.expected_event_sequence)?,
             });
         }
 
@@ -1660,10 +1821,7 @@ impl PersistenceStore for PostgresPersistenceStore {
             ));
         }
         if completion.is_some() {
-            return Err(anyhow!(
-                "trace_id {} is already completed and cannot be resumed",
-                trace_id
-            ));
+            return Err(conflict(trace_id, PersistenceConflictKind::Completed));
         }
         let events_query = format!(
             "SELECT trace_id, circuit, schematic_version, event_sequence, event_type, step, node_id, outcome_kind, timestamp_ms, payload_hash, payload
@@ -1790,19 +1948,81 @@ impl PersistenceStore for PostgresPersistenceStore {
     }
 
     async fn save_intervention(&self, trace_id: &str, intervention: Intervention) -> Result<()> {
+        self.reject_legacy_trace(trace_id).await?;
         let ts_i64 = i64::try_from(intervention.timestamp_ms)?;
+        let revision_i64 = i64::try_from(intervention.expected_event_sequence)?;
+        let state_table = self.state_table.sql()?;
+        let events_table = self.events_table.sql()?;
+        let interventions_table = self.interventions_table.sql()?;
+        // The state row lock serializes this check with appends and completion.
+        let mut transaction = self.pool.begin().await?;
+        let state_query = format!(
+            "SELECT format_version, completion FROM {} WHERE trace_id = $1 FOR UPDATE",
+            state_table
+        );
+        let Some((format_version, completion)): Option<(i32, Option<String>)> =
+            sqlx::query_as(&state_query)
+                .bind(trace_id)
+                .fetch_optional(&mut *transaction)
+                .await?
+        else {
+            return Err(anyhow!("trace_id {} not found", trace_id));
+        };
+        if format_version != i32::from(PERSISTENCE_FORMAT_VERSION) {
+            return Err(anyhow!(
+                "trace_id {trace_id} has unsupported persistence format {format_version}"
+            ));
+        }
+        if completion.is_some() {
+            return Err(conflict(trace_id, PersistenceConflictKind::Completed));
+        }
+        let (count, terminal): (i64, bool) = sqlx::query_as(&format!(
+            "SELECT COUNT(*)::BIGINT, COALESCE(BOOL_OR(event_type = 'terminal'), FALSE)
+             FROM {} WHERE trace_id = $1",
+            events_table
+        ))
+        .bind(trace_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if terminal {
+            return Err(conflict(trace_id, PersistenceConflictKind::Terminal));
+        }
+        let actual = u64::try_from(count)?;
+        if intervention.expected_event_sequence != actual {
+            return Err(stale_revision(
+                trace_id,
+                intervention.expected_event_sequence,
+                actual,
+            ));
+        }
+        let exists: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS (SELECT 1 FROM {} WHERE trace_id = $1 AND expected_event_sequence = $2)",
+            interventions_table
+        ))
+        .bind(trace_id)
+        .bind(revision_i64)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if exists {
+            return Err(conflict(
+                trace_id,
+                PersistenceConflictKind::InterventionExists { revision: actual },
+            ));
+        }
         let query = format!(
-            "INSERT INTO {} (trace_id, target_node, payload_override, timestamp_ms)
-             VALUES ($1, $2, $3, $4)",
-            self.interventions_table.sql()?
+            "INSERT INTO {} (trace_id, target_node, payload_override, timestamp_ms, expected_event_sequence)
+             VALUES ($1, $2, $3, $4, $5)",
+            interventions_table
         );
         sqlx::query(&query)
             .bind(trace_id)
             .bind(&intervention.target_node)
             .bind(&intervention.payload_override)
             .bind(ts_i64)
-            .execute(&self.pool)
+            .bind(revision_i64)
+            .execute(&mut *transaction)
             .await?;
+        transaction.commit().await?;
         Ok(())
     }
 }
@@ -1922,9 +2142,9 @@ impl RedisPersistenceStore {
             .query_async(&mut conn)
             .await?;
         if updated != 1 {
-            return Err(anyhow!(
-                "concurrent persistence update for trace_id {}",
-                trace.trace_id
+            return Err(conflict(
+                &trace.trace_id,
+                PersistenceConflictKind::ConcurrentUpdate,
             ));
         }
         Ok(())
@@ -1956,9 +2176,9 @@ impl PersistenceStore for RedisPersistenceStore {
             ));
         }
         if trace.completion.is_some() {
-            return Err(anyhow!(
-                "trace_id {} is already completed and cannot accept new events",
-                envelope.trace_id
+            return Err(conflict(
+                &envelope.trace_id,
+                PersistenceConflictKind::Completed,
             ));
         }
 
@@ -1971,11 +2191,10 @@ impl PersistenceStore for RedisPersistenceStore {
         }
         let expected_sequence = u64::try_from(trace.events.len())?;
         if envelope.event_sequence != expected_sequence {
-            return Err(anyhow!(
-                "trace_id {} expected event sequence {}, got {}",
-                envelope.trace_id,
+            return Err(stale_revision(
+                &envelope.trace_id,
+                envelope.event_sequence,
                 expected_sequence,
-                envelope.event_sequence
             ));
         }
         if envelope.event_type == PersistenceEventType::LegacyUnknown {
@@ -2000,10 +2219,7 @@ impl PersistenceStore for RedisPersistenceStore {
         let (previous, loaded) = self.read_trace(trace_id).await?;
         let mut trace = loaded.ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
         if trace.completion.is_some() {
-            return Err(anyhow!(
-                "trace_id {} is already completed and cannot be resumed",
-                trace_id
-            ));
+            return Err(conflict(trace_id, PersistenceConflictKind::Completed));
         }
         ensure_trace_lifecycle_safe(&trace, "resume")?;
         trace.resumed_from_step = Some(resume_from_step);
@@ -2030,6 +2246,7 @@ impl PersistenceStore for RedisPersistenceStore {
     async fn save_intervention(&self, trace_id: &str, intervention: Intervention) -> Result<()> {
         let (previous, loaded) = self.read_trace(trace_id).await?;
         let mut trace = loaded.ok_or_else(|| anyhow!("trace_id {} not found", trace_id))?;
+        ensure_intervention_accepted(&trace, &intervention)?;
         trace.interventions.push(intervention);
         self.write_trace(&trace, previous.as_deref()).await?;
         Ok(())
@@ -2206,6 +2423,7 @@ mod tests {
                         target_node: "node".into(),
                         payload_override: None,
                         timestamp_ms: 1,
+                        expected_event_sequence: 0,
                     },
                 )
                 .await
@@ -2258,6 +2476,20 @@ mod tests {
             payload_hash: Some(format!("hash-{}", step)),
             payload: None,
         }
+    }
+
+    /// A v2 journal event for `trace_id`.
+    #[cfg(feature = "persistence-redis")]
+    fn traced_event(
+        trace_id: &str,
+        sequence: u64,
+        node_id: Option<&str>,
+        event_type: PersistenceEventType,
+        outcome_kind: &str,
+    ) -> PersistenceEnvelope {
+        let mut event = journal_event(sequence, sequence, node_id, event_type, outcome_kind);
+        event.trace_id = trace_id.to_owned();
+        event
     }
 
     fn journal_event(
@@ -2524,17 +2756,19 @@ mod tests {
         );
         assert_eq!(store.load("trace-1").await.unwrap(), Some(loaded.clone()));
 
-        let err = store.append(envelope(2, "Next")).await.unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("is already completed and cannot accept new events")
-        );
-
-        let err = store.resume("trace-1", 1).await.unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("is already completed and cannot be resumed")
-        );
+        for err in [
+            store.append(envelope(2, "Next")).await.unwrap_err(),
+            store.resume("trace-1", 1).await.unwrap_err(),
+        ] {
+            assert_eq!(
+                err.downcast_ref::<PersistenceConflict>(),
+                Some(&PersistenceConflict {
+                    trace_id: "trace-1".into(),
+                    kind: PersistenceConflictKind::Completed,
+                })
+            );
+            assert!(err.to_string().contains("is already completed"));
+        }
     }
 
     #[tokio::test]
@@ -2696,19 +2930,21 @@ mod tests {
             .connect(&url)
             .await
             .unwrap();
-        let table_prefix = format!("ranvier_persistence_test_{}", Uuid::new_v4().simple());
+        // Every relation name must fit PostgreSQL's 63-byte identifier limit.
+        let table_prefix = format!("rpt_{}", &Uuid::new_v4().simple().to_string()[..12]);
         let store = PostgresPersistenceStore::with_table_prefix(pool.clone(), table_prefix.clone());
         store.ensure_schema().await.unwrap();
 
         let trace_id = format!("trace-{}", Uuid::new_v4().simple());
         let circuit = "PgCircuit".to_string();
 
-        let mut first = envelope(1, "Next");
+        // A v2 journal starts at event sequence 0.
+        let mut first = journal_event(0, 0, None, PersistenceEventType::Enter, "Enter");
         first.trace_id = trace_id.clone();
         first.circuit = circuit.clone();
         store.append(first).await.unwrap();
 
-        let mut second = envelope(2, "Branch");
+        let mut second = journal_event(1, 1, None, PersistenceEventType::Terminal, "Branch");
         second.trace_id = trace_id.clone();
         second.circuit = circuit.clone();
         store.append(second).await.unwrap();
@@ -2785,7 +3021,7 @@ mod tests {
 
                 store.ensure_schema().await?;
                 let trace_id = format!("prefix-{}", Uuid::new_v4().simple());
-                let mut event = envelope(1, "Next");
+                let mut event = journal_event(0, 0, None, PersistenceEventType::Enter, "Enter");
                 event.trace_id = trace_id.clone();
                 event.circuit = "IdentifierBoundary".to_string();
                 store.append(event).await?;
@@ -2796,6 +3032,7 @@ mod tests {
                             target_node: "node".into(),
                             payload_override: Some(serde_json::json!({"case": "identifier"})),
                             timestamp_ms: 1,
+                            expected_event_sequence: 1,
                         },
                     )
                     .await?;
@@ -2813,6 +3050,11 @@ mod tests {
                     "intervention did not round-trip"
                 );
 
+                let mut terminal =
+                    journal_event(1, 1, None, PersistenceEventType::Terminal, "Success");
+                terminal.trace_id = trace_id.clone();
+                terminal.circuit = "IdentifierBoundary".to_string();
+                store.append(terminal).await?;
                 store.complete(&trace_id, CompletionState::Success).await?;
                 let completed = store
                     .load(&trace_id)
@@ -2897,8 +3139,7 @@ mod tests {
             std::env::var("RANVIER_ATOMICITY_REDIS_URL").expect("explicit isolated Redis required");
         let store = RedisPersistenceStore::connect(&url).await.unwrap();
         let trace_id = format!("stale-{}", Uuid::new_v4().simple());
-        let mut seed = envelope(0, "Next");
-        seed.trace_id = trace_id.clone();
+        let mut seed = traced_event(&trace_id, 0, None, PersistenceEventType::Enter, "Enter");
         seed.timestamp_ms = u64::MAX;
         seed.payload = Some(serde_json::json!({"large": u64::MAX}));
         store.append(seed.clone()).await.unwrap();
@@ -2909,10 +3150,21 @@ mod tests {
         assert_eq!(Some(before.clone()), other_before);
         let mut first = before.clone();
         let mut second = before.clone();
-        let mut event_one = seed.clone();
-        event_one.step = 1;
-        let mut event_two = seed;
-        event_two.step = 2;
+        // Two writers extend the same snapshot with different events.
+        let event_one = traced_event(
+            &trace_id,
+            1,
+            Some("node-one"),
+            PersistenceEventType::Checkpoint,
+            "Checkpoint",
+        );
+        let event_two = traced_event(
+            &trace_id,
+            1,
+            Some("node-two"),
+            PersistenceEventType::Checkpoint,
+            "Checkpoint",
+        );
         first.events.push(event_one.clone());
         second.events.push(event_two.clone());
         store
@@ -2939,6 +3191,16 @@ mod tests {
             store.write_trace(&second, None).await.is_err(),
             "absent-key expectation must not overwrite existing trace"
         );
+        store
+            .append(traced_event(
+                &trace_id,
+                2,
+                None,
+                PersistenceEventType::Terminal,
+                "Success",
+            ))
+            .await
+            .unwrap();
         let winning_payload = store.read_trace(&trace_id).await.unwrap().0;
         store
             .complete(&trace_id, CompletionState::Success)
@@ -3004,8 +3266,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let trace_id = format!("clients-{}", Uuid::new_v4().simple());
-        let mut seed = envelope(0, "Next");
-        seed.trace_id = trace_id.clone();
+        let seed = traced_event(&trace_id, 0, None, PersistenceEventType::Enter, "Enter");
         observer.append(seed.clone()).await.unwrap();
         let mut expected = observer.load(&trace_id).await.unwrap().unwrap();
         let barrier = Arc::new(Barrier::new(17));
@@ -3017,8 +3278,15 @@ mod tests {
                 .unwrap()
                 .unwrap();
             let barrier = barrier.clone();
-            let mut event = envelope(step, "Next");
-            event.trace_id = trace_id.clone();
+            // Every client appends the next revision with its own event.
+            let node = format!("client-{step}");
+            let event = traced_event(
+                &trace_id,
+                1,
+                Some(&node),
+                PersistenceEventType::Checkpoint,
+                "Checkpoint",
+            );
             workers.spawn(async move {
                 barrier.wait().await;
                 let result = client.append(event.clone()).await;
@@ -3034,7 +3302,13 @@ mod tests {
                 match result {
                     Ok(()) => accepted.push(event),
                     Err(error) => {
-                        assert!(error.to_string().contains("concurrent persistence update"));
+                        assert!(matches!(
+                            error.downcast_ref::<PersistenceConflict>().map(|c| &c.kind),
+                            Some(
+                                PersistenceConflictKind::ConcurrentUpdate
+                                    | PersistenceConflictKind::StaleRevision { .. }
+                            )
+                        ));
                         conflicts += 1;
                     }
                 }
@@ -3046,12 +3320,9 @@ mod tests {
             workers.abort_all();
             while workers.join_next().await.is_some() {}
         }
-        let (mut accepted, conflicts) = results.expect("bounded independent-client writes");
-        accepted.sort_by_key(|event| event.step);
-        assert!(
-            accepted.len() > 1,
-            "at least one public append must succeed"
-        );
+        let (accepted, conflicts) = results.expect("bounded independent-client writes");
+        assert_eq!(accepted.len(), 2, "exactly one public append succeeds");
+        assert_eq!(conflicts, 15);
         let loaded = observer.load(&trace_id).await.unwrap().unwrap();
         expected.events = accepted.clone();
         assert_eq!(
@@ -3063,14 +3334,28 @@ mod tests {
             "every acknowledged event, and only those events, survive"
         );
         assert_eq!(expected.completion, None);
+        let terminal = traced_event(
+            &trace_id,
+            2,
+            None,
+            PersistenceEventType::Terminal,
+            "Success",
+        );
+        observer.append(terminal.clone()).await.unwrap();
+        expected.events.push(terminal);
         observer
             .complete(&trace_id, CompletionState::Success)
             .await
             .unwrap();
         expected.completion = Some(CompletionState::Success);
         let late_client = RedisPersistenceStore::connect(&url).await.unwrap();
-        let mut late = envelope(17, "Next");
-        late.trace_id = trace_id.clone();
+        let late = traced_event(
+            &trace_id,
+            3,
+            Some("late"),
+            PersistenceEventType::Checkpoint,
+            "Checkpoint",
+        );
         assert!(
             late_client
                 .append(late)
@@ -3092,7 +3377,10 @@ mod tests {
     #[cfg(feature = "persistence-redis")]
     #[tokio::test]
     #[ignore = "requires explicitly isolated Redis fixture URL"]
-    async fn redis_public_append_complete_controlled_orders() {
+    async fn redis_public_complete_resume_controlled_orders() {
+        // In the v2 journal an append and a completion cannot both be valid on
+        // the same snapshot (completion needs the terminal event, which ends
+        // appends). Completion therefore races a resume of the terminal trace.
         use std::sync::Arc;
         use tokio::{
             sync::Semaphore,
@@ -3104,9 +3392,18 @@ mod tests {
         for completion_first in [true, false] {
             let observer = connect().await.unwrap().unwrap();
             let trace_id = format!("order-{}", Uuid::new_v4().simple());
-            let mut seed = envelope(0, "Next");
-            seed.trace_id = trace_id.clone();
-            observer.append(seed).await.unwrap();
+            for event in [
+                traced_event(&trace_id, 0, None, PersistenceEventType::Enter, "Enter"),
+                traced_event(
+                    &trace_id,
+                    1,
+                    None,
+                    PersistenceEventType::Terminal,
+                    "Success",
+                ),
+            ] {
+                observer.append(event).await.unwrap();
+            }
             let mut expected = observer.load(&trace_id).await.unwrap().unwrap();
             let original = observer.read_trace(&trace_id).await.unwrap().0;
             let gate = || {
@@ -3122,12 +3419,10 @@ mod tests {
             let mut completer = connect().await.unwrap().unwrap();
             appender.write_gate = Some(append_gate.clone());
             completer.write_gate = Some(complete_gate.clone());
-            let mut event = envelope(1, "Next");
-            event.trace_id = trace_id.clone();
-            let event_copy = event.clone();
+            let resume_id = trace_id.clone();
             let id = trace_id.clone();
             let mut workers = JoinSet::new();
-            workers.spawn(async move { (false, appender.append(event_copy).await) });
+            workers.spawn(async move { (false, appender.resume(&resume_id, 1).await.map(|_| ())) });
             workers.spawn(async move {
                 (
                     true,
@@ -3151,7 +3446,7 @@ mod tests {
                 if completion_first {
                     expected.completion = Some(CompletionState::Success);
                 } else {
-                    expected.events.push(event.clone());
+                    expected.resumed_from_step = Some(1);
                 }
                 assert_eq!(observer.load(&trace_id).await.unwrap().unwrap(), expected);
                 second.release.add_permits(1);
@@ -3171,8 +3466,13 @@ mod tests {
                         .unwrap();
                     expected.completion = Some(CompletionState::Success);
                 }
-                let mut late = envelope(2, "Next");
-                late.trace_id = trace_id.clone();
+                let late = traced_event(
+                    &trace_id,
+                    2,
+                    Some("late"),
+                    PersistenceEventType::Checkpoint,
+                    "Checkpoint",
+                );
                 assert!(
                     observer
                         .append(late)
@@ -3207,15 +3507,23 @@ mod tests {
         for intervention_first in [true, false] {
             let observer = connect().await.unwrap().unwrap();
             let trace_id = format!("resume-order-{}", Uuid::new_v4().simple());
-            let mut seed = envelope(0, "Next");
-            seed.trace_id = trace_id.clone();
-            observer.append(seed).await.unwrap();
+            observer
+                .append(traced_event(
+                    &trace_id,
+                    0,
+                    None,
+                    PersistenceEventType::Enter,
+                    "Enter",
+                ))
+                .await
+                .unwrap();
             let intervention = Intervention {
                 target_node: "reviewed-node".to_owned(),
                 payload_override: Some(
                     serde_json::json!({"large": u64::MAX, "command": "fixture"}),
                 ),
                 timestamp_ms: u64::MAX,
+                expected_event_sequence: 2,
             };
             // Seed existing fields so a winner must preserve earlier caller data too.
             observer.resume(&trace_id, 2).await.unwrap();
@@ -3226,8 +3534,20 @@ mod tests {
                         target_node: "prior-node".to_owned(),
                         payload_override: Some(serde_json::json!({"prior": true})),
                         timestamp_ms: 1,
+                        expected_event_sequence: 1,
                     },
                 )
+                .await
+                .unwrap();
+            // Advance the revision so the raced intervention binds to a fresh one.
+            observer
+                .append(traced_event(
+                    &trace_id,
+                    1,
+                    Some("advance"),
+                    PersistenceEventType::Checkpoint,
+                    "Checkpoint",
+                ))
                 .await
                 .unwrap();
             let mut expected = observer.load(&trace_id).await.unwrap().unwrap();
@@ -3301,6 +3621,15 @@ mod tests {
                     expected.interventions.push(intervention.clone());
                 }
                 assert_eq!(observer.load(&trace_id).await.unwrap().unwrap(), expected);
+                let terminal = traced_event(
+                    &trace_id,
+                    2,
+                    None,
+                    PersistenceEventType::Terminal,
+                    "Success",
+                );
+                observer.append(terminal.clone()).await.unwrap();
+                expected.events.push(terminal);
                 observer
                     .complete(&trace_id, CompletionState::Success)
                     .await
@@ -3344,12 +3673,13 @@ mod tests {
         let trace_id = format!("trace-{}", Uuid::new_v4().simple());
         let circuit = "RedisCircuit".to_string();
 
-        let mut first = envelope(1, "Next");
+        // A v2 journal starts at event sequence 0.
+        let mut first = journal_event(0, 0, None, PersistenceEventType::Enter, "Enter");
         first.trace_id = trace_id.clone();
         first.circuit = circuit.clone();
         store.append(first).await.unwrap();
 
-        let mut second = envelope(2, "Fault");
+        let mut second = journal_event(1, 1, None, PersistenceEventType::Terminal, "Fault");
         second.trace_id = trace_id.clone();
         second.circuit = circuit.clone();
         store.append(second).await.unwrap();

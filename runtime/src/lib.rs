@@ -43,9 +43,9 @@ pub mod prelude {
         CompensationAutoTrigger, CompensationContext, CompensationHandle, CompensationHook,
         CompensationIdempotencyHandle, CompensationIdempotencyStore, CompensationRetryPolicy,
         CompletionState, InMemoryCompensationIdempotencyStore, InMemoryPersistenceStore,
-        PERSISTENCE_FORMAT_VERSION, PersistedTrace, PersistenceAutoComplete, PersistenceEnvelope,
-        PersistenceEventType, PersistenceHandle, PersistenceStore, PersistenceTraceId,
-        ResumeCursor,
+        PERSISTENCE_FORMAT_VERSION, PersistedTrace, PersistenceAutoComplete, PersistenceConflict,
+        PersistenceConflictKind, PersistenceEnvelope, PersistenceEventType, PersistenceHandle,
+        PersistenceStore, PersistenceTraceId, ResumeCursor,
     };
     #[cfg(feature = "persistence-postgres")]
     pub use crate::persistence::{PostgresCompensationIdempotencyStore, PostgresPersistenceStore};
@@ -93,8 +93,9 @@ pub use persistence::{
     CompensationAutoTrigger, CompensationContext, CompensationHandle, CompensationHook,
     CompensationIdempotencyHandle, CompensationIdempotencyStore, CompensationRetryPolicy,
     CompletionState, InMemoryCompensationIdempotencyStore, InMemoryPersistenceStore,
-    PERSISTENCE_FORMAT_VERSION, PersistedTrace, PersistenceAutoComplete, PersistenceEnvelope,
-    PersistenceEventType, PersistenceHandle, PersistenceStore, PersistenceTraceId, ResumeCursor,
+    PERSISTENCE_FORMAT_VERSION, PersistedTrace, PersistenceAutoComplete, PersistenceConflict,
+    PersistenceConflictKind, PersistenceEnvelope, PersistenceEventType, PersistenceHandle,
+    PersistenceStore, PersistenceTraceId, ResumeCursor,
 };
 #[cfg(feature = "persistence-postgres")]
 pub use persistence::{PostgresCompensationIdempotencyStore, PostgresPersistenceStore};

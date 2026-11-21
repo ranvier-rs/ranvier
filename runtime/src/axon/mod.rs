@@ -235,10 +235,20 @@ where
             .as_ref()
             .ok_or("No persistence store attached to Axon")?;
 
+        // Bind the jump to the revision observed now; the store rejects it if
+        // another writer advances the trace before it is saved.
+        let revision = store
+            .load(trace_id)
+            .await
+            .map_err(|e| format!("Failed to load trace for intervention: {}", e))?
+            .ok_or_else(|| format!("trace_id {trace_id} not found"))?
+            .events
+            .len();
         let intervention = crate::persistence::Intervention {
             target_node: target_node.to_string(),
             payload_override,
             timestamp_ms: now_ms(),
+            expected_event_sequence: revision as u64,
         };
 
         store
@@ -675,10 +685,13 @@ async fn load_persistence_version(
                 };
 
             let origin = ResumeOrigin::of(&trace);
+            // Only an intervention bound to the current revision applies; an
+            // applied one is consumed by the events its run appends.
+            let intervention = trace.pending_intervention().cloned();
             Ok((
                 next_step,
                 Some(trace.schematic_version),
-                trace.interventions.last().cloned(),
+                intervention,
                 last_node_id,
                 last_payload,
                 trace.completion,
@@ -2529,6 +2542,7 @@ mod tests {
                     Some(serde_json::json!("private-payload"))
                 },
                 timestamp_ms: 17,
+                expected_event_sequence: 1,
             };
             store
                 .save_intervention("stored-jump", intervention.clone())
@@ -2723,31 +2737,25 @@ mod tests {
                 .await
                 .unwrap();
 
+            // A trace that already ended (a domain `Next` without a node is a
+            // terminal event) does not accept a manual resume command, and
+            // nothing is logged or changed.
+            if outcome_kind == "Next" {
+                let before = store_impl.load(trace_id).await.unwrap().unwrap();
+                let refused = axon
+                    .force_resume(trace_id, &target_node_id, None)
+                    .await
+                    .unwrap_err();
+                assert!(refused.contains("terminal"), "{refused}");
+                assert_eq!(store_impl.load(trace_id).await.unwrap().unwrap(), before);
+                assert!(events.lock().await.is_empty());
+                continue;
+            }
+
             // 1. Trigger force_resume (should log ForceResume)
             axon.force_resume(trace_id, &target_node_id, None)
                 .await
                 .unwrap();
-
-            // A manual resume command does not repair a missing result or
-            // authorize the executor to bypass recovery validation.
-            if outcome_kind == "Next" {
-                let before = store_impl.load(trace_id).await.unwrap().unwrap();
-                assert!(matches!(
-                    axon.execute(10, &(), &mut bus).await,
-                    crate::ExecutionReport::BlockedBeforeEffect {
-                        operation: crate::PersistenceOperation::RecoveryPayload,
-                        effect: crate::EffectBoundary::NotInvoked,
-                        ..
-                    }
-                ));
-                assert_eq!(store_impl.load(trace_id).await.unwrap().unwrap(), before);
-                let recorded = events.lock().await;
-                assert_eq!(recorded.len(), 1);
-                assert!(
-                    matches!(&recorded[0], InterventionEvent::ForceResume { workflow_id, .. } if workflow_id == trace_id)
-                );
-                continue;
-            }
 
             // 2. Execute (should log ApplyIntervention)
             assert!(matches!(
@@ -3553,6 +3561,7 @@ mod tests {
                     target_node: target_node_id.clone(),
                     payload_override: Some(serde_json::json!(100)),
                     timestamp_ms: 0,
+                    expected_event_sequence: 1,
                 },
             )
             .await

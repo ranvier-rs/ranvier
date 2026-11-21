@@ -98,6 +98,7 @@ fn expected(trace: &str) -> PersistedTrace {
             target_node: "recovery-node".into(),
             payload_override: Some(serde_json::json!({"prior": u64::MAX, "retained": true})),
             timestamp_ms: u64::MAX,
+            expected_event_sequence: 5,
         }],
         resumed_from_step: Some(1),
         completion: Some(CompletionState::Success),
@@ -159,7 +160,9 @@ async fn redis_recovery_worker() {
                     store.load(&trace).await.unwrap().is_none(),
                     "fresh fixture trace required"
                 );
-                for event in &contract.events {
+                // The intervention is bound to the revision before the terminal event.
+                let (terminal, journal) = contract.events.split_last().unwrap();
+                for event in journal {
                     store.append(event.clone()).await.unwrap();
                 }
                 let cursor = store.resume(&trace, 1).await.unwrap();
@@ -169,6 +172,7 @@ async fn redis_recovery_worker() {
                     .save_intervention(&trace, contract.interventions[0].clone())
                     .await
                     .unwrap();
+                store.append(terminal.clone()).await.unwrap();
                 store
                     .complete(&trace, CompletionState::Success)
                     .await

@@ -133,6 +133,7 @@ fn expected_trace(trace_id: &str) -> PersistedTrace {
             target_node: "synthetic-node".to_string(),
             payload_override: Some(serde_json::json!({ "approved": true, "source": "fixture" })),
             timestamp_ms: 1_700_000_000_100,
+            expected_event_sequence: 5,
         }],
         resumed_from_step: Some(2),
         completion: Some(CompletionState::Success),
@@ -151,7 +152,9 @@ async fn exercise<S: PersistenceStore>(
                 store.load(&trace_id).await?.is_none(),
                 "fixture trace already exists before seeding"
             );
-            for event in &expected.events {
+            // The intervention is bound to the revision before the terminal event.
+            let (terminal, journal) = expected.events.split_last().expect("fixture events");
+            for event in journal {
                 store.append(event.clone()).await.map_err(|error| {
                     anyhow::anyhow!("append step {} failed: {error:#}", event.step)
                 })?;
@@ -166,6 +169,10 @@ async fn exercise<S: PersistenceStore>(
                 .save_intervention(&trace_id, expected.interventions[0].clone())
                 .await
                 .map_err(|error| anyhow::anyhow!("save intervention failed: {error:#}"))?;
+            store
+                .append(terminal.clone())
+                .await
+                .map_err(|error| anyhow::anyhow!("append terminal failed: {error:#}"))?;
             store
                 .complete(&trace_id, CompletionState::Success)
                 .await

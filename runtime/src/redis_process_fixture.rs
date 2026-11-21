@@ -7,19 +7,37 @@ use tokio::{
     time::{Duration, sleep, timeout},
 };
 
-fn event(trace_id: &str, step: u64) -> PersistenceEnvelope {
+/// A v2 checkpoint. Competing writers use the same `sequence` with a
+/// different `step`, so exactly one of them can be acknowledged.
+fn event(trace_id: &str, sequence: u64, step: u64) -> PersistenceEnvelope {
     PersistenceEnvelope {
         trace_id: trace_id.into(),
         circuit: "ProcessFixture".into(),
         schematic_version: format!("process-version-{step}"),
-        event_sequence: step,
-        event_type: crate::PersistenceEventType::Result,
+        event_sequence: sequence,
+        event_type: crate::PersistenceEventType::Checkpoint,
         step,
         node_id: Some(format!("node-{step}")),
-        outcome_kind: "Next".into(),
+        outcome_kind: "Checkpoint".into(),
         timestamp_ms: u64::MAX,
         payload_hash: None,
         payload: Some(json!({"step": step, "large": u64::MAX})),
+    }
+}
+
+fn terminal(trace_id: &str, sequence: u64) -> PersistenceEnvelope {
+    PersistenceEnvelope {
+        trace_id: trace_id.into(),
+        circuit: "ProcessFixture".into(),
+        schematic_version: "process-terminal".into(),
+        event_sequence: sequence,
+        event_type: crate::PersistenceEventType::Terminal,
+        step: sequence,
+        node_id: None,
+        outcome_kind: "Success".into(),
+        timestamp_ms: u64::MAX,
+        payload_hash: None,
+        payload: None,
     }
 }
 
@@ -61,7 +79,7 @@ async fn isolated_process_worker() {
         });
         store.write_gate = Some(gate.clone());
         let mut channel = TcpStream::connect(address).await.unwrap();
-        let writer = tokio::spawn(async move { store.append(event(&trace, step)).await });
+        let writer = tokio::spawn(async move { store.append(event(&trace, 1, step)).await });
         gate.ready.acquire().await.unwrap().forget();
         send(
             &mut channel,
@@ -75,7 +93,14 @@ async fn isolated_process_worker() {
         gate.release.add_permits(1);
         let outcome = match writer.await.unwrap() {
             Ok(()) => "ack",
-            Err(error) if error.to_string().contains("concurrent persistence update") => "conflict",
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<PersistenceConflict>().map(|c| &c.kind),
+                    Some(PersistenceConflictKind::ConcurrentUpdate)
+                ) =>
+            {
+                "conflict"
+            }
             Err(error) => panic!("unexpected persistence outcome: {error}"),
         };
         send(
@@ -155,7 +180,7 @@ async fn redis_independent_process_appends_preserve_acknowledged_write() {
         .unwrap();
     for first_step in [1, 2] {
         let trace = format!("os-process-{}", uuid::Uuid::new_v4().simple());
-        observer.append(event(&trace, 0)).await.unwrap();
+        observer.append(event(&trace, 0, 0)).await.unwrap();
         observer.resume(&trace, 0).await.unwrap();
         observer
             .save_intervention(
@@ -164,6 +189,7 @@ async fn redis_independent_process_appends_preserve_acknowledged_write() {
                     target_node: "prior-node".into(),
                     payload_override: Some(json!({"prior": u64::MAX})),
                     timestamp_ms: u64::MAX,
+                    expected_event_sequence: 1,
                 },
             )
             .await
@@ -204,7 +230,7 @@ async fn redis_independent_process_appends_preserve_acknowledged_write() {
                     if index == 0 { "ack" } else { "conflict" }
                 );
                 if index == 0 {
-                    let accepted = event(&trace, *step);
+                    let accepted = event(&trace, 1, *step);
                     expected.schematic_version = accepted.schematic_version.clone();
                     expected.events.push(accepted);
                 }
@@ -212,6 +238,9 @@ async fn redis_independent_process_appends_preserve_acknowledged_write() {
             }
             first.finish().await;
             second.finish().await;
+            observer.append(terminal(&trace, 2)).await.unwrap();
+            expected.schematic_version = "process-terminal".into();
+            expected.events.push(terminal(&trace, 2));
             observer
                 .complete(&trace, CompletionState::Success)
                 .await
@@ -219,7 +248,7 @@ async fn redis_independent_process_appends_preserve_acknowledged_write() {
             expected.completion = Some(CompletionState::Success);
             assert!(
                 observer
-                    .append(event(&trace, 3))
+                    .append(event(&trace, 3, 3))
                     .await
                     .unwrap_err()
                     .to_string()
@@ -251,7 +280,7 @@ async fn redis_killed_pre_eval_process_preserves_seed_and_allows_fresh_writer() 
         .unwrap()
         .unwrap();
     let trace = format!("killed-process-{}", uuid::Uuid::new_v4().simple());
-    observer.append(event(&trace, 0)).await.unwrap();
+    observer.append(event(&trace, 0, 0)).await.unwrap();
     observer.resume(&trace, 0).await.unwrap();
     observer
         .save_intervention(
@@ -260,6 +289,7 @@ async fn redis_killed_pre_eval_process_preserves_seed_and_allows_fresh_writer() 
                 target_node: "kill-seed-node".into(),
                 payload_override: Some(json!({"prior": u64::MAX})),
                 timestamp_ms: u64::MAX,
+                expected_event_sequence: 1,
             },
         )
         .await
@@ -308,10 +338,13 @@ async fn redis_killed_pre_eval_process_preserves_seed_and_allows_fresh_writer() 
         assert_eq!(outcome["step"], 2);
         assert_eq!(outcome["outcome"], "ack");
         writer.finish().await;
-        let accepted = event(&trace, 2);
+        let accepted = event(&trace, 1, 2);
         expected.schematic_version = accepted.schematic_version.clone();
         expected.events.push(accepted);
         assert_eq!(fresh.load(&trace).await.unwrap().unwrap(), expected);
+        fresh.append(terminal(&trace, 2)).await.unwrap();
+        expected.schematic_version = "process-terminal".into();
+        expected.events.push(terminal(&trace, 2));
         fresh
             .complete(&trace, CompletionState::Success)
             .await

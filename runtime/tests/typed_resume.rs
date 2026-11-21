@@ -483,6 +483,7 @@ async fn manual_jump_requires_the_trace_input_and_uses_its_override() {
                     target_node: axon.schematic().nodes[2].id.clone(),
                     payload_override: Some(serde_json::json!(100)),
                     timestamp_ms: 0,
+                    expected_event_sequence: 1,
                 },
             )
             .await

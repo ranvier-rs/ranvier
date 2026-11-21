@@ -324,6 +324,18 @@ async fn completed_trace_blocks_normal_and_cancellation_effects_for_all_terminal
                 .await
                 .unwrap();
             store
+                .save_intervention(
+                    "completed",
+                    Intervention {
+                        target_node: axon.schematic().nodes[1].id.clone(),
+                        payload_override: Some(serde_json::json!(100)),
+                        timestamp_ms: 1,
+                        expected_event_sequence: 1,
+                    },
+                )
+                .await
+                .unwrap();
+            store
                 .append(PersistenceEnvelope {
                     trace_id: "completed".into(),
                     circuit: "CompletedGuard".into(),
@@ -337,17 +349,6 @@ async fn completed_trace_blocks_normal_and_cancellation_effects_for_all_terminal
                     payload_hash: None,
                     payload: None,
                 })
-                .await
-                .unwrap();
-            store
-                .save_intervention(
-                    "completed",
-                    Intervention {
-                        target_node: axon.schematic().nodes[1].id.clone(),
-                        payload_override: Some(serde_json::json!(100)),
-                        timestamp_ms: 1,
-                    },
-                )
                 .await
                 .unwrap();
             store

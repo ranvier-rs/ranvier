@@ -28,10 +28,10 @@
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2905,
+  "public_item_count": 2919,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2711,
+    "Experimental": 2725,
     "Stable Candidate": 186
   },
   "crates": [
@@ -29987,20 +29987,20 @@
         "schema",
         "streaming"
       ],
-      "public_item_count": 684,
+      "public_item_count": 698,
       "counts_by_kind": {
         "constant": 3,
-        "enum": 79,
+        "enum": 82,
         "function": 173,
         "module": 18,
-        "struct": 126,
-        "struct_field": 93,
+        "struct": 129,
+        "struct_field": 96,
         "trait": 18,
         "type_alias": 9,
-        "variant": 165
+        "variant": 170
       },
       "counts_by_stability": {
-        "Experimental": 667,
+        "Experimental": 681,
         "Stable Candidate": 17
       },
       "facade_reexport_count": 0,
@@ -33493,6 +33493,20 @@
           }
         },
         {
+          "path": "ranvier_runtime::persistence::Intervention::expected_event_sequence",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/persistence.rs"
+          }
+        },
+        {
           "path": "ranvier_runtime::persistence::Intervention::payload_override",
           "kind": "struct_field",
           "origin": "direct",
@@ -33691,6 +33705,132 @@
         {
           "path": "ranvier_runtime::persistence::PersistenceAutoComplete::0",
           "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/persistence.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::persistence::PersistenceConflict",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/persistence.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::persistence::PersistenceConflict::kind",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/persistence.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::persistence::PersistenceConflict::trace_id",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/persistence.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::persistence::PersistenceConflictKind",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/persistence.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::persistence::PersistenceConflictKind::Completed",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/persistence.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::persistence::PersistenceConflictKind::ConcurrentUpdate",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/persistence.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::persistence::PersistenceConflictKind::InterventionExists",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/persistence.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::persistence::PersistenceConflictKind::StaleRevision",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/persistence.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::persistence::PersistenceConflictKind::Terminal",
+          "kind": "variant",
           "origin": "direct",
           "target": null,
           "stability": "Experimental",
@@ -34445,6 +34585,34 @@
           }
         },
         {
+          "path": "ranvier_runtime::PersistenceConflict",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "persistence::PersistenceConflict",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::PersistenceConflictKind",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "persistence::PersistenceConflictKind",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier_runtime::PersistenceEnvelope",
           "kind": "struct",
           "origin": "reexport",
@@ -35107,6 +35275,34 @@
           "kind": "struct",
           "origin": "reexport",
           "target": "crate::persistence::PersistenceAutoComplete",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::prelude::PersistenceConflict",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "crate::persistence::PersistenceConflict",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::prelude::PersistenceConflictKind",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "crate::persistence::PersistenceConflictKind",
           "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": null,

@@ -1517,10 +1517,6 @@ async fn postgres_recovery_worker() {
                 .await
                 .unwrap();
             store
-                .append(terminal_event("recovery", 2, 2, "acknowledged", "Next"))
-                .await
-                .unwrap();
-            store
                 .save_intervention(
                     "recovery",
                     Intervention {
@@ -1529,8 +1525,13 @@ async fn postgres_recovery_worker() {
                             serde_json::json!({"fixture": [1, true, "retained"]}),
                         ),
                         timestamp_ms: 1100,
+                        expected_event_sequence: 2,
                     },
                 )
+                .await
+                .unwrap();
+            store
+                .append(terminal_event("recovery", 2, 2, "acknowledged", "Next"))
                 .await
                 .unwrap();
             store
@@ -1553,7 +1554,8 @@ async fn postgres_recovery_worker() {
                 vec![Intervention {
                     target_node: "recovery-node".into(),
                     payload_override: Some(serde_json::json!({"fixture": [1, true, "retained"]})),
-                    timestamp_ms: 1100
+                    timestamp_ms: 1100,
+                    expected_event_sequence: 2,
                 }]
             );
             let file = std::fs::OpenOptions::new()
@@ -2011,6 +2013,7 @@ async fn postgres_load_reads_one_snapshot_across_concurrent_append() {
         target_node: "review-node".into(),
         payload_override: Some(serde_json::json!({"case": "snapshot-review", "approved": false})),
         timestamp_ms: 1001,
+        expected_event_sequence: 2,
     };
     let intervened = if appended.is_ok() {
         writer
