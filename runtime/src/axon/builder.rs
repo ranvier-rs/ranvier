@@ -154,6 +154,54 @@ impl Axon<(), (), (), ()> {
 // Block 3: Config + Chain + Inspector/Schematic methods
 // ---------------------------------------------------------------------------
 
+/// How a step executor obtains its input.
+enum StepEntry<Out> {
+    /// Run this step with the given input (manual jump target or resumed step).
+    Run(Out),
+    /// Stop without running; the observation is already blocked.
+    Stop(&'static str, Option<serde_json::Value>),
+    /// Run the previous steps for the input.
+    Prev,
+}
+
+/// Shared manual-jump and resumption entry for step executors that wrap
+/// `run_this_step` (retry, timeout). Mirrors the handling in `then`.
+fn step_entry<Out: DeserializeOwned>(
+    bus: &Bus,
+    node_id: &str,
+    node_label: &str,
+    step_idx: u64,
+) -> StepEntry<Out> {
+    if let Some(jump) = bus.read::<ManualJump>()
+        && (jump.target_node == node_id || jump.target_node == node_label)
+    {
+        let decoded = jump
+            .payload_override
+            .clone()
+            .and_then(|payload| serde_json::from_value::<Out>(payload).ok());
+        return match decoded {
+            Some(state) => StepEntry::Run(state),
+            None => {
+                if let Some(active) = bus.read::<crate::execution_observation::ActiveObservation>()
+                {
+                    active.0.block(crate::PersistenceOperation::RecoveryPayload);
+                }
+                StepEntry::Stop("execution.jump.payload_error", None)
+            }
+        };
+    }
+    if let Some(start) = bus.read::<StartStep>()
+        && step_idx == start.0
+        && bus.read::<ResumptionState>().is_some()
+    {
+        return match super::resume_checkpoint::<Out>(bus) {
+            Some(state) => StepEntry::Run(state),
+            None => StepEntry::Stop("execution.resumption.payload_error", None),
+        };
+    }
+    StepEntry::Prev
+}
+
 impl<In, Out, E, Res> Axon<In, Out, E, Res>
 where
     In: Send + Sync + Serialize + DeserializeOwned + 'static,
@@ -663,11 +711,22 @@ where
                 let retry_policy = policy.clone();
 
                 Box::pin(async move {
-                    // Run previous step
-                    let prev_result = prev(input, res, bus).await;
-                    let state = match prev_result {
-                        Outcome::Next(t) => t,
-                        other => return other.map(|_| unreachable!()),
+                    // A manual jump target or the resumed step starts from its
+                    // own input; earlier steps are not run again.
+                    let state = match step_entry::<Out>(
+                        bus,
+                        &timeline_node_id,
+                        &timeline_node_label,
+                        step_idx,
+                    ) {
+                        StepEntry::Run(state) => state,
+                        StepEntry::Stop(event, payload) => {
+                            return Outcome::emit(event, payload);
+                        }
+                        StepEntry::Prev => match prev(input, res, bus).await {
+                            Outcome::Next(t) => t,
+                            other => return other.map(|_| unreachable!()),
+                        },
                     };
 
                     // Attempt with retries
@@ -841,11 +900,22 @@ where
                 let error_factory = make_timeout_error.clone();
 
                 Box::pin(async move {
-                    // Run previous step
-                    let prev_result = prev(input, res, bus).await;
-                    let state = match prev_result {
-                        Outcome::Next(t) => t,
-                        other => return other.map(|_| unreachable!()),
+                    // A manual jump target or the resumed step starts from its
+                    // own input; earlier steps are not run again.
+                    let state = match step_entry::<Out>(
+                        bus,
+                        &timeline_node_id,
+                        &timeline_node_label,
+                        step_idx,
+                    ) {
+                        StepEntry::Run(state) => state,
+                        StepEntry::Stop(event, payload) => {
+                            return Outcome::emit(event, payload);
+                        }
+                        StepEntry::Prev => match prev(input, res, bus).await {
+                            Outcome::Next(t) => t,
+                            other => return other.map(|_| unreachable!()),
+                        },
                     };
 
                     // Execute with timeout

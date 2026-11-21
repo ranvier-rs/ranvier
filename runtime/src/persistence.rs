@@ -460,6 +460,88 @@ impl PersistedTrace {
             .iter()
             .find(|intervention| intervention.expected_event_sequence == revision)
     }
+
+    /// Classify this trace for reconciliation.
+    ///
+    /// Uses the same rules the runtime applies before executing a trace. The
+    /// result only describes the stored history; it does not change it and it
+    /// does not say whether an external effect ran. See the persistence
+    /// operations runbook for the procedure for each state.
+    pub fn reconciliation(&self) -> TraceReconciliation {
+        if self.format_version != PERSISTENCE_FORMAT_VERSION {
+            return TraceReconciliation::Invalid {
+                reason: format!(
+                    "unsupported persistence format version {}",
+                    self.format_version
+                ),
+            };
+        }
+        let pending = match validate_event_sequence(&self.events, false) {
+            Ok(pending) => pending,
+            Err(error) => {
+                return TraceReconciliation::Invalid {
+                    reason: format!("invalid event history: {error:?}"),
+                };
+            }
+        };
+        let terminal = self
+            .events
+            .iter()
+            .any(|event| event.event_type == PersistenceEventType::Terminal);
+        if let Some(completion) = &self.completion {
+            return if terminal {
+                TraceReconciliation::Completed(completion.clone())
+            } else {
+                TraceReconciliation::CompletedWithoutTerminal
+            };
+        }
+        if let Some(intent) = self.events.iter().rev().find(|event| {
+            event.event_type == PersistenceEventType::Intent
+                && event
+                    .node_id
+                    .as_ref()
+                    .is_some_and(|node| pending.contains(&(event.step, node.clone())))
+        }) {
+            return TraceReconciliation::PendingIntent {
+                event_sequence: intent.event_sequence,
+                step: intent.step,
+                node_id: intent.node_id.clone(),
+            };
+        }
+        if terminal {
+            TraceReconciliation::TerminalWithoutCompletion
+        } else {
+            TraceReconciliation::Open
+        }
+    }
+}
+
+/// Reconciliation state of a stored trace, from
+/// [`PersistedTrace::reconciliation`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TraceReconciliation {
+    /// No open intent and no terminal event: an execution may run or resume.
+    Open,
+    /// An effect intent has no result. The effect may have run; confirm it in
+    /// the external system before writing a result. The newest open intent is
+    /// reported.
+    PendingIntent {
+        event_sequence: u64,
+        step: u64,
+        node_id: Option<String>,
+    },
+    /// The terminal event is recorded but completion is not, for example
+    /// after a lost completion acknowledgement.
+    TerminalWithoutCompletion,
+    /// The trace is complete.
+    Completed(CompletionState),
+    /// Completion is recorded without a terminal event; the runtime refuses
+    /// to execute it.
+    CompletedWithoutTerminal,
+    /// The history does not follow the current format; the runtime refuses
+    /// to execute it.
+    Invalid { reason: String },
 }
 
 /// Resume cursor returned from [`PersistenceStore::resume`].
@@ -568,6 +650,23 @@ impl Default for CompensationRetryPolicy {
         }
     }
 }
+
+/// Upper bound on the time one execution spends in cleanup.
+///
+/// Insert into the Bus before execution. Cleanup is Saga rollback and external
+/// compensation after a fault, and the cleanup that follows cancellation. The
+/// window starts when cleanup first starts and covers every cleanup step of
+/// the invocation, including compensation retries and their backoff.
+///
+/// When the window closes, a running handler is dropped and reported as
+/// `SagaRollbackOutcome::InProgress`; handlers not yet started are
+/// `NotInvoked`. The compensation intent stays open, no terminal event or
+/// completion is written, and the execution is reported `Unconfirmed` for
+/// reconciliation. The budget bounds how long cleanup runs; it does not cancel
+/// an external effect. Without this resource cleanup is unbounded. Streaming
+/// supervision uses the same window with its own grace period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CleanupBudget(pub std::time::Duration);
 
 /// Compensation hook contract for irreversible side effects.
 ///

@@ -1303,7 +1303,6 @@ where
 
     /// One invocation deadline across every Saga rollback entry, including prefix cleanup.
     async fn rollback_saga(&self, resources: &Res, bus: &mut Bus, trace_id: &str) {
-        #[cfg(feature = "streaming")]
         {
             bus.clear_access_policy();
             let active = bus

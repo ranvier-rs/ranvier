@@ -726,6 +726,50 @@ enum NodeRetryOwner {
 /// Record and confirm the input to one effectful transition before invoking it.
 /// No configured store preserves legacy execution behavior, but a configured
 /// store is a hard precondition for the effect.
+/// Records an interrupted effect when a step future is dropped after its
+/// intent was acknowledged and before its result write starts, for example
+/// by `then_with_timeout`. The execution then stops like a lost result
+/// acknowledgement: no DLQ, compensation or terminal history. Cancellation is
+/// left to `finish_cancellation`, which finds the open intent on reload.
+struct EffectResultGuard {
+    observation: Option<Arc<crate::execution_observation::Observation>>,
+    token: Option<ranvier_core::cancellation::CancellationToken>,
+}
+
+impl EffectResultGuard {
+    fn arm(bus: &Bus) -> Self {
+        let observation = bus
+            .read::<PersistenceHandle>()
+            .and(bus.read::<crate::execution_observation::ActiveObservation>())
+            .map(|active| active.0.clone());
+        Self {
+            observation,
+            token: bus.cancellation_token().cloned(),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.observation = None;
+    }
+}
+
+impl Drop for EffectResultGuard {
+    fn drop(&mut self) {
+        let Some(observation) = self.observation.take() else {
+            return;
+        };
+        if std::thread::panicking()
+            || self
+                .token
+                .as_ref()
+                .is_some_and(ranvier_core::cancellation::CancellationToken::is_cancelled)
+        {
+            return;
+        }
+        observation.effect_interrupted();
+    }
+}
+
 async fn persist_effect_intent<In: serde::Serialize>(
     state: &In,
     bus: &Bus,
@@ -895,6 +939,7 @@ where
     if !persist_effect_intent(&state, bus, node_id, step_idx).await {
         return Outcome::emit("execution.persistence.intent_unconfirmed", None);
     }
+    let mut effect_guard = EffectResultGuard::arm(bus);
     if let Some(observation) = bus.read::<crate::execution_observation::ActiveObservation>() {
         observation.0.effect();
     }
@@ -1037,6 +1082,7 @@ where
             .map(|s| s.schema_version.clone())
             .unwrap_or_default();
 
+        effect_guard.disarm();
         persist_encoded_execution_event(
             handle,
             &trace_id,
@@ -1207,6 +1253,7 @@ where
     if !persist_effect_intent(&state, bus, node_id, step_idx).await {
         return Outcome::emit("execution.persistence.intent_unconfirmed", None);
     }
+    let mut effect_guard = EffectResultGuard::arm(bus);
     if let Some(observation) = bus.read::<crate::execution_observation::ActiveObservation>() {
         observation.0.effect();
     }
@@ -1249,6 +1296,7 @@ where
             .map(|s| s.schema_version.clone())
             .unwrap_or_default();
 
+        effect_guard.disarm();
         persist_encoded_execution_event(
             handle,
             &trace_id,
@@ -1310,36 +1358,23 @@ where
                 return result;
             }
             use futures_util::FutureExt as _;
-            #[cfg(feature = "streaming")]
             let active = bus
                 .read::<crate::execution_observation::ActiveObservation>()
                 .cloned();
-            #[cfg(feature = "streaming")]
             let deadline = active.as_ref().and_then(|active| active.0.begin_cleanup());
-            #[cfg(feature = "streaming")]
             if deadline.is_some() {
                 bus.set_cancellation_token(ranvier_core::CancellationToken::new());
             }
-            #[cfg(feature = "streaming")]
             let not_invoked =
                 deadline.is_some_and(|deadline| deadline <= tokio::time::Instant::now());
-            #[cfg(not(feature = "streaming"))]
-            let not_invoked = false;
             let compensation_result = {
                 let cleanup =
                     std::panic::AssertUnwindSafe(async { comp.run(state, res, bus).await })
                         .catch_unwind();
-                #[cfg(feature = "streaming")]
-                {
-                    match deadline {
-                        Some(_) if not_invoked => None,
-                        Some(deadline) => tokio::time::timeout_at(deadline, cleanup).await.ok(),
-                        None => Some(cleanup.await),
-                    }
-                }
-                #[cfg(not(feature = "streaming"))]
-                {
-                    Some(cleanup.await)
+                match deadline {
+                    Some(_) if not_invoked => None,
+                    Some(deadline) => tokio::time::timeout_at(deadline, cleanup).await.ok(),
+                    None => Some(cleanup.await),
                 }
             };
             bus.clear_access_policy();
@@ -1711,7 +1746,6 @@ async fn run_compensation(
     let index = journal
         .as_ref()
         .map(|journal| journal.push_external(recovery.clone()));
-    #[cfg(feature = "streaming")]
     let deadline = observation
         .as_ref()
         .and_then(|active| active.begin_cleanup());
@@ -1728,17 +1762,10 @@ async fn run_compensation(
             .await
         })
         .catch_unwind();
-        #[cfg(feature = "streaming")]
-        {
-            match deadline {
-                Some(deadline) if deadline <= tokio::time::Instant::now() => None,
-                Some(deadline) => tokio::time::timeout_at(deadline, cleanup).await.ok(),
-                None => Some(cleanup.await),
-            }
-        }
-        #[cfg(not(feature = "streaming"))]
-        {
-            Some(cleanup.await)
+        match deadline {
+            Some(deadline) if deadline <= tokio::time::Instant::now() => None,
+            Some(deadline) => tokio::time::timeout_at(deadline, cleanup).await.ok(),
+            None => Some(cleanup.await),
         }
     };
     let outcome = match result {
@@ -1753,7 +1780,6 @@ async fn run_compensation(
         }
         None => SagaRollbackOutcome::NotInvoked,
     };
-    #[cfg(feature = "streaming")]
     if result.is_none() {
         if let Some(active) = &observation {
             active.cleanup_expired();

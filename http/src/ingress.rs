@@ -7525,6 +7525,91 @@ mod tests {
             .expect("server shutdown");
     }
 
+    // P2-5 X13: a shutdown that cancels an in-flight execution runs its
+    // cleanup inside the configured `CleanupBudget`, well before the drain
+    // deadline, even when the compensation hook never returns.
+    #[tokio::test]
+    async fn managed_shutdown_cleanup_is_bounded_by_cleanup_budget() {
+        #[derive(Clone)]
+        struct WaitForShutdown(Arc<tokio::sync::Notify>);
+
+        #[async_trait]
+        impl Transition<(), String> for WaitForShutdown {
+            type Error = String;
+            type Resources = ();
+
+            async fn run(&self, _: (), _: &(), _: &mut Bus) -> Outcome<String, String> {
+                self.0.notify_one();
+                std::future::pending::<()>().await;
+                Outcome::Next("unreachable".to_string())
+            }
+        }
+
+        #[derive(Clone)]
+        struct HangCompensation(Arc<std::sync::atomic::AtomicUsize>);
+
+        #[async_trait]
+        impl ranvier_runtime::CompensationHook for HangCompensation {
+            async fn compensate(
+                &self,
+                _: ranvier_runtime::CompensationContext,
+            ) -> anyhow::Result<()> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                std::future::pending().await
+            }
+        }
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
+        let addr = probe.local_addr().expect("local addr");
+        drop(probe);
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let hooks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hook = HangCompensation(hooks.clone());
+        let token = CancellationToken::new();
+        let ingress = HttpIngress::<()>::new()
+            .bind(addr.to_string())
+            .graceful_shutdown(Duration::from_secs(5))
+            .bus_injector(move |_, bus| {
+                bus.insert(ranvier_runtime::CompensationHandle::from_hook(hook.clone()));
+                bus.insert(ranvier_runtime::CleanupBudget(Duration::from_millis(200)));
+            })
+            .get(
+                "/wait",
+                Axon::<(), (), String, ()>::new("ShutdownCleanupBudget")
+                    .then(WaitForShutdown(entered.clone())),
+            );
+        let server_token = token.clone();
+        let server =
+            tokio::spawn(async move { ingress.run_with_cancellation((), server_token).await });
+
+        let mut stream = connect_with_retry(addr).await;
+        stream
+            .write_all(
+                b"GET /wait HTTP/1.1
+Host: localhost
+Connection: close
+
+",
+            )
+            .await
+            .expect("write request");
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .expect("Axon should start");
+        let started = std::time::Instant::now();
+        assert!(token.cancel(CancellationReason::OperatorShutdown));
+
+        let mut response = Vec::new();
+        let _ = stream.read_to_end(&mut response).await;
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("cleanup budget, not the 5 s drain deadline, ends the shutdown")
+            .expect("server join")
+            .expect("server shutdown");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(hooks.load(Ordering::SeqCst), 1);
+    }
+
     // ── Range request tests ─────────────────────────────────────────
 
     fn extract_body(response: Response<Full<Bytes>>) -> Bytes {

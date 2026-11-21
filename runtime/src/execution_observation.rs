@@ -17,15 +17,13 @@ pub(crate) struct Observation {
     blocked: AtomicBool,
     unconfirmed_result_write: AtomicBool,
     encoding_failed: AtomicBool,
-    #[cfg(feature = "streaming")]
-    cleanup_budget: Mutex<Option<CleanupBudget>>,
+    cleanup_budget: Mutex<Option<CleanupWindow>>,
     #[cfg(feature = "streaming")]
     cleanup_observer:
         Mutex<Option<tokio::sync::watch::Sender<crate::streaming_recovery::SupervisorObservation>>>,
 }
 
-#[cfg(feature = "streaming")]
-struct CleanupBudget {
+struct CleanupWindow {
     grace: std::time::Duration,
     deadline: Option<tokio::time::Instant>,
 }
@@ -602,12 +600,11 @@ mod tests {
 }
 
 impl Observation {
-    #[cfg(feature = "streaming")]
     pub(crate) fn configure_cleanup(&self, grace: std::time::Duration) {
         self.cleanup_budget
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .get_or_insert(CleanupBudget {
+            .get_or_insert(CleanupWindow {
                 grace,
                 deadline: None,
             });
@@ -622,7 +619,6 @@ impl Observation {
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = Some(sender);
     }
-    #[cfg(feature = "streaming")]
     pub(crate) fn begin_cleanup(&self) -> Option<tokio::time::Instant> {
         let deadline = {
             let mut budget = self
@@ -636,6 +632,7 @@ impl Observation {
                 })
             })
         };
+        #[cfg(feature = "streaming")]
         if deadline.is_some() {
             if let Some(sender) = self
                 .cleanup_observer
@@ -650,8 +647,8 @@ impl Observation {
         }
         deadline
     }
-    #[cfg(feature = "streaming")]
     pub(crate) fn cleanup_expired(&self) {
+        #[cfg(feature = "streaming")]
         if let Some(sender) = self
             .cleanup_observer
             .lock()
@@ -694,6 +691,11 @@ impl Observation {
     }
     pub(crate) fn effect(&self) {
         self.effect.store(true, Ordering::SeqCst);
+    }
+    /// An effect whose intent was acknowledged stopped before its result
+    /// write started: the effect may have run and its result is unrecorded.
+    pub(crate) fn effect_interrupted(&self) {
+        self.failed_store_operation(PersistenceOperation::Result);
     }
     pub(crate) fn block(&self, operation: PersistenceOperation) {
         self.failed(operation);
@@ -1006,6 +1008,10 @@ impl Session {
             (None, None)
         };
         let observation = Arc::new(Observation::default());
+        // A nested invocation runs inside its parent's cleanup window.
+        if !nested && let Some(budget) = bus.read::<crate::persistence::CleanupBudget>() {
+            observation.configure_cleanup(budget.0);
+        }
         if let Some(handle) = &original {
             bus.insert(handle.observed(observation.clone()));
         }

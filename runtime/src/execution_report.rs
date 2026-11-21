@@ -39,7 +39,6 @@ pub enum PersistenceOperation {
     Complete,
     CompensationRead,
     CompensationWrite,
-    CancellationCursor,
 }
 
 /// Whether execution may already have invoked a business or cleanup effect.
@@ -230,7 +229,6 @@ mod tests {
                 PersistenceOperation::Complete,
                 PersistenceOperation::CompensationRead,
                 PersistenceOperation::CompensationWrite,
-                PersistenceOperation::CancellationCursor,
             ] {
                 reports.push(ExecutionReport::Unconfirmed {
                     result: String::from("known"),

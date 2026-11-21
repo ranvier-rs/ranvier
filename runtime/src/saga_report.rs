@@ -1081,7 +1081,6 @@ impl SagaRollbackJournal {
         }
     }
     /// An exhausted budget cannot reuse a previous finished bit for newly queued work.
-    #[cfg(feature = "streaming")]
     pub(crate) fn mark_unfinished(&self) {
         self.0.lock().unwrap_or_else(|p| p.into_inner()).finished = false;
     }
