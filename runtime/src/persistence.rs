@@ -16,7 +16,7 @@ pub const PERSISTENCE_FORMAT_VERSION: u16 = 2;
 ///
 /// `step` remains the logical schematic step. `event_sequence` provides a
 /// unique, ordered identity when several protocol events belong to one step.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PersistenceEventType {
     Enter,
@@ -26,10 +26,6 @@ pub enum PersistenceEventType {
     Checkpoint,
     Terminal,
     Compensation,
-    /// Used only when decoding an unversioned legacy Redis value. Such a trace
-    /// is rejected by the v2 runtime before recovery or effects.
-    #[default]
-    LegacyUnknown,
 }
 
 pub(crate) fn persistence_event_type_for(
@@ -164,9 +160,6 @@ fn apply_event_to_pending(
     event: &PersistenceEnvelope,
     pending_intents: &mut HashSet<(u64, String)>,
 ) -> Result<(), TraceValidationError> {
-    if event.event_type == PersistenceEventType::LegacyUnknown {
-        return Err(TraceValidationError::UnsupportedFormat);
-    }
     match event.event_type {
         PersistenceEventType::Enter => {
             if !pending_intents.is_empty() {
@@ -205,9 +198,6 @@ fn apply_event_to_pending(
             if !pending_intents.is_empty() {
                 return Err(TraceValidationError::PendingIntent);
             }
-        }
-        PersistenceEventType::LegacyUnknown => {
-            return Err(TraceValidationError::UnsupportedFormat);
         }
     }
     Ok(())
@@ -280,6 +270,63 @@ impl std::fmt::Display for PersistenceConflict {
 
 impl std::error::Error for PersistenceConflict {}
 
+/// A persistence store whose stored format this build does not support.
+///
+/// The built-in PostgreSQL and Redis stores record the store format once, in
+/// a marker outside the versioned tables or keys, and check it before any
+/// trace operation (`ensure_schema()` at startup, otherwise once per store
+/// instance). They return this value inside [`anyhow::Error`]; recover it with
+/// `error.downcast_ref::<StoreFormatError>()`. Nothing is written when a check
+/// fails. Version 1 data is not supported and is never migrated: start on a
+/// new or emptied store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StoreFormatError {
+    /// The store has no format marker and holds version 1 data at `location`
+    /// (a table or key).
+    LegacyData { location: String },
+    /// The format marker holds `found`, not this build's
+    /// [`PERSISTENCE_FORMAT_VERSION`]. A later Ranvier version initialized
+    /// the store, or the marker was changed by hand.
+    UnsupportedVersion { found: String },
+    /// The store has no format marker and this operation does not create one.
+    /// Call `ensure_schema()` at startup.
+    NotInitialized,
+}
+
+impl std::fmt::Display for StoreFormatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StoreFormatError::LegacyData { location } => write!(
+                f,
+                "persistence store holds version 1 data at {location}; version 1 data is not supported: use a new table or key prefix, or remove the version 1 data, then start again"
+            ),
+            StoreFormatError::UnsupportedVersion { found } => write!(
+                f,
+                "persistence store format marker is {found:?} but this build supports format {PERSISTENCE_FORMAT_VERSION}; the store was initialized by a different Ranvier version"
+            ),
+            StoreFormatError::NotInitialized => write!(
+                f,
+                "persistence store has no format marker; call ensure_schema() at startup before using the store"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StoreFormatError {}
+
+#[cfg(any(feature = "persistence-postgres", feature = "persistence-redis"))]
+fn format_marker_matches(found: &str) -> Result<()> {
+    if found == PERSISTENCE_FORMAT_VERSION.to_string() {
+        Ok(())
+    } else {
+        Err(StoreFormatError::UnsupportedVersion {
+            found: found.to_owned(),
+        }
+        .into())
+    }
+}
+
 fn conflict(trace_id: &str, kind: PersistenceConflictKind) -> anyhow::Error {
     anyhow::Error::new(PersistenceConflict {
         trace_id: trace_id.to_owned(),
@@ -350,7 +397,6 @@ pub struct PersistenceEnvelope {
     #[serde(default)]
     pub event_sequence: u64,
     /// Protocol role, kept separate from the domain `outcome_kind`.
-    #[serde(default)]
     pub event_type: PersistenceEventType,
     pub step: u64,
     pub node_id: Option<String>,
@@ -414,7 +460,6 @@ fn persistence_event_type_to_db(event_type: PersistenceEventType) -> &'static st
         PersistenceEventType::Checkpoint => "checkpoint",
         PersistenceEventType::Terminal => "terminal",
         PersistenceEventType::Compensation => "compensation",
-        PersistenceEventType::LegacyUnknown => "legacy_unknown",
     }
 }
 
@@ -437,8 +482,6 @@ pub struct PersistedTrace {
     pub trace_id: String,
     pub circuit: String,
     /// Storage format version, not the user-authored schematic version.
-    /// Missing versions decode as legacy v1 so callers fail closed.
-    #[serde(default = "legacy_persistence_format_version")]
     pub format_version: u16,
     /// The schematic version of the last appended event.
     pub schematic_version: String,
@@ -446,10 +489,6 @@ pub struct PersistedTrace {
     pub interventions: Vec<Intervention>,
     pub resumed_from_step: Option<u64>,
     pub completion: Option<CompletionState>,
-}
-
-fn legacy_persistence_format_version() -> u16 {
-    1
 }
 
 impl PersistedTrace {
@@ -1335,11 +1374,6 @@ impl PersistenceStore for InMemoryPersistenceStore {
                     0,
                 ));
             }
-            if envelope.event_type == PersistenceEventType::LegacyUnknown {
-                return Err(anyhow!(
-                    "legacy event type cannot be appended to a v2 trace"
-                ));
-            }
             validate_persistence_append(&[], &envelope)?;
             guard.insert(
                 envelope.trace_id.clone(),
@@ -1385,11 +1419,6 @@ impl PersistenceStore for InMemoryPersistenceStore {
                 &envelope.trace_id,
                 envelope.event_sequence,
                 expected_sequence,
-            ));
-        }
-        if envelope.event_type == PersistenceEventType::LegacyUnknown {
-            return Err(anyhow!(
-                "legacy event type cannot be appended to a v2 trace"
             ));
         }
         validate_persistence_append(&entry.events, &envelope)?;
@@ -1455,6 +1484,8 @@ pub struct PostgresPersistenceStore {
     legacy_events_table: PostgresRelation,
     legacy_state_table: PostgresRelation,
     legacy_interventions_table: PostgresRelation,
+    format_table: PostgresRelation,
+    format_ready: Arc<tokio::sync::OnceCell<()>>,
 }
 
 #[cfg(feature = "persistence-postgres")]
@@ -1526,6 +1557,7 @@ impl PostgresPersistenceStore {
             PostgresRelation::from_prefix(&prefix, "_events"),
             PostgresRelation::from_prefix(&prefix, "_state"),
             PostgresRelation::from_prefix(&prefix, "_interventions"),
+            PostgresRelation::from_prefix(&prefix, "_format"),
         ];
         reject_postgres_relation_group_if_any_is_invalid(&mut relations);
         let [
@@ -1535,6 +1567,7 @@ impl PostgresPersistenceStore {
             legacy_events_table,
             legacy_state_table,
             legacy_interventions_table,
+            format_table,
         ] = relations;
         Self {
             pool,
@@ -1544,46 +1577,122 @@ impl PostgresPersistenceStore {
             legacy_events_table,
             legacy_state_table,
             legacy_interventions_table,
+            format_table,
+            format_ready: Arc::new(tokio::sync::OnceCell::new()),
         }
     }
 
-    async fn reject_legacy_trace(&self, trace_id: &str) -> Result<()> {
+    async fn relation_exists(conn: &mut sqlx::PgConnection, relation: &str) -> Result<bool> {
+        Ok(
+            sqlx::query_scalar::<_, bool>("SELECT to_regclass($1) IS NOT NULL")
+                .bind(relation)
+                .fetch_one(&mut *conn)
+                .await?,
+        )
+    }
+
+    async fn read_format(
+        conn: &mut sqlx::PgConnection,
+        format_table: &str,
+    ) -> Result<Option<String>> {
+        if !Self::relation_exists(conn, format_table).await? {
+            return Ok(None);
+        }
+        let query = format!("SELECT format_version::text FROM {format_table} WHERE id = 1");
+        Ok(sqlx::query_scalar::<_, Option<String>>(&query)
+            .fetch_optional(&mut *conn)
+            .await?
+            .map(Option::unwrap_or_default))
+    }
+
+    /// Check the store format marker and the version 1 tables. With
+    /// `initialize`, create the marker on a store that has none.
+    async fn check_format(&self, conn: &mut sqlx::PgConnection, initialize: bool) -> Result<()> {
+        let format_table = self.format_table.sql()?;
+        let marker = Self::read_format(conn, format_table).await?;
+        if let Some(found) = &marker {
+            format_marker_matches(found)?;
+        }
+        // Checked even when the marker matches: a downgraded v0.51.x binary
+        // writes version 1 tables and ignores the marker. The check costs
+        // three catalog lookups.
         for relation in [
             &self.legacy_state_table,
             &self.legacy_events_table,
             &self.legacy_interventions_table,
         ] {
-            let query = format!(
-                "SELECT EXISTS (SELECT 1 FROM {} WHERE trace_id = $1)",
-                relation.sql()?
-            );
-            let found = match sqlx::query_scalar::<_, bool>(&query)
-                .bind(trace_id)
-                .fetch_one(&self.pool)
-                .await
-            {
-                Ok(found) => found,
-                // A new installation has no v1 relations. Missing legacy tables
-                // are distinct from all other query errors and are safe to ignore.
-                Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("42P01") => {
-                    false
+            let relation = relation.sql()?;
+            if Self::relation_exists(conn, relation).await? {
+                let query = format!("SELECT EXISTS (SELECT 1 FROM {relation})");
+                if sqlx::query_scalar::<_, bool>(&query)
+                    .fetch_one(&mut *conn)
+                    .await?
+                {
+                    return Err(StoreFormatError::LegacyData {
+                        location: relation.to_owned(),
+                    }
+                    .into());
                 }
-                Err(error) => return Err(error.into()),
-            };
-            if found {
-                return Err(anyhow!(
-                    "trace_id {trace_id} exists in the legacy v1 persistence namespace; reconcile it before v2 use"
-                ));
             }
         }
+        if marker.is_some() {
+            return Ok(());
+        }
+        if !initialize {
+            return Err(StoreFormatError::NotInitialized.into());
+        }
+        let create = format!(
+            "CREATE TABLE IF NOT EXISTS {format_table} (
+                id SMALLINT PRIMARY KEY CHECK (id = 1),
+                format_version INTEGER NOT NULL
+            )"
+        );
+        sqlx::query(&create).execute(&mut *conn).await?;
+        let insert = format!(
+            "INSERT INTO {format_table} (id, format_version) VALUES (1, $1) ON CONFLICT (id) DO NOTHING"
+        );
+        sqlx::query(&insert)
+            .bind(i32::from(PERSISTENCE_FORMAT_VERSION))
+            .execute(&mut *conn)
+            .await?;
+        match Self::read_format(conn, format_table).await? {
+            Some(found) => format_marker_matches(&found),
+            None => Err(StoreFormatError::NotInitialized.into()),
+        }
+    }
+
+    /// Run the format check once per store instance (shared by clones).
+    async fn format_ready(&self) -> Result<()> {
+        // Reject an invalid prefix before using the pool.
+        self.format_table.sql()?;
+        self.format_ready
+            .get_or_try_init(|| async {
+                let mut conn = self.pool.acquire().await?;
+                self.check_format(&mut conn, false).await
+            })
+            .await?;
         Ok(())
     }
 
-    /// Initialize adapter tables when absent.
+    /// Check the store format and create the adapter tables when absent.
+    ///
+    /// Call once at startup. Refuses, without writing anything, a store whose
+    /// format marker names another version or whose version 1 tables hold
+    /// rows ([`StoreFormatError`]); the version 1 tables are checked on every
+    /// call. On a store without a marker it records this build's format. Concurrent calls are serialized with a
+    /// transaction-scoped advisory lock. Existing tables are not altered or
+    /// migrated.
     pub async fn ensure_schema(&self) -> Result<()> {
         let state_table = self.state_table.sql()?;
         let events_table = self.events_table.sql()?;
         let interventions_table = self.interventions_table.sql()?;
+        let format_table = self.format_table.sql()?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(format_table)
+            .execute(&mut *tx)
+            .await?;
+        self.check_format(&mut tx, true).await?;
         let create_state = format!(
             "CREATE TABLE IF NOT EXISTS {} (
                 trace_id TEXT PRIMARY KEY,
@@ -1595,7 +1704,7 @@ impl PostgresPersistenceStore {
             )",
             state_table
         );
-        sqlx::query(&create_state).execute(&self.pool).await?;
+        sqlx::query(&create_state).execute(&mut *tx).await?;
 
         let create_events = format!(
             "CREATE TABLE IF NOT EXISTS {} (
@@ -1614,7 +1723,7 @@ impl PostgresPersistenceStore {
             )",
             events_table
         );
-        sqlx::query(&create_events).execute(&self.pool).await?;
+        sqlx::query(&create_events).execute(&mut *tx).await?;
 
         let create_interventions = format!(
             "CREATE TABLE IF NOT EXISTS {} (
@@ -1628,9 +1737,7 @@ impl PostgresPersistenceStore {
             )",
             interventions_table, state_table
         );
-        sqlx::query(&create_interventions)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(&create_interventions).execute(&mut *tx).await?;
         // `CREATE TABLE IF NOT EXISTS` keeps a table created by an earlier
         // build. Such tables are not migrated (no prior data is supported);
         // refuse them here instead of failing on the first intervention.
@@ -1638,12 +1745,14 @@ impl PostgresPersistenceStore {
             "SELECT expected_event_sequence FROM {} LIMIT 0",
             interventions_table
         );
-        sqlx::query(&probe).execute(&self.pool).await.map_err(|error| {
+        sqlx::query(&probe).execute(&mut *tx).await.map_err(|error| {
             anyhow!(
                 "interventions table {interventions_table} predates revision-bound interventions; recreate the persistence tables: {error}"
             )
         })?;
 
+        tx.commit().await?;
+        let _ = self.format_ready.set(());
         Ok(())
     }
 }
@@ -1661,13 +1770,8 @@ fn postgres_event_sequence_is_contiguous(count: i64, max_sequence: Option<i64>) 
 #[async_trait]
 impl PersistenceStore for PostgresPersistenceStore {
     async fn append(&self, envelope: PersistenceEnvelope) -> Result<()> {
+        self.format_ready().await?;
         // Validate representability before creating any persistent state.
-        self.reject_legacy_trace(&envelope.trace_id).await?;
-        if envelope.event_type == PersistenceEventType::LegacyUnknown {
-            return Err(anyhow!(
-                "legacy event type cannot be appended to a v2 trace"
-            ));
-        }
         let event_sequence_i64 = i64::try_from(envelope.event_sequence)?;
         let step_i64 = i64::try_from(envelope.step)?;
         let ts_i64 = i64::try_from(envelope.timestamp_ms)?;
@@ -1797,7 +1901,7 @@ impl PersistenceStore for PostgresPersistenceStore {
     }
 
     async fn load(&self, trace_id: &str) -> Result<Option<PersistedTrace>> {
-        self.reject_legacy_trace(trace_id).await?;
+        self.format_ready().await?;
         // State, events and interventions must represent the same MVCC snapshot.
         let state_table = self.state_table.sql()?;
         let events_table = self.events_table.sql()?;
@@ -1898,7 +2002,7 @@ impl PersistenceStore for PostgresPersistenceStore {
     }
 
     async fn resume(&self, trace_id: &str, resume_from_step: u64) -> Result<ResumeCursor> {
-        self.reject_legacy_trace(trace_id).await?;
+        self.format_ready().await?;
         let state_table = self.state_table.sql()?;
         let events_table = self.events_table.sql()?;
         let mut transaction = self.pool.begin().await?;
@@ -1971,7 +2075,7 @@ impl PersistenceStore for PostgresPersistenceStore {
     }
 
     async fn complete(&self, trace_id: &str, completion: CompletionState) -> Result<()> {
-        self.reject_legacy_trace(trace_id).await?;
+        self.format_ready().await?;
         let state_table = self.state_table.sql()?;
         let events_table = self.events_table.sql()?;
         let mut transaction = self.pool.begin().await?;
@@ -2047,7 +2151,7 @@ impl PersistenceStore for PostgresPersistenceStore {
     }
 
     async fn save_intervention(&self, trace_id: &str, intervention: Intervention) -> Result<()> {
-        self.reject_legacy_trace(trace_id).await?;
+        self.format_ready().await?;
         let ts_i64 = i64::try_from(intervention.timestamp_ms)?;
         let revision_i64 = i64::try_from(intervention.expected_event_sequence)?;
         let state_table = self.state_table.sql()?;
@@ -2134,10 +2238,23 @@ struct RedisWriteGate {
 }
 
 #[cfg(feature = "persistence-redis")]
+fn escape_redis_glob(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        if matches!(character, '*' | '?' | '[' | ']' | '\\' | '^' | '-') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
+}
+
+#[cfg(feature = "persistence-redis")]
 #[derive(Clone)]
 pub struct RedisPersistenceStore {
     manager: redis::aio::ConnectionManager,
     key_prefix: String,
+    format_ready: Arc<tokio::sync::OnceCell<()>>,
     #[cfg(test)]
     write_gate: Option<std::sync::Arc<RedisWriteGate>>,
 }
@@ -2162,6 +2279,7 @@ impl RedisPersistenceStore {
         Ok(Self {
             manager,
             key_prefix: "ranvier:persistence".to_string(),
+            format_ready: Arc::new(tokio::sync::OnceCell::new()),
             #[cfg(test)]
             write_gate: None,
         })
@@ -2174,6 +2292,7 @@ impl RedisPersistenceStore {
         Self {
             manager,
             key_prefix: key_prefix.into(),
+            format_ready: Arc::new(tokio::sync::OnceCell::new()),
             #[cfg(test)]
             write_gate: None,
         }
@@ -2183,22 +2302,88 @@ impl RedisPersistenceStore {
         format!("{}:v2:{}", self.key_prefix, trace_id)
     }
 
-    fn legacy_key(&self, trace_id: &str) -> String {
-        format!("{}:{}", self.key_prefix, trace_id)
+    fn format_key(&self) -> String {
+        format!("{}:format", self.key_prefix)
+    }
+
+    /// Check the store format and record it on a store without a marker.
+    ///
+    /// Call once at startup. Refuses, without writing anything, a store whose
+    /// format marker (`{prefix}:format`) names another version or that has no
+    /// marker and holds version 1 keys (`{prefix}:{trace_id}`)
+    /// ([`StoreFormatError`]). Store operations run the same check once per
+    /// store instance when this was not called. Version 1 keys are looked for
+    /// only while the store has no marker, because the scan walks the whole
+    /// keyspace; keys a downgraded v0.51.x binary writes after that are not
+    /// detected and stay invisible to this build.
+    pub async fn ensure_schema(&self) -> Result<()> {
+        self.check_format().await?;
+        let _ = self.format_ready.set(());
+        Ok(())
+    }
+
+    async fn format_ready(&self) -> Result<()> {
+        self.format_ready
+            .get_or_try_init(|| self.check_format())
+            .await?;
+        Ok(())
+    }
+
+    async fn check_format(&self) -> Result<()> {
+        use redis::AsyncCommands;
+        let mut conn = self.manager.clone();
+        let format_key = self.format_key();
+        let found: Option<String> = conn.get(&format_key).await?;
+        if let Some(found) = found {
+            // Version 1 keys are looked for only on a store without a marker:
+            // the scan walks the whole keyspace, so it is not repeated on
+            // every start. Keys a downgraded v0.51.x binary writes later are
+            // not detected; they stay invisible to this build.
+            return format_marker_matches(&found);
+        }
+        let v2_prefix = format!("{}:v2:", self.key_prefix);
+        let pattern = format!("{}:*", escape_redis_glob(&self.key_prefix));
+        let mut cursor: u64 = 0;
+        loop {
+            let (next, keys): (u64, Vec<Vec<u8>>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(1000)
+                .query_async(&mut conn)
+                .await?;
+            if let Some(legacy) = keys.into_iter().find(|key| {
+                !key.starts_with(v2_prefix.as_bytes()) && key.as_slice() != format_key.as_bytes()
+            }) {
+                return Err(StoreFormatError::LegacyData {
+                    location: String::from_utf8_lossy(&legacy).into_owned(),
+                }
+                .into());
+            }
+            if next == 0 {
+                break;
+            }
+            cursor = next;
+        }
+        let _: Option<String> = redis::cmd("SET")
+            .arg(&format_key)
+            .arg(PERSISTENCE_FORMAT_VERSION.to_string())
+            .arg("NX")
+            .query_async(&mut conn)
+            .await?;
+        let found: Option<String> = conn.get(&format_key).await?;
+        match found {
+            Some(found) => format_marker_matches(&found),
+            None => Err(StoreFormatError::NotInitialized.into()),
+        }
     }
 
     async fn read_trace(&self, trace_id: &str) -> Result<(Option<String>, Option<PersistedTrace>)> {
         use redis::AsyncCommands;
+        self.format_ready().await?;
         let mut conn = self.manager.clone();
         let payload: Option<String> = conn.get(self.key(trace_id)).await?;
-        if payload.is_none() {
-            let legacy: Option<String> = conn.get(self.legacy_key(trace_id)).await?;
-            if legacy.is_some() {
-                return Err(anyhow!(
-                    "trace_id {trace_id} exists in the legacy v1 persistence namespace; reconcile it before v2 use"
-                ));
-            }
-        }
         let trace = payload
             .as_deref()
             .map(serde_json::from_str::<PersistedTrace>)
@@ -2294,11 +2479,6 @@ impl PersistenceStore for RedisPersistenceStore {
                 &envelope.trace_id,
                 envelope.event_sequence,
                 expected_sequence,
-            ));
-        }
-        if envelope.event_type == PersistenceEventType::LegacyUnknown {
-            return Err(anyhow!(
-                "legacy event type cannot be appended to a v2 trace"
             ));
         }
         validate_persistence_append(&trace.events, &envelope)?;

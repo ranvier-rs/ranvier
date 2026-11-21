@@ -28,10 +28,10 @@
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2932,
+  "public_item_count": 2938,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2738,
+    "Experimental": 2744,
     "Stable Candidate": 186
   },
   "crates": [
@@ -29987,20 +29987,20 @@
         "schema",
         "streaming"
       ],
-      "public_item_count": 711,
+      "public_item_count": 717,
       "counts_by_kind": {
         "constant": 3,
-        "enum": 85,
-        "function": 174,
+        "enum": 88,
+        "function": 175,
         "module": 18,
         "struct": 132,
         "struct_field": 97,
         "trait": 18,
         "type_alias": 9,
-        "variant": 175
+        "variant": 177
       },
       "counts_by_stability": {
-        "Experimental": 694,
+        "Experimental": 700,
         "Stable Candidate": 17
       },
       "facade_reexport_count": 0,
@@ -34123,20 +34123,6 @@
           }
         },
         {
-          "path": "ranvier_runtime::persistence::PersistenceEventType::LegacyUnknown",
-          "kind": "variant",
-          "origin": "direct",
-          "target": null,
-          "stability": "Experimental",
-          "owner": "runtime-core",
-          "boundary": null,
-          "deprecated": false,
-          "deprecation": null,
-          "source": {
-            "file": "runtime/src/persistence.rs"
-          }
-        },
-        {
           "path": "ranvier_runtime::persistence::PersistenceEventType::Result",
           "kind": "variant",
           "origin": "direct",
@@ -34557,6 +34543,20 @@
           }
         },
         {
+          "path": "ranvier_runtime::persistence::RedisPersistenceStore::ensure_schema",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/persistence.rs"
+          }
+        },
+        {
           "path": "ranvier_runtime::persistence::RedisPersistenceStore::with_prefix",
           "kind": "function",
           "origin": "direct",
@@ -34601,6 +34601,62 @@
         {
           "path": "ranvier_runtime::persistence::ResumeCursor::trace_id",
           "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/persistence.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::persistence::StoreFormatError",
+          "kind": "enum",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/persistence.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::persistence::StoreFormatError::LegacyData",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/persistence.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::persistence::StoreFormatError::NotInitialized",
+          "kind": "variant",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/persistence.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::persistence::StoreFormatError::UnsupportedVersion",
+          "kind": "variant",
           "origin": "direct",
           "target": null,
           "stability": "Experimental",
@@ -35733,6 +35789,20 @@
           }
         },
         {
+          "path": "ranvier_runtime::prelude::StoreFormatError",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "crate::persistence::StoreFormatError",
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier_runtime::prelude::StreamingAxon",
           "kind": "struct",
           "origin": "reexport",
@@ -36703,6 +36773,20 @@
           "kind": "type_alias",
           "origin": "direct",
           "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::StoreFormatError",
+          "kind": "enum",
+          "origin": "reexport",
+          "target": "persistence::StoreFormatError",
           "stability": "Experimental",
           "owner": "runtime-core",
           "boundary": null,

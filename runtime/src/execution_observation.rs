@@ -813,7 +813,6 @@ impl PersistenceStore for ObservedStore {
             crate::PersistenceEventType::Checkpoint => PersistenceOperation::Result,
             crate::PersistenceEventType::Terminal => PersistenceOperation::Terminal,
             crate::PersistenceEventType::Compensation => PersistenceOperation::CompensationEvent,
-            crate::PersistenceEventType::LegacyUnknown => PersistenceOperation::UnsupportedFormat,
         };
         self.observation
             .attempted_write

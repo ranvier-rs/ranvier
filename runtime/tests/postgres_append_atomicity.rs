@@ -1968,7 +1968,8 @@ async fn postgres_load_reads_one_snapshot_across_concurrent_append() {
     // fixture-only lock. The production writer uses the real backing tables.
     sqlx::query(&format!("CREATE VIEW {reader_prefix}_v2_state AS SELECT * FROM {prefix}_v2_state WHERE pg_advisory_xact_lock({key}) IS NOT NULL"))
         .execute(&pool).await.unwrap();
-    for suffix in ["v2_events", "v2_interventions"] {
+    // The format marker view lets the reader pass the store format check.
+    for suffix in ["v2_events", "v2_interventions", "format"] {
         sqlx::query(&format!(
             "CREATE VIEW {reader_prefix}_{suffix} AS SELECT * FROM {prefix}_{suffix}"
         ))

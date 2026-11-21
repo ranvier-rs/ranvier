@@ -203,7 +203,6 @@ fn verify_trace(
                 | PersistenceEventType::Checkpoint => event.node_id.is_none(),
                 PersistenceEventType::Terminal => event.node_id.is_some(),
                 PersistenceEventType::Enter => event.outcome_kind != "Enter",
-                PersistenceEventType::LegacyUnknown => true,
             }
     });
     let invalid_sequence = trace

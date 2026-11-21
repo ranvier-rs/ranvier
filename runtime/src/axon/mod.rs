@@ -1585,9 +1585,6 @@ async fn persist_encoded_execution_event_with_type(
                     crate::PersistenceEventType::Compensation => {
                         crate::execution_report::PersistenceOperation::CompensationEvent
                     }
-                    crate::PersistenceEventType::LegacyUnknown => {
-                        crate::execution_report::PersistenceOperation::UnsupportedFormat
-                    }
                 };
                 active.0.encoding_failed(operation);
                 if matches!(

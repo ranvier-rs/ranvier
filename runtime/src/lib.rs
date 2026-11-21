@@ -46,7 +46,7 @@ pub mod prelude {
         InMemoryPersistenceStore, PERSISTENCE_FORMAT_VERSION, PersistedTrace,
         PersistenceAutoComplete, PersistenceConflict, PersistenceConflictKind, PersistenceEnvelope,
         PersistenceEventType, PersistenceHandle, PersistenceStore, PersistenceTraceId,
-        ResumeCursor, TraceReconciliation,
+        ResumeCursor, StoreFormatError, TraceReconciliation,
     };
     #[cfg(feature = "persistence-postgres")]
     pub use crate::persistence::{PostgresCompensationIdempotencyStore, PostgresPersistenceStore};
@@ -96,7 +96,8 @@ pub use persistence::{
     CompensationRetryPolicy, CompletionState, InMemoryCompensationIdempotencyStore,
     InMemoryPersistenceStore, PERSISTENCE_FORMAT_VERSION, PersistedTrace, PersistenceAutoComplete,
     PersistenceConflict, PersistenceConflictKind, PersistenceEnvelope, PersistenceEventType,
-    PersistenceHandle, PersistenceStore, PersistenceTraceId, ResumeCursor, TraceReconciliation,
+    PersistenceHandle, PersistenceStore, PersistenceTraceId, ResumeCursor, StoreFormatError,
+    TraceReconciliation,
 };
 #[cfg(feature = "persistence-postgres")]
 pub use persistence::{PostgresCompensationIdempotencyStore, PostgresPersistenceStore};

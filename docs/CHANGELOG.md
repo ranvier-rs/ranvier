@@ -19,11 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Timeout during an effect is unconfirmed (ranvier-runtime):** when `then_with_timeout` expires after the effect's intent was acknowledged, the effect may have run and its result is unrecorded. The execution now reports `Unconfirmed { operation: Result, effect: MayHaveRun }` and stops like a lost result acknowledgement: no DLQ delivery, Saga rollback, external compensation or terminal event. A timeout before the intent is acknowledged still blocks before the effect. Previously the timeout was handled like a business fault.
 - **Cleanup budget for every execution (ranvier-runtime):** the bounded cleanup window that streaming supervision used now applies to ordinary executions when a `CleanupBudget` is in the Bus, with or without the `streaming` feature.
 - **Fix — resuming at a timeout or retry step (ranvier-runtime):** steps added with `then_with_timeout` or `then_with_retry` now honour manual jumps and resumption like `then`. Previously, continuing a persisted trace at such a step ran the earlier steps again, repeating their effects, and a jump to such a step was not applied.
+- **Breaking — store format check at startup (ranvier-runtime):** the PostgreSQL and Redis trace stores record the store format once (`{prefix}_format` table, `{prefix}:format` key). `PostgresPersistenceStore::ensure_schema()` and the new `RedisPersistenceStore::ensure_schema()` refuse, without writing anything, a store whose marker names another format or that holds version 1 data (rows in `{prefix}_state/_events/_interventions`; Redis keys `{prefix}:{trace_id}` while the store has no marker), and record the marker on a new store. Without `ensure_schema()`, each store instance runs the same check before its first operation; PostgreSQL then requires the marker. Version 1 data is not supported and not migrated: start on a new or emptied store. Previously only a trace whose ID also existed in the version 1 namespace was refused, and that lookup ran on every operation. Supported servers: PostgreSQL 16 or later, single-node Redis 7.4 or later.
+- **Breaking — no legacy decoding (ranvier-runtime):** a stored trace without `format_version`, or an event without `event_type`, no longer decodes (it used to decode as version 1 / `LegacyUnknown` and be refused later); execution is still blocked before any effect, now as `BlockedBeforeEffect { operation: Load }`.
 - **Redis compensation marker TTL (ranvier-runtime):** `RedisCompensationIdempotencyStore` applies the TTL in the same `SET … NX EX` command that creates the marker, so a marker can no longer be left without its configured expiry.
 
 ### Added
 - **Breaking:** `PersistenceOperation::ResumeInput` (ranvier-runtime).
 - `PersistenceConflict` and `PersistenceConflictKind` (ranvier-runtime).
+- `StoreFormatError` and `RedisPersistenceStore::ensure_schema()` (ranvier-runtime).
 - `CleanupBudget`: an upper bound on the time one execution spends in Saga rollback, external compensation and cancellation cleanup (ranvier-runtime).
 - `PersistedTrace::reconciliation()` and `TraceReconciliation`: read-only classification of a stored trace for operator reconciliation (ranvier-runtime).
 - **Breaking:** `Intervention::expected_event_sequence: u64`. Code that builds `Intervention` with a struct literal must set it (ranvier-runtime).
@@ -33,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - **Breaking:** `PersistenceOperation::UnsupportedEffect`. Configured-store streaming no longer reports it.
 - **Breaking:** `PersistenceOperation::CancellationCursor`, which the runtime never reported (ranvier-runtime).
+- **Breaking:** `PersistenceEventType::LegacyUnknown` and `impl Default for PersistenceEventType` (ranvier-runtime).
 
 ---
 
