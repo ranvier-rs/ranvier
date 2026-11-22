@@ -186,6 +186,16 @@ async fn redis_recovery_worker() {
             }
             Mode::Check => {
                 assert_eq!(store.load(&trace).await.unwrap(), Some(contract));
+                // The restarted or restored store keeps its format marker.
+                use redis::AsyncCommands;
+                let mut connection =
+                    redis::aio::ConnectionManager::new(redis::Client::open(url.as_str()).unwrap())
+                        .await
+                        .unwrap();
+                let marker: Option<String> =
+                    connection.get("ranvier:persistence:format").await.unwrap();
+                assert_eq!(marker.as_deref(), Some("2"));
+                println!("REDIS_RECOVERY_FORMAT marker=2");
                 println!("REDIS_RECOVERY_CHECK fresh-process full-snapshot-equality");
             }
         }

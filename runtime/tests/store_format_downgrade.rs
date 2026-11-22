@@ -87,3 +87,65 @@ async fn downgrade_check() {
         "STORE_FORMAT case=G7 phase=check postgres=refused:LegacyData redis=started:v1-invisible,v2-intact PASS"
     );
 }
+
+/// P2-7 R7: a backup holding version 1 data, restored into an empty server, is
+/// refused by `ensure_schema()` and nothing is written. Driven by
+/// `scripts/run-legacy-restore-rejection.ps1`, which restores a v0.51.0
+/// PostgreSQL dump and the archived v1 Redis RDB.
+#[tokio::test]
+#[ignore = "requires restored version 1 backups (P2-7 R7)"]
+async fn restored_v1_backup_is_refused() {
+    use redis::AsyncCommands;
+    let pg_prefix = env("RANVIER_LEGACY_POSTGRES_PREFIX");
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&env("RANVIER_LEGACY_POSTGRES_URL"))
+        .await
+        .unwrap();
+    let postgres = PostgresPersistenceStore::with_table_prefix(pool.clone(), pg_prefix.clone());
+    let error = postgres.ensure_schema().await.unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<StoreFormatError>().cloned(),
+        Some(StoreFormatError::LegacyData {
+            location: format!("{pg_prefix}_state")
+        }),
+        "{error:#}"
+    );
+    for relation in ["format", "v2_state", "v2_events", "v2_interventions"] {
+        let present: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+            .bind(format!("{pg_prefix}_{relation}"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(!present, "{pg_prefix}_{relation} must not be created");
+    }
+
+    let redis_key = env("RANVIER_LEGACY_REDIS_KEY");
+    let client = redis::Client::open(env("RANVIER_LEGACY_REDIS_URL").as_str()).unwrap();
+    let mut connection = redis::aio::ConnectionManager::new(client).await.unwrap();
+    let before: usize = redis::cmd("DBSIZE")
+        .query_async(&mut connection)
+        .await
+        .unwrap();
+    let redis = RedisPersistenceStore::with_prefix(connection.clone(), "ranvier:persistence");
+    let error = redis.ensure_schema().await.unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<StoreFormatError>().cloned(),
+        Some(StoreFormatError::LegacyData {
+            location: redis_key.clone()
+        }),
+        "{error:#}"
+    );
+    let marker: bool = connection
+        .exists("ranvier:persistence:format")
+        .await
+        .unwrap();
+    let after: usize = redis::cmd("DBSIZE")
+        .query_async(&mut connection)
+        .await
+        .unwrap();
+    assert!(!marker && before == after, "nothing may be written");
+    println!(
+        "LEGACY_RESTORE postgres=refused:LegacyData redis=refused:LegacyData nothing-written PASS"
+    );
+}

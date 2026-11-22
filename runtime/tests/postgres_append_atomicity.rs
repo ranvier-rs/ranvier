@@ -1571,6 +1571,15 @@ async fn postgres_recovery_worker() {
             let expected: ranvier_runtime::persistence::PersistedTrace =
                 serde_json::from_reader(std::fs::File::open(&snapshot).unwrap()).unwrap();
             assert_eq!(store.load("recovery").await.unwrap(), Some(expected));
+            // The restored or restarted store keeps its format marker.
+            let marker: String = sqlx::query_scalar(&format!(
+                "SELECT format_version::text FROM {prefix}_format WHERE id = 1"
+            ))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(marker, "2");
+            println!("POSTGRES_RECOVERY_FORMAT marker=2");
             println!("POSTGRES_RECOVERY_CHECK fresh-process full-snapshot-equality");
         }
         _ => panic!("unknown recovery worker mode"),
