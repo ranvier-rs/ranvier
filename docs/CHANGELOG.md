@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking — store format check at startup (ranvier-runtime):** the PostgreSQL and Redis trace stores record the store format once (`{prefix}_format` table, `{prefix}:format` key). `PostgresPersistenceStore::ensure_schema()` and the new `RedisPersistenceStore::ensure_schema()` refuse, without writing anything, a store whose marker names another format or that holds version 1 data (rows in `{prefix}_state/_events/_interventions`; Redis keys `{prefix}:{trace_id}` while the store has no marker), and record the marker on a new store. Without `ensure_schema()`, each store instance runs the same check before its first operation; PostgreSQL then requires the marker. Version 1 data is not supported and not migrated: start on a new or emptied store. Previously only a trace whose ID also existed in the version 1 namespace was refused, and that lookup ran on every operation. Supported servers: PostgreSQL 16 or later, single-node Redis 7.4 or later.
 - **Breaking — no legacy decoding (ranvier-runtime):** a stored trace without `format_version`, or an event without `event_type`, no longer decodes (it used to decode as version 1 / `LegacyUnknown` and be refused later); execution is still blocked before any effect, now as `BlockedBeforeEffect { operation: Load }`.
 - **Redis compensation marker TTL (ranvier-runtime):** `RedisCompensationIdempotencyStore` applies the TTL in the same `SET … NX EX` command that creates the marker, so a marker can no longer be left without its configured expiry.
+- **Supervised SSE routes (ranvier-http):** `post_sse` and `post_sse_typed` run the stream's prefix, initializer, producer and Saga cleanup under one `StreamSupervisor` per ingress (capacity `managed_task_capacity`). A client disconnect or an item that fails to encode now cancels the stream, and a stream that fails after it started now runs its prefix compensation (previously that compensation did not run). `[DONE]` is sent only when the source ended normally, no cleanup is incomplete and the end record is not unconfirmed; otherwise the stream ends with an error frame, including the new `stream_cleanup_incomplete` and `stream_settlement_timeout` codes. A stream whose compensation did not finish, or whose durability write was not acknowledged, is held for recovery review and keeps its custody slot; when the slots are full, new streams are refused before any request callback with `503` and `stream_recovery_capacity_exhausted`. The `Out` type parameter of both methods gains `Serialize + DeserializeOwned` bounds, which `then_stream` already requires.
+- **Breaking — drain report (ranvier-http):** graceful shutdown and `RawIngressService::drain_tasks` also close stream admission and wait for running streams to the same deadline. `HttpTaskDrainReport` gains `streams_retained` and `streams_unsettled`; code that builds it with a struct literal must set them.
+- **Supervised stream records (ranvier-runtime):** a supervised stream that ends because its consumer went away (`CancellationReason::ClientDisconnected`) is journaled as `StreamAbandoned` with the number of items taken from the source, like the SSE adapter's abandoned streams.
 
 ### Added
 - **Breaking:** `PersistenceOperation::ResumeInput` (ranvier-runtime).
@@ -32,11 +35,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `Intervention::expected_event_sequence: u64`. Code that builds `Intervention` with a struct literal must set it (ranvier-runtime).
 - `StreamDurability`, `ObservedStream::durability()`, `ObservedStream::abandon()` and `StreamConsumptionReport::durability` (ranvier-runtime).
 - **Breaking:** `CompensationContext::intent_sequence: Option<u64>`, the journal identity of the compensation, for use as a provider idempotency key. Code that builds `CompensationContext` with a struct literal must set it (ranvier-runtime).
+- `Axon::execute_owned_child` and `execute_owned_child_cancellable` (streaming feature): run a nested Axon with its own resources inside a supervised stream. The stream keeps the child's resources and compensation handlers in custody until its compensation is settled. Outside a supervised stream nothing runs (`execution.owned_child_requires_supervisor`) (ranvier-runtime).
+- `StreamReportHandle::release_settled_until`: release a supervised stream's custody when nothing needs reconciliation, and `StreamReportHandle::stream_end_durability` (ranvier-runtime).
+- `StreamRecoveryHandle` and `StreamReportHandle::recovery_handle`: the recovery operations of a supervised stream without its typed report (ranvier-runtime).
+- `StreamReportHandle::reconcile_next_local_compensation_until` also undoes compensation retained by an owned nested child, with that child's resources and handlers, in LIFO order (ranvier-runtime).
+- `HttpIngress::on_stream_retained` and `RetainedStream`: receive SSE streams held for recovery review (ranvier-http).
 
 ### Removed
 - **Breaking:** `PersistenceOperation::UnsupportedEffect`. Configured-store streaming no longer reports it.
 - **Breaking:** `PersistenceOperation::CancellationCursor`, which the runtime never reported (ranvier-runtime).
 - **Breaking:** `PersistenceEventType::LegacyUnknown` and `impl Default for PersistenceEventType` (ranvier-runtime).
+
+### Not included
+- Streaming children bound under a parent stream's custody, and the bounded recovery store with expiry and abandonment records, were never connected to a production path and are removed. Held SSE streams stay in memory until they are released or the process exits; after a restart, use the trace store and the reconciliation runbook. Nothing is replayed automatically.
 
 ---
 
