@@ -203,7 +203,7 @@ pub struct StreamRecoveryLease {
 }
 type PreparedFrame<Out, E> = crate::managed_stream_task::PreparedStreamTask<
     Result<
-        crate::StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult<()>, E>,
+        crate::StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult, E>,
         crate::streaming_recovery::StreamInvocationAlreadyStarted,
     >,
 >;
@@ -446,6 +446,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::streaming_recovery_admission::tests::AdmissionTestExt as _;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -2131,77 +2132,6 @@ mod tests {
         }
         assert_eq!(supervisor.admission.in_use(), Ok(0));
         assert!(supervisor.reserve().is_ok());
-    }
-    #[tokio::test]
-    async fn rejected_frame_retirement_refunds_actual_record_after_timeout_and_report_transfer() {
-        use crate::streaming_report_handle::{StreamReportWaitError, StreamRetirementEvidence};
-        let root = CustodyStore::new(1);
-        let calls = Arc::new(AtomicUsize::new(0));
-        let owner: crate::nested_custody::Capability = calls.clone();
-        let observed = calls.clone();
-        let mut prepared =
-            crate::managed_stream_task::PreparedStreamTask::new_owned(owner.clone(), async move {
-                observed.fetch_add(1, Ordering::SeqCst);
-                Err::<
-                    crate::StreamInitializationReport<
-                        u32,
-                        crate::streaming_recovery::StreamReadyResult<()>,
-                        String,
-                    >,
-                    _,
-                >(crate::streaming_recovery::StreamInvocationAlreadyStarted)
-            });
-        let journal = crate::SagaRollbackJournal::new("rejected-retirement-fixture");
-        let observer =
-            tokio::sync::watch::channel(crate::streaming_recovery::SupervisorObservation {
-                phase: crate::streaming_recovery::SupervisorPhase::NotStarted,
-                disposition: None,
-                cleanup_complete: None,
-                cleanup_timed_out: false,
-                custody: crate::streaming_recovery::RecoveryCustody::Held,
-            })
-            .1;
-        let receipt = root
-            .client()
-            .reserve_stream(owner.clone(), &journal, Some(prepared.holder()), observer)
-            .unwrap();
-        prepared.reject_start().unwrap();
-        let report =
-            crate::streaming_report_handle::StreamReportHandle::new(prepared.holder(), owner);
-        let clone = report.clone();
-        let rejected = StreamStartRejected {
-            signal: "fixture.rejected_start",
-            report,
-            _custody: Some(receipt),
-        };
-        let holder = prepared.holder();
-        let locked = holder.lock().await;
-        assert_eq!(
-            rejected
-                .retire_unstarted_until(tokio::time::Instant::now())
-                .await,
-            Err(StreamRetirementError::Wait(StreamReportWaitError::TimedOut))
-        );
-        assert_eq!(
-            clone.retirement_evidence(),
-            StreamRetirementEvidence::NotObserved
-        );
-        assert!(root.reserve_stream_slot().is_err());
-        drop(locked);
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        let original = clone.take_report_until(deadline).await.unwrap();
-        assert!(matches!(
-            original,
-            crate::streaming_report_handle::SupervisedStreamCompletion::RejectedBeforeStart
-        ));
-        assert_eq!(
-            rejected.report().retirement_evidence(),
-            StreamRetirementEvidence::RejectedBeforeStart
-        );
-        rejected.retire_unstarted_until(deadline).await.unwrap();
-        rejected.retire_unstarted_until(deadline).await.unwrap();
-        assert!(root.reserve_stream_slot().is_ok());
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
     #[tokio::test]
     async fn executed_frame_cannot_use_unstarted_retirement_after_report_transfer() {

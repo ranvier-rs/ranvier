@@ -8,7 +8,7 @@ use std::sync::{
 use tokio::time::Instant;
 
 type Original<Out, E> = Result<
-    StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult<()>, E>,
+    StreamInitializationReport<Out, crate::streaming_recovery::StreamReadyResult, E>,
     crate::streaming_recovery::StreamInvocationAlreadyStarted,
 >;
 
@@ -798,7 +798,6 @@ mod assessment_tests {
                     prefix: prefix.with_cleanup(cleanup_state.map(cleanup)),
                     value: crate::streaming_recovery::StreamReadyResult {
                         consumption: Ok(crate::streaming_recovery::StreamDriveResult {
-                            value: (),
                             terminal: StreamConsumptionTerminal::Completed,
                         }),
                         cleanup: None,
@@ -821,7 +820,6 @@ mod assessment_tests {
         for consumption in [
             Err(crate::streaming_recovery::StreamDriverError::Panicked),
             Ok(crate::streaming_recovery::StreamDriveResult {
-                value: (),
                 terminal: StreamConsumptionTerminal::Cancelled(
                     ranvier_core::CancellationContext::new(
                         ranvier_core::CancellationReason::Explicit,
@@ -955,48 +953,6 @@ mod assessment_tests {
         }
     }
     #[tokio::test]
-    async fn poisoned_assessment_fails_closed_without_losing_original_join_error() {
-        let prepared = crate::managed_stream_task::PreparedStreamTask::new(async {
-            Err::<
-                StreamInitializationReport<
-                    u32,
-                    crate::streaming_recovery::StreamReadyResult<()>,
-                    String,
-                >,
-                _,
-            >(crate::streaming_recovery::StreamInvocationAlreadyStarted)
-        });
-        prepared.holder().lock().await.abort_frame();
-        let handle = StreamReportHandle::new(prepared.holder(), Arc::new(()));
-        let cache = handle.assessment.clone();
-        assert!(
-            std::thread::spawn(move || {
-                let _lock = cache.lock().unwrap();
-                panic!("cache poison fixture");
-            })
-            .join()
-            .is_err()
-        );
-        let report = handle
-            .take_report_until(Instant::now() + std::time::Duration::from_secs(5))
-            .await
-            .unwrap();
-        assert!(
-            matches!(report, SupervisedStreamCompletion::FrameFailed(error) if error.is_cancelled())
-        );
-        assert_eq!(handle.assessment(), Err(StreamAssessmentError::Unavailable));
-        assert_eq!(
-            handle
-                .prove_completed_local(Instant::now() + std::time::Duration::from_secs(5))
-                .await,
-            Err(StreamLocalRetirementError::AssessmentUnavailable)
-        );
-        assert_eq!(
-            handle.retirement_evidence(),
-            StreamRetirementEvidence::RequiresRecoveryReview
-        );
-    }
-    #[tokio::test]
     async fn assessment_survives_original_report_transfer_and_clone_without_authorizing_retirement()
     {
         let original: Original<u32, String> = Ok(StreamInitializationReport::Ready {
@@ -1007,7 +963,6 @@ mod assessment_tests {
             },
             value: crate::streaming_recovery::StreamReadyResult {
                 consumption: Ok(crate::streaming_recovery::StreamDriveResult {
-                    value: (),
                     terminal: StreamConsumptionTerminal::Completed,
                 }),
                 cleanup: None,

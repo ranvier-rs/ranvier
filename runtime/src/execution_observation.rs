@@ -31,6 +31,7 @@ struct CleanupWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::saga_report::tests::JournalTestExt as _;
     use futures_util::FutureExt;
 
     #[cfg(feature = "streaming")]

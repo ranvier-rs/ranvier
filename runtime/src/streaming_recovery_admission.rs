@@ -8,10 +8,6 @@ pub(crate) enum RecoveryAdmissionFailure {
     Poisoned,
     RegistryPoisoned,
     RegistryBusy,
-    #[cfg(test)]
-    InvalidRetention,
-    #[cfg(test)]
-    DispositionCapacity,
 }
 #[derive(Clone)]
 pub(crate) struct StreamRecoveryAdmission(Arc<Mutex<State>>);
@@ -81,14 +77,6 @@ impl StreamRecoveryAdmission {
             .closed = true;
         Ok(())
     }
-    #[cfg(test)]
-    pub(crate) fn in_use(&self) -> Result<usize, RecoveryAdmissionFailure> {
-        Ok(self
-            .0
-            .lock()
-            .map_err(|_| RecoveryAdmissionFailure::Poisoned)?
-            .used)
-    }
 }
 impl Drop for RecoveryPermit {
     fn drop(&mut self) {
@@ -106,8 +94,21 @@ impl Drop for RecoveryPermit {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    /// Test-only count of admitted permits.
+    pub(crate) trait AdmissionTestExt {
+        fn in_use(&self) -> Result<usize, RecoveryAdmissionFailure>;
+    }
+    impl AdmissionTestExt for StreamRecoveryAdmission {
+        fn in_use(&self) -> Result<usize, RecoveryAdmissionFailure> {
+            Ok(self
+                .0
+                .lock()
+                .map_err(|_| RecoveryAdmissionFailure::Poisoned)?
+                .used)
+        }
+    }
     #[test]
     fn reserved_permit_validation_fails_closed_after_poison() {
         let admission = StreamRecoveryAdmission::new(1);

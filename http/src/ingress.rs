@@ -5372,17 +5372,6 @@ async fn shutdown_signal() {
     }
 }
 
-#[cfg(test)]
-async fn drain_connections(
-    connections: &mut tokio::task::JoinSet<()>,
-    graceful_shutdown_timeout: Duration,
-) -> bool {
-    let deadline = tokio::time::Instant::now()
-        .checked_add(graceful_shutdown_timeout)
-        .unwrap_or_else(tokio::time::Instant::now);
-    drain_connections_until(connections, deadline).await
-}
-
 async fn drain_connections_until(
     connections: &mut tokio::task::JoinSet<()>,
     deadline: tokio::time::Instant,
@@ -5940,6 +5929,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    async fn drain_connections(
+        connections: &mut tokio::task::JoinSet<()>,
+        graceful_shutdown_timeout: Duration,
+    ) -> bool {
+        let deadline = tokio::time::Instant::now()
+            .checked_add(graceful_shutdown_timeout)
+            .unwrap_or_else(tokio::time::Instant::now);
+        drain_connections_until(connections, deadline).await
+    }
     use async_trait::async_trait;
     use futures_util::{SinkExt, StreamExt};
     use serde::Deserialize;

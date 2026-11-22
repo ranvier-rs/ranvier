@@ -521,55 +521,6 @@ impl SagaRollbackJournal {
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         )
     }
-    #[cfg(feature = "streaming")]
-    #[cfg(test)]
-    pub(crate) fn claim_not_invoked(
-        &self,
-        index: usize,
-    ) -> Result<LocalTaskClaim, LocalTaskClaimError> {
-        let mut report = self
-            .0
-            .try_lock()
-            .map_err(|_| LocalTaskClaimError::Unavailable)?;
-        let mut claims = self
-            .6
-            .try_lock()
-            .map_err(|_| LocalTaskClaimError::Unavailable)?;
-        let tasks = self
-            .1
-            .try_lock()
-            .map_err(|_| LocalTaskClaimError::Unavailable)?;
-        if claims.contains_key(&index) {
-            return Err(LocalTaskClaimError::Claimed);
-        }
-        let task = tasks
-            .iter()
-            .find(|(observed, _)| *observed == index)
-            .map(|(_, task)| task.clone())
-            .ok_or(LocalTaskClaimError::Missing)?;
-        let step = report
-            .steps
-            .get_mut(index)
-            .ok_or(LocalTaskClaimError::IdentityMismatch)?;
-        if step.node_id != task.node_id {
-            return Err(LocalTaskClaimError::IdentityMismatch);
-        }
-        if step.outcome != SagaRollbackOutcome::NotInvoked {
-            return Err(LocalTaskClaimError::NotEligible);
-        }
-        let token = std::sync::Arc::new(());
-        claims.insert(index, token.clone());
-        step.outcome = SagaRollbackOutcome::InProgress;
-        report.finished = false;
-        Ok(LocalTaskClaim {
-            journal: self.clone(),
-            index,
-            task,
-            token,
-            invoked: false,
-            settled: false,
-        })
-    }
     /// Claim the first unresolved journal row. Earlier child/external/uncertain
     /// work blocks local compensation so recovery cannot silently reorder effects.
     #[cfg(feature = "streaming")]
@@ -794,67 +745,6 @@ impl SagaRollbackJournal {
             .push((index, observer));
     }
     #[cfg(feature = "streaming")]
-    #[cfg(test)]
-    pub(crate) fn retained_stream_observations(
-        &self,
-    ) -> Vec<(usize, crate::streaming_recovery::SupervisorObservation)> {
-        self.5
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .iter()
-            .map(|(index, observer)| (*index, observer.borrow().clone()))
-            .collect()
-    }
-    /// Wait for the current child observation set using one absolute deadline.
-    /// This does not cancel children or retire their recovery records. Returned
-    /// and Interrupted are local execution termination, not durable completion.
-    #[cfg(feature = "streaming")]
-    #[cfg(test)]
-    pub(crate) async fn drain_stream_children(
-        &self,
-        deadline: tokio::time::Instant,
-    ) -> Result<(), usize> {
-        use futures_util::{StreamExt, stream::FuturesUnordered};
-        let observers: Vec<_> = self
-            .5
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .iter()
-            .map(|(_, observer)| observer.clone())
-            .collect();
-        let mut pending = FuturesUnordered::new();
-        for mut observer in observers {
-            pending.push(async move {
-                loop {
-                    let settled = {
-                        let state = observer.borrow_and_update();
-                        matches!(
-                            state.phase,
-                            crate::streaming_recovery::SupervisorPhase::Returned
-                                | crate::streaming_recovery::SupervisorPhase::Interrupted
-                        ) || state.custody != crate::streaming_recovery::RecoveryCustody::Held
-                    };
-                    if settled {
-                        return true;
-                    }
-                    if observer.changed().await.is_err() {
-                        return false;
-                    }
-                }
-            });
-        }
-        let mut unknown = 0;
-        while !pending.is_empty() {
-            match tokio::time::timeout_at(deadline, pending.next()).await {
-                Ok(Some(true)) => {}
-                Ok(Some(false)) => unknown += 1,
-                Ok(None) => break,
-                Err(_) => return Err(unknown + pending.len()),
-            }
-        }
-        if unknown == 0 { Ok(()) } else { Err(unknown) }
-    }
-    #[cfg(feature = "streaming")]
     pub(crate) fn retain_custody(&self, custody: crate::nested_custody::WeakCustody) {
         let mut incoming = Some(custody);
         {
@@ -884,16 +774,6 @@ impl SagaRollbackJournal {
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .and_then(|record| record.upgrade())
-    }
-    #[cfg(all(test, feature = "streaming"))]
-    pub(crate) fn poison_retention_for_test(&self) {
-        assert!(
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _held = self.1.lock().unwrap();
-                panic!("retention poison fixture");
-            }))
-            .is_err()
-        );
     }
     /// Owned local reconciliation inputs. These may contain secrets: never expose
     /// them as public responses/logs. Retention does not authorize replay or prove
@@ -1039,14 +919,6 @@ impl SagaRollbackJournal {
             .unwrap_or_else(|p| p.into_inner())
             .push((index, child));
     }
-    #[cfg(all(test, feature = "streaming"))]
-    pub(crate) fn shares_report_with(&self, other: &Self) -> bool {
-        std::sync::Arc::ptr_eq(&self.0, &other.0)
-    }
-    #[cfg(all(test, feature = "streaming"))]
-    pub(crate) fn retained_children(&self) -> Vec<(usize, Self)> {
-        self.3.lock().unwrap_or_else(|p| p.into_inner()).clone()
-    }
     pub(crate) fn push_uninvoked_task(&self, task: ranvier_core::saga::SagaTask) {
         self.push_task_observed(std::sync::Arc::new(task), SagaRollbackOutcome::NotInvoked);
     }
@@ -1094,16 +966,6 @@ impl SagaRollbackJournal {
             .push((index, recovery));
         index
     }
-    /// Sensitive exact context/capability, accessible only to runtime reconciliation.
-    #[cfg(all(test, feature = "streaming"))]
-    pub(crate) fn unresolved_external(&self) -> Vec<ExternalCompensationRecovery> {
-        self.2
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .iter()
-            .map(|(_, item)| item.clone())
-            .collect()
-    }
     pub(crate) fn settle_external(&self, index: usize, outcome: SagaRollbackOutcome) {
         {
             let mut report = self.0.lock().unwrap_or_else(|p| p.into_inner());
@@ -1141,15 +1003,6 @@ impl SagaRollbackJournal {
             .trace_id
             == trace_id
     }
-    #[cfg(test)]
-    pub(crate) fn push(&self, node_id: String, outcome: SagaRollbackOutcome) {
-        let mut report = self
-            .0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        report.finished = false;
-        report.steps.push(SagaRollbackStep { node_id, outcome });
-    }
     pub(crate) fn settle(&self, outcome: SagaRollbackOutcome) {
         let mut report = self
             .0
@@ -1184,7 +1037,91 @@ impl SagaRollbackJournal {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    /// Test-only journal inspection and fixtures, kept out of the production impl.
+    pub(crate) trait JournalTestExt {
+        #[cfg(feature = "streaming")]
+        fn claim_not_invoked(&self, index: usize) -> Result<LocalTaskClaim, LocalTaskClaimError>;
+        #[cfg(feature = "streaming")]
+        fn poison_retention_for_test(&self);
+        #[cfg(feature = "streaming")]
+        fn unresolved_external(&self) -> Vec<ExternalCompensationRecovery>;
+        fn push(&self, node_id: String, outcome: SagaRollbackOutcome);
+    }
+    impl JournalTestExt for SagaRollbackJournal {
+        #[cfg(feature = "streaming")]
+        fn claim_not_invoked(&self, index: usize) -> Result<LocalTaskClaim, LocalTaskClaimError> {
+            let mut report = self
+                .0
+                .try_lock()
+                .map_err(|_| LocalTaskClaimError::Unavailable)?;
+            let mut claims = self
+                .6
+                .try_lock()
+                .map_err(|_| LocalTaskClaimError::Unavailable)?;
+            let tasks = self
+                .1
+                .try_lock()
+                .map_err(|_| LocalTaskClaimError::Unavailable)?;
+            if claims.contains_key(&index) {
+                return Err(LocalTaskClaimError::Claimed);
+            }
+            let task = tasks
+                .iter()
+                .find(|(observed, _)| *observed == index)
+                .map(|(_, task)| task.clone())
+                .ok_or(LocalTaskClaimError::Missing)?;
+            let step = report
+                .steps
+                .get_mut(index)
+                .ok_or(LocalTaskClaimError::IdentityMismatch)?;
+            if step.node_id != task.node_id {
+                return Err(LocalTaskClaimError::IdentityMismatch);
+            }
+            if step.outcome != SagaRollbackOutcome::NotInvoked {
+                return Err(LocalTaskClaimError::NotEligible);
+            }
+            let token = std::sync::Arc::new(());
+            claims.insert(index, token.clone());
+            step.outcome = SagaRollbackOutcome::InProgress;
+            report.finished = false;
+            Ok(LocalTaskClaim {
+                journal: self.clone(),
+                index,
+                task,
+                token,
+                invoked: false,
+                settled: false,
+            })
+        }
+        #[cfg(feature = "streaming")]
+        fn poison_retention_for_test(&self) {
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _held = self.1.lock().unwrap();
+                    panic!("retention poison fixture");
+                }))
+                .is_err()
+            );
+        }
+        #[cfg(feature = "streaming")]
+        fn unresolved_external(&self) -> Vec<ExternalCompensationRecovery> {
+            self.2
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .map(|(_, item)| item.clone())
+                .collect()
+        }
+        fn push(&self, node_id: String, outcome: SagaRollbackOutcome) {
+            let mut report = self
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            report.finished = false;
+            report.steps.push(SagaRollbackStep { node_id, outcome });
+        }
+    }
     #[cfg(feature = "streaming")]
     fn claim_fixture() -> super::SagaRollbackJournal {
         let journal = super::SagaRollbackJournal::new("claim original");
