@@ -129,6 +129,7 @@ async fn supervised_stream_end_is_recorded_and_released_on_postgres() {
                 .unwrap()
                 .is_some()
             {}
+            drop(invocation);
         } else {
             // The consumer goes away while the source is still Pending.
             drop(invocation);
