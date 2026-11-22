@@ -125,24 +125,8 @@ pub struct HttpTaskDrainReport {
 }
 
 impl ManagedTaskRegistry {
-    /// Return ownership on rejection; never detach a task after drain begins.
-    #[cfg(test)]
-    async fn spawn<F>(&self, future: F) -> Result<(), F>
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        // Known closed admission must not queue behind a pending drain.
-        if self.is_closed() {
-            return Err(future);
-        }
-        let mut tasks = self.tasks.lock().await;
-        if self.is_closed() {
-            return Err(future);
-        }
-        tasks.spawn(future);
-        Ok(())
-    }
-
+    /// Admit one slot before request callbacks. Known closed admission does not
+    /// queue behind a pending drain; closure while waiting is rechecked.
     async fn reserve(&self) -> Result<ManagedTaskReservation, TaskReservationError> {
         if self.is_closed() {
             return Err(TaskReservationError::Closed);
@@ -4306,16 +4290,9 @@ where
                             }
                         }
                     }
-                    #[allow(unused_mut)]
-                    let mut res = (entry.handler)(parts, &resources).await;
+                    let res = (entry.handler)(parts, &resources).await;
                     #[cfg(feature = "http3")]
-                    if let Some(port) = alt_svc_port {
-                        if let Ok(val) =
-                            http::HeaderValue::from_str(&format!("h3=\":{}\"; ma=86400", port))
-                        {
-                            res.headers_mut().insert(http::header::ALT_SVC, val);
-                        }
-                    }
+                    let res = with_alt_svc(res, alt_svc_port);
                     Ok::<_, Infallible>(res)
                 } else {
                     let route_service = build_route_service(
@@ -4324,19 +4301,9 @@ where
                         effective_layers,
                         entry.needs_body,
                     );
-                    #[allow(unused_mut)]
-                    let mut res = route_service.call(req).await;
+                    let res = route_service.call(req).await;
                     #[cfg(feature = "http3")]
-                    #[allow(irrefutable_let_patterns)]
-                    if let Ok(ref mut r) = res {
-                        if let Some(port) = alt_svc_port {
-                            if let Ok(val) =
-                                http::HeaderValue::from_str(&format!("h3=\":{}\"; ma=86400", port))
-                            {
-                                r.headers_mut().insert(http::header::ALT_SVC, val);
-                            }
-                        }
-                    }
+                    let res = res.map(|res| with_alt_svc(res, alt_svc_port));
                     res
                 }
             } else {
@@ -4348,8 +4315,7 @@ where
                         Err(response) => return Ok(response),
                     };
 
-                #[allow(unused_mut)]
-                let mut fallback_res = if let Some(ref fb) = fallback {
+                let fallback_res = if let Some(ref fb) = fallback {
                     if layers.is_empty() {
                         let (parts, _) = req.into_parts();
                         Ok(fb(parts, &resources).await)
@@ -4370,20 +4336,23 @@ where
                 };
 
                 #[cfg(feature = "http3")]
-                if let Ok(r) = fallback_res.as_mut() {
-                    if let Some(port) = alt_svc_port {
-                        if let Ok(val) =
-                            http::HeaderValue::from_str(&format!("h3=\":{}\"; ma=86400", port))
-                        {
-                            r.headers_mut().insert(http::header::ALT_SVC, val);
-                        }
-                    }
-                }
+                let fallback_res = fallback_res.map(|res| with_alt_svc(res, alt_svc_port));
 
                 fallback_res
             }
         }
     })
+}
+
+/// Advertise the HTTP/3 endpoint on an HTTP/1.1 or HTTP/2 response.
+#[cfg(feature = "http3")]
+fn with_alt_svc<B>(mut res: Response<B>, port: Option<u16>) -> Response<B> {
+    if let Some(port) = port
+        && let Ok(val) = http::HeaderValue::from_str(&format!("h3=\":{}\"; ma=86400", port))
+    {
+        res.headers_mut().insert(http::header::ALT_SVC, val);
+    }
+    res
 }
 
 fn build_route_service<R>(
@@ -5711,6 +5680,23 @@ mod tests {
     use tokio_tungstenite::tungstenite::Message as WsClientMessage;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
+    /// Production admission path: reserve a slot, then hand it the task.
+    /// Rejection returns the unpolled future to the caller.
+    async fn start_managed<F>(registry: &ManagedTaskRegistry, future: F) -> Result<(), F>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        match registry.reserve().await {
+            Ok(reservation) => {
+                if reservation.start(future).is_err() {
+                    panic!("reserved slot dropped its receiver before start");
+                }
+                Ok(())
+            }
+            Err(_) => Err(future),
+        }
+    }
+
     async fn connect_with_retry(addr: std::net::SocketAddr) -> tokio::net::TcpStream {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
 
@@ -6789,8 +6775,7 @@ mod tests {
     async fn managed_task_registry_aborts_stuck_child_at_shared_deadline() {
         let registry = ManagedTaskRegistry::default();
         assert!(
-            registry
-                .spawn(async { std::future::pending::<()>().await })
+            start_managed(&registry, async { std::future::pending::<()>().await })
                 .await
                 .is_ok()
         );
@@ -6806,8 +6791,7 @@ mod tests {
         let release = Arc::new(tokio::sync::Notify::new());
         let wait = release.clone();
         assert!(
-            registry
-                .spawn(async move { wait.notified().await })
+            start_managed(&registry, async move { wait.notified().await })
                 .await
                 .is_ok()
         );
@@ -6828,7 +6812,7 @@ mod tests {
         })
         .await
         .unwrap();
-        let mut late = Box::pin(registry.spawn(std::future::pending::<()>()));
+        let mut late = Box::pin(start_managed(&registry, std::future::pending::<()>()));
         assert!(
             matches!(
                 futures_util::poll!(&mut late),
@@ -6861,7 +6845,7 @@ mod tests {
         registry
             .closed
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        let mut attempt = Box::pin(registry.spawn(std::future::pending::<()>()));
+        let mut attempt = Box::pin(start_managed(&registry, std::future::pending::<()>()));
         assert!(
             matches!(
                 futures_util::poll!(&mut attempt),
@@ -6875,7 +6859,7 @@ mod tests {
     async fn managed_task_admission_rechecks_closure_after_waiting() {
         let registry = ManagedTaskRegistry::default();
         let held = registry.tasks.lock().await;
-        let mut attempt = Box::pin(registry.spawn(std::future::pending::<()>()));
+        let mut attempt = Box::pin(start_managed(&registry, std::future::pending::<()>()));
         assert!(futures_util::poll!(&mut attempt).is_pending());
         registry
             .closed
@@ -6910,7 +6894,7 @@ mod tests {
             let _probe = probe;
             std::future::pending::<()>().await;
         };
-        let Err(rejected) = registry.spawn(future).await else {
+        let Err(rejected) = start_managed(&registry, future).await else {
             panic!("closed admission accepted task")
         };
         assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 0);

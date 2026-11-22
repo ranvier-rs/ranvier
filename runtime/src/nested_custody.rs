@@ -90,13 +90,7 @@ pub(crate) struct NestedSagaCustody<E, Res> {
 pub(crate) type Capability = Arc<dyn Any + Send + Sync>;
 struct CustodyRecord {
     owner: Capability,
-    #[cfg_attr(
-        not(any(test, feature = "streaming")),
-        expect(
-            dead_code,
-            reason = "task custody is read only by the streaming runtime"
-        )
-    )]
+    #[cfg(feature = "streaming")]
     task: Option<Capability>,
     #[cfg(feature = "streaming")]
     settlement: Option<crate::managed_stream_task::TaskSettlement>,
@@ -332,7 +326,7 @@ impl CustodyStore {
     }
     /// Root-only snapshot after admission closure. Cloning holders preserves
     /// unjoined task custody; this neither removes records nor proves join.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "streaming"))]
     pub(crate) fn closed_tasks(&self) -> Result<Vec<(uuid::Uuid, Capability)>, &'static str> {
         let records = self
             .0
@@ -589,6 +583,8 @@ fn reserve_in_with_kind(
     is_reservation: bool,
 ) -> Result<WeakCustody, &'static str> {
     let _ = is_reservation;
+    #[cfg(not(feature = "streaming"))]
+    let _ = task;
     let mut records = store
         .records
         .lock()
@@ -615,6 +611,7 @@ fn reserve_in_with_kind(
         id,
         CustodyRecord {
             owner: record,
+            #[cfg(feature = "streaming")]
             task,
             #[cfg(feature = "streaming")]
             settlement: None,
@@ -1575,6 +1572,7 @@ mod tests {
         );
         assert_eq!(first.lock().await.take_joined().unwrap().unwrap(), Some(73));
     }
+    #[cfg(feature = "streaming")]
     #[test]
     fn closed_task_snapshot_excludes_plain_owners_and_keeps_holder_after_record_release() {
         let root = CustodyStore::new(2);

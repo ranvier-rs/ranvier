@@ -49,21 +49,9 @@ impl SagaRollbackReport {
 /// Sensitive local recovery capability; no automatic retry or serialization.
 #[derive(Clone)]
 pub(crate) struct ExternalCompensationRecovery {
-    #[cfg_attr(
-        not(feature = "streaming"),
-        expect(
-            dead_code,
-            reason = "read only by streaming recovery until M427 operator recovery is wired"
-        )
-    )]
+    #[cfg(feature = "streaming")]
     pub(crate) context: crate::persistence::CompensationContext,
-    #[cfg_attr(
-        not(feature = "streaming"),
-        expect(
-            dead_code,
-            reason = "read only by streaming recovery until M427 operator recovery is wired"
-        )
-    )]
+    #[cfg(feature = "streaming")]
     pub(crate) idempotency: Option<crate::persistence::CompensationIdempotencyHandle>,
     pub(crate) invoked: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -1427,6 +1415,7 @@ mod tests {
         );
     }
     use super::*;
+    #[cfg(feature = "streaming")]
     #[test]
     fn completed_external_settlement_releases_retained_recovery() {
         let journal = SagaRollbackJournal::new("release-probe");

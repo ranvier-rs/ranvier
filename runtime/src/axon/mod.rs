@@ -1733,7 +1733,9 @@ async fn run_compensation(
     use crate::saga_report::{ExternalCompensationRecovery, SagaRollbackOutcome};
     use futures_util::FutureExt as _;
     let recovery = ExternalCompensationRecovery {
+        #[cfg(feature = "streaming")]
         context: context.clone(),
+        #[cfg(feature = "streaming")]
         idempotency: idempotency.clone(),
         invoked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
