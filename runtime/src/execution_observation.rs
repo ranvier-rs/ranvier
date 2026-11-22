@@ -1107,6 +1107,7 @@ impl Session {
                 if journal.has_unresolved_tasks() {
                     Some(journal)
                 } else {
+                    #[cfg(feature = "streaming")]
                     journal.release_custody();
                     None
                 }

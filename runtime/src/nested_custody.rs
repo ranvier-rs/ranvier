@@ -18,22 +18,14 @@ impl<Res> Clone for OwnedResources<Res> {
 /// Temporary explicit typed owner; restore the parent's original Bus storage on
 /// return, panic or future Drop. Required supervision retains the live record.
 ///
-/// Test-only until production nested owned-child execution (M427 OR1–OR5) is
-/// wired; see the M425–M432 work plan backlog.
-#[cfg(test)]
+/// Used by the public `Axon::execute_owned_child*` entry points.
+#[cfg(feature = "streaming")]
 pub(crate) struct OwnedResourceScope<'a> {
     bus: &'a mut ranvier_core::Bus,
     scope: Option<ranvier_core::bus::BusResourceScope>,
-    #[cfg_attr(
-        not(feature = "streaming"),
-        expect(
-            dead_code,
-            reason = "read only by the streaming-gated owned-child tests"
-        )
-    )]
     pub(crate) eligible: bool,
 }
-#[cfg(test)]
+#[cfg(feature = "streaming")]
 impl<'a> OwnedResourceScope<'a> {
     pub(crate) fn begin<Res: Send + Sync + 'static>(
         bus: &'a mut ranvier_core::Bus,
@@ -56,7 +48,7 @@ impl<'a> OwnedResourceScope<'a> {
         self.bus
     }
 }
-#[cfg(test)]
+#[cfg(feature = "streaming")]
 impl Drop for OwnedResourceScope<'_> {
     fn drop(&mut self) {
         let access = self.bus.take_access_scope();
@@ -67,26 +59,67 @@ impl Drop for OwnedResourceScope<'_> {
     }
 }
 /// Retained by the custody store so a nested Saga's resources and compensation
-/// handlers outlive the child invocation. Production code only retains them;
-/// the reader (operator recovery / nested drain) is M427 backlog work.
+/// handlers outlive the child invocation. Operator recovery
+/// (`StreamReportHandle::reconcile_next_local_compensation_until`) reads them
+/// through [`NestedCompensation`] to undo the child's retained work.
+#[cfg(feature = "streaming")]
 pub(crate) struct NestedSagaCustody<E, Res> {
-    #[cfg_attr(
-        not(all(test, feature = "streaming")),
-        expect(
-            dead_code,
-            reason = "retained for M427 nested compensation; reader not wired yet"
-        )
-    )]
     pub(crate) resources: Arc<Res>,
-    #[cfg_attr(
-        not(all(test, feature = "streaming")),
-        expect(
-            dead_code,
-            reason = "retained for M427 nested compensation; reader not wired yet"
-        )
-    )]
     pub(crate) handlers: ranvier_core::saga::SagaCompensationRegistry<E, Res>,
 }
+/// Boxed future returned by a type-erased nested compensation.
+#[cfg(feature = "streaming")]
+pub(crate) type NestedCompensationFuture<'a> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<
+                    crate::saga_report::SagaRollbackOutcome,
+                    crate::saga_report::LocalTaskClaimError,
+                >,
+            > + Send
+            + 'a,
+    >,
+>;
+/// Type-erased reader of a retained nested Saga. The parent recovery owner
+/// does not know the child's resource or error types. Tests downcast through
+/// trait upcasting to `Arc<dyn Any>`.
+#[cfg(feature = "streaming")]
+pub(crate) trait NestedCompensation: Any + Send + Sync {
+    /// Run one claimed child compensation with the child's own resources and
+    /// frozen handler map. A missing handler settles the row as such.
+    fn compensate<'a>(
+        &'a self,
+        claim: crate::saga_report::LocalTaskClaim,
+        bus: &'a mut ranvier_core::Bus,
+        deadline: tokio::time::Instant,
+    ) -> NestedCompensationFuture<'a>;
+}
+#[cfg(feature = "streaming")]
+impl<E, Res> NestedCompensation for NestedSagaCustody<E, Res>
+where
+    E: Send + Sync + 'static,
+    Res: Send + Sync + 'static,
+{
+    fn compensate<'a>(
+        &'a self,
+        mut claim: crate::saga_report::LocalTaskClaim,
+        bus: &'a mut ranvier_core::Bus,
+        deadline: tokio::time::Instant,
+    ) -> NestedCompensationFuture<'a> {
+        Box::pin(async move {
+            let Some(handler) = self.handlers.get(claim.node_id()) else {
+                claim.mark_missing_handler()?;
+                return Ok(crate::saga_report::SagaRollbackOutcome::MissingHandler);
+            };
+            claim
+                .invoke(handler, self.resources.as_ref(), bus, deadline)
+                .await
+        })
+    }
+}
+/// The custody-store record of a nested owned child.
+#[cfg(feature = "streaming")]
+pub(crate) struct NestedCustodyRecord(pub(crate) Arc<dyn NestedCompensation>);
 pub(crate) type Capability = Arc<dyn Any + Send + Sync>;
 struct CustodyRecord {
     owner: Capability,
@@ -733,7 +766,7 @@ impl WeakCustody {
     pub(crate) fn id(&self) -> uuid::Uuid {
         self.id
     }
-    #[cfg(test)]
+    #[cfg(feature = "streaming")]
     pub(crate) fn upgrade(&self) -> Option<Capability> {
         self.record.upgrade()
     }

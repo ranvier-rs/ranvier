@@ -55,6 +55,19 @@ pub(crate) struct ExternalCompensationRecovery {
     pub(crate) idempotency: Option<crate::persistence::CompensationIdempotencyHandle>,
     pub(crate) invoked: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
+/// The earliest unresolved journal row, as seen by operator recovery.
+#[cfg(feature = "streaming")]
+pub(crate) enum RecoveryRow {
+    /// A local compensation input owned by this journal.
+    Task,
+    /// A retained nested invocation journal.
+    Child {
+        index: usize,
+        journal: SagaRollbackJournal,
+    },
+    /// External, stream or unknown work that local recovery cannot pass.
+    Blocked,
+}
 /// Invocation-owned cleanup journal. Cloning this handle does not copy steps.
 /// Call snapshot to obtain an owned serializable report, including partial work.
 #[derive(Clone)]
@@ -63,6 +76,7 @@ pub struct SagaRollbackJournal(
     std::sync::Arc<std::sync::Mutex<Vec<(usize, std::sync::Arc<ranvier_core::saga::SagaTask>)>>>,
     std::sync::Arc<std::sync::Mutex<Vec<(usize, ExternalCompensationRecovery)>>>,
     std::sync::Arc<std::sync::Mutex<Vec<(usize, SagaRollbackJournal)>>>,
+    #[cfg(feature = "streaming")]
     std::sync::Arc<std::sync::Mutex<Option<crate::nested_custody::WeakCustody>>>,
     #[cfg(feature = "streaming")]
     std::sync::Arc<
@@ -499,6 +513,7 @@ impl SagaRollbackJournal {
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            #[cfg(feature = "streaming")]
             std::sync::Arc::new(std::sync::Mutex::new(None)),
             #[cfg(feature = "streaming")]
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -606,6 +621,81 @@ impl SagaRollbackJournal {
             invoked: false,
             settled: false,
         })
+    }
+    /// Classify the earliest unresolved row so operator recovery keeps LIFO
+    /// order across retained nested journals. `None` means every row completed.
+    #[cfg(feature = "streaming")]
+    pub(crate) fn next_recovery_row(&self) -> Result<Option<RecoveryRow>, LocalTaskClaimError> {
+        let index = {
+            let report = self
+                .0
+                .try_lock()
+                .map_err(|_| LocalTaskClaimError::Unavailable)?;
+            match report
+                .steps
+                .iter()
+                .position(|step| step.outcome != SagaRollbackOutcome::Completed)
+            {
+                Some(index) => index,
+                None => return Ok(None),
+            }
+        };
+        let child = self
+            .3
+            .try_lock()
+            .map_err(|_| LocalTaskClaimError::Unavailable)?
+            .iter()
+            .find(|(observed, _)| *observed == index)
+            .map(|(_, child)| child.clone());
+        if let Some(journal) = child {
+            return Ok(Some(RecoveryRow::Child { index, journal }));
+        }
+        let task = self
+            .1
+            .try_lock()
+            .map_err(|_| LocalTaskClaimError::Unavailable)?
+            .iter()
+            .any(|(observed, _)| *observed == index);
+        Ok(Some(if task {
+            RecoveryRow::Task
+        } else {
+            RecoveryRow::Blocked
+        }))
+    }
+    /// Complete a retained child row once the child journal holds no retained
+    /// work, then release the child's custody outside the journal locks.
+    /// Returns `false` while the child still has unresolved or unknown work.
+    #[cfg(feature = "streaming")]
+    pub(crate) fn settle_completed_child(&self, index: usize) -> Result<bool, LocalTaskClaimError> {
+        let child = {
+            let mut report = self
+                .0
+                .try_lock()
+                .map_err(|_| LocalTaskClaimError::Unavailable)?;
+            let mut children = self
+                .3
+                .try_lock()
+                .map_err(|_| LocalTaskClaimError::Unavailable)?;
+            let Some(position) = children.iter().position(|(observed, _)| *observed == index)
+            else {
+                return Err(LocalTaskClaimError::Missing);
+            };
+            if children[position].1.try_retained_work_pending(256) != Ok(false) {
+                return Ok(false);
+            }
+            let step = report
+                .steps
+                .get_mut(index)
+                .ok_or(LocalTaskClaimError::IdentityMismatch)?;
+            if step.node_id != "nested-invocation" {
+                return Err(LocalTaskClaimError::IdentityMismatch);
+            }
+            step.outcome = SagaRollbackOutcome::Completed;
+            children.swap_remove(position).1
+        };
+        // User resource destructors must run outside the journal locks.
+        child.release_custody();
+        Ok(true)
     }
     /// Claim only the earliest unresolved journal row, and only when that row
     /// owns the exact retained external capability. Later rows cannot pass an
@@ -764,6 +854,7 @@ impl SagaRollbackJournal {
         }
         if unknown == 0 { Ok(()) } else { Err(unknown) }
     }
+    #[cfg(feature = "streaming")]
     pub(crate) fn retain_custody(&self, custody: crate::nested_custody::WeakCustody) {
         let mut incoming = Some(custody);
         {
@@ -777,13 +868,14 @@ impl SagaRollbackJournal {
             incoming.release();
         }
     }
+    #[cfg(feature = "streaming")]
     pub(crate) fn release_custody(&self) {
         let released = self.4.lock().unwrap_or_else(|p| p.into_inner()).take();
         if let Some(released) = released {
             released.release();
         }
     }
-    #[cfg(all(test, feature = "streaming"))]
+    #[cfg(feature = "streaming")]
     pub(crate) fn retained_custody(
         &self,
     ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {

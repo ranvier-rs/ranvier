@@ -86,13 +86,22 @@ where
     E: Send + Sync + Serialize + DeserializeOwned + std::fmt::Debug + 'static,
     Res: Send + Sync + 'static,
 {
-    /// Private explicit owned child entry. The active root store remains the owner;
-    /// this scope supplies a distinct typed resource allocation without cloning it.
+    /// Execute a nested Axon with its own resources inside a supervised stream.
     ///
-    /// Test-only until production nested owned-child execution (M427 OR1–OR5) is
-    /// wired; see the M425–M432 work plan backlog.
-    #[cfg(all(test, feature = "streaming"))]
-    pub(crate) async fn execute_owned_child(
+    /// Call this from a transition that runs under
+    /// [`StreamSupervisor`](crate::streaming_supervisor::StreamSupervisor). The
+    /// supervised root keeps `resources`, this graph's compensation handlers and
+    /// any unfinished child compensation in custody, so they outlive the child
+    /// call, a dropped consumer or an aborted task. Operator recovery runs them
+    /// later through the stream's report handle.
+    ///
+    /// Outside a supervised stream nothing runs: the report is
+    /// `Outcome::Emit("execution.owned_child_requires_supervisor", None)`. A plain
+    /// nested `execute` with a different resource allocation inside a supervised
+    /// stream is refused before effects with `execution.nested_resources_unowned`.
+    /// The resources are not cloned.
+    #[cfg(feature = "streaming")]
+    pub async fn execute_owned_child(
         &self,
         input: In,
         resources: std::sync::Arc<Res>,
@@ -106,9 +115,9 @@ where
         }
         self.execute(input, resources.as_ref(), scope.bus()).await
     }
-    /// Cancellable variant of [`Self::execute_owned_child`]; test-only for the same reason.
-    #[cfg(all(test, feature = "streaming"))]
-    pub(crate) async fn execute_owned_child_cancellable(
+    /// Cancellable variant of [`Self::execute_owned_child`].
+    #[cfg(feature = "streaming")]
+    pub async fn execute_owned_child_cancellable(
         &self,
         input: In,
         resources: std::sync::Arc<Res>,
@@ -127,12 +136,40 @@ where
         self.execute_cancellable(input, resources.as_ref(), scope.bus(), token)
             .await
     }
-    fn prepare_owned_child(
+    /// Under a supervised stream, select a custody-owned copy of this graph and
+    /// record its custody in a fresh child journal. Otherwise `Ok(None)`.
+    fn select_owned_child(
+        &self,
+        resources: &Res,
+        bus: &mut Bus,
+    ) -> Result<Option<Self>, &'static str> {
+        #[cfg(not(feature = "streaming"))]
+        {
+            // Required owned custody exists only under the streaming supervisor.
+            let _ = (resources, bus);
+            Ok(None)
+        }
+        #[cfg(feature = "streaming")]
+        {
+            let Some((graph, custody)) = self.prepare_supervised_child(resources, bus)? else {
+                return Ok(None);
+            };
+            let journal = crate::SagaRollbackJournal::new(&persistence_trace_id(bus));
+            journal.retain_custody(custody);
+            journal.finish();
+            bus.insert(journal);
+            Ok(Some(graph))
+        }
+    }
+    #[cfg(feature = "streaming")]
+    fn prepare_supervised_child(
         &self,
         resources: &Res,
         bus: &Bus,
     ) -> Result<Option<(Self, crate::nested_custody::WeakCustody)>, &'static str> {
-        use crate::nested_custody::{NestedSagaCustody, OwnedResources, RequiredOwnedCustody};
+        use crate::nested_custody::{
+            NestedCustodyRecord, NestedSagaCustody, OwnedResources, RequiredOwnedCustody,
+        };
         if !bus.has::<RequiredOwnedCustody>()
             || !bus.has::<crate::execution_observation::ActiveObservation>()
         {
@@ -154,10 +191,12 @@ where
                 handlers: handlers.clone(),
             },
         ));
-        let custody = std::sync::Arc::new(NestedSagaCustody {
-            resources: owned.0.clone(),
-            handlers: ranvier_core::saga::SagaCompensationRegistry { handlers },
-        });
+        let custody = std::sync::Arc::new(NestedCustodyRecord(std::sync::Arc::new(
+            NestedSagaCustody {
+                resources: owned.0.clone(),
+                handlers: ranvier_core::saga::SagaCompensationRegistry { handlers },
+            },
+        )));
         let retained = if let Some(store) = bus.read::<crate::nested_custody::CustodyStore>() {
             store.reserve(custody)?
         } else if let Some(client) = bus.read::<crate::nested_custody::WeakCustodyClient>() {
@@ -166,12 +205,6 @@ where
             return Err("execution.nested_custody_unavailable");
         };
         Ok(Some((graph, retained)))
-    }
-    fn record_owned_child(bus: &mut Bus, custody: crate::nested_custody::WeakCustody) {
-        let journal = crate::SagaRollbackJournal::new(&persistence_trace_id(bus));
-        journal.retain_custody(custody);
-        journal.finish();
-        bus.insert(journal);
     }
 
     /// Execute with an explicit cooperative cancellation owner.
@@ -188,11 +221,9 @@ where
         token: CancellationToken,
     ) -> crate::ExecutionReport<ExecutionTerminal<Out, E>> {
         let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
-        let prepared = self.prepare_owned_child(resources, owner.bus());
         let selected;
-        let graph = match prepared {
-            Ok(Some((graph, custody))) => {
-                Self::record_owned_child(owner.bus(), custody);
+        let graph = match self.select_owned_child(resources, owner.bus()) {
+            Ok(Some(graph)) => {
                 selected = graph;
                 &selected
             }
@@ -640,11 +671,9 @@ where
         bus: &mut Bus,
     ) -> crate::ExecutionReport<Outcome<Out, E>> {
         let mut owner = crate::execution_observation::InvocationOwner::begin(bus);
-        let prepared = self.prepare_owned_child(resources, owner.bus());
         let selected;
-        let graph = match prepared {
-            Ok(Some((graph, custody))) => {
-                Self::record_owned_child(owner.bus(), custody);
+        let graph = match self.select_owned_child(resources, owner.bus()) {
+            Ok(Some(graph)) => {
                 selected = graph;
                 &selected
             }

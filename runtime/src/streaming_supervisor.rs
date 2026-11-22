@@ -919,6 +919,189 @@ mod tests {
             Err(crate::streaming_report_handle::StreamLocalRetirementError::RecoveryReviewRequired)
         );
     }
+    struct OwnedChildResources {
+        effects: AtomicUsize,
+    }
+    #[derive(Clone)]
+    struct OwnedChildEffect;
+    #[async_trait::async_trait]
+    impl ranvier_core::Transition<u32, u32> for OwnedChildEffect {
+        type Error = String;
+        type Resources = OwnedChildResources;
+        async fn run(
+            &self,
+            input: u32,
+            resources: &OwnedChildResources,
+            _: &mut ranvier_core::Bus,
+        ) -> ranvier_core::Outcome<u32, String> {
+            resources.effects.fetch_add(1, Ordering::SeqCst);
+            ranvier_core::Outcome::Next(input)
+        }
+    }
+    /// Records which resource allocation the child compensation received.
+    #[derive(Clone)]
+    struct OwnedChildUndo(Arc<std::sync::Mutex<Vec<usize>>>);
+    #[async_trait::async_trait]
+    impl ranvier_core::Transition<u32, ()> for OwnedChildUndo {
+        type Error = String;
+        type Resources = OwnedChildResources;
+        async fn run(
+            &self,
+            input: u32,
+            resources: &OwnedChildResources,
+            _: &mut ranvier_core::Bus,
+        ) -> ranvier_core::Outcome<(), String> {
+            assert_eq!(input, 251);
+            self.0
+                .lock()
+                .unwrap()
+                .push(resources as *const OwnedChildResources as usize);
+            ranvier_core::Outcome::Next(())
+        }
+    }
+    type ChildAllocation =
+        Arc<std::sync::Mutex<Option<(usize, std::sync::Weak<OwnedChildResources>)>>>;
+    /// Prefix step that runs a nested Axon with its own resources.
+    #[derive(Clone)]
+    struct OwnedChildStep {
+        allocation: ChildAllocation,
+        undone_with: Arc<std::sync::Mutex<Vec<usize>>>,
+    }
+    #[async_trait::async_trait]
+    impl ranvier_core::Transition<u32, u32> for OwnedChildStep {
+        type Error = String;
+        type Resources = ();
+        async fn run(
+            &self,
+            input: u32,
+            _: &(),
+            bus: &mut ranvier_core::Bus,
+        ) -> ranvier_core::Outcome<u32, String> {
+            let resources = Arc::new(OwnedChildResources {
+                effects: AtomicUsize::new(0),
+            });
+            *self.allocation.lock().unwrap() =
+                Some((Arc::as_ptr(&resources) as usize, Arc::downgrade(&resources)));
+            let child = crate::Axon::<u32, u32, String, OwnedChildResources>::start("owned-child")
+                .with_saga_policy(ranvier_core::saga::SagaPolicy::Enabled)
+                .then_compensated(OwnedChildEffect, OwnedChildUndo(self.undone_with.clone()));
+            match child.execute_owned_child(input, resources, bus).await {
+                crate::ExecutionReport::Unpersisted {
+                    result: ranvier_core::Outcome::Next(value),
+                    ..
+                }
+                | crate::ExecutionReport::NotRequested {
+                    result: ranvier_core::Outcome::Next(value),
+                    ..
+                } => ranvier_core::Outcome::Next(value),
+                _ => ranvier_core::Outcome::Fault("owned child failed".into()),
+            }
+        }
+    }
+    #[tokio::test]
+    async fn operator_recovery_undoes_retained_owned_child_with_its_resources_then_parent() {
+        // One custody slot for the stream root, one for the nested child.
+        let supervisor = StreamSupervisor::new(2);
+        let root_undos = Arc::new(AtomicUsize::new(0));
+        let step_undos = Arc::new(AtomicUsize::new(0));
+        let allocation: ChildAllocation = Arc::new(std::sync::Mutex::new(None));
+        let undone_with = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let circuit = crate::Axon::<u32, u32, String>::start("owned-child-recovery")
+            .then_compensated(Prefix, CountUndo(root_undos.clone()))
+            .then_compensated(
+                OwnedChildStep {
+                    allocation: allocation.clone(),
+                    undone_with: undone_with.clone(),
+                },
+                CountUndo(step_undos.clone()),
+            )
+            .with_saga_policy(ranvier_core::saga::SagaPolicy::Enabled)
+            .then_stream(Finite);
+        let (ticket, context) = supervisor
+            .reserve()
+            .unwrap()
+            .with_context(|| OwnedStreamContext::try_new(Arc::new(()), ranvier_core::Bus::new()))
+            .unwrap();
+        let prepared = ticket
+            .prepare(
+                &circuit,
+                context,
+                251,
+                std::time::Duration::from_secs(1),
+                None,
+            )
+            .unwrap_or_else(|_| panic!("setup rejected"));
+        let mut invocation = prepared
+            .start(ranvier_core::CancellationToken::new())
+            .await
+            .unwrap_or_else(|error| panic!("{}", error.signal));
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        // A nested child with unfinished compensation leaves prefix cleanup
+        // incomplete, so the stream is refused before any item (OR2).
+        assert!(
+            tokio::time::timeout_at(deadline, invocation.readiness.initialized())
+                .await
+                .unwrap()
+                .is_err()
+        );
+        let report = invocation.report();
+        report.settle_until(deadline).await.unwrap();
+        let assessment = report.assessment().unwrap().unwrap();
+        assert_eq!(
+            assessment.initialization,
+            crate::streaming_report_handle::StreamInitializationAssessment::PrefixRejected
+        );
+        assert_eq!(
+            assessment.cleanup,
+            crate::streaming_report_handle::StreamCleanupAssessment::Incomplete
+        );
+        let (address, weak) = allocation.lock().unwrap().clone().unwrap();
+        let child = weak.upgrade().expect("custody retains child resources");
+        assert_eq!(child.effects.load(Ordering::SeqCst), 1);
+        drop(child);
+        // LIFO: the nested child is undone first, with its own resources and
+        // frozen handler, then its custody (and resources) are released.
+        assert_eq!(
+            report
+                .reconcile_next_local_compensation_until(deadline)
+                .await,
+            Ok(crate::SagaRollbackOutcome::Completed)
+        );
+        assert_eq!(*undone_with.lock().unwrap(), vec![address]);
+        assert!(
+            weak.upgrade().is_none(),
+            "settled child releases its resources"
+        );
+        assert_eq!(
+            (
+                step_undos.load(Ordering::SeqCst),
+                root_undos.load(Ordering::SeqCst)
+            ),
+            (0, 0)
+        );
+        for expected in [(1, 0), (1, 1)] {
+            assert_eq!(
+                report
+                    .reconcile_next_local_compensation_until(deadline)
+                    .await,
+                Ok(crate::SagaRollbackOutcome::Completed)
+            );
+            assert_eq!(
+                (
+                    step_undos.load(Ordering::SeqCst),
+                    root_undos.load(Ordering::SeqCst)
+                ),
+                expected
+            );
+        }
+        assert_eq!(
+            report
+                .reconcile_next_local_compensation_until(deadline)
+                .await,
+            Err(crate::streaming_report_handle::StreamLocalRecoveryError::RecoveryBlocked)
+        );
+        assert_eq!(undone_with.lock().unwrap().len(), 1, "no replay");
+    }
     #[tokio::test]
     async fn missing_local_handler_is_zero_call_and_keeps_the_first_recovery_row_blocking() {
         #[derive(Clone)]

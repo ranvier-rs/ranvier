@@ -18,6 +18,10 @@ use tokio::sync::Mutex;
 
 type RawStream<Item> = Pin<Box<dyn futures_core::Stream<Item = Item> + Send>>;
 
+/// Bound on journal rows one recovery call may walk, and on nested depth.
+const NESTED_RECOVERY_STEPS: usize = 256;
+const NESTED_RECOVERY_DEPTH: usize = 32;
+
 /// Local consumption observation, separate from stored prefix completion.
 pub(crate) struct StreamDriveResult<T> {
     #[cfg_attr(
@@ -1037,40 +1041,79 @@ where
                 }
             }
         }
-        let mut claim = journal
-            .claim_next_not_invoked()
-            .map_err(|error| match error {
-                LocalTaskClaimError::Unavailable => Error::Unavailable,
-                LocalTaskClaimError::TimedOut => Error::Wait(StreamReportWaitError::TimedOut),
-                LocalTaskClaimError::Missing
-                | LocalTaskClaimError::NotEligible
-                | LocalTaskClaimError::Claimed
-                | LocalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
-            })?;
-        let handler = self
-            .inner
-            .graph
-            .saga_compensation_registry
-            .try_read()
-            .map_err(|_| Error::HandlerRegistryUnavailable)?
-            .get(claim.node_id());
-        let Some(handler) = handler else {
-            claim
-                .mark_missing_handler()
-                .map_err(|_| Error::Unavailable)?;
-            return Ok(crate::SagaRollbackOutcome::MissingHandler);
+        // Walk retained nested journals in LIFO order. A nested row is undone
+        // with the child's own resources and frozen handlers from custody.
+        let map = |error: LocalTaskClaimError| match error {
+            LocalTaskClaimError::Unavailable => Error::Unavailable,
+            LocalTaskClaimError::TimedOut => Error::Wait(StreamReportWaitError::TimedOut),
+            LocalTaskClaimError::Missing
+            | LocalTaskClaimError::NotEligible
+            | LocalTaskClaimError::Claimed
+            | LocalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
         };
-        claim
-            .invoke(handler, resources.as_ref(), scope.bus(), deadline)
-            .await
-            .map_err(|error| match error {
-                LocalTaskClaimError::Unavailable => Error::Unavailable,
-                LocalTaskClaimError::TimedOut => Error::Wait(StreamReportWaitError::TimedOut),
-                LocalTaskClaimError::Missing
-                | LocalTaskClaimError::NotEligible
-                | LocalTaskClaimError::Claimed
-                | LocalTaskClaimError::IdentityMismatch => Error::RecoveryBlocked,
-            })
+        let mut current = journal;
+        let mut parents: Vec<(crate::SagaRollbackJournal, usize)> = Vec::new();
+        let mut nested: Option<std::sync::Arc<dyn crate::nested_custody::NestedCompensation>> =
+            None;
+        for _ in 0..NESTED_RECOVERY_STEPS {
+            match current.next_recovery_row().map_err(map)? {
+                None | Some(crate::saga_report::RecoveryRow::Blocked) => {
+                    return Err(Error::RecoveryBlocked);
+                }
+                Some(crate::saga_report::RecoveryRow::Child { index, journal }) => {
+                    if current.settle_completed_child(index).map_err(map)? {
+                        continue;
+                    }
+                    if parents.len() >= NESTED_RECOVERY_DEPTH {
+                        return Err(Error::RecoveryBlocked);
+                    }
+                    let record = journal
+                        .retained_custody()
+                        .and_then(|record| {
+                            record
+                                .downcast::<crate::nested_custody::NestedCustodyRecord>()
+                                .ok()
+                        })
+                        .ok_or(Error::RecoveryBlocked)?;
+                    nested = Some(record.0.clone());
+                    parents.push((std::mem::replace(&mut current, journal), index));
+                }
+                Some(crate::saga_report::RecoveryRow::Task) => {
+                    let mut claim = current.claim_next_not_invoked().map_err(map)?;
+                    let outcome = match &nested {
+                        Some(child) => child.compensate(claim, scope.bus(), deadline).await,
+                        None => {
+                            let handler = self
+                                .inner
+                                .graph
+                                .saga_compensation_registry
+                                .try_read()
+                                .map_err(|_| Error::HandlerRegistryUnavailable)?
+                                .get(claim.node_id());
+                            match handler {
+                                Some(handler) => {
+                                    claim
+                                        .invoke(handler, resources.as_ref(), scope.bus(), deadline)
+                                        .await
+                                }
+                                None => claim
+                                    .mark_missing_handler()
+                                    .map(|()| crate::SagaRollbackOutcome::MissingHandler),
+                            }
+                        }
+                    }
+                    .map_err(map)?;
+                    // Completing the last child row lets its parent row settle too.
+                    while let Some((parent, index)) = parents.pop() {
+                        if !parent.settle_completed_child(index).map_err(map)? {
+                            break;
+                        }
+                    }
+                    return Ok(outcome);
+                }
+            }
+        }
+        Err(Error::RecoveryBlocked)
     }
     async fn readback_next_external_compensation_until(
         &self,
@@ -1548,6 +1591,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Typed view of a nested owned child's custody record.
+    fn nested_custody<E: Send + Sync + 'static, Res: Send + Sync + 'static>(
+        child: &crate::SagaRollbackJournal,
+    ) -> Arc<crate::nested_custody::NestedSagaCustody<E, Res>> {
+        let record = child
+            .retained_custody()
+            .unwrap()
+            .downcast::<crate::nested_custody::NestedCustodyRecord>()
+            .unwrap_or_else(|_| panic!("not a nested custody record"));
+        let erased: Arc<dyn std::any::Any + Send + Sync> = record.0.clone();
+        erased
+            .downcast()
+            .unwrap_or_else(|_| panic!("wrong typed custody"))
+    }
     use ranvier_core::{
         Outcome, Transition,
         saga::{SagaPolicy, SagaStack},
@@ -2429,11 +2486,7 @@ mod tests {
             .retained_children();
         assert_eq!(children.len(), 1);
         let child = &children[0].1;
-        let custody = child
-            .retained_custody()
-            .unwrap()
-            .downcast::<crate::nested_custody::NestedSagaCustody<String, Resources>>()
-            .unwrap_or_else(|_| panic!("wrong typed custody"));
+        let custody = nested_custody::<String, Resources>(child);
         assert!(Arc::ptr_eq(&custody.resources, &resources));
         let pending = child.unresolved_tasks();
         assert_eq!(
@@ -2681,8 +2734,7 @@ mod tests {
                     .retained_children();
                 assert_eq!(children.len(), 1);
                 let child = &children[0].1;
-                let custody = child.retained_custody().unwrap().downcast::<crate::nested_custody::NestedSagaCustody<String, DistinctChildResources>>()
-                    .unwrap_or_else(|_| panic!("wrong child resource type"));
+                let custody = nested_custody::<String, DistinctChildResources>(child);
                 assert!(Arc::ptr_eq(&custody.resources, &weak.upgrade().unwrap()));
                 assert_eq!(custody.resources.effects.load(Ordering::SeqCst), 1);
                 let tasks = child.unresolved_tasks();
@@ -2781,8 +2833,7 @@ mod tests {
                 assert_eq!(children.len(), 1);
                 let child = &children[0].1;
                 assert_ne!(child.snapshot().trace_id, journal.snapshot().trace_id);
-                let custody = child.retained_custody().unwrap().downcast::<crate::nested_custody::NestedSagaCustody<String, DistinctChildResources>>()
-                    .unwrap_or_else(|_| panic!("wrong child resource type"));
+                let custody = nested_custody::<String, DistinctChildResources>(child);
                 assert!(Arc::ptr_eq(&custody.resources, &weak.upgrade().unwrap()));
                 assert_eq!(custody.resources.effects.load(Ordering::SeqCst), 1);
                 let tasks = child.unresolved_tasks();

@@ -7,6 +7,7 @@ pub mod distributed;
 mod execution_observation;
 pub mod execution_report;
 pub mod llm;
+#[cfg(feature = "streaming")]
 mod nested_custody;
 pub mod persistence;
 pub mod replay;

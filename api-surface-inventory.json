@@ -28,10 +28,10 @@
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2938,
+  "public_item_count": 2940,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2744,
+    "Experimental": 2746,
     "Stable Candidate": 186
   },
   "crates": [
@@ -29987,11 +29987,11 @@
         "schema",
         "streaming"
       ],
-      "public_item_count": 717,
+      "public_item_count": 719,
       "counts_by_kind": {
         "constant": 3,
         "enum": 88,
-        "function": 175,
+        "function": 177,
         "module": 18,
         "struct": 132,
         "struct_field": 97,
@@ -30000,7 +30000,7 @@
         "variant": 177
       },
       "counts_by_stability": {
-        "Experimental": 700,
+        "Experimental": 702,
         "Stable Candidate": 17
       },
       "facade_reexport_count": 0,
@@ -30176,6 +30176,34 @@
         },
         {
           "path": "ranvier_runtime::axon::Axon::execute_cancellable",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/axon/executor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::axon::Axon::execute_owned_child",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/axon/executor.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::axon::Axon::execute_owned_child_cancellable",
           "kind": "function",
           "origin": "direct",
           "target": null,
