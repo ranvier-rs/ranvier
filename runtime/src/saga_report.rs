@@ -992,7 +992,7 @@ impl SagaRollbackJournal {
         index
     }
     /// Sensitive exact context/capability, accessible only to runtime reconciliation.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "streaming"))]
     pub(crate) fn unresolved_external(&self) -> Vec<ExternalCompensationRecovery> {
         self.2
             .lock()
