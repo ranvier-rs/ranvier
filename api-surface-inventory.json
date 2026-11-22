@@ -28,10 +28,10 @@
     "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
   },
   "product_crate_count": 12,
-  "public_item_count": 2940,
+  "public_item_count": 2959,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2746,
+    "Experimental": 2765,
     "Stable Candidate": 186
   },
   "crates": [
@@ -17205,26 +17205,26 @@
         "tls",
         "validation"
       ],
-      "public_item_count": 528,
+      "public_item_count": 537,
       "counts_by_kind": {
         "assoc_const": 2,
         "constant": 5,
         "enum": 18,
-        "function": 253,
+        "function": 254,
         "macro": 1,
         "module": 14,
-        "struct": 112,
-        "struct_field": 57,
+        "struct": 115,
+        "struct_field": 62,
         "trait": 18,
         "type_alias": 14,
         "variant": 34
       },
       "counts_by_stability": {
-        "Experimental": 504,
+        "Experimental": 513,
         "Stable Candidate": 24
       },
       "facade_reexport_count": 0,
-      "boundary_item_count": 528,
+      "boundary_item_count": 537,
       "items": [
         {
           "path": "ranvier_http",
@@ -19943,6 +19943,20 @@
           }
         },
         {
+          "path": "ranvier_http::ingress::HttpIngress::on_stream_retained",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "http-adapters",
+          "boundary": "runtime-validated-protocol-boundary",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "http/src/ingress.rs"
+          }
+        },
+        {
           "path": "ranvier_http::ingress::HttpIngress::patch",
           "kind": "function",
           "origin": "direct",
@@ -20699,6 +20713,34 @@
           }
         },
         {
+          "path": "ranvier_http::ingress::HttpTaskDrainReport::streams_retained",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "http-adapters",
+          "boundary": "runtime-validated-protocol-boundary",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "http/src/ingress.rs"
+          }
+        },
+        {
+          "path": "ranvier_http::ingress::HttpTaskDrainReport::streams_unsettled",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "http-adapters",
+          "boundary": "runtime-validated-protocol-boundary",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "http/src/ingress.rs"
+          }
+        },
+        {
           "path": "ranvier_http::ingress::PathParams",
           "kind": "struct",
           "origin": "direct",
@@ -20953,6 +20995,62 @@
         {
           "path": "ranvier_http::ingress::RawIngressService::with_cancellation_token",
           "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "http-adapters",
+          "boundary": "runtime-validated-protocol-boundary",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "http/src/ingress.rs"
+          }
+        },
+        {
+          "path": "ranvier_http::ingress::RetainedStream",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "http-adapters",
+          "boundary": "runtime-validated-protocol-boundary",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "http/src/ingress.rs"
+          }
+        },
+        {
+          "path": "ranvier_http::ingress::RetainedStream::method",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "http-adapters",
+          "boundary": "runtime-validated-protocol-boundary",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "http/src/ingress.rs"
+          }
+        },
+        {
+          "path": "ranvier_http::ingress::RetainedStream::path",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "http-adapters",
+          "boundary": "runtime-validated-protocol-boundary",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "http/src/ingress.rs"
+          }
+        },
+        {
+          "path": "ranvier_http::ingress::RetainedStream::report",
+          "kind": "struct_field",
           "origin": "direct",
           "target": null,
           "stability": "Experimental",
@@ -22883,6 +22981,20 @@
           }
         },
         {
+          "path": "ranvier_http::prelude::RetainedStream",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "crate::ingress::RetainedStream",
+          "stability": "Experimental",
+          "owner": "http-adapters",
+          "boundary": "runtime-validated-protocol-boundary",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "http/src/lib.rs"
+          }
+        },
+        {
           "path": "ranvier_http::prelude::RouteGroup",
           "kind": "struct",
           "origin": "reexport",
@@ -23643,6 +23755,20 @@
           "kind": "type_alias",
           "origin": "reexport",
           "target": "guard_integration::ResponseExtractorFn",
+          "stability": "Experimental",
+          "owner": "http-adapters",
+          "boundary": "runtime-validated-protocol-boundary",
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "http/src/lib.rs"
+          }
+        },
+        {
+          "path": "ranvier_http::RetainedStream",
+          "kind": "struct",
+          "origin": "reexport",
+          "target": "ingress::RetainedStream",
           "stability": "Experimental",
           "owner": "http-adapters",
           "boundary": "runtime-validated-protocol-boundary",
@@ -29987,20 +30113,20 @@
         "schema",
         "streaming"
       ],
-      "public_item_count": 719,
+      "public_item_count": 729,
       "counts_by_kind": {
         "constant": 3,
         "enum": 88,
-        "function": 177,
+        "function": 186,
         "module": 18,
-        "struct": 132,
+        "struct": 133,
         "struct_field": 97,
         "trait": 18,
         "type_alias": 9,
         "variant": 177
       },
       "counts_by_stability": {
-        "Experimental": 702,
+        "Experimental": 712,
         "Stable Candidate": 17
       },
       "facade_reexport_count": 0,
@@ -38575,6 +38701,104 @@
           }
         },
         {
+          "path": "ranvier_runtime::streaming_report_handle::StreamRecoveryHandle",
+          "kind": "struct",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamRecoveryHandle::assessment",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamRecoveryHandle::live_recovery_until",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamRecoveryHandle::readback_next_external_compensation_until",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamRecoveryHandle::reconcile_next_local_compensation_until",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamRecoveryHandle::release_settled_until",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamRecoveryHandle::stream_end_durability",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
           "path": "ranvier_runtime::streaming_report_handle::StreamRecoveryProbeError",
           "kind": "enum",
           "origin": "direct",
@@ -38813,6 +39037,34 @@
           }
         },
         {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportHandle::recovery_handle",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportHandle::release_settled_until",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
           "path": "ranvier_runtime::streaming_report_handle::StreamReportHandle::retire_completed_local_until",
           "kind": "function",
           "origin": "direct",
@@ -38842,6 +39094,20 @@
         },
         {
           "path": "ranvier_runtime::streaming_report_handle::StreamReportHandle::settle_until",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "runtime/src/streaming_report_handle.rs"
+          }
+        },
+        {
+          "path": "ranvier_runtime::streaming_report_handle::StreamReportHandle::stream_end_durability",
           "kind": "function",
           "origin": "direct",
           "target": null,

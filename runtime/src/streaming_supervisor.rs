@@ -373,10 +373,14 @@ impl StreamReservation {
             }
         };
         let retirement = plan.owner.local_retirement(custody.clone(), report.clone());
+        let finalization = plan
+            .owner
+            .completed_finalization(custody.clone(), report.clone());
         let recovery = plan.owner.local_recovery(report.clone());
         let external_recovery = plan.owner.external_recovery(report.clone());
         let report = report
             .with_local_retirement(retirement)
+            .with_completed_finalization(finalization)
             .with_local_recovery(recovery)
             .with_external_recovery(external_recovery);
         Ok(PreparedSupervisedStream {
@@ -1055,6 +1059,10 @@ mod tests {
             assessment.cleanup,
             crate::streaming_report_handle::StreamCleanupAssessment::Incomplete
         );
+        assert_eq!(
+            report.release_settled_until(deadline).await,
+            Err(crate::streaming_report_handle::StreamLocalRetirementError::RecoveryReviewRequired)
+        );
         let (address, weak) = allocation.lock().unwrap().clone().unwrap();
         let child = weak.upgrade().expect("custody retains child resources");
         assert_eq!(child.effects.load(Ordering::SeqCst), 1);
@@ -1101,6 +1109,155 @@ mod tests {
             Err(crate::streaming_report_handle::StreamLocalRecoveryError::RecoveryBlocked)
         );
         assert_eq!(undone_with.lock().unwrap().len(), 1, "no replay");
+        // Every row is now reconciled, so the record can be released.
+        assert_eq!(report.release_settled_until(deadline).await, Ok(()));
+        drop(invocation);
+        assert!(supervisor.reserve().is_ok());
+    }
+    #[derive(Clone)]
+    struct NeverEnding;
+    #[async_trait::async_trait]
+    impl ranvier_core::streaming::StreamingTransition<u32> for NeverEnding {
+        type Item = u32;
+        type Error = String;
+        type Resources = ();
+        async fn run_stream(
+            &self,
+            _: u32,
+            _: &(),
+            _: &mut ranvier_core::Bus,
+        ) -> Result<std::pin::Pin<Box<dyn futures_core::Stream<Item = u32> + Send>>, String>
+        {
+            Ok(Box::pin(futures_util::stream::pending()))
+        }
+    }
+    /// Run a compensated prefix through the supervisor and drain its items.
+    async fn completed_stream_fixture(
+        with_store: bool,
+        finite: bool,
+    ) -> (
+        StreamSupervisor,
+        crate::streaming_report_handle::StreamReportHandle<u32, String>,
+        Arc<AtomicUsize>,
+    ) {
+        let supervisor = StreamSupervisor::new(1);
+        let undos = Arc::new(AtomicUsize::new(0));
+        let mut bus = ranvier_core::Bus::new();
+        if with_store {
+            bus.insert(crate::PersistenceHandle::from_store(
+                crate::InMemoryPersistenceStore::new(),
+            ));
+        }
+        let base = crate::Axon::<u32, u32, String>::start("completed-finalization")
+            .then_compensated(Prefix, CountUndo(undos.clone()))
+            .with_saga_policy(ranvier_core::saga::SagaPolicy::Enabled);
+        let (ticket, context) = supervisor
+            .reserve()
+            .unwrap()
+            .with_context(|| OwnedStreamContext::try_new(Arc::new(()), bus))
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let report = if finite {
+            let circuit = base.then_stream(Finite);
+            let prepared = ticket
+                .prepare(
+                    &circuit,
+                    context,
+                    251,
+                    std::time::Duration::from_secs(1),
+                    None,
+                )
+                .unwrap_or_else(|_| panic!("setup rejected"));
+            let mut invocation = prepared
+                .start(ranvier_core::CancellationToken::new())
+                .await
+                .unwrap_or_else(|error| panic!("{}", error.signal));
+            tokio::time::timeout_at(deadline, invocation.readiness.initialized())
+                .await
+                .unwrap()
+                .unwrap();
+            while tokio::time::timeout_at(deadline, invocation.items.recv())
+                .await
+                .unwrap()
+                .is_some()
+            {}
+            invocation.report().clone()
+        } else {
+            let circuit = base.then_stream(NeverEnding);
+            let prepared = ticket
+                .prepare(
+                    &circuit,
+                    context,
+                    251,
+                    std::time::Duration::from_secs(1),
+                    None,
+                )
+                .unwrap_or_else(|_| panic!("setup rejected"));
+            let mut invocation = prepared
+                .start(ranvier_core::CancellationToken::new())
+                .await
+                .unwrap_or_else(|error| panic!("{}", error.signal));
+            tokio::time::timeout_at(deadline, invocation.readiness.initialized())
+                .await
+                .unwrap()
+                .unwrap();
+            invocation.cancel(ranvier_core::CancellationReason::ClientDisconnected);
+            invocation.report().clone()
+        };
+        report.settle_until(deadline).await.unwrap();
+        (supervisor, report, undos)
+    }
+    #[tokio::test]
+    async fn completed_stream_finalization_discards_prefix_inputs_and_returns_capacity() {
+        for with_store in [false, true] {
+            let (supervisor, report, undos) = completed_stream_fixture(with_store, true).await;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            let end = report.stream_end_durability().unwrap();
+            if with_store {
+                assert!(
+                    matches!(end, Some(crate::StreamDurability::Recorded { .. })),
+                    "{end:?}"
+                );
+            } else {
+                assert!(matches!(
+                    end,
+                    None | Some(crate::StreamDurability::Unpersisted)
+                ));
+            }
+            // Local retirement keeps refusing: the prefix Saga inputs are live.
+            assert_eq!(
+                report.retire_completed_local_until(deadline).await,
+                Err(crate::streaming_report_handle::StreamLocalRetirementError::RecoveryReviewRequired)
+            );
+            assert_eq!(report.release_settled_until(deadline).await, Ok(()));
+            assert_eq!(report.release_settled_until(deadline).await, Ok(()));
+            let live = report.live_recovery_until(deadline).await.unwrap();
+            assert!(!live.saga_stack_nonempty && !live.journal_present);
+            assert_eq!(
+                undos.load(Ordering::SeqCst),
+                0,
+                "success runs no compensation"
+            );
+            drop(report);
+            assert!(
+                supervisor.reserve().is_ok(),
+                "capacity returns after release"
+            );
+        }
+    }
+    #[tokio::test]
+    async fn cancelled_stream_with_complete_cleanup_is_released_without_discarding_inputs() {
+        let (supervisor, report, undos) = completed_stream_fixture(false, false).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        assert_eq!(
+            report.assessment().unwrap().unwrap().consumption,
+            Some(crate::streaming_report_handle::StreamConsumptionAssessment::SupervisorCancelled)
+        );
+        // Cancellation ran the prefix compensation to completion; nothing remains.
+        assert_eq!(undos.load(Ordering::SeqCst), 1);
+        assert_eq!(report.release_settled_until(deadline).await, Ok(()));
+        drop(report);
+        assert!(supervisor.reserve().is_ok());
     }
     #[tokio::test]
     async fn missing_local_handler_is_zero_call_and_keeps_the_first_recovery_row_blocking() {

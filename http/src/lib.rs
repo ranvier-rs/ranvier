@@ -50,6 +50,8 @@ pub use guard_integration::{
     BusInjectorFn, GuardExec, GuardIntegration, GuardRejection, PreflightConfig, RegisteredGuard,
     ResponseBodyTransformFn, ResponseExtractorFn, register_guard,
 };
+#[cfg(feature = "streaming")]
+pub use ingress::RetainedStream;
 pub use ingress::{
     HttpGuardDescriptor, HttpGuardScope, HttpIngress, HttpRouteDescriptor, HttpTaskDrainReport,
     PathParams, QueryParams, Ranvier, RawIngressService, RouteGroup, StaticAssetPolicy,
@@ -104,6 +106,8 @@ pub mod prelude {
         BusInjectorFn, GuardExec, GuardIntegration, GuardRejection, PreflightConfig,
         RegisteredGuard, ResponseBodyTransformFn, ResponseExtractorFn, register_guard,
     };
+    #[cfg(feature = "streaming")]
+    pub use crate::ingress::RetainedStream;
     pub use crate::ingress::{
         HttpGuardDescriptor, HttpGuardScope, HttpIngress, HttpRouteDescriptor, HttpTaskDrainReport,
         PathParams, QueryParams, Ranvier, RawIngressService, RouteGroup, StaticAssetPolicy,

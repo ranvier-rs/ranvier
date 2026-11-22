@@ -43,6 +43,8 @@ pub(crate) enum StreamDriverError {
 pub(crate) struct StreamReadyResult<T> {
     pub(crate) consumption: Result<StreamDriveResult<T>, StreamDriverError>,
     pub(crate) cleanup: Option<crate::SagaRollbackReport>,
+    /// Durability of the stream end record; `None` when no journal was kept.
+    pub(crate) end_durability: Option<crate::StreamDurability>,
 }
 
 /// Bounded delivery: reserve before polling source, keep controls live while full,
@@ -1178,6 +1180,24 @@ where
         receipt: crate::nested_custody::WeakCustody,
         report: crate::streaming_report_handle::StreamReportHandle<Out, E>,
     ) -> crate::streaming_report_handle::LocalRetirement {
+        self.retirement(receipt, report, false)
+    }
+    /// Release for `StreamReportHandle::release_settled_until`: a normally
+    /// completed stream discards its prefix Saga stack, as an ordinary Axon
+    /// does on success; otherwise only settled, fully reconciled state goes.
+    pub(crate) fn completed_finalization(
+        &self,
+        receipt: crate::nested_custody::WeakCustody,
+        report: crate::streaming_report_handle::StreamReportHandle<Out, E>,
+    ) -> crate::streaming_report_handle::LocalRetirement {
+        self.retirement(receipt, report, true)
+    }
+    fn retirement(
+        &self,
+        receipt: crate::nested_custody::WeakCustody,
+        report: crate::streaming_report_handle::StreamReportHandle<Out, E>,
+        completed_stream: bool,
+    ) -> crate::streaming_report_handle::LocalRetirement {
         let owner = self.clone();
         let decision = Arc::new(Mutex::new(false));
         Arc::new(move |deadline| {
@@ -1202,7 +1222,12 @@ where
                 if *retired {
                     return Ok(());
                 }
-                report.prove_completed_local(deadline).await?;
+                let settlement = if completed_stream {
+                    Some(report.prove_settled(deadline).await?)
+                } else {
+                    report.prove_completed_local(deadline).await?;
+                    None
+                };
                 let mut context = tokio::time::timeout_at(deadline, owner.inner.context.lock())
                     .await
                     .map_err(|_| timeout())?;
@@ -1213,14 +1238,33 @@ where
                 let access = bus.take_access_scope();
                 // A clear snapshot of a clonable journal is not sealed authority.
                 // Refuse every journal until child mutation/recovery is sealed.
-                let pending = bus.has::<crate::SagaRollbackJournal>()
-                    || bus
-                        .read::<ranvier_core::saga::SagaStack>()
-                        .is_some_and(|stack| !stack.is_empty());
-                bus.restore_access_scope(access);
-                if pending {
+                use crate::streaming_report_handle::StreamSettlement;
+                let journal = bus.read::<crate::SagaRollbackJournal>().cloned();
+                let stack = bus
+                    .read::<ranvier_core::saga::SagaStack>()
+                    .is_some_and(|stack| !stack.is_empty());
+                // Settled release accepts a journal only after every row was
+                // reconciled; the frame has joined and the context lock is held.
+                let journal_blocks = match (&journal, settlement) {
+                    (None, Some(StreamSettlement::RequiresReconciledJournal)) => true,
+                    (None, _) => false,
+                    (Some(journal), Some(_)) => !journal.is_fully_reconciled(),
+                    (Some(_), None) => true,
+                };
+                let stack_blocks = stack && settlement != Some(StreamSettlement::Completed);
+                if journal_blocks || stack_blocks {
+                    bus.restore_access_scope(access);
                     return Err(Error::RecoveryReviewRequired);
                 }
+                // A normally completed stream needs no compensation: drop the
+                // prefix inputs, as an ordinary successful Axon does.
+                let discarded = if stack {
+                    bus.remove::<ranvier_core::saga::SagaStack>()
+                } else {
+                    None
+                };
+                bus.restore_access_scope(access);
+                drop(discarded);
                 // No await between the guarded live check, exact removal and
                 // cached success. Dropping a waiter cannot lose the decision.
                 receipt
@@ -1465,6 +1509,15 @@ where
                     .read::<ranvier_core::saga::SagaPolicy>()
                     .is_some_and(|policy| *policy == ranvier_core::saga::SagaPolicy::Enabled);
                 use futures_util::FutureExt as _;
+                // Count items pulled from the source for an abandoned-stream record;
+                // the driver may be dropped mid-stream, so the count lives outside it.
+                let observed_items = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                let value: RawStream<_> = {
+                    let counter = observed_items.clone();
+                    Box::pin(futures_util::StreamExt::inspect(value, move |_| {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }))
+                };
                 // User factory invocation is inside the boundary, as well as polling.
                 let consumption = std::panic::AssertUnwindSafe(async {
                     tokio::select! {
@@ -1493,26 +1546,39 @@ where
                     None
                 };
                 // Record the stream effect's end after cleanup, as the public
-                // consumer does before EOF. The driver does not count items.
+                // consumer does before EOF. A client disconnect is recorded as an
+                // abandoned stream with the number of items pulled from the source.
+                let mut end_durability = None;
                 if let Some(journal) = journal {
-                    let end = match &consumption {
-                        Ok(observed) => {
-                            crate::streaming_journal::StreamEnd::from_terminal(&observed.terminal)
-                        }
-                        Err(StreamDriverError::Cancelled(_)) => {
-                            crate::streaming_journal::StreamEnd::Cancelled
-                        }
-                        Err(StreamDriverError::Panicked) => {
-                            crate::streaming_journal::StreamEnd::DriverPanicked
-                        }
+                    use crate::streaming_journal::StreamEnd;
+                    let disconnected = |context: &ranvier_core::CancellationContext| {
+                        context.reason == ranvier_core::CancellationReason::ClientDisconnected
                     };
-                    let _ = journal.finish(end, None).await;
+                    let end = match &consumption {
+                        Ok(observed) => match &observed.terminal {
+                            crate::StreamConsumptionTerminal::Cancelled(context)
+                                if disconnected(context) =>
+                            {
+                                StreamEnd::Abandoned
+                            }
+                            terminal => StreamEnd::from_terminal(terminal),
+                        },
+                        Err(StreamDriverError::Cancelled(context)) if disconnected(context) => {
+                            StreamEnd::Abandoned
+                        }
+                        Err(StreamDriverError::Cancelled(_)) => StreamEnd::Cancelled,
+                        Err(StreamDriverError::Panicked) => StreamEnd::DriverPanicked,
+                    };
+                    let items = (end == StreamEnd::Abandoned)
+                        .then(|| observed_items.load(Ordering::Relaxed));
+                    end_durability = Some(journal.finish(end, items).await);
                 }
                 StreamInitializationReport::Ready {
                     prefix,
                     value: StreamReadyResult {
                         consumption,
                         cleanup,
+                        end_durability,
                     },
                 }
             }

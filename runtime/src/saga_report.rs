@@ -1007,6 +1007,17 @@ impl SagaRollbackJournal {
         }
         Ok(false)
     }
+    /// Every row completed and nothing is retained. Unknown state is `false`.
+    #[cfg(feature = "streaming")]
+    pub(crate) fn is_fully_reconciled(&self) -> bool {
+        self.try_retained_work_pending(256) == Ok(false)
+            && self.0.try_lock().is_ok_and(|report| {
+                report
+                    .steps
+                    .iter()
+                    .all(|step| step.outcome == SagaRollbackOutcome::Completed)
+            })
+    }
     /// Retention callers treat any unknown state as unresolved.
     /// This is not report completeness, reconciliation or replay authority.
     pub(crate) fn has_unresolved_tasks(&self) -> bool {

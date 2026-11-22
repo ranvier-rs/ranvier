@@ -242,6 +242,16 @@ pub(crate) type RecoveryProbe = Arc<
         > + Send
         + Sync,
 >;
+/// How a joined frame may be released by `release_settled_until`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamSettlement {
+    /// Normal source end: prefix Saga inputs may be discarded.
+    Completed,
+    /// Other end with complete cleanup: no Saga input may remain.
+    Ended,
+    /// Cleanup was incomplete: only a fully reconciled journal may be released.
+    RequiresReconciledJournal,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamLocalRetirementError {
     Wait(StreamReportWaitError),
@@ -324,8 +334,10 @@ pub struct StreamReportHandle<Out, E> {
     _owner: crate::nested_custody::Capability,
     retirement: Arc<AtomicU8>,
     assessment: Arc<Mutex<Option<StreamReportAssessment>>>,
+    end_durability: Arc<Mutex<Option<crate::StreamDurability>>>,
     probe: Option<RecoveryProbe>,
     local_retirement: Option<LocalRetirement>,
+    completed_finalization: Option<LocalRetirement>,
     local_recovery: Option<LocalRecovery>,
     external_recovery: Option<ExternalRecovery>,
 }
@@ -336,8 +348,10 @@ impl<Out, E> Clone for StreamReportHandle<Out, E> {
             _owner: self._owner.clone(),
             retirement: self.retirement.clone(),
             assessment: self.assessment.clone(),
+            end_durability: self.end_durability.clone(),
             probe: self.probe.clone(),
             local_retirement: self.local_retirement.clone(),
+            completed_finalization: self.completed_finalization.clone(),
             local_recovery: self.local_recovery.clone(),
             external_recovery: self.external_recovery.clone(),
         }
@@ -355,8 +369,10 @@ impl<Out: Send + 'static, E: Send + 'static> StreamReportHandle<Out, E> {
             _owner: owner,
             retirement: Arc::new(AtomicU8::new(0)),
             assessment: Arc::new(Mutex::new(None)),
+            end_durability: Arc::new(Mutex::new(None)),
             probe: None,
             local_retirement: None,
+            completed_finalization: None,
             local_recovery: None,
             external_recovery: None,
         }
@@ -367,6 +383,10 @@ impl<Out: Send + 'static, E: Send + 'static> StreamReportHandle<Out, E> {
     }
     pub(crate) fn with_local_retirement(mut self, retirement: LocalRetirement) -> Self {
         self.local_retirement = Some(retirement);
+        self
+    }
+    pub(crate) fn with_completed_finalization(mut self, finalization: LocalRetirement) -> Self {
+        self.completed_finalization = Some(finalization);
         self
     }
     pub(crate) fn with_local_recovery(mut self, recovery: LocalRecovery) -> Self {
@@ -394,6 +414,43 @@ impl<Out: Send + 'static, E: Send + 'static> StreamReportHandle<Out, E> {
             .as_ref()
             .ok_or(StreamLocalRetirementError::NotConfigured)?)(deadline)
         .await
+    }
+    /// Release root custody once nothing in this stream needs reconciliation.
+    ///
+    /// Allowed when the frame was reported, no durability write is
+    /// unconfirmed (prefix or stream end record; a recorded prefix needs an
+    /// acknowledged end record) and one of these holds:
+    /// - the source reached its normal end and no cleanup is incomplete: the
+    ///   prefix Saga inputs are discarded, as an ordinary Axon discards them on
+    ///   success;
+    /// - the stream ended otherwise (prefix rejected, initialization failed or
+    ///   cancelled, consumption cancelled or timed out) and its cleanup
+    ///   completed, leaving no Saga input;
+    /// - cleanup was incomplete, but operator recovery has since settled every
+    ///   journal row and nothing is retained.
+    ///
+    /// Anything else returns `RecoveryReviewRequired` and keeps custody. This
+    /// never runs compensation or replays work. Clones share the decision.
+    pub async fn release_settled_until(
+        &self,
+        deadline: Instant,
+    ) -> Result<(), StreamLocalRetirementError> {
+        (self
+            .completed_finalization
+            .as_ref()
+            .ok_or(StreamLocalRetirementError::NotConfigured)?)(deadline)
+        .await
+    }
+    /// Durability of the stream end record, once the frame has been joined.
+    /// `None` before the join, for a stream that never became ready, or when
+    /// no journal was kept for this stream.
+    pub fn stream_end_durability(
+        &self,
+    ) -> Result<Option<crate::StreamDurability>, StreamAssessmentError> {
+        self.end_durability
+            .lock()
+            .map(|state| state.clone())
+            .map_err(|_| StreamAssessmentError::Unavailable)
     }
     /// Explicitly run at most the first eligible local Saga compensation from
     /// this joined report's original typed owner. Results contain fixed outcome
@@ -486,6 +543,63 @@ impl<Out: Send + 'static, E: Send + 'static> StreamReportHandle<Out, E> {
             _ => Err(Error::RecoveryReviewRequired),
         }
     }
+    /// Classify a joined frame for [`Self::release_settled_until`]. The live
+    /// owner state is checked separately under the context lock.
+    pub(crate) async fn prove_settled(
+        &self,
+        deadline: Instant,
+    ) -> Result<StreamSettlement, StreamLocalRetirementError> {
+        use StreamLocalRetirementError as Error;
+        if Instant::now() >= deadline {
+            return Err(Error::Wait(StreamReportWaitError::TimedOut));
+        }
+        if self
+            .assessment()
+            .map_err(|_| Error::AssessmentUnavailable)?
+            .is_none()
+        {
+            if let Err(error) = self.settle_until(deadline).await {
+                if error != StreamReportWaitError::AlreadyTaken {
+                    return Err(Error::Wait(error));
+                }
+            }
+        }
+        let assessment = self
+            .assessment()
+            .map_err(|_| Error::AssessmentUnavailable)?
+            .ok_or(Error::RecoveryReviewRequired)?;
+        let end = self
+            .stream_end_durability()
+            .map_err(|_| Error::AssessmentUnavailable)?;
+        if assessment.frame != StreamFrameAssessment::Reported
+            || matches!(end, Some(crate::StreamDurability::Unconfirmed { .. }))
+        {
+            return Err(Error::RecoveryReviewRequired);
+        }
+        let ready = assessment.initialization == StreamInitializationAssessment::Ready;
+        match assessment.prefix_durability {
+            StreamPrefixDurability::Unpersisted | StreamPrefixDurability::NotRequested => {}
+            StreamPrefixDurability::RecordedCompletionConfirmed
+            | StreamPrefixDurability::RecordedWithoutCompletion => {
+                // A ready stream defers its completion to the end record.
+                if ready && !matches!(end, Some(crate::StreamDurability::Recorded { .. })) {
+                    return Err(Error::RecoveryReviewRequired);
+                }
+            }
+            _ => return Err(Error::RecoveryReviewRequired),
+        }
+        Ok(
+            if assessment.cleanup == StreamCleanupAssessment::Incomplete {
+                StreamSettlement::RequiresReconciledJournal
+            } else if ready
+                && assessment.consumption == Some(StreamConsumptionAssessment::Completed)
+            {
+                StreamSettlement::Completed
+            } else {
+                StreamSettlement::Ended
+            },
+        )
+    }
     /// Inspect the original owner with bounded context wait. This snapshot is
     /// neither retirement authorization nor proof of external reconciliation.
     pub async fn live_recovery_until(
@@ -529,6 +643,14 @@ impl<Out: Send + 'static, E: Send + 'static> StreamReportHandle<Out, E> {
     ) {
         if let Some(joined) = task.joined_ref() {
             let rejected = matches!(joined, Ok(None));
+            if let Ok(mut durability) = self.end_durability.lock() {
+                *durability = match joined {
+                    Ok(Some(Ok(StreamInitializationReport::Ready { value, .. }))) => {
+                        value.end_durability.clone()
+                    }
+                    _ => None,
+                };
+            }
             if let Ok(mut assessment) = self.assessment.lock() {
                 *assessment = Some(assess_joined(joined));
             }
@@ -680,6 +802,7 @@ mod assessment_tests {
                             terminal: StreamConsumptionTerminal::Completed,
                         }),
                         cleanup: None,
+                        end_durability: None,
                     },
                 });
                 let (_root, handle) = joined_original_fixture(original).await;
@@ -714,6 +837,7 @@ mod assessment_tests {
                 value: crate::streaming_recovery::StreamReadyResult {
                     consumption,
                     cleanup: Some(cleanup(true)),
+                    end_durability: None,
                 },
             }))
             .await;
@@ -887,6 +1011,7 @@ mod assessment_tests {
                     terminal: StreamConsumptionTerminal::Completed,
                 }),
                 cleanup: None,
+                end_durability: None,
             },
         });
         let prepared = crate::managed_stream_task::PreparedStreamTask::new(async move { original });
@@ -910,5 +1035,126 @@ mod assessment_tests {
         );
         assert_eq!(assessment.cleanup, StreamCleanupAssessment::NotReported);
         assert_eq!(clone.assessment().unwrap(), Some(assessment));
+    }
+}
+
+type RecoveryFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+/// Recovery operations of a report handle that do not depend on its typed
+/// output or error.
+trait StreamRecoveryOps: Send + Sync {
+    fn assessment(&self) -> Result<Option<StreamReportAssessment>, StreamAssessmentError>;
+    fn stream_end_durability(
+        &self,
+    ) -> Result<Option<crate::StreamDurability>, StreamAssessmentError>;
+    fn reconcile(
+        &self,
+        deadline: Instant,
+    ) -> RecoveryFuture<'_, Result<crate::SagaRollbackOutcome, StreamLocalRecoveryError>>;
+    fn readback(
+        &self,
+        deadline: Instant,
+    ) -> RecoveryFuture<'_, Result<StreamExternalReadback, StreamExternalRecoveryError>>;
+    fn release(
+        &self,
+        deadline: Instant,
+    ) -> RecoveryFuture<'_, Result<(), StreamLocalRetirementError>>;
+    fn live(
+        &self,
+        deadline: Instant,
+    ) -> RecoveryFuture<'_, Result<StreamLiveRecoveryState, StreamRecoveryProbeError>>;
+}
+impl<Out: Send + 'static, E: Send + 'static> StreamRecoveryOps for StreamReportHandle<Out, E> {
+    fn assessment(&self) -> Result<Option<StreamReportAssessment>, StreamAssessmentError> {
+        StreamReportHandle::assessment(self)
+    }
+    fn stream_end_durability(
+        &self,
+    ) -> Result<Option<crate::StreamDurability>, StreamAssessmentError> {
+        StreamReportHandle::stream_end_durability(self)
+    }
+    fn reconcile(
+        &self,
+        deadline: Instant,
+    ) -> RecoveryFuture<'_, Result<crate::SagaRollbackOutcome, StreamLocalRecoveryError>> {
+        Box::pin(self.reconcile_next_local_compensation_until(deadline))
+    }
+    fn readback(
+        &self,
+        deadline: Instant,
+    ) -> RecoveryFuture<'_, Result<StreamExternalReadback, StreamExternalRecoveryError>> {
+        Box::pin(self.readback_next_external_compensation_until(deadline))
+    }
+    fn release(
+        &self,
+        deadline: Instant,
+    ) -> RecoveryFuture<'_, Result<(), StreamLocalRetirementError>> {
+        Box::pin(self.release_settled_until(deadline))
+    }
+    fn live(
+        &self,
+        deadline: Instant,
+    ) -> RecoveryFuture<'_, Result<StreamLiveRecoveryState, StreamRecoveryProbeError>> {
+        Box::pin(self.live_recovery_until(deadline))
+    }
+}
+
+/// A supervised stream's recovery operations without its typed report.
+///
+/// Adapters hand this to an operator when a stream is held for recovery
+/// review. It keeps the stream's custody alive while held. Each method has the
+/// same meaning as on [`StreamReportHandle`]; nothing here replays work, and
+/// in-memory custody ends with the process (restart recovery uses the trace
+/// store).
+#[derive(Clone)]
+pub struct StreamRecoveryHandle {
+    inner: Arc<dyn StreamRecoveryOps>,
+}
+impl StreamRecoveryHandle {
+    /// See [`StreamReportHandle::assessment`].
+    pub fn assessment(&self) -> Result<Option<StreamReportAssessment>, StreamAssessmentError> {
+        self.inner.assessment()
+    }
+    /// See [`StreamReportHandle::stream_end_durability`].
+    pub fn stream_end_durability(
+        &self,
+    ) -> Result<Option<crate::StreamDurability>, StreamAssessmentError> {
+        self.inner.stream_end_durability()
+    }
+    /// See [`StreamReportHandle::reconcile_next_local_compensation_until`].
+    pub async fn reconcile_next_local_compensation_until(
+        &self,
+        deadline: Instant,
+    ) -> Result<crate::SagaRollbackOutcome, StreamLocalRecoveryError> {
+        self.inner.reconcile(deadline).await
+    }
+    /// See [`StreamReportHandle::readback_next_external_compensation_until`].
+    pub async fn readback_next_external_compensation_until(
+        &self,
+        deadline: Instant,
+    ) -> Result<StreamExternalReadback, StreamExternalRecoveryError> {
+        self.inner.readback(deadline).await
+    }
+    /// See [`StreamReportHandle::release_settled_until`].
+    pub async fn release_settled_until(
+        &self,
+        deadline: Instant,
+    ) -> Result<(), StreamLocalRetirementError> {
+        self.inner.release(deadline).await
+    }
+    /// See [`StreamReportHandle::live_recovery_until`].
+    pub async fn live_recovery_until(
+        &self,
+        deadline: Instant,
+    ) -> Result<StreamLiveRecoveryState, StreamRecoveryProbeError> {
+        self.inner.live(deadline).await
+    }
+}
+impl<Out: Send + 'static, E: Send + 'static> StreamReportHandle<Out, E> {
+    /// A recovery handle that does not carry the typed report.
+    pub fn recovery_handle(&self) -> StreamRecoveryHandle {
+        StreamRecoveryHandle {
+            inner: Arc::new(self.clone()),
+        }
     }
 }

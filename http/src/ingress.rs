@@ -87,15 +87,62 @@ struct ManagedTaskRegistry {
     tasks: Arc<Mutex<tokio::task::JoinSet<()>>>,
     closed: Arc<std::sync::atomic::AtomicBool>,
     reservation_limit: usize,
+    /// Owns every SSE stream's prefix, producer and cleanup, and keeps
+    /// streams that need recovery review until they are released.
+    #[cfg(feature = "streaming")]
+    streams: Arc<ranvier_runtime::streaming_supervisor::StreamSupervisor>,
+    #[cfg(feature = "streaming")]
+    on_stream_retained: Option<StreamRetainedHook>,
+}
+
+/// A supervised SSE stream that finished but is held for recovery review.
+///
+/// The stream's compensation did not finish, or a durability write was not
+/// acknowledged. Its custody slot stays taken until
+/// `report.release_settled_until` succeeds. Nothing is replayed
+/// automatically, and the hold ends with the process: after a restart, use
+/// the trace store and the reconciliation runbook.
+#[cfg(feature = "streaming")]
+#[derive(Clone)]
+pub struct RetainedStream {
+    /// Route method.
+    pub method: Method,
+    /// Route path pattern.
+    pub path: String,
+    /// Recovery operations for the held stream.
+    pub report: ranvier_runtime::streaming_report_handle::StreamRecoveryHandle,
+}
+
+#[cfg(feature = "streaming")]
+type StreamRetainedHook = Arc<dyn Fn(RetainedStream) + Send + Sync>;
+
+impl ManagedTaskRegistry {
+    fn with_limit(reservation_limit: usize) -> Self {
+        Self {
+            tasks: Arc::new(Mutex::new(tokio::task::JoinSet::new())),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            reservation_limit,
+            #[cfg(feature = "streaming")]
+            streams: Arc::new(
+                ranvier_runtime::streaming_supervisor::StreamSupervisor::new(reservation_limit),
+            ),
+            #[cfg(feature = "streaming")]
+            on_stream_retained: None,
+        }
+    }
+}
+
+#[cfg(feature = "streaming")]
+impl ManagedTaskRegistry {
+    fn with_stream_retained(mut self, hook: Option<StreamRetainedHook>) -> Self {
+        self.on_stream_retained = hook;
+        self
+    }
 }
 
 impl Default for ManagedTaskRegistry {
     fn default() -> Self {
-        Self {
-            tasks: Arc::new(Mutex::new(tokio::task::JoinSet::new())),
-            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            reservation_limit: DEFAULT_MANAGED_TASK_CAPACITY,
-        }
+        Self::with_limit(DEFAULT_MANAGED_TASK_CAPACITY)
     }
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -122,6 +169,12 @@ impl ManagedTaskReservation {
 pub struct HttpTaskDrainReport {
     /// Tasks that exceeded the drain deadline and were explicitly aborted.
     pub forced_aborts: usize,
+    /// SSE streams that finished but are still held for recovery review
+    /// (unfinished compensation or unconfirmed durability). They stay in
+    /// memory only; after the process exits, use the trace store.
+    pub streams_retained: usize,
+    /// SSE streams whose frame had not finished by the drain deadline.
+    pub streams_unsettled: usize,
 }
 
 impl ManagedTaskRegistry {
@@ -158,18 +211,63 @@ impl ManagedTaskRegistry {
     }
 
     async fn drain_until(&self, deadline: tokio::time::Instant) -> HttpTaskDrainReport {
+        let forced_aborts = self.drain_tasks_until(deadline).await;
+        let (streams_retained, streams_unsettled) = self.drain_streams_until(deadline).await;
+        HttpTaskDrainReport {
+            forced_aborts,
+            streams_retained,
+            streams_unsettled,
+        }
+    }
+
+    /// Close stream admission, wait for running frames to the same deadline
+    /// and count what is still held. Nothing is detached or aborted here.
+    #[cfg(feature = "streaming")]
+    async fn drain_streams_until(&self, deadline: tokio::time::Instant) -> (usize, usize) {
+        use ranvier_runtime::streaming_supervisor::StreamDrainStatus;
+        let Ok(mut lease) = self.streams.close_for_drain() else {
+            tracing::warn!("SSE stream custody unavailable during drain");
+            return (0, 0);
+        };
+        lease.settle_until(deadline).await;
+        let mut retained = 0;
+        let mut unsettled = lease.unfinalized_reservations();
+        for (_, status) in lease.statuses() {
+            match status {
+                StreamDrainStatus::Settled | StreamDrainStatus::ReportAlreadyTransferred => {
+                    retained += 1
+                }
+                _ => unsettled += 1,
+            }
+        }
+        if retained + unsettled > 0 {
+            tracing::warn!(
+                streams_retained = retained,
+                streams_unsettled = unsettled,
+                "SSE streams still held for recovery review at shutdown"
+            );
+        }
+        (retained, unsettled)
+    }
+
+    #[cfg(not(feature = "streaming"))]
+    async fn drain_streams_until(&self, _deadline: tokio::time::Instant) -> (usize, usize) {
+        (0, 0)
+    }
+
+    async fn drain_tasks_until(&self, deadline: tokio::time::Instant) -> usize {
         let mut tasks = self.tasks.lock().await;
         self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
         loop {
             if tasks.is_empty() {
-                return HttpTaskDrainReport { forced_aborts: 0 };
+                return 0;
             }
             match tokio::time::timeout_at(deadline, tasks.join_next()).await {
                 Ok(Some(Ok(()))) => {}
                 Ok(Some(Err(error))) => {
                     tracing::warn!(error = %error, "HTTP child task join failed");
                 }
-                Ok(None) => return HttpTaskDrainReport { forced_aborts: 0 },
+                Ok(None) => return 0,
                 Err(_) => {
                     let forced_aborts = tasks.len();
                     tasks.abort_all();
@@ -180,7 +278,7 @@ impl ManagedTaskRegistry {
                             tracing::warn!(error = %error, "HTTP child task abort join failed");
                         }
                     }
-                    return HttpTaskDrainReport { forced_aborts };
+                    return forced_aborts;
                 }
             }
         }
@@ -202,6 +300,93 @@ fn task_admission_closed_response(reconciliation_required: bool) -> HttpResponse
             .to_string(),
         ),
     )
+}
+
+/// SSE stream custody is full, usually because finished streams are held
+/// for recovery review. Refused before any request callback.
+#[cfg(feature = "streaming")]
+fn stream_capacity_response() -> HttpResponse {
+    build_response(
+        Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header("content-type", "application/json")
+            .header("cache-control", "no-store"),
+        boxed_body(
+            serde_json::json!({"code": "stream_recovery_capacity_exhausted", "reconciliation_required": false})
+                .to_string(),
+        ),
+    )
+}
+
+/// Cleanup budget for a supervised SSE stream's Saga compensation.
+#[cfg(feature = "streaming")]
+const SSE_CLEANUP_GRACE: Duration = Duration::from_secs(30);
+
+/// Final SSE frame from the joined report. `[DONE]` only for a normal source
+/// end whose cleanup is not incomplete and whose end record is not unconfirmed.
+#[cfg(feature = "streaming")]
+fn sse_terminal_frame<Out: Send + 'static, E: Send + 'static>(
+    report: &ranvier_runtime::streaming_report_handle::StreamReportHandle<Out, E>,
+) -> &'static str {
+    use ranvier_runtime::streaming_report_handle::{
+        StreamCleanupAssessment, StreamConsumptionAssessment,
+    };
+    if matches!(
+        report.stream_end_durability(),
+        Ok(Some(ranvier_runtime::StreamDurability::Unconfirmed { .. }))
+    ) {
+        tracing::error!(
+            failure_source = "stream_durability",
+            "Stream end record was not acknowledged"
+        );
+        return "event: error\ndata: {\"code\":\"stream_durability_unconfirmed\",\"reconciliation_required\":true}\n\n";
+    }
+    let Ok(Some(assessment)) = report.assessment() else {
+        return "event: error\ndata: {\"code\":\"stream_settlement_timeout\",\"reconciliation_required\":true}\n\n";
+    };
+    match assessment.consumption {
+        Some(StreamConsumptionAssessment::Completed) => {
+            if assessment.cleanup == StreamCleanupAssessment::Incomplete {
+                "event: error\ndata: {\"code\":\"stream_cleanup_incomplete\",\"reconciliation_required\":true}\n\n"
+            } else {
+                "data: [DONE]\n\n"
+            }
+        }
+        Some(StreamConsumptionAssessment::Cancelled)
+        | Some(StreamConsumptionAssessment::SupervisorCancelled) => {
+            "event: error\ndata: {\"code\":\"stream_cancelled\"}\n\n"
+        }
+        Some(StreamConsumptionAssessment::TimedOut) => {
+            "event: error\ndata: {\"code\":\"stream_timeout\"}\n\n"
+        }
+        _ => "event: error\ndata: {\"code\":\"stream_terminal_invalid\"}\n\n",
+    }
+}
+
+/// Release a settled stream's custody, or hand it to the retained-stream
+/// callback (or log it) for recovery review.
+#[cfg(feature = "streaming")]
+async fn settle_stream_custody<Out: Send + 'static, E: Send + 'static>(
+    report: &ranvier_runtime::streaming_report_handle::StreamReportHandle<Out, E>,
+    (method, path, hook): &(Method, String, Option<StreamRetainedHook>),
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let Err(error) = report.release_settled_until(deadline).await else {
+        return;
+    };
+    match hook {
+        Some(hook) => hook(RetainedStream {
+            method: method.clone(),
+            path: path.clone(),
+            report: report.recovery_handle(),
+        }),
+        None => tracing::warn!(
+            ?error,
+            http.method = %method,
+            http.path = %path,
+            "SSE stream retained for recovery review"
+        ),
+    }
 }
 
 fn task_capacity_response() -> HttpResponse {
@@ -1356,6 +1541,8 @@ pub struct HttpIngress<R = ()> {
     on_start: Option<LifecycleHook>,
     /// Lifecycle callback invoked when graceful shutdown finishes.
     on_shutdown: Option<LifecycleHook>,
+    #[cfg(feature = "streaming")]
+    on_stream_retained: Option<StreamRetainedHook>,
     /// Maximum time to wait for in-flight requests to drain.
     graceful_shutdown_timeout: Duration,
     /// Shared maximum tracked SSE/WebSocket task reservations.
@@ -1403,6 +1590,8 @@ where
             layers: Vec::new(),
             on_start: None,
             on_shutdown: None,
+            #[cfg(feature = "streaming")]
+            on_stream_retained: None,
             graceful_shutdown_timeout: Duration::from_secs(30),
             managed_task_capacity: DEFAULT_MANAGED_TASK_CAPACITY,
             bus_injectors: Vec::new(),
@@ -1477,6 +1666,22 @@ where
         F: Fn() + Send + Sync + 'static,
     {
         self.on_shutdown = Some(Arc::new(callback));
+        self
+    }
+
+    /// Receive SSE streams that are held for recovery review.
+    ///
+    /// Called once per stream whose Saga compensation did not finish or whose
+    /// durability write was not acknowledged. Use the handle to reconcile and
+    /// then `release_settled_until`. Without a callback such streams are
+    /// logged at warn level and kept until shutdown. The callback must not
+    /// block; spawn async work.
+    #[cfg(feature = "streaming")]
+    pub fn on_stream_retained<F>(mut self, callback: F) -> Self
+    where
+        F: Fn(RetainedStream) + Send + Sync + 'static,
+    {
+        self.on_stream_retained = Some(Arc::new(callback));
         self
     }
 
@@ -3223,7 +3428,7 @@ where
         circuit: ranvier_runtime::StreamingAxon<(), Out, Item, E, R>,
     ) -> Self
     where
-        Out: Send + Sync + 'static,
+        Out: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         Item: serde::Serialize + Send + Sync + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
@@ -3259,7 +3464,7 @@ where
             + serde::Serialize
             + schemars::JsonSchema
             + 'static,
-        Out: Send + Sync + 'static,
+        Out: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         Item: serde::Serialize + Send + Sync + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
@@ -3277,7 +3482,7 @@ where
     ) -> Self
     where
         T: serde::de::DeserializeOwned + Send + Sync + serde::Serialize + 'static,
-        Out: Send + Sync + 'static,
+        Out: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + 'static,
         Item: serde::Serialize + Send + Sync + 'static,
         E: Send + Sync + serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug + 'static,
     {
@@ -3310,13 +3515,27 @@ where
                 );
 
                 async move {
-                    let task_reservation = match request_task_owner(&parts) {
+                    let owner = request_task_owner(&parts);
+                    let task_reservation = match &owner {
                         Some(owner) => match owner.reserve().await {
                             Ok(reservation) => Some(reservation),
                             Err(TaskReservationError::Closed) => return task_admission_closed_response(false),
                             Err(TaskReservationError::Capacity) => return task_capacity_response(),
                         },
                         None => None,
+                    };
+                    // Reserve stream custody before any request callback runs.
+                    let retained_hook = owner.as_ref().and_then(|owner| owner.on_stream_retained.clone());
+                    let supervisor = owner.map(|owner| owner.streams).unwrap_or_else(|| {
+                        Arc::new(ranvier_runtime::streaming_supervisor::StreamSupervisor::new(1))
+                    });
+                    let retained_route = (method.clone(), path.clone(), retained_hook);
+                    let stream_reservation = match supervisor.reserve() {
+                        Ok(reservation) => reservation,
+                        Err(ranvier_runtime::streaming_supervisor::StreamReservationError::RecoveryCapacity) => {
+                            return stream_capacity_response();
+                        }
+                        Err(_) => return task_admission_closed_response(false),
                     };
 
                     // Parse typed body if needed
@@ -3367,130 +3586,180 @@ where
                     }
 
 
-                    // Execute the streaming pipeline with the same request
-                    // cancellation owner as ordinary Axons.
-                    let stream_token = bus
-                        .cancellation_token()
-                        .cloned()
-                        .unwrap_or_default();
-                    use ranvier_runtime::StreamInitializationReport;
-                    let initialized = circuit.execute_cancellable(input, &res, &mut bus, stream_token).await;
-                    let stream = match initialized {
-                        StreamInitializationReport::Ready { prefix, value } => {
-                            if let Some((status, payload)) = crate::response::durability_rejection(&prefix) {
-                                return stream_reconciliation_response(status, payload);
-                            }
-                            value
-                        }
-                        StreamInitializationReport::Rejected { prefix } => {
-                            if matches!(&prefix, ranvier_runtime::ExecutionReport::Unconfirmed { .. }
-                                | ranvier_runtime::ExecutionReport::BlockedBeforeEffect { .. })
-                                || prefix.cleanup().is_some_and(|cleanup| !cleanup.is_complete()) {
-                                // The runtime retains the typed result. Public operational
-                                // rejection must not serialize private prefix output/errors.
-                                let safe = prefix.map_result(|_| ());
-                                if let Some((status, payload)) = crate::response::durability_rejection(&safe) {
-                                    return stream_reconciliation_response(status, payload);
-                                }
-                                return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Execution durability requires reconciliation");
-                            }
-                            let terminal = match prefix {
-                                ranvier_runtime::ExecutionReport::Unpersisted { result, .. }
-                                | ranvier_runtime::ExecutionReport::NotRequested { result, .. }
-                                | ranvier_runtime::ExecutionReport::Recorded { result, .. } => result,
-                                _ => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Execution durability requires reconciliation"),
-                            };
-                            match terminal {
-                                ExecutionTerminal::Cancelled(context) => return cancellation_http_response(&context),
-                                ExecutionTerminal::Outcome(Outcome::Emit(event, _)) => {
-                                    if let Some(response) = crate::service::iam_failure_response(&event)
-                                        .or_else(|| crate::service::saga_failure_response(&event)) {
-                                        return response.map(BodyExt::boxed);
-                                    }
-                                }
-                                _ => {},
-                            }
-                            return stream_reconciliation_response(StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({"error": "Streaming prefix rejected initialization"}));
-                        }
-                        StreamInitializationReport::Cancelled { prefix, context, initialization, initialization_cleanup } => {
-                            if let Some((status, payload)) = crate::response::durability_rejection(&prefix) {
-                                return stream_reconciliation_response(status, payload);
-                            }
-                            let (status, message) = cancellation_status_message(&context);
-                            return stream_reconciliation_response(status, serde_json::json!({
-                                "error": message, "reason": context.reason, "prefix": prefix,
-                                "initialization": initialization, "initialization_cleanup": initialization_cleanup, "initialization_cleanup_complete": initialization_cleanup.as_ref().map(ranvier_runtime::SagaRollbackReport::is_complete), "reconciliation_required": true
-                            }));
-                        }
-                        StreamInitializationReport::Failed { prefix, initialization, initialization_cleanup, .. } => {
-                            if let Some((status, payload)) = crate::response::durability_rejection(&prefix) {
-                                return stream_reconciliation_response(status, payload);
-                            }
-                            tracing::error!(failure_source = "stream_init", "Streaming initialization failed");
-                            return stream_reconciliation_response(StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({"error": "Streaming initialization failed", "prefix": prefix, "initialization": initialization, "initialization_cleanup": initialization_cleanup, "initialization_cleanup_complete": initialization_cleanup.as_ref().map(ranvier_runtime::SagaRollbackReport::is_complete), "reconciliation_required": true}));
+                    // Guards wrote their response values into the Bus; read them
+                    // now, because the supervised stream takes ownership of it.
+                    let mut extracted_headers = http::HeaderMap::new();
+                    for extractor in route_response_extractors.iter() {
+                        extractor(&bus, &mut extracted_headers);
+                    }
+                    // The supervisor owns prefix, initializer, producer and Saga
+                    // cleanup under the request's cancellation owner.
+                    let request_token = bus.cancellation_token().cloned().unwrap_or_default();
+                    let (ticket, context) = match stream_reservation.with_context(|| {
+                        ranvier_runtime::streaming_axon::OwnedStreamContext::try_new(Arc::new(res), bus)
+                    }) {
+                        Ok(pair) => pair,
+                        Err(_) => {
+                            return json_error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "Internal: stream context rejected",
+                            );
                         }
                     };
+                    let prepared = match ticket.prepare(&circuit, context, input, SSE_CLEANUP_GRACE, None) {
+                        Ok(prepared) => prepared,
+                        Err(ranvier_runtime::streaming_supervisor::StreamPrepareError::Staging(rejected)) => {
+                            let _ = rejected
+                                .retire_unstarted_until(tokio::time::Instant::now() + Duration::from_secs(5))
+                                .await;
+                            return task_admission_closed_response(false);
+                        }
+                        Err(_) => {
+                            return json_error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "Internal: stream preparation rejected",
+                            );
+                        }
+                    };
+                    let mut invocation = match prepared.start(request_token).await {
+                        Ok(invocation) => invocation,
+                        Err(rejected) => {
+                            let _ = rejected
+                                .retire_unstarted_until(tokio::time::Instant::now() + Duration::from_secs(5))
+                                .await;
+                            return task_admission_closed_response(false);
+                        }
+                    };
+                    let settle_deadline = || {
+                        tokio::time::Instant::now() + SSE_CLEANUP_GRACE + Duration::from_secs(5)
+                    };
+                    if invocation.readiness.initialized().await.is_err() {
+                        // Not ready: map the original report, then release or retain.
+                        let report = invocation.report().clone();
+                        let completion = report.take_report_until(settle_deadline()).await;
+                        drop(invocation);
+                        settle_stream_custody(&report, &retained_route).await;
+                        use ranvier_runtime::StreamInitializationReport;
+                        use ranvier_runtime::streaming_report_handle::SupervisedStreamCompletion;
+                        let initialized = match completion {
+                            Ok(SupervisedStreamCompletion::Report(initialized)) => initialized,
+                            _ => {
+                                return stream_reconciliation_response(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    serde_json::json!({"error": "Streaming frame did not report", "reconciliation_required": true}),
+                                );
+                            }
+                        };
+                        match initialized {
+                            StreamInitializationReport::Ready { prefix, .. } => {
+                                if let Some((status, payload)) = crate::response::durability_rejection(&prefix) {
+                                    return stream_reconciliation_response(status, payload);
+                                }
+                                return stream_reconciliation_response(StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({"error": "Streaming initialization was not observed", "reconciliation_required": true}));
+                            }
+                            StreamInitializationReport::Rejected { prefix } => {
+                                if matches!(&prefix, ranvier_runtime::ExecutionReport::Unconfirmed { .. }
+                                    | ranvier_runtime::ExecutionReport::BlockedBeforeEffect { .. })
+                                    || prefix.cleanup().is_some_and(|cleanup| !cleanup.is_complete()) {
+                                    // The runtime retains the typed result. Public operational
+                                    // rejection must not serialize private prefix output/errors.
+                                    let safe = prefix.map_result(|_| ());
+                                    if let Some((status, payload)) = crate::response::durability_rejection(&safe) {
+                                        return stream_reconciliation_response(status, payload);
+                                    }
+                                    return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Execution durability requires reconciliation");
+                                }
+                                let terminal = match prefix {
+                                    ranvier_runtime::ExecutionReport::Unpersisted { result, .. }
+                                    | ranvier_runtime::ExecutionReport::NotRequested { result, .. }
+                                    | ranvier_runtime::ExecutionReport::Recorded { result, .. } => result,
+                                    _ => return json_error_response(StatusCode::INTERNAL_SERVER_ERROR, "Execution durability requires reconciliation"),
+                                };
+                                match terminal {
+                                    ExecutionTerminal::Cancelled(context) => return cancellation_http_response(&context),
+                                    ExecutionTerminal::Outcome(Outcome::Emit(event, _)) => {
+                                        if let Some(response) = crate::service::iam_failure_response(&event)
+                                            .or_else(|| crate::service::saga_failure_response(&event)) {
+                                            return response.map(BodyExt::boxed);
+                                        }
+                                    }
+                                    _ => {},
+                                }
+                                return stream_reconciliation_response(StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({"error": "Streaming prefix rejected initialization"}));
+                            }
+                            StreamInitializationReport::Cancelled { prefix, context, initialization, initialization_cleanup } => {
+                                if let Some((status, payload)) = crate::response::durability_rejection(&prefix) {
+                                    return stream_reconciliation_response(status, payload);
+                                }
+                                let (status, message) = cancellation_status_message(&context);
+                                return stream_reconciliation_response(status, serde_json::json!({
+                                    "error": message, "reason": context.reason, "prefix": prefix,
+                                    "initialization": initialization, "initialization_cleanup": initialization_cleanup, "initialization_cleanup_complete": initialization_cleanup.as_ref().map(ranvier_runtime::SagaRollbackReport::is_complete), "reconciliation_required": true
+                                }));
+                            }
+                            StreamInitializationReport::Failed { prefix, initialization, initialization_cleanup, .. } => {
+                                if let Some((status, payload)) = crate::response::durability_rejection(&prefix) {
+                                    return stream_reconciliation_response(status, payload);
+                                }
+                                tracing::error!(failure_source = "stream_init", "Streaming initialization failed");
+                                return stream_reconciliation_response(StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({"error": "Streaming initialization failed", "prefix": prefix, "initialization": initialization, "initialization_cleanup": initialization_cleanup, "initialization_cleanup_complete": initialization_cleanup.as_ref().map(ranvier_runtime::SagaRollbackReport::is_complete), "reconciliation_required": true}));
+                            }
+                        }
+                    }
 
-                    // Bridge stream → mpsc channel → SSE frames.
-                    // This decouples the !Sync stream from the Sync body requirement.
+                    // Bridge supervised items → mpsc channel → SSE frames.
                     let buffer_size = circuit.buffer_size;
                     let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(buffer_size);
 
-                    // Spawn a task to consume the stream and send SSE frames
                     let producer_task = async move {
-                        let mut pinned = Box::pin(stream);
+                        let mut disconnected = false;
+                        let mut aborted: Option<&'static str> = None;
                         loop {
-                            // A source may remain Pending forever without another
-                            // item. Body drop must still release its owned producer.
+                            // The supervised producer may stay Pending forever;
+                            // body drop must still request its cancellation.
                             let item = tokio::select! {
                                 biased;
                                 _ = tx.closed() => {
                                     tracing::info!("SSE client disconnected");
-                                    // Record the partial delivery; a failed write
-                                    // leaves the stream Intent open for reconciliation.
-                                    let _ = pinned.abandon().await;
-                                    return;
+                                    invocation.cancel(ranvier_core::CancellationReason::ClientDisconnected);
+                                    disconnected = true;
+                                    break;
                                 }
-                                item = futures_util::StreamExt::next(&mut pinned) => {
-                                    match item { Some(item) => item, None => break }
-                                }
+                                item = invocation.items.recv() => match item {
+                                    Some(item) => item,
+                                    None => break,
+                                },
                             };
                             let text = match serde_json::to_string(&item) {
                                 Ok(json) => format!("data: {}\n\n", json),
                                 Err(_) => {
                                     tracing::error!(failure_source = "stream_item_encode", "SSE item encoding failed");
-                                    let _ = pinned.abandon().await;
-                                    let err_text = "event: error\ndata: {\"message\":\"serialization error\",\"code\":\"serialize_error\"}\n\n".to_string();
-                                    let _ = tx.send(Bytes::from(err_text)).await;
-                                    return;
+                                    invocation.cancel(ranvier_core::CancellationReason::Explicit);
+                                    aborted = Some("event: error\ndata: {\"message\":\"serialization error\",\"code\":\"serialize_error\"}\n\n");
+                                    break;
                                 }
                             };
                             if tx.send(Bytes::from(text)).await.is_err() {
                                 tracing::info!("SSE client disconnected");
-                                let _ = pinned.abandon().await;
-                                return;
+                                invocation.cancel(ranvier_core::CancellationReason::ClientDisconnected);
+                                disconnected = true;
+                                break;
                             }
                         }
-                        // An unacknowledged end record is never announced as DONE;
-                        // items already sent cannot be withdrawn.
-                        if matches!(pinned.durability(), Some(ranvier_runtime::StreamDurability::Unconfirmed { .. })) {
-                            tracing::error!(failure_source = "stream_durability", "Stream end record was not acknowledged");
-                            let _ = tx.send(Bytes::from_static(b"event: error\ndata: {\"code\":\"stream_durability_unconfirmed\",\"reconciliation_required\":true}\n\n")).await;
-                            return;
+                        // Wait for the frame's own end: cleanup and the end record
+                        // are written before the report settles.
+                        let report = invocation.report().clone();
+                        let _ = report.settle_until(settle_deadline()).await;
+                        drop(invocation);
+                        if !disconnected {
+                            let frame = aborted.unwrap_or_else(|| sse_terminal_frame(&report));
+                            let _ = tx.send(Bytes::from_static(frame.as_bytes())).await;
                         }
-                        // Only an observed normal source end announces DONE. Prefix
-                        // acknowledgment never certifies this consumption terminal.
-                        let frame = match pinned.terminal() {
-                            Some(ranvier_runtime::StreamConsumptionTerminal::Completed) => "data: [DONE]\n\n",
-                            Some(ranvier_runtime::StreamConsumptionTerminal::Cancelled(_)) => "event: error\ndata: {\"code\":\"stream_cancelled\"}\n\n",
-                            Some(ranvier_runtime::StreamConsumptionTerminal::TimedOut(_)) => "event: error\ndata: {\"code\":\"stream_timeout\"}\n\n",
-                            _ => "event: error\ndata: {\"code\":\"stream_terminal_invalid\"}\n\n",
-                        };
-                        let _ = tx.send(Bytes::from_static(frame.as_bytes())).await;
+                        settle_stream_custody(&report, &retained_route).await;
                     };
                     if let Some(reservation) = task_reservation {
                         if reservation.start(producer_task).is_err() {
-                            // Prefix effects may have run. Source release is not compensation.
+                            // The supervisor keeps the stream; drop requested cancellation.
                             return task_admission_closed_response(true);
                         }
                     } else {
@@ -3515,9 +3784,7 @@ where
                             .header(http::header::CONNECTION, "keep-alive"),
                         http_body_util::BodyExt::boxed(body),
                     );
-                    for extractor in route_response_extractors.iter() {
-                        extractor(&bus, response.headers_mut());
-                    }
+                    response.headers_mut().extend(extracted_headers);
                     response
                 }
                 .instrument(span)
@@ -3931,6 +4198,8 @@ where
         let on_shutdown = self.on_shutdown;
         let graceful_shutdown_timeout = self.graceful_shutdown_timeout;
         let managed_task_capacity = self.managed_task_capacity;
+        #[cfg(feature = "streaming")]
+        let on_stream_retained = self.on_stream_retained.clone();
         let resources = Arc::new(resources);
 
         let listener = TcpListener::bind(addr).await?;
@@ -3954,10 +4223,9 @@ where
 
         tokio::pin!(shutdown_signal);
         let mut connections = tokio::task::JoinSet::new();
-        let task_registry = ManagedTaskRegistry {
-            reservation_limit: managed_task_capacity,
-            ..Default::default()
-        };
+        let task_registry = ManagedTaskRegistry::with_limit(managed_task_capacity);
+        #[cfg(feature = "streaming")]
+        let task_registry = task_registry.with_stream_retained(on_stream_retained);
 
         loop {
             tokio::select! {
@@ -4121,9 +4389,11 @@ where
             preflight_config,
             resources,
             root_cancellation: CancellationToken::new(),
-            task_registry: ManagedTaskRegistry {
-                reservation_limit: self.managed_task_capacity,
-                ..Default::default()
+            task_registry: {
+                let registry = ManagedTaskRegistry::with_limit(self.managed_task_capacity);
+                #[cfg(feature = "streaming")]
+                let registry = registry.with_stream_retained(self.on_stream_retained.clone());
+                registry
             },
         }
     }
@@ -6976,6 +7246,487 @@ mod tests {
         assert!(registry.tasks.lock().await.is_empty());
     }
 
+    /// Fixtures for supervised SSE routes (P4-3).
+    #[cfg(feature = "streaming")]
+    mod supervised_sse {
+        use super::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Clone)]
+        pub(super) struct Effect(pub Arc<AtomicUsize>);
+        #[async_trait::async_trait]
+        impl Transition<(), ()> for Effect {
+            type Error = String;
+            type Resources = ();
+            async fn run(&self, _: (), _: &(), _: &mut Bus) -> Outcome<(), String> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Outcome::Next(())
+            }
+        }
+        #[derive(Clone)]
+        pub(super) struct Undo {
+            pub calls: Arc<AtomicUsize>,
+            pub fail: bool,
+        }
+        #[async_trait::async_trait]
+        impl Transition<(), ()> for Undo {
+            type Error = String;
+            type Resources = ();
+            async fn run(&self, _: (), _: &(), _: &mut Bus) -> Outcome<(), String> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                if self.fail {
+                    Outcome::Fault("undo failed".into())
+                } else {
+                    Outcome::Next(())
+                }
+            }
+        }
+        /// Item whose JSON encoding always fails.
+        pub(super) struct Unencodable;
+        impl serde::Serialize for Unencodable {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("unencodable"))
+            }
+        }
+        #[derive(Clone)]
+        pub(super) enum Source {
+            Finite,
+            FirstThenPending,
+        }
+        #[async_trait::async_trait]
+        impl ranvier_core::streaming::StreamingTransition<()> for Source {
+            type Item = String;
+            type Error = String;
+            type Resources = ();
+            async fn run_stream(
+                &self,
+                _: (),
+                _: &(),
+                _: &mut Bus,
+            ) -> Result<Pin<Box<dyn futures_util::Stream<Item = String> + Send>>, String>
+            {
+                Ok(match self {
+                    Self::Finite => Box::pin(futures_util::stream::iter([
+                        "a".to_string(),
+                        "b".to_string(),
+                    ])),
+                    Self::FirstThenPending => Box::pin(futures_util::StreamExt::chain(
+                        futures_util::stream::iter(["first".to_string()]),
+                        futures_util::stream::pending(),
+                    )),
+                })
+            }
+        }
+        #[derive(Clone)]
+        pub(super) struct UnencodableSource;
+        #[async_trait::async_trait]
+        impl ranvier_core::streaming::StreamingTransition<()> for UnencodableSource {
+            type Item = Unencodable;
+            type Error = String;
+            type Resources = ();
+            async fn run_stream(
+                &self,
+                _: (),
+                _: &(),
+                _: &mut Bus,
+            ) -> Result<Pin<Box<dyn futures_util::Stream<Item = Unencodable> + Send>>, String>
+            {
+                Ok(Box::pin(futures_util::StreamExt::chain(
+                    futures_util::stream::iter([Unencodable]),
+                    futures_util::stream::pending(),
+                )))
+            }
+        }
+        pub(super) fn prefix(effects: &Arc<AtomicUsize>, undo: Undo) -> Axon<(), (), String> {
+            Axon::<(), (), String>::start("supervised-sse")
+                .then_compensated(Effect(effects.clone()), undo)
+                .with_saga_policy(ranvier_core::saga::SagaPolicy::Enabled)
+        }
+        pub(super) async fn call(
+            app: &HttpIngress<()>,
+            registry: &ManagedTaskRegistry,
+        ) -> HttpResponse {
+            let (mut parts, _) = Request::builder()
+                .method("POST")
+                .uri("/s")
+                .body(())
+                .unwrap()
+                .into_parts();
+            parts.extensions.insert(RequestTaskOwner(registry.clone()));
+            (app.routes[0].handler)(parts, &()).await
+        }
+        pub(super) async fn body_text(response: HttpResponse) -> String {
+            let bytes =
+                tokio::time::timeout(Duration::from_secs(5), response.into_body().collect())
+                    .await
+                    .expect("SSE body did not end")
+                    .unwrap()
+                    .to_bytes();
+            String::from_utf8(bytes.to_vec()).unwrap()
+        }
+        pub(super) async fn wait_for(counter: &AtomicUsize, value: usize) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while counter.load(Ordering::SeqCst) < value {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("counter did not reach the expected value");
+        }
+    }
+
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn supervised_sse_completion_sends_done_without_compensation_and_frees_custody() {
+        use std::sync::atomic::Ordering;
+        use supervised_sse::*;
+        let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let undos = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let app = Ranvier::http::<()>().post_sse(
+            "/s",
+            prefix(
+                &effects,
+                Undo {
+                    calls: undos.clone(),
+                    fail: false,
+                },
+            )
+            .then_stream(Source::Finite),
+        );
+        // One custody slot: a stream that kept its custody would refuse the next.
+        let registry = ManagedTaskRegistry::with_limit(1);
+        for round in 1..=2 {
+            let response = call(&app, &registry).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let text = body_text(response).await;
+            assert!(
+                text.contains("data: \"a\"") && text.contains("data: \"b\""),
+                "{text}"
+            );
+            assert!(text.ends_with("data: [DONE]\n\n"), "{text}");
+            assert_eq!(effects.load(Ordering::SeqCst), round);
+            // The producer task releases custody after the final frame.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while registry.streams.reserve().is_err() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("completed stream kept its custody");
+        }
+        assert_eq!(
+            undos.load(Ordering::SeqCst),
+            0,
+            "success runs no compensation"
+        );
+        let report = registry
+            .drain_until(tokio::time::Instant::now() + Duration::from_secs(2))
+            .await;
+        assert_eq!((report.streams_retained, report.streams_unsettled), (0, 0));
+    }
+
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn supervised_sse_disconnect_runs_prefix_compensation() {
+        use supervised_sse::*;
+        let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let undos = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let app = Ranvier::http::<()>().post_sse(
+            "/s",
+            prefix(
+                &effects,
+                Undo {
+                    calls: undos.clone(),
+                    fail: false,
+                },
+            )
+            .then_stream(Source::FirstThenPending),
+        );
+        let registry = ManagedTaskRegistry::with_limit(1);
+        let response = call(&app, &registry).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body();
+        let first = tokio::time::timeout(Duration::from_secs(5), body.frame())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            std::str::from_utf8(first.data_ref().unwrap())
+                .unwrap()
+                .contains("first")
+        );
+        // The source is still Pending; dropping the body is the disconnect.
+        drop(body);
+        wait_for(&undos, 1).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while registry.streams.reserve().is_err() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("compensated stream kept its custody");
+    }
+
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn supervised_sse_timeout_compensates_and_never_announces_done() {
+        use supervised_sse::*;
+        let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let undos = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let timeout = ranvier_core::streaming::StreamTimeoutConfig {
+            idle: Some(Duration::from_millis(100)),
+            ..Default::default()
+        };
+        let app = Ranvier::http::<()>().post_sse(
+            "/s",
+            prefix(
+                &effects,
+                Undo {
+                    calls: undos.clone(),
+                    fail: false,
+                },
+            )
+            .then_stream_with_timeout(Source::FirstThenPending, timeout),
+        );
+        let registry = ManagedTaskRegistry::with_limit(1);
+        let text = body_text(call(&app, &registry).await).await;
+        assert!(text.contains("first"), "{text}");
+        assert!(
+            text.ends_with("event: error\ndata: {\"code\":\"stream_timeout\"}\n\n"),
+            "{text}"
+        );
+        assert!(!text.contains("[DONE]"));
+        wait_for(&undos, 1).await;
+    }
+
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn supervised_sse_encoding_failure_cancels_and_compensates() {
+        use supervised_sse::*;
+        let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let undos = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let app = Ranvier::http::<()>().post_sse(
+            "/s",
+            prefix(
+                &effects,
+                Undo {
+                    calls: undos.clone(),
+                    fail: false,
+                },
+            )
+            .then_stream(UnencodableSource),
+        );
+        let registry = ManagedTaskRegistry::with_limit(1);
+        let text = body_text(call(&app, &registry).await).await;
+        assert!(text.contains("\"code\":\"serialize_error\""), "{text}");
+        assert!(!text.contains("[DONE]"));
+        wait_for(&undos, 1).await;
+    }
+
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn supervised_sse_incomplete_cleanup_keeps_custody_refuses_before_effects_and_drains() {
+        use std::sync::atomic::Ordering;
+        use supervised_sse::*;
+        let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let undos = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let timeout = ranvier_core::streaming::StreamTimeoutConfig {
+            idle: Some(Duration::from_millis(100)),
+            ..Default::default()
+        };
+        let app = Ranvier::http::<()>().post_sse(
+            "/s",
+            prefix(
+                &effects,
+                Undo {
+                    calls: undos.clone(),
+                    fail: true,
+                },
+            )
+            .then_stream_with_timeout(Source::FirstThenPending, timeout),
+        );
+        let retained = Arc::new(std::sync::Mutex::new(Vec::<RetainedStream>::new()));
+        let sink = retained.clone();
+        let registry = ManagedTaskRegistry::with_limit(1).with_stream_retained(Some(Arc::new(
+            move |stream: RetainedStream| sink.lock().unwrap().push(stream),
+        )));
+        let text = body_text(call(&app, &registry).await).await;
+        assert!(text.contains("stream_timeout"), "{text}");
+        wait_for(&undos, 1).await;
+        // The failed compensation keeps the stream for recovery review. Its
+        // custody slot stays taken, so the next request is refused first.
+        // Retry only while the first producer task still holds its task slot.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let response = call(&app, &registry).await;
+                assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+                let bytes = response.into_body().collect().await.unwrap().to_bytes();
+                let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                if body["code"] == "stream_recovery_capacity_exhausted" {
+                    assert_eq!(body["reconciliation_required"], false);
+                    break;
+                }
+                assert_eq!(body["code"], "managed_task_capacity_exhausted");
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("retained stream did not hold its custody slot");
+        assert_eq!(effects.load(Ordering::SeqCst), 1, "refused before effects");
+        let report = registry
+            .drain_until(tokio::time::Instant::now() + Duration::from_secs(2))
+            .await;
+        assert_eq!(report.forced_aborts, 0);
+        assert_eq!((report.streams_retained, report.streams_unsettled), (1, 0));
+        // The callback received the held stream exactly once. A failed
+        // compensation cannot be reconciled locally, so it stays held.
+        let held = retained.lock().unwrap().clone();
+        assert_eq!(held.len(), 1);
+        assert_eq!(
+            (held[0].method.clone(), held[0].path.as_str()),
+            (Method::POST, "/s")
+        );
+        let assessment = held[0].report.assessment().unwrap().unwrap();
+        assert_eq!(
+            assessment.cleanup,
+            ranvier_runtime::streaming_report_handle::StreamCleanupAssessment::Incomplete
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        assert_eq!(
+            held[0].report.release_settled_until(deadline).await,
+            Err(ranvier_runtime::streaming_report_handle::StreamLocalRetirementError::RecoveryReviewRequired)
+        );
+    }
+
+    #[cfg(feature = "streaming")]
+    #[tokio::test]
+    async fn retained_sse_stream_is_reconciled_and_released_through_the_callback_handle() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use supervised_sse::*;
+        struct ChildResources {
+            undos: AtomicUsize,
+        }
+        #[derive(Clone)]
+        struct ChildEffect;
+        #[async_trait::async_trait]
+        impl Transition<(), ()> for ChildEffect {
+            type Error = String;
+            type Resources = ChildResources;
+            async fn run(&self, _: (), _: &ChildResources, _: &mut Bus) -> Outcome<(), String> {
+                Outcome::Next(())
+            }
+        }
+        #[derive(Clone)]
+        struct ChildUndo;
+        #[async_trait::async_trait]
+        impl Transition<(), ()> for ChildUndo {
+            type Error = String;
+            type Resources = ChildResources;
+            async fn run(
+                &self,
+                _: (),
+                resources: &ChildResources,
+                _: &mut Bus,
+            ) -> Outcome<(), String> {
+                resources.undos.fetch_add(1, Ordering::SeqCst);
+                Outcome::Next(())
+            }
+        }
+        /// Prefix step that runs a nested Axon with its own resources and
+        /// leaves the child's compensation unfinished.
+        #[derive(Clone)]
+        struct OwnedChildStep(Arc<std::sync::Mutex<Option<Arc<ChildResources>>>>);
+        #[async_trait::async_trait]
+        impl Transition<(), ()> for OwnedChildStep {
+            type Error = String;
+            type Resources = ();
+            async fn run(&self, _: (), _: &(), bus: &mut Bus) -> Outcome<(), String> {
+                let resources = Arc::new(ChildResources {
+                    undos: AtomicUsize::new(0),
+                });
+                *self.0.lock().unwrap() = Some(resources.clone());
+                let child = Axon::<(), (), String, ChildResources>::start("http-owned-child")
+                    .with_saga_policy(ranvier_core::saga::SagaPolicy::Enabled)
+                    .then_compensated(ChildEffect, ChildUndo);
+                match child.execute_owned_child((), resources, bus).await {
+                    ranvier_runtime::ExecutionReport::Unpersisted {
+                        result: Outcome::Next(()),
+                        ..
+                    } => Outcome::Next(()),
+                    _ => Outcome::Fault("owned child failed".into()),
+                }
+            }
+        }
+        let effects = Arc::new(AtomicUsize::new(0));
+        let undos = Arc::new(AtomicUsize::new(0));
+        let child = Arc::new(std::sync::Mutex::new(None));
+        let app = Ranvier::http::<()>().post_sse(
+            "/s",
+            prefix(
+                &effects,
+                Undo {
+                    calls: undos.clone(),
+                    fail: false,
+                },
+            )
+            .then_compensated(
+                OwnedChildStep(child.clone()),
+                Undo {
+                    calls: undos.clone(),
+                    fail: false,
+                },
+            )
+            .then_stream(Source::Finite),
+        );
+        let retained = Arc::new(std::sync::Mutex::new(Vec::<RetainedStream>::new()));
+        let sink = retained.clone();
+        // One custody slot for the stream root, one for the nested child.
+        let registry = ManagedTaskRegistry::with_limit(2).with_stream_retained(Some(Arc::new(
+            move |stream: RetainedStream| sink.lock().unwrap().push(stream),
+        )));
+        // Unfinished child compensation leaves prefix cleanup incomplete: the
+        // stream is refused before any item and held for recovery review.
+        let response = call(&app, &registry).await;
+        assert_ne!(response.status(), StatusCode::OK);
+        let held = retained.lock().unwrap().clone();
+        assert_eq!(held.len(), 1);
+        let handle = held[0].report.clone();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        // Operator recovery: undo the child with its own resources, then the
+        // two prefix rows, in LIFO order.
+        let mut outcomes = Vec::new();
+        loop {
+            match handle.reconcile_next_local_compensation_until(deadline).await {
+                Ok(outcome) => outcomes.push(outcome),
+                Err(ranvier_runtime::streaming_report_handle::StreamLocalRecoveryError::RecoveryBlocked) => break,
+                Err(other) => panic!("unexpected recovery error {other:?}"),
+            }
+        }
+        assert_eq!(
+            outcomes,
+            vec![ranvier_runtime::SagaRollbackOutcome::Completed; 3]
+        );
+        assert_eq!(
+            child
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .undos
+                .load(Ordering::SeqCst),
+            1
+        );
+        assert_eq!(undos.load(Ordering::SeqCst), 2);
+        assert_eq!(handle.release_settled_until(deadline).await, Ok(()));
+        drop(held);
+        drop(handle);
+        retained.lock().unwrap().clear();
+        // Both custody slots are free again.
+        let first = registry.streams.reserve().expect("root slot");
+        let second = registry.streams.reserve().expect("second slot");
+        drop((first, second));
+    }
     #[cfg(feature = "streaming")]
     #[tokio::test]
     async fn managed_task_capacity_sse_route_rejects_before_user_callbacks() {
@@ -7006,10 +7757,7 @@ mod tests {
                 "/closed",
                 Axon::<(), (), String>::start("closed-route").then_stream(Init),
             );
-        let registry = ManagedTaskRegistry {
-            reservation_limit: 0,
-            ..Default::default()
-        };
+        let registry = ManagedTaskRegistry::with_limit(0);
         let (mut parts, _) = Request::builder()
             .method("POST")
             .uri("/closed")
@@ -7072,10 +7820,7 @@ mod tests {
             .ws("/closed", |_, _, _| async {
                 panic!("closed route must not upgrade")
             });
-        let registry = ManagedTaskRegistry {
-            reservation_limit: 0,
-            ..Default::default()
-        };
+        let registry = ManagedTaskRegistry::with_limit(0);
         let (mut parts, _) = Request::builder()
             .uri("/closed")
             .body(())
@@ -7148,10 +7893,7 @@ mod tests {
 
     #[tokio::test]
     async fn managed_task_reservation_capacity_recovers_after_slot_release() {
-        let registry = ManagedTaskRegistry {
-            reservation_limit: 1,
-            ..Default::default()
-        };
+        let registry = ManagedTaskRegistry::with_limit(1);
         let slot = registry.reserve().await.unwrap();
         assert!(matches!(
             registry.reserve().await,
@@ -7184,10 +7926,7 @@ mod tests {
         let app = Ranvier::http::<()>().ws("/invalid", |_, _, _| async {
             panic!("invalid request must not run session")
         });
-        let registry = ManagedTaskRegistry {
-            reservation_limit: 1,
-            ..Default::default()
-        };
+        let registry = ManagedTaskRegistry::with_limit(1);
         let (mut parts, _) = Request::builder()
             .uri("/invalid")
             .body(())
