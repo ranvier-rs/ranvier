@@ -13,7 +13,7 @@
   ],
   "input_sha256": {
     ".ranvier-observe-api-policy.json": "c36287492ccbfa841880247d7317ed0de0a264700def10020c18ebc673aaba2c",
-    "Cargo.lock": "e560747f954ce4f5e0d432e9161fd9b7d6110412c12698769e5703d0f5f3ff42",
+    "Cargo.lock": "42346626f395de432793cd80e5f4066ee9d042d20d9ec6b432748a5462e11b84",
     "Cargo.toml": "0e634f5a204f4784e31d4ea1c3b03f5d8877d8dfa50ca8e49300bc7516505790",
     "extensions/observe/Cargo.toml": "5be29ff3c2746e7471db5fff964c8297a152eeb59628d43429b95806f3b9716f",
     "extensions/observe/src/lib.rs": "87a149cbbb6d190cb0f61342487424d23655216e878f160908cebbd45547b2c5",
