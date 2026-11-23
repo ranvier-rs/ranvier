@@ -156,6 +156,18 @@ mod privacy_tests {
         sync::{Arc, Mutex},
     };
 
+    /// Serializes the tests that emit `Traced` events. A test that runs the same
+    /// callsites in parallel without a subscriber can make tracing cache their
+    /// interest as `never` while the capturing subscriber is being installed,
+    /// which drops the first captured event (seen once on hosted CI).
+    static TRACED_CALLSITES: Mutex<()> = Mutex::new(());
+
+    fn lock_traced_callsites() -> std::sync::MutexGuard<'static, ()> {
+        TRACED_CALLSITES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     struct Capture(Arc<Mutex<Vec<u8>>>);
     impl Write for Capture {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -179,6 +191,7 @@ mod privacy_tests {
 
     #[test]
     fn traced_logs_preserve_outcome_without_recording_private_values() {
+        let _serial = lock_traced_callsites();
         let captured = Arc::new(Mutex::new(Vec::new()));
         let output = captured.clone();
         let subscriber = tracing_subscriber::fmt()
@@ -232,12 +245,13 @@ mod privacy_tests {
             Outcome::Next(input)
         }
     }
-    #[tokio::test]
-    async fn traced_does_not_require_payload_debug_formatting() {
-        match Traced::new(Pass, "safe-node")
-            .run(NoDebug(7), &(), &mut Bus::new())
-            .await
-        {
+    #[test]
+    fn traced_does_not_require_payload_debug_formatting() {
+        let _serial = lock_traced_callsites();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let outcome =
+            runtime.block_on(Traced::new(Pass, "safe-node").run(NoDebug(7), &(), &mut Bus::new()));
+        match outcome {
             Outcome::Next(value) => assert_eq!(value.0, 7),
             _ => panic!("unexpected outcome"),
         }
