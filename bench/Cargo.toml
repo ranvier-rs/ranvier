@@ -29,7 +29,8 @@ tracing-subscriber = { workspace = true }
 axum = "0.8"
 # Default features without http2: actix-http 3.x still uses h2 0.3 (RUSTSEC-2026-0258) for HTTP/2,
 # and these HTTP/1.1 benchmark servers never negotiate it.
-actix-web = { version = "4", default-features = false, features = ["macros", "compress-brotli", "compress-gzip", "compress-zstd", "cookies", "unicode", "compat", "ws"] }
+# Without cookies: actix-web 4.x pins cookie 0.16 (RUSTSEC-2026-0594), and the benchmarks use no cookies.
+actix-web = { version = "4", default-features = false, features = ["macros", "compress-brotli", "compress-gzip", "compress-zstd", "unicode", "compat", "ws"] }
 actix-rt = "2"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 clap = { version = "4.4", features = ["derive"] }
