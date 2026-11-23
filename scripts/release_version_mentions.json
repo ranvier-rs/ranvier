@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "description": "Classifies mentions of the previous workspace version that remain after prepare_release_version_bump.ps1. The first rule whose glob matches a tracked path wins. Unmatched mentions are reported as unclassified.",
+  "rules": [
+    {
+      "category": "regenerate",
+      "note": "Generated or locked files. Run the next_steps commands after -Apply.",
+      "paths": [
+        "Cargo.lock",
+        "api-surface-inventory.json",
+        "observe-api-surface-inventory.json",
+        "tests/compile/*/Cargo.lock",
+        "macros/tests/compile/*/Cargo.lock"
+      ]
+    },
+    {
+      "category": "release_docs",
+      "note": "Prose that names the current release. Update by hand when the release is prepared.",
+      "paths": [
+        "README.md",
+        "kit/README.md",
+        "http/README.md",
+        "macros/README.md",
+        "examples/README.md",
+        "docs/DESIGN_PRINCIPLES.md",
+        "docs/PHILOSOPHY.md",
+        "docs/PHILOSOPHY.ko.md",
+        "guard/src/distributed.rs",
+        "examples/outcome-patterns/src/main.rs"
+      ]
+    },
+    {
+      "category": "release_line",
+      "note": "Supported release line. Change only when the release policy says the new line is current.",
+      "paths": [
+        ".ranvier-supply-chain-policy.json",
+        "docs/SECURITY.md"
+      ]
+    },
+    {
+      "category": "published_baseline",
+      "note": "Compatibility baseline: the last version published on crates.io. Update after the new version is published, not at bump time.",
+      "paths": [
+        "api-stable-candidate-baseline.json",
+        "scripts/candidate_api_baseline.mjs"
+      ]
+    },
+    {
+      "category": "historical",
+      "note": "Statements about the previous line itself (changelog history, known issues, compatibility and downgrade notes). Do not change.",
+      "paths": [
+        "docs/CHANGELOG.md",
+        "docs/KNOWN_ISSUES.md",
+        "extensions/inspector/README.md",
+        "guard/README.md",
+        "runtime/src/axon/mod.rs",
+        "runtime/src/axon/parallel.rs",
+        "runtime/src/persistence.rs",
+        "runtime/tests/store_format.rs",
+        "runtime/tests/store_format_downgrade.rs"
+      ]
+    }
+  ],
+  "next_steps": [
+    "cargo update --workspace --offline",
+    "node scripts/api_surface_inventory.mjs --write",
+    "node scripts/api_surface_inventory.mjs --write --optional-observe",
+    "for each tests/compile/*/ and macros/tests/compile/*/ fixture: cargo update --offline --manifest-path <fixture>/Cargo.toml -p <each ranvier-* package that has no source line in that Cargo.lock> (only those version lines change; then node scripts/candidate_compile_contract.mjs)",
+    "review release_docs and release_line mentions; leave historical and published_baseline as they are"
+  ]
+}

@@ -1,11 +1,8 @@
 # Changelog
 
-All notable changes to $name will be documented in this file.
+Changes to `ranvier-http` are recorded in the Ranvier workspace changelog, where each
+entry names the crates it affects:
 
-The format is based on Keep a Changelog, and this project follows SemVer pre-1.0 policy.
+https://github.com/ranvier-rs/ranvier/blob/main/docs/CHANGELOG.md
 
-## [Unreleased]
-
-### Added
-
-- Changelog initialized during M133 API stabilization baseline.
+This file is kept so that the published package points to that changelog.
