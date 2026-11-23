@@ -5,7 +5,7 @@
     "exact_scope": "Stable Candidate item identity, ownership, re-export target, and typed/runtime boundary.",
     "semver_scope": "cargo-semver-checks runs on every candidate-bearing crate as a conservative whole-crate superset."
   },
-  "product_version": "0.51.0",
+  "product_version": "0.52.0",
   "baseline_ref": "v0.51.0",
   "baseline_commit": "3578799759da5d2fb3ad5742b67b7c281b726754",
   "cargo_semver_feature_mode": "all-features",

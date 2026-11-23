@@ -9,6 +9,7 @@
         "Cargo.lock",
         "api-surface-inventory.json",
         "observe-api-surface-inventory.json",
+        "api-stable-candidate-baseline.json",
         "tests/compile/*/Cargo.lock",
         "macros/tests/compile/*/Cargo.lock"
       ]
@@ -39,9 +40,8 @@
     },
     {
       "category": "published_baseline",
-      "note": "Compatibility baseline: the last version published on crates.io. Update after the new version is published, not at bump time.",
+      "note": "Compatibility baseline: the last version published on crates.io (baseline_ref and baseline_commit in scripts/candidate_api_baseline.mjs). Update after the new version is published, not at bump time. api-stable-candidate-baseline.json itself is regenerated at bump time: its product_version follows the inventory.",
       "paths": [
-        "api-stable-candidate-baseline.json",
         "scripts/candidate_api_baseline.mjs"
       ]
     },
@@ -65,6 +65,7 @@
     "cargo update --workspace --offline",
     "node scripts/api_surface_inventory.mjs --write",
     "node scripts/api_surface_inventory.mjs --write --optional-observe",
+    "node scripts/candidate_api_baseline.mjs --write (after the inventories; only product_version should change, otherwise stop for SemVer and migration review), then --check",
     "for each tests/compile/*/ and macros/tests/compile/*/ fixture: cargo update --offline --manifest-path <fixture>/Cargo.toml -p <each ranvier-* package that has no source line in that Cargo.lock> (only those version lines change; then node scripts/candidate_compile_contract.mjs)",
     "review release_docs and release_line mentions; leave historical and published_baseline as they are"
   ]
