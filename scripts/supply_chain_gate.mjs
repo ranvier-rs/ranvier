@@ -96,8 +96,10 @@ function recordKey(record) {
 }
 
 function validatePolicy(policy) {
-  invariant(policy.schema_version === '1.0.0', 'unsupported policy schema');
-  invariant(policy.ownership.primary !== policy.ownership.backup, 'primary and backup must be distinct');
+  invariant(policy.schema_version === '2.0.0', 'unsupported policy schema');
+  invariant(policy.ownership?.model === 'single-maintainer', 'ownership.model must be single-maintainer');
+  invariant(typeof policy.ownership.primary === 'string' && policy.ownership.primary.length > 0, 'ownership.primary is required');
+  invariant(policy.ownership.backup === null, 'single-maintainer policy must not name a backup');
   invariant(policy.tools.node_major === 24, 'supply-chain Node major must remain 24');
   invariant(/^\d+\.\d+\.\d+$/.test(policy.tools.rust ?? ''), 'supply-chain Rust toolchain version must be exact');
   invariant(/^\d+\.\d+\.\d+$/.test(policy.tools.cargo ?? ''), 'supply-chain Cargo version must be exact');
@@ -119,10 +121,11 @@ function validateRecord(policy, record, now) {
     add(record.decision === 'temporary_allow', 'decision must be temporary_allow');
     add(policy.advisory.temporary_allow_severities.includes(record.severity), 'severity cannot be temporarily allowed');
     add(record.owner === policy.ownership.primary, 'record owner must be the primary');
-    add(record.backup === policy.ownership.backup, 'record backup must match policy');
-    add(record.owner !== record.backup, 'record owners must be distinct');
+    add(record.backup === undefined || record.backup === null, 'single-maintainer record must not name a backup');
     add(record.approvals?.primary === policy.ownership.primary, 'primary approval is required');
-    add(record.approvals?.backup === policy.ownership.backup, 'backup approval is required');
+    // Separate-session AI review (D-SOLO): a reference to the review record.
+    add(typeof record.approvals?.independent_review === 'string' && record.approvals.independent_review.length >= 12,
+      'independent review reference is required');
     for (const field of ['affected_features', 'rationale', 'mitigation', 'upgrade_path', 'evidence']) {
       add(typeof record[field] === 'string' && record[field].length >= 12, `${field} must be substantive`);
     }
@@ -144,7 +147,7 @@ function validateRecord(policy, record, now) {
 
 export function evaluateAdvisories(policy, registry, findings, now = new Date()) {
   validatePolicy(policy);
-  invariant(registry.schema_version === '1.0.0', 'unsupported triage registry schema');
+  invariant(registry.schema_version === '2.0.0', 'unsupported triage registry schema');
   invariant(Array.isArray(registry.advisories), 'triage advisories must be an array');
   const records = new Map();
   const errors = [];
@@ -292,8 +295,8 @@ function runSelfTest(policy) {
     advisory: { id: 'RUSTSEC-2099-0001', title: 'synthetic', severity: 'low' },
     package: { name: 'synthetic-dependency', version: '1.0.0' }
   };
-  invariant(evaluateAdvisories(policy, { schema_version: '1.0.0', advisories: [] }, [], now).passed, 'empty clean scan failed');
-  invariant(!evaluateAdvisories(policy, { schema_version: '1.0.0', advisories: [] }, [finding], now).passed, 'untriaged finding passed');
+  invariant(evaluateAdvisories(policy, { schema_version: '2.0.0', advisories: [] }, [], now).passed, 'empty clean scan failed');
+  invariant(!evaluateAdvisories(policy, { schema_version: '2.0.0', advisories: [] }, [finding], now).passed, 'untriaged finding passed');
 
   const record = {
     advisory_id: 'RUSTSEC-2099-0001',
@@ -301,8 +304,7 @@ function runSelfTest(policy) {
     severity: 'low',
     decision: 'temporary_allow',
     owner: policy.ownership.primary,
-    backup: policy.ownership.backup,
-    approvals: { primary: policy.ownership.primary, backup: policy.ownership.backup },
+    approvals: { primary: policy.ownership.primary, independent_review: 'security/triage/synthetic-review.md' },
     affected_features: 'Feature is not enabled in release artifacts.',
     rationale: 'Temporary exception for the negative self-test fixture.',
     mitigation: 'The affected path remains disabled and monitored.',
@@ -313,18 +315,25 @@ function runSelfTest(policy) {
     review_by: '2026-07-30',
     expires_on: '2026-08-15'
   };
-  const registry = { schema_version: '1.0.0', advisories: [record] };
+  const registry = { schema_version: '2.0.0', advisories: [record] };
   invariant(evaluateAdvisories(policy, registry, [finding], now).passed, 'valid low triage did not pass');
 
   const highFinding = structuredClone(finding);
   highFinding.advisory.severity = 'high';
   const highRecord = structuredClone(record);
   highRecord.severity = 'high';
-  invariant(!evaluateAdvisories(policy, { schema_version: '1.0.0', advisories: [highRecord] }, [highFinding], now).passed, 'triaged High finding passed');
+  invariant(!evaluateAdvisories(policy, { schema_version: '2.0.0', advisories: [highRecord] }, [highFinding], now).passed, 'triaged High finding passed');
+
+  const noReview = structuredClone(record);
+  delete noReview.approvals.independent_review;
+  invariant(!evaluateAdvisories(policy, { schema_version: '2.0.0', advisories: [noReview] }, [finding], now).passed, 'record without independent review passed');
+  const withBackup = structuredClone(record);
+  withBackup.backup = 'Someone Else';
+  invariant(!evaluateAdvisories(policy, { schema_version: '2.0.0', advisories: [withBackup] }, [finding], now).passed, 'record naming a backup passed');
 
   const expired = structuredClone(record);
   expired.expires_on = '2026-07-16';
-  invariant(!evaluateAdvisories(policy, { schema_version: '1.0.0', advisories: [expired] }, [finding], now).passed, 'expired triage passed');
+  invariant(!evaluateAdvisories(policy, { schema_version: '2.0.0', advisories: [expired] }, [finding], now).passed, 'expired triage passed');
   invariant(!evaluateAdvisories(policy, registry, [], now).passed, 'stale triage passed');
 
   invariant(normalizeSeverity({ advisory: { cvss: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H' } }) === 'critical', 'critical CVSS vector was misclassified');
@@ -335,11 +344,11 @@ function runSelfTest(policy) {
   try { dateOnly('2026-02-30', 'synthetic_date'); } catch { invalidDateRejected = true; }
   invariant(invalidDateRejected, 'calendar-invalid date passed');
 
-  const sameOwner = structuredClone(policy);
-  sameOwner.ownership.backup = sameOwner.ownership.primary;
+  const namedBackup = structuredClone(policy);
+  namedBackup.ownership.backup = 'Someone Else';
   let rejected = false;
-  try { evaluateAdvisories(sameOwner, { schema_version: '1.0.0', advisories: [] }, [], now); } catch { rejected = true; }
-  invariant(rejected, 'same-owner policy passed');
+  try { evaluateAdvisories(namedBackup, { schema_version: '2.0.0', advisories: [] }, [], now); } catch { rejected = true; }
+  invariant(rejected, 'single-maintainer policy with a named backup passed');
   console.log('[supply-chain] negative self-test passed');
 }
 

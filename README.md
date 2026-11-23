@@ -8,6 +8,8 @@ extract Schematics for CI diff, and keep every Outcome explicit — no hidden mi
 
 ---
 
+> Ranvier is a single-maintainer project. Security response is best-effort; see [SECURITY.md](docs/SECURITY.md).
+
 **Current workspace: v0.51.0 release** — latest published: v0.51.0, 12 crates on [crates.io](https://crates.io/crates/ranvier)
 
 - **v0.51**: production readiness hardening, runtime failure semantics, release gates, example/auth reference alignment, and the v0.50 validation surface

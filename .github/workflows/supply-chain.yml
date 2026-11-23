@@ -10,6 +10,7 @@ on:
       - '.ranvier-supply-chain-policy.json'
       - 'security/advisory-triage.json'
       - 'security/handoff-exercises/**'
+      - 'security/continuity-drills/**'
       - 'scripts/publish_boundary.mjs'
       - 'scripts/supply_chain_gate.mjs'
       - 'scripts/maintenance_handoff_gate.mjs'
@@ -23,6 +24,7 @@ on:
       - '.ranvier-supply-chain-policy.json'
       - 'security/advisory-triage.json'
       - 'security/handoff-exercises/**'
+      - 'security/continuity-drills/**'
       - 'scripts/publish_boundary.mjs'
       - 'scripts/supply_chain_gate.mjs'
       - 'scripts/maintenance_handoff_gate.mjs'
@@ -69,7 +71,7 @@ jobs:
         run: |
           mkdir -p target/supply-chain
           cargo deny --manifest-path bench/Cargo.toml --all-features --format json check advisories > target/supply-chain/bench-stdout.jsonl 2> target/supply-chain/bench-stderr.jsonl
-      - name: Validate maintenance handoff record
+      - name: Validate maintenance continuity drill
         run: node scripts/maintenance_handoff_gate.mjs --self-test --output target/supply-chain/handoff.json
       - name: Upload machine evidence
         if: always()

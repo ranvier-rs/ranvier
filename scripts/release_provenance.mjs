@@ -36,7 +36,7 @@ function normalizedRemote(value) {
 }
 
 function validatePolicy(policy) {
-  invariant(policy.schema_version === '1.0.0', 'unsupported policy schema');
+  invariant(policy.schema_version === '2.0.0', 'unsupported policy schema');
   const crates = policy.provenance.publishable_crates;
   invariant(Array.isArray(crates) && crates.length === 12, 'policy must name exactly 12 publishable crates');
   invariant(new Set(crates).size === crates.length, 'policy publishable crates must be unique');

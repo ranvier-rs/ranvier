@@ -1,0 +1,84 @@
+{
+  "schema_version": "2.0.0",
+  "drill_id": "solo-continuity-20261123",
+  "drill_type": "tabletop",
+  "synthetic": true,
+  "started_at": "2026-11-23T04:01:05Z",
+  "completed_at": "2026-11-23T04:52:47Z",
+  "facilitator": "Claude Code agent: presented the scenario and recorded the primary's answers; it made no decisions",
+  "scenario": {
+    "advisory_id": "RUSTSEC-2099-0002",
+    "package": "quinn-proto",
+    "version": "0.11.19",
+    "severity": "high",
+    "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+    "detected_at": "2026-11-23T04:01:05Z",
+    "description": "Synthetic High advisory announced while a release candidate is being prepared: a remote peer can panic quinn-proto 0.11.19 (denial of service, no authentication). No fixed version is published. Reached through ranvier-http's optional http3 feature (h3-quinn -> quinn -> quinn-proto). Hosted Supply Chain fails on it."
+  },
+  "primary": {
+    "name": "Sanghyo Lee"
+  },
+  "events": [
+    {
+      "type": "acknowledged",
+      "actor": "Sanghyo Lee",
+      "at": "2026-11-23T04:50:54Z",
+      "response": "해당 문제에 대한 조치를 해줘",
+      "recorded_as": "Primary directed the agent to respond. Ownership is inferred from that instruction, not stated."
+    },
+    {
+      "type": "initial_assessment",
+      "actor": "Sanghyo Lee",
+      "at": "2026-11-23T04:51:30Z",
+      "severity": "high",
+      "affected_scope": "users who enable ranvier-http's http3 feature",
+      "response": "High, http3 사용자만 영향"
+    },
+    {
+      "type": "release_decision",
+      "actor": "Sanghyo Lee",
+      "at": "2026-11-23T04:52:17Z",
+      "decision": "no-go",
+      "reason": "Hold the release until a fixed quinn-proto version is published (primary: '고친 버전 나올 때까지 보류').",
+      "response": "no-go, 고친 버전 나올 때까지 보류"
+    },
+    {
+      "type": "drill_closed",
+      "actor": "Sanghyo Lee",
+      "at": "2026-11-23T04:52:47Z",
+      "next_action": "Watch the upstream advisory; when a fixed version is published, update the dependency and rerun the gates.",
+      "response": "upstream 지켜보고 고친 버전 나오면 업데이트 후 게이트 재실행"
+    }
+  ],
+  "independent_review": {
+    "reviewer": "separate-session AI review",
+    "session": "Claude Code subagent (general-purpose), started without the drill conversation; inputs: this record, the policy, maintenance_handoff_gate.mjs and SECURITY.md",
+    "had_drill_conversation": false,
+    "reviewed_at": "2026-11-23T04:54:00Z",
+    "conclusion": "pass-with-findings",
+    "findings": [
+      "Internal consistency holds: ordered timestamps, completed_at equals drill_closed, actors are the primary, High preserved, no-go with reason, next action, non-claims present.",
+      "The acknowledged recorded_as overstated the primary's words (ownership was inferred, and 'stated back without objection' had no verbatim support); reworded.",
+      "Severity, affected_scope, decision, reason and next_action match the verbatim responses.",
+      "No-go matches SECURITY.md (High findings block publication). 'Only http3 users are affected' is right for runtime exposure, but the publication block applies to the whole release; recorded as a follow-up.",
+      "No mitigation besides waiting for upstream and no review date; recorded as a follow-up.",
+      "The interview-timing statement was not a non-claim; moved to notes, and non-claims for acknowledgment latency, gates not run and advisory communication not exercised were added."
+    ],
+    "primary_approval": {
+      "name": "Sanghyo Lee",
+      "at": "2026-11-23T05:26:00Z",
+      "statement": "승인 (chat, after reviewing the findings and the record changes)"
+    }
+  },
+  "non_claims": [
+    "This synthetic drill does not prove delivery to the security mailbox.",
+    "This synthetic drill does not prove GitHub organization or crates.io permissions.",
+    "This synthetic drill does not prove response times or remediation in a real incident; the acknowledgment latency (about 49 minutes) reflects when the interview questions were asked, not real responsiveness.",
+    "No gate was run against the scenario, and no user or GitHub advisory communication was exercised."
+  ],
+  "notes": "The scenario was presented at started_at; the interview questions were asked from 2026-11-23T04:50:14Z.",
+  "follow_ups": [
+    "Impact scope: runtime exposure is limited to users who enable ranvier-http's http3 feature (opt-in, not forwarded by the facade), but the High finding blocks publication of the whole workspace release.",
+    "The no-go is an open-ended hold: the next action names no review date and does not weigh alternatives such as releasing without the http3 feature or publishing a user advisory while no fixed version exists. A real incident should set a review date against the 14-day High fix target."
+  ]
+}

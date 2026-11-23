@@ -1,6 +1,6 @@
 {
-  "schema_version": "1.0.0",
-  "updated": "2026-07-17",
+  "schema_version": "2.0.0",
+  "updated": "2026-11-23",
   "tools": {
     "cargo_audit": "0.22.2",
     "cargo_deny": "0.20.2",
@@ -26,13 +26,16 @@
     "max_expiry_days": 90
   },
   "ownership": {
+    "model": "single-maintainer",
     "primary": "Sanghyo Lee",
-    "backup": "이시완",
+    "backup": null,
+    "independent_review": "separate-session AI review with primary approval",
+    "response_targets_best_effort": true,
     "acknowledgment_hours": 48,
     "initial_assessment_business_days": 5,
     "critical_fix_days": 7,
     "high_fix_days": 14,
-    "max_handoff_exercise_age_days": 90
+    "continuity_drill_max_age_days": 90
   },
   "maintenance": {
     "weekly_cron_utc": "17 3 * * 1",
