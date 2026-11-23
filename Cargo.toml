@@ -167,7 +167,6 @@ sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "derive",
     "postgres",
-    "sqlite",
     "chrono",
     "uuid",
     "json",

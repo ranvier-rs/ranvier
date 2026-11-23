@@ -59,7 +59,7 @@ h3-quinn = { version = "0.0.10", optional = true }
 rustls = { version = "0.23", optional = true }
 tokio-rustls = { version = "0.26", optional = true }
 rcgen = { version = "0.13", optional = true }
-askama = { version = "0.16", optional = true }
+askama = { version = "0.16", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]
 anyhow = { workspace = true }

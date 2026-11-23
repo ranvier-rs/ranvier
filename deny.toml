@@ -2,7 +2,13 @@
 all-features = true
 
 [advisories]
-ignore = []
+ignore = [
+    # Approved 2026-11-23 (B7 design D1=a). chrono has no maintained release; it is a direct
+    # dependency of ranvier-core, ranvier-audit and ranvier-compliance and DateTime<Utc> is part
+    # of their public API, so replacing it is a breaking change planned as separate work.
+    # Review by 2027-02-23.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; public API type in core/audit/compliance; replacement planned; review by 2027-02-23" },
+]
 
 [licenses]
 allow = [
