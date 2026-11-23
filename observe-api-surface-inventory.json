@@ -6,15 +6,15 @@
     "rustdoc_mode": "all features; JSON generated with stable rustdoc plus RUSTC_BOOTSTRAP=1 until JSON output is stable",
     "policy": ".ranvier-observe-api-policy.json"
   },
-  "product_version": "0.51.0",
+  "product_version": "0.52.0",
   "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
   "rustdoc_format_versions": [
     57
   ],
   "input_sha256": {
-    ".ranvier-observe-api-policy.json": "e446e25a77f1593761c01145a3fc9d9f2942d2e68e00d83a8c1412e241940687",
-    "Cargo.lock": "766be344cc3b52ffcf50c6e80d2ae31bd3da25950ffca36c35896db078fd63f1",
-    "Cargo.toml": "388f1d30b19fb4d57995c32d37d0a8605643248dd4c910eac202bd156109434e",
+    ".ranvier-observe-api-policy.json": "c36287492ccbfa841880247d7317ed0de0a264700def10020c18ebc673aaba2c",
+    "Cargo.lock": "e560747f954ce4f5e0d432e9161fd9b7d6110412c12698769e5703d0f5f3ff42",
+    "Cargo.toml": "0e634f5a204f4784e31d4ea1c3b03f5d8877d8dfa50ca8e49300bc7516505790",
     "extensions/observe/Cargo.toml": "5be29ff3c2746e7471db5fff964c8297a152eeb59628d43429b95806f3b9716f",
     "extensions/observe/src/lib.rs": "87a149cbbb6d190cb0f61342487424d23655216e878f160908cebbd45547b2c5",
     "extensions/observe/src/metrics.rs": "7840f34d80570d1b75820eec11c2822ac2e90f58202ae63936ad25bb6a035c4f",
@@ -31,7 +31,7 @@
     {
       "package": "ranvier-observe",
       "crate_root": "ranvier_observe",
-      "version": "0.51.0",
+      "version": "0.52.0",
       "manifest": "extensions/observe/Cargo.toml",
       "default_stability": "Experimental",
       "owner": "security-ops",

@@ -401,7 +401,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "ranvier-core"
-version = "0.51.0"
+version = "0.52.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -423,7 +423,7 @@ dependencies = [
 
 [[package]]
 name = "ranvier-macros"
-version = "0.51.0"
+version = "0.52.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",

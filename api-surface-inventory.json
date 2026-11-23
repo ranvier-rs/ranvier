@@ -6,14 +6,14 @@
     "rustdoc_mode": "all features; JSON generated with stable rustdoc plus RUSTC_BOOTSTRAP=1 until JSON output is stable",
     "policy": ".ranvier-api-policy.json"
   },
-  "product_version": "0.51.0",
+  "product_version": "0.52.0",
   "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
   "rustdoc_format_versions": [
     57
   ],
   "input_sha256": {
-    ".ranvier-api-policy.json": "2762f2dca75bf1a3f48f30d2f7c659c14f27f44919c3bdc84062b004e6090f3d",
-    "Cargo.toml": "388f1d30b19fb4d57995c32d37d0a8605643248dd4c910eac202bd156109434e",
+    ".ranvier-api-policy.json": "9dc645f5b2831343bfd19342d5984f4552a5ba281aef25131409f23d72104f1a",
+    "Cargo.toml": "0e634f5a204f4784e31d4ea1c3b03f5d8877d8dfa50ca8e49300bc7516505790",
     "core/Cargo.toml": "4d84b4b6d2a3d5b159ca761860b88cfbbf08951ab4300c673898996a14cb6103",
     "extensions/audit/Cargo.toml": "6e09af66c9c4a531dc07b2ec8ff91254b668df48148f961e13b801f3a04a8cb4",
     "extensions/compliance/Cargo.toml": "f573800e854ed9ceb5c4a8b36e7047d9d6cdaed13e87f80bdf8fe7298a87f5da",
@@ -25,7 +25,7 @@
     "macros/Cargo.toml": "1b947a14aab9f0e1d8d20a012c9d3b1421211a5e36662a4880dcc38eed54340d",
     "runtime/Cargo.toml": "7b8a8027f7ebd3c93cef74e35f6794374c188073cf52c927807926315b7128c2",
     "std/Cargo.toml": "593d63ae77471e9e7a1af5dcc57f387c89a7347040008c18c038edf3f9deceaf",
-    "testing/Cargo.toml": "70790ceac273f3b3a08cc33fa945b71a5e17d08a16dc3100f5be13b98243080e"
+    "testing/Cargo.toml": "d67fa8409e5c25e7ead619c688b3d711c6ce5b130e200baca60eca6d472e4c4c"
   },
   "product_crate_count": 12,
   "public_item_count": 2959,
@@ -38,7 +38,7 @@
     {
       "package": "ranvier",
       "crate_root": "ranvier",
-      "version": "0.51.0",
+      "version": "0.52.0",
       "manifest": "kit/Cargo.toml",
       "default_stability": "Experimental",
       "owner": "developer-tooling",
@@ -872,7 +872,7 @@
     {
       "package": "ranvier-audit",
       "crate_root": "ranvier_audit",
-      "version": "0.51.0",
+      "version": "0.52.0",
       "manifest": "extensions/audit/Cargo.toml",
       "default_stability": "Experimental",
       "owner": "security-ops",
@@ -2836,7 +2836,7 @@
     {
       "package": "ranvier-compliance",
       "crate_root": "ranvier_compliance",
-      "version": "0.51.0",
+      "version": "0.52.0",
       "manifest": "extensions/compliance/Cargo.toml",
       "default_stability": "Experimental",
       "owner": "security-ops",
@@ -3564,7 +3564,7 @@
     {
       "package": "ranvier-core",
       "crate_root": "ranvier_core",
-      "version": "0.51.0",
+      "version": "0.52.0",
       "manifest": "core/Cargo.toml",
       "default_stability": "Experimental",
       "owner": "runtime-core",
@@ -13436,7 +13436,7 @@
     {
       "package": "ranvier-guard",
       "crate_root": "ranvier_guard",
-      "version": "0.51.0",
+      "version": "0.52.0",
       "manifest": "guard/Cargo.toml",
       "default_stability": "Experimental",
       "owner": "security-ops",
@@ -17190,7 +17190,7 @@
     {
       "package": "ranvier-http",
       "crate_root": "ranvier_http",
-      "version": "0.51.0",
+      "version": "0.52.0",
       "manifest": "http/Cargo.toml",
       "default_stability": "Experimental",
       "owner": "http-adapters",
@@ -24749,7 +24749,7 @@
     {
       "package": "ranvier-inspector",
       "crate_root": "ranvier_inspector",
-      "version": "0.51.0",
+      "version": "0.52.0",
       "manifest": "extensions/inspector/Cargo.toml",
       "default_stability": "Experimental",
       "owner": "security-ops",
@@ -29018,7 +29018,7 @@
     {
       "package": "ranvier-macros",
       "crate_root": "ranvier_macros",
-      "version": "0.51.0",
+      "version": "0.52.0",
       "manifest": "macros/Cargo.toml",
       "default_stability": "Experimental",
       "owner": "developer-tooling",
@@ -29084,7 +29084,7 @@
     {
       "package": "ranvier-openapi",
       "crate_root": "ranvier_openapi",
-      "version": "0.51.0",
+      "version": "0.52.0",
       "manifest": "extensions/openapi/Cargo.toml",
       "default_stability": "Experimental",
       "owner": "http-adapters",
@@ -30101,7 +30101,7 @@
     {
       "package": "ranvier-runtime",
       "crate_root": "ranvier_runtime",
-      "version": "0.51.0",
+      "version": "0.52.0",
       "manifest": "runtime/Cargo.toml",
       "default_stability": "Experimental",
       "owner": "runtime-core",
@@ -40343,7 +40343,7 @@
     {
       "package": "ranvier-std",
       "crate_root": "ranvier_std",
-      "version": "0.51.0",
+      "version": "0.52.0",
       "manifest": "std/Cargo.toml",
       "default_stability": "Experimental",
       "owner": "developer-tooling",
@@ -41698,7 +41698,7 @@
     {
       "package": "ranvier-test",
       "crate_root": "ranvier_test",
-      "version": "0.51.0",
+      "version": "0.52.0",
       "manifest": "testing/Cargo.toml",
       "default_stability": "Experimental",
       "owner": "developer-tooling",

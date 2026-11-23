@@ -1,6 +1,6 @@
 {
   "$schema": "https://ranvier.dev/schemas/examples-manifest-v1.json",
-  "version": "0.51.0",
+  "version": "0.52.0",
   "generated": "2026-07-16",
   "description": "Machine-parseable manifest of all Ranvier examples. Used by AI agents, CI pipelines, and documentation tooling.",
   "portfolioPolicy": {

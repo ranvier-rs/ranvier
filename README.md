@@ -10,7 +10,7 @@ extract Schematics for CI diff, and keep every Outcome explicit — no hidden mi
 
 > Ranvier is a single-maintainer project. Security response is best-effort; see [SECURITY.md](docs/SECURITY.md).
 
-**Current workspace: v0.51.0 release** — latest published: v0.51.0, 12 crates on [crates.io](https://crates.io/crates/ranvier)
+**Current workspace: v0.52.0 (in development, not yet published)** — latest published: v0.51.0, 12 crates on [crates.io](https://crates.io/crates/ranvier)
 
 - **v0.51**: production readiness hardening, runtime failure semantics, release gates, example/auth reference alignment, and the v0.50 validation surface
 - **v0.50 candidate**: opt-in DTO validation for typed JSON ingress, `ValidatedJson<T>`, validated route helpers, and OpenAPI/Orval/Zod constraint guidance

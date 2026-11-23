@@ -318,7 +318,7 @@ if (($previousVersion -ne $targetVersion) -and (Test-Path -LiteralPath $rulesPat
     $targetParts = $targetVersion.Split("-")[0].Split(".")
     $sameLine = ($previousParts[0] -eq $targetParts[0]) -and ($previousParts[1] -eq $targetParts[1])
     if ($sameLine) {
-        # A leading "v" (tags such as v0.51.0) still counts as a mention.
+        # A leading "v" (tags such as v1.2.3) still counts as a mention.
         $mentionPattern = '(?<![\d.])' + [regex]::Escape($previousVersion) + '(?!\.?\d)'
     } else {
         $linePrefix = "$($previousParts[0]).$($previousParts[1])"

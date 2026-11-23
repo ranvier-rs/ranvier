@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased] — next integrated release (version not selected)
+## [Unreleased] — 0.52.0 (not yet published)
 
 ### Changed
 - **Durable streaming under a configured store (ranvier-runtime, ranvier-http):** a stream initializer after a prefix that ends in `Next` now runs under a configured `PersistenceHandle` instead of being rejected. The whole stream is journaled as one effect of the stream node: an `Intent` (payload: prefix output) is acknowledged before the initializer runs; after the consumption terminal, a `Result` (`StreamCompleted`, `StreamTimedOut`, `StreamCancelled`, `StreamInitFailed`, `StreamInitCancelled`, `StreamAbandoned`; payload: terminal kind and item count, never the items), the `Terminal` and the optional completion are recorded. The prefix no longer writes its own `Terminal` in that case. Streams are never replayed: a stream dropped before EOF leaves its `Intent` open and a later invocation of the trace is blocked with `PendingIntent`.
