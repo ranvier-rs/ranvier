@@ -99,7 +99,7 @@ fn node_by_label<'a>(
 
 #[test]
 fn retry_timeout_and_compensation_builders_record_sources() {
-    let start_line = line!() + 1;
+    let start_line = line!();
     let axon = Axon::<i32, i32, String>::new("builders")
         .then_with_retry(
             defined_step,
@@ -188,7 +188,7 @@ mod streaming {
 
     #[test]
     fn then_stream_records_the_user_call_site() {
-        let start_line = line!() + 1;
+        let start_line = line!();
         let streaming = Axon::<i32, i32, String>::new("stream")
             .then_stream(numbers)
             .map_items(|item| item + 1);
@@ -206,7 +206,7 @@ mod streaming {
 
     #[test]
     fn then_stream_with_timeout_records_the_user_call_site() {
-        let start_line = line!() + 1;
+        let start_line = line!();
         let streaming = Axon::<i32, i32, String>::new("stream-timeout").then_stream_with_timeout(
             numbers,
             ranvier_core::streaming::StreamTimeoutConfig::none(),
