@@ -3507,9 +3507,9 @@ mod tests {
 
         let mut registry = ranvier_core::schematic::MigrationRegistry::new("TestCircuit");
         registry.register(ranvier_core::schematic::SnapshotMigration {
-            name: Some("v0.9 to v1.0".to_string()),
+            name: Some("v0.9 to current".to_string()),
             from_version: "0.9".to_string(),
-            to_version: "1.0".to_string(),
+            to_version: ranvier_core::schematic::SCHEMA_VERSION.to_string(),
             default_strategy: ranvier_core::schematic::MigrationStrategy::ResumeFromStart,
             node_mapping: std::collections::HashMap::new(),
             payload_mapper: None,
@@ -3535,7 +3535,7 @@ mod tests {
 
         // Verify new event has current version
         let persisted = store_impl.load(trace_id).await.unwrap().unwrap();
-        assert_eq!(persisted.schematic_version, "1.0");
+        assert_eq!(persisted.schematic_version, ranvier_core::schematic::SCHEMA_VERSION);
     }
 
     #[tokio::test]
@@ -3566,7 +3566,7 @@ mod tests {
             .append(crate::persistence::PersistenceEnvelope {
                 trace_id: trace_id.to_string(),
                 circuit: "TestCircuit".to_string(),
-                schematic_version: "1.0".to_string(),
+                schematic_version: ranvier_core::schematic::SCHEMA_VERSION.to_string(),
                 event_sequence: 0,
                 event_type: crate::PersistenceEventType::Enter,
                 step: 0,
