@@ -3535,7 +3535,10 @@ mod tests {
 
         // Verify new event has current version
         let persisted = store_impl.load(trace_id).await.unwrap().unwrap();
-        assert_eq!(persisted.schematic_version, ranvier_core::schematic::SCHEMA_VERSION);
+        assert_eq!(
+            persisted.schematic_version,
+            ranvier_core::schematic::SCHEMA_VERSION
+        );
     }
 
     #[tokio::test]
