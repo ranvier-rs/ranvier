@@ -28,11 +28,11 @@
     "testing/Cargo.toml": "d67fa8409e5c25e7ead619c688b3d711c6ce5b130e200baca60eca6d472e4c4c"
   },
   "product_crate_count": 12,
-  "public_item_count": 2959,
+  "public_item_count": 2962,
   "counts_by_stability": {
     "Deprecated": 8,
-    "Experimental": 2765,
-    "Stable Candidate": 186
+    "Experimental": 2766,
+    "Stable Candidate": 188
   },
   "crates": [
     {
@@ -3573,24 +3573,24 @@
         "schema",
         "streaming"
       ],
-      "public_item_count": 700,
+      "public_item_count": 703,
       "counts_by_kind": {
         "assoc_type": 11,
         "constant": 2,
         "enum": 56,
-        "function": 208,
+        "function": 210,
         "macro": 3,
         "module": 24,
         "struct": 102,
-        "struct_field": 147,
+        "struct_field": 148,
         "trait": 30,
         "type_alias": 5,
         "variant": 112
       },
       "counts_by_stability": {
         "Deprecated": 6,
-        "Experimental": 562,
-        "Stable Candidate": 132
+        "Experimental": 563,
+        "Stable Candidate": 134
       },
       "facade_reexport_count": 0,
       "boundary_item_count": 53,
@@ -10708,6 +10708,20 @@
           }
         },
         {
+          "path": "ranvier_core::schematic::Node::attachment_source",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Stable Candidate",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/schematic.rs"
+          }
+        },
+        {
           "path": "ranvier_core::schematic::Node::bus_capability",
           "kind": "struct_field",
           "origin": "direct",
@@ -10723,6 +10737,20 @@
         },
         {
           "path": "ranvier_core::schematic::Node::compensation_node_id",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "stability": "Stable Candidate",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/schematic.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::schematic::Node::definition_source",
           "kind": "struct_field",
           "origin": "direct",
           "target": null,
@@ -10891,20 +10919,6 @@
         },
         {
           "path": "ranvier_core::schematic::Node::resource_type",
-          "kind": "struct_field",
-          "origin": "direct",
-          "target": null,
-          "stability": "Stable Candidate",
-          "owner": "runtime-core",
-          "boundary": null,
-          "deprecated": false,
-          "deprecation": null,
-          "source": {
-            "file": "core/src/schematic.rs"
-          }
-        },
-        {
-          "path": "ranvier_core::schematic::Node::source_location",
           "kind": "struct_field",
           "origin": "direct",
           "target": null,
@@ -12326,6 +12340,20 @@
           }
         },
         {
+          "path": "ranvier_core::streaming::StreamingTransition::definition_source",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Experimental",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/streaming.rs"
+          }
+        },
+        {
           "path": "ranvier_core::streaming::StreamingTransition::description",
           "kind": "function",
           "origin": "direct",
@@ -13279,6 +13307,20 @@
         },
         {
           "path": "ranvier_core::transition::Transition::bus_access_policy",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "stability": "Stable Candidate",
+          "owner": "runtime-core",
+          "boundary": null,
+          "deprecated": false,
+          "deprecation": null,
+          "source": {
+            "file": "core/src/transition.rs"
+          }
+        },
+        {
+          "path": "ranvier_core::transition::Transition::definition_source",
           "kind": "function",
           "origin": "direct",
           "target": null,

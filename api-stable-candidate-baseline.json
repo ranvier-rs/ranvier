@@ -9,7 +9,7 @@
   "baseline_ref": "v0.51.0",
   "baseline_commit": "3578799759da5d2fb3ad5742b67b7c281b726754",
   "cargo_semver_feature_mode": "all-features",
-  "stable_candidate_item_count": 186,
+  "stable_candidate_item_count": 188,
   "candidate_bearing_packages": [
     "ranvier",
     "ranvier-core",
@@ -756,6 +756,14 @@
           "boundary": null
         },
         {
+          "path": "ranvier_core::schematic::Node::attachment_source",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "owner": "runtime-core",
+          "boundary": null
+        },
+        {
           "path": "ranvier_core::schematic::Node::bus_capability",
           "kind": "struct_field",
           "origin": "direct",
@@ -765,6 +773,14 @@
         },
         {
           "path": "ranvier_core::schematic::Node::compensation_node_id",
+          "kind": "struct_field",
+          "origin": "direct",
+          "target": null,
+          "owner": "runtime-core",
+          "boundary": null
+        },
+        {
+          "path": "ranvier_core::schematic::Node::definition_source",
           "kind": "struct_field",
           "origin": "direct",
           "target": null,
@@ -861,14 +877,6 @@
         },
         {
           "path": "ranvier_core::schematic::Node::resource_type",
-          "kind": "struct_field",
-          "origin": "direct",
-          "target": null,
-          "owner": "runtime-core",
-          "boundary": null
-        },
-        {
-          "path": "ranvier_core::schematic::Node::source_location",
           "kind": "struct_field",
           "origin": "direct",
           "target": null,
@@ -1133,6 +1141,14 @@
         },
         {
           "path": "ranvier_core::transition::Transition::bus_access_policy",
+          "kind": "function",
+          "origin": "direct",
+          "target": null,
+          "owner": "runtime-core",
+          "boundary": null
+        },
+        {
+          "path": "ranvier_core::transition::Transition::definition_source",
           "kind": "function",
           "origin": "direct",
           "target": null,
