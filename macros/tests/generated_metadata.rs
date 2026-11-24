@@ -93,16 +93,23 @@ fn definition_source_points_at_the_annotated_function() {
 
 #[cfg(feature = "streaming")]
 mod streaming_definition {
-    use std::{convert::Infallible, pin::Pin};
+    // The macro regenerates the signature with its own paths, so the stream
+    // types are written fully qualified instead of imported.
+    use std::convert::Infallible;
 
-    use ranvier_core::{__macro_support::futures_core::Stream, streaming::StreamingTransition};
+    use ranvier_core::streaming::StreamingTransition;
     use ranvier_macros::streaming_transition;
 
     const STREAM_LINE: u32 = line!() + 2;
     #[streaming_transition]
     async fn located_stream(
         input: i32,
-    ) -> Result<Pin<Box<dyn Stream<Item = i32> + Send>>, Infallible> {
+    ) -> Result<
+        std::pin::Pin<
+            Box<dyn ranvier_core::__macro_support::futures_core::Stream<Item = i32> + Send>,
+        >,
+        Infallible,
+    > {
         let _ = input;
         unreachable!("only metadata is inspected")
     }
