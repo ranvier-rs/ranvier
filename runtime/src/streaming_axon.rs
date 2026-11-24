@@ -426,10 +426,12 @@ where
     }
 
     /// Transform items only in Ready; rejected prefix results retain their original type.
+    #[track_caller]
     pub fn map_items<F>(self, f: F) -> Self
     where
         F: Fn(Item) -> Item + Send + Sync + 'static,
     {
+        let caller = std::panic::Location::caller();
         let previous = self.stream_executor;
         let f = Arc::new(f);
         let mut item_maps = self.owned_definition.item_maps.clone();
@@ -471,7 +473,10 @@ where
             metadata: Default::default(),
             bus_capability: None,
             definition_source: None,
-            attachment_source: None,
+            attachment_source: Some(ranvier_core::schematic::SourceLocation::new(
+                caller.file(),
+                caller.line(),
+            )),
             position: None,
             compensation_node_id: None,
             input_schema: None,

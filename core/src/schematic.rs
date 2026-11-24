@@ -177,7 +177,9 @@ pub struct Node {
     /// Where this node is attached to the Axon: the builder call site such as
     /// `.then(...)`, captured with `#[track_caller]`. This is never the
     /// definition location; tools must not reinterpret it as one. `None` for
-    /// synthetic nodes without a builder call (for example a compensation node).
+    /// synthetic nodes without a builder call of their own: the compensation
+    /// node that `then_compensated` adds beside its main node has only a
+    /// `definition_source` (a node added with `compensate_with` has both).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment_source: Option<SourceLocation>,
     /// Visual position in schematic

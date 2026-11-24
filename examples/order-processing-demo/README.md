@@ -56,7 +56,7 @@ cargo run -q -p order-processing-demo -- --schematic
 **Output:**
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "id": "<uuid>",
   "name": "OrderProcessing",
   "nodes": [...],

@@ -1419,6 +1419,9 @@ where
     }
 
     #[cfg(feature = "streaming")]
+    // `#[track_caller]` propagates the public `then_stream*` call site, so
+    // `attachment_source` points at user code rather than this file.
+    #[track_caller]
     fn then_stream_internal<Item, SErr, S>(
         self,
         streaming: S,
