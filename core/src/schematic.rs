@@ -4,11 +4,23 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-/// 스키마 버전 상수
-pub const SCHEMA_VERSION: &str = "1.0";
+/// Schematic wire schema version written by this crate.
+///
+/// Readers compare only the major component (see [`is_supported_schema_version`]).
+/// `2.0` replaced the ambiguous node `source_location` with the explicit
+/// `definition_source` and `attachment_source` fields; `1.x` documents are not
+/// supported and are not migrated.
+pub const SCHEMA_VERSION: &str = "2.0";
+
+/// Version assumed for a document that has no `schema_version` field.
+///
+/// Such documents predate versioning, so they are treated as legacy `1.0`
+/// and rejected by [`is_supported_schema_version`] instead of being read as
+/// the current format.
+const LEGACY_SCHEMA_VERSION: &str = "1.0";
 
 fn default_schema_version() -> String {
-    SCHEMA_VERSION.to_string()
+    LEGACY_SCHEMA_VERSION.to_string()
 }
 
 fn parse_schema_version(version: &str) -> Option<(u64, u64)> {
@@ -25,7 +37,10 @@ fn parse_schema_version(version: &str) -> Option<(u64, u64)> {
 
 /// Returns true when the provided schematic schema version is supported by this crate.
 ///
-/// Compatibility is evaluated at major-version level.
+/// Compatibility is evaluated at major-version level: the text is trimmed, the
+/// first two dot-separated components are parsed as integers (a missing minor
+/// counts as `0`, later components are ignored), and only the major is compared
+/// with [`SCHEMA_VERSION`].
 pub fn is_supported_schema_version(version: &str) -> bool {
     let Some((major, _)) = parse_schema_version(version) else {
         return false;
@@ -97,14 +112,19 @@ impl Schematic {
     }
 }
 
-/// 소스 코드 위치 정보 (Studio Code↔Node 매핑용)
+/// A source code location recorded in a Schematic node.
+///
+/// Values produced by Ranvier come from `file!()`/`line!()` or
+/// [`std::panic::Location`], so `file` is the source path as passed to rustc
+/// (usually relative to the package or workspace root, with the platform's
+/// path separator) rather than a normalized absolute path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceLocation {
-    /// 파일 경로 (프로젝트 루트 기준 상대 경로)
+    /// Source file path as recorded by the compiler.
     pub file: String,
-    /// 라인 번호 (1-indexed)
+    /// 1-indexed line number.
     pub line: u32,
-    /// 컬럼 번호 (optional)
+    /// Optional 1-indexed column; Ranvier's builders and macros do not set it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub column: Option<u32>,
 }
@@ -147,9 +167,19 @@ pub struct Node {
     /// Optional transition-level Bus capability policy metadata.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bus_capability: Option<BusCapabilitySchema>,
-    /// 소스 코드 위치 (Studio Code↔Node 매핑용)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_location: Option<SourceLocation>,
+    /// Where the transition behind this node is defined: the function
+    /// annotated with `#[transition]`/`#[streaming_transition]`, as reported by
+    /// the transition's `definition_source()`. `None` for manual transitions
+    /// that do not provide one and for structural nodes (ingress, branch,
+    /// fan-out/fan-in).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition_source: Option<SourceLocation>,
+    /// Where this node is attached to the Axon: the builder call site such as
+    /// `.then(...)`, captured with `#[track_caller]`. This is never the
+    /// definition location; tools must not reinterpret it as one. `None` for
+    /// synthetic nodes without a builder call (for example a compensation node).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_source: Option<SourceLocation>,
     /// Visual position in schematic
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<Position>,
@@ -364,17 +394,72 @@ mod tests {
         let json = serde_json::to_string_pretty(&schematic).unwrap();
 
         assert!(json.contains("schema_version"));
-        assert!(json.contains("\"1.0\""));
+        assert!(json.contains("\"2.0\""));
         assert!(json.contains("generated_at"));
     }
 
-    #[test]
-    fn test_source_location_optional_in_json() {
-        let schematic = Schematic::new("Test");
-        let json = serde_json::to_string(&schematic).unwrap();
+    fn bare_node(definition: Option<SourceLocation>, attachment: Option<SourceLocation>) -> Node {
+        Node {
+            id: "node-src".to_string(),
+            kind: NodeKind::Atom,
+            label: "Located".to_string(),
+            description: None,
+            input_type: "i32".to_string(),
+            output_type: "i32".to_string(),
+            resource_type: "()".to_string(),
+            metadata: StepMetadata::default(),
+            bus_capability: None,
+            definition_source: definition,
+            attachment_source: attachment,
+            position: None,
+            compensation_node_id: None,
+            input_schema: None,
+            output_schema: None,
+            item_type: None,
+            terminal: None,
+        }
+    }
 
-        // description과 source_location은 None이면 JSON에서 생략됨
-        assert!(!json.contains("description"));
+    #[test]
+    fn test_source_fields_omitted_when_none() {
+        let json = serde_json::to_value(bare_node(None, None)).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(!obj.contains_key("definition_source"));
+        assert!(!obj.contains_key("attachment_source"));
+        assert!(!obj.contains_key("source_location"));
+        assert!(!obj.contains_key("description"));
+    }
+
+    #[test]
+    fn test_source_fields_are_distinct_on_the_wire() {
+        let node = bare_node(
+            Some(SourceLocation::new("src/steps.rs", 18)),
+            Some(SourceLocation::new("src/pipeline.rs", 42)),
+        );
+        let json = serde_json::to_value(&node).unwrap();
+        assert_eq!(
+            json["definition_source"],
+            serde_json::json!({"file": "src/steps.rs", "line": 18})
+        );
+        assert_eq!(
+            json["attachment_source"],
+            serde_json::json!({"file": "src/pipeline.rs", "line": 42})
+        );
+        assert!(json.get("source_location").is_none());
+
+        let back: Node = serde_json::from_value(json).unwrap();
+        assert_eq!(back.definition_source.unwrap().line, 18);
+        assert_eq!(back.attachment_source.unwrap().line, 42);
+    }
+
+    #[test]
+    fn test_legacy_source_location_is_not_read() {
+        // 2.0 has no alias: a 1.x `source_location` is ignored, never mapped.
+        let mut json = serde_json::to_value(bare_node(None, None)).unwrap();
+        json["source_location"] = serde_json::json!({"file": "src/old.rs", "line": 7});
+        let node: Node = serde_json::from_value(json).unwrap();
+        assert!(node.definition_source.is_none());
+        assert!(node.attachment_source.is_none());
     }
 
     #[test]
@@ -397,17 +482,22 @@ mod tests {
             "edges": []
         }"#;
         let schematic: Schematic = serde_json::from_str(json).unwrap();
-        assert_eq!(schematic.schema_version, SCHEMA_VERSION);
-        assert!(schematic.is_supported_schema_version());
+        // A document without a version predates versioning: legacy 1.0, unsupported.
+        assert_eq!(schematic.schema_version, "1.0");
+        assert!(!schematic.is_supported_schema_version());
     }
 
     #[test]
     fn test_supported_schema_version_major_compatibility() {
-        assert!(is_supported_schema_version("1"));
-        assert!(is_supported_schema_version("1.0"));
-        assert!(is_supported_schema_version("1.1"));
-        assert!(is_supported_schema_version("1.0.9"));
-        assert!(!is_supported_schema_version("2.0"));
+        assert!(is_supported_schema_version("2"));
+        assert!(is_supported_schema_version("2.0"));
+        assert!(is_supported_schema_version("2.1"));
+        assert!(is_supported_schema_version("2.0.9"));
+        assert!(is_supported_schema_version(" 2.0 "));
+        assert!(!is_supported_schema_version("1"));
+        assert!(!is_supported_schema_version("1.0"));
+        assert!(!is_supported_schema_version("1.9"));
+        assert!(!is_supported_schema_version("3.0"));
         assert!(!is_supported_schema_version(""));
         assert!(!is_supported_schema_version("invalid"));
     }
@@ -469,7 +559,8 @@ mod tests {
             resource_type: "()".to_string(),
             metadata: StepMetadata::default(),
             bus_capability: None,
-            source_location: None,
+            definition_source: None,
+            attachment_source: None,
             position: None,
             compensation_node_id: None,
             input_schema: Some(serde_json::json!({"type": "object"})),
@@ -494,7 +585,8 @@ mod tests {
             resource_type: "()".to_string(),
             metadata: StepMetadata::default(),
             bus_capability: None,
-            source_location: None,
+            definition_source: None,
+            attachment_source: None,
             position: None,
             compensation_node_id: None,
             input_schema: None,
@@ -521,7 +613,8 @@ mod tests {
             resource_type: "()".to_string(),
             metadata: StepMetadata::default(),
             bus_capability: None,
-            source_location: None,
+            definition_source: None,
+            attachment_source: None,
             position: None,
             compensation_node_id: None,
             input_schema: Some(serde_json::json!({"type": "object", "required": ["name"]})),
@@ -571,6 +664,8 @@ mod tests {
         assert_eq!(schematic.nodes.len(), 1);
         assert!(schematic.nodes[0].input_schema.is_none());
         assert!(schematic.nodes[0].output_schema.is_none());
+        // It parses, but the 1.0 format is no longer supported.
+        assert!(!schematic.is_supported_schema_version());
     }
 
     #[test]
@@ -585,7 +680,8 @@ mod tests {
             resource_type: "AppResources".to_string(),
             metadata: StepMetadata::default(),
             bus_capability: None,
-            source_location: None,
+            definition_source: None,
+            attachment_source: None,
             position: None,
             compensation_node_id: None,
             input_schema: None,

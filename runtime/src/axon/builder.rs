@@ -59,7 +59,8 @@ where
             resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
             bus_capability: None,
-            source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            definition_source: None,
+            attachment_source: Some(SourceLocation::new(caller.file(), caller.line())),
             position: None,
             compensation_node_id: None,
             input_schema: None,
@@ -407,7 +408,8 @@ where
             resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
             bus_capability: bus_capability_schema_from_policy(transition.bus_access_policy()),
-            source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            definition_source: transition.definition_source(),
+            attachment_source: Some(SourceLocation::new(caller.file(), caller.line())),
             position: transition
                 .position()
                 .map(|(x, y)| ranvier_core::schematic::Position { x, y }),
@@ -670,7 +672,8 @@ where
             resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
             bus_capability: bus_capability_schema_from_policy(transition.bus_access_policy()),
-            source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            definition_source: transition.definition_source(),
+            attachment_source: Some(SourceLocation::new(caller.file(), caller.line())),
             position: transition
                 .position()
                 .map(|(x, y)| ranvier_core::schematic::Position { x, y }),
@@ -858,7 +861,8 @@ where
             resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
             bus_capability: bus_capability_schema_from_policy(transition.bus_access_policy()),
-            source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            definition_source: transition.definition_source(),
+            attachment_source: Some(SourceLocation::new(caller.file(), caller.line())),
             position: transition
                 .position()
                 .map(|(x, y)| ranvier_core::schematic::Position { x, y }),
@@ -1017,7 +1021,8 @@ where
             resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
             bus_capability: bus_capability_schema_from_policy(transition.bus_access_policy()),
-            source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            definition_source: transition.definition_source(),
+            attachment_source: Some(SourceLocation::new(caller.file(), caller.line())),
             position: transition
                 .position()
                 .map(|(x, y)| ranvier_core::schematic::Position { x, y }),
@@ -1039,7 +1044,8 @@ where
             resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
             bus_capability: None,
-            source_location: None,
+            definition_source: compensation.definition_source(),
+            attachment_source: None,
             position: compensation
                 .position()
                 .map(|(x, y)| ranvier_core::schematic::Position { x, y }),
@@ -1291,7 +1297,8 @@ where
             resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
             bus_capability: None,
-            source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            definition_source: transition.definition_source(),
+            attachment_source: Some(SourceLocation::new(caller.file(), caller.line())),
             position: transition
                 .position()
                 .map(|(x, y)| ranvier_core::schematic::Position { x, y }),
@@ -1332,7 +1339,8 @@ where
             resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
             bus_capability: None,
-            source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            definition_source: None,
+            attachment_source: Some(SourceLocation::new(caller.file(), caller.line())),
             position: None,
             compensation_node_id: None,
             input_schema: None,
@@ -1445,7 +1453,8 @@ where
             resource_type: type_name_of::<Res>(),
             metadata: Default::default(),
             bus_capability: None,
-            source_location: Some(SourceLocation::new(caller.file(), caller.line())),
+            definition_source: streaming.definition_source(),
+            attachment_source: Some(SourceLocation::new(caller.file(), caller.line())),
             position: None,
             compensation_node_id: None,
             input_schema: None,

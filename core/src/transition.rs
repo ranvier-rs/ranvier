@@ -10,6 +10,7 @@
 
 use crate::bus::{Bus, BusAccessPolicy};
 use crate::outcome::Outcome;
+use crate::schematic::SourceLocation;
 use async_trait::async_trait;
 use std::fmt::Debug;
 
@@ -114,6 +115,16 @@ where
         None
     }
 
+    /// Optional location of this transition's definition.
+    ///
+    /// `#[transition]` returns the location of the annotated function. Manual
+    /// implementations return `None` unless they supply one. Axon builders copy
+    /// this value into [`Node::definition_source`](crate::schematic::Node::definition_source);
+    /// the attachment call site is recorded separately as `attachment_source`.
+    fn definition_source(&self) -> Option<SourceLocation> {
+        None
+    }
+
     /// Execute the transition.
     ///
     /// # Parameters
@@ -161,6 +172,10 @@ where
 
     fn input_schema(&self) -> Option<serde_json::Value> {
         self.as_ref().input_schema()
+    }
+
+    fn definition_source(&self) -> Option<SourceLocation> {
+        self.as_ref().definition_source()
     }
 }
 
@@ -231,5 +246,38 @@ mod tests {
         let t: std::sync::Arc<WithSchema> = std::sync::Arc::new(WithSchema);
         let schema = t.input_schema().unwrap();
         assert_eq!(schema["type"], "string");
+    }
+
+    #[test]
+    fn manual_transition_has_no_definition_source() {
+        assert!(AddOne.definition_source().is_none());
+    }
+
+    struct WithDefinition;
+
+    #[async_trait]
+    impl Transition<i32, i32> for WithDefinition {
+        type Error = std::convert::Infallible;
+        type Resources = ();
+
+        fn definition_source(&self) -> Option<SourceLocation> {
+            Some(SourceLocation::new("src/steps.rs", 18))
+        }
+
+        async fn run(
+            &self,
+            state: i32,
+            _resources: &Self::Resources,
+            _bus: &mut Bus,
+        ) -> Outcome<i32, Self::Error> {
+            Outcome::Next(state)
+        }
+    }
+
+    #[test]
+    fn arc_wrapped_transition_forwards_definition_source() {
+        let t: std::sync::Arc<WithDefinition> = std::sync::Arc::new(WithDefinition);
+        let source = t.definition_source().unwrap();
+        assert_eq!((source.file.as_str(), source.line), ("src/steps.rs", 18));
     }
 }

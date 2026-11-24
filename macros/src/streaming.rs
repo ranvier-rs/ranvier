@@ -42,6 +42,8 @@ pub(crate) fn expand(attr: TokenStream2, item: TokenStream2) -> syn::Result<Toke
         }
     };
 
+    let definition_method = crate::expansion::definition_source_method(&core_path, name);
+
     Ok(quote! {
         #(#shared_attributes)*
         #[doc(hidden)]
@@ -60,6 +62,8 @@ pub(crate) fn expand(attr: TokenStream2, item: TokenStream2) -> syn::Result<Toke
             type Item = #item_type;
             type Error = #error_type;
             type Resources = #resource_type;
+
+            #definition_method
 
             async fn run_stream(
                 &self,

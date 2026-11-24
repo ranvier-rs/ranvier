@@ -105,6 +105,14 @@ where
     fn description(&self) -> Option<String> {
         None
     }
+
+    /// Optional location of this streaming transition's definition.
+    ///
+    /// `#[streaming_transition]` returns the location of the annotated
+    /// function; manual implementations return `None` unless they supply one.
+    fn definition_source(&self) -> Option<crate::schematic::SourceLocation> {
+        None
+    }
 }
 
 /// Blanket implementation for `Arc<T>` where `T: StreamingTransition`.
@@ -135,6 +143,10 @@ where
 
     fn description(&self) -> Option<String> {
         self.as_ref().description()
+    }
+
+    fn definition_source(&self) -> Option<crate::schematic::SourceLocation> {
+        self.as_ref().definition_source()
     }
 }
 

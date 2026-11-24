@@ -62,6 +62,8 @@ pub(crate) fn expand_transition(
         quote! {}
     };
 
+    let definition_method = definition_source_method(&core_path, name);
+
     let expanded = quote! {
         #(#shared_attributes)*
         #[doc(hidden)]
@@ -82,6 +84,7 @@ pub(crate) fn expand_transition(
 
             #bus_policy_method
             #schema_method
+            #definition_method
 
             async fn run(
                 &self,
@@ -96,4 +99,19 @@ pub(crate) fn expand_transition(
     };
 
     Ok(expanded)
+}
+
+/// `definition_source` for a generated transition: the file and line of the
+/// annotated function's name. `file!()`/`line!()` carry the name's span, so
+/// they resolve to the author's source location rather than the macro crate.
+pub(crate) fn definition_source_method(
+    core_path: &TokenStream2,
+    name: &syn::Ident,
+) -> TokenStream2 {
+    let location = quote::quote_spanned! {name.span()=> ::core::file!(), ::core::line!()};
+    quote! {
+        fn definition_source(&self) -> Option<#core_path::schematic::SourceLocation> {
+            Some(#core_path::schematic::SourceLocation::new(#location))
+        }
+    }
 }

@@ -74,3 +74,45 @@ fn disjoint_bus_allow_and_deny_metadata_are_preserved() {
     );
     assert_eq!(policy.deny, vec![BusTypeRef::of::<DeniedBus>()]);
 }
+
+const LOCATED_LINE: u32 = line!() + 2;
+#[transition]
+async fn located() -> Outcome<(), Infallible> {
+    Outcome::next(())
+}
+
+#[test]
+fn definition_source_points_at_the_annotated_function() {
+    let source = located
+        .definition_source()
+        .expect("#[transition] should record its definition");
+    assert_eq!(source.file, file!());
+    assert_eq!(source.line, LOCATED_LINE);
+    assert!(source.column.is_none());
+}
+
+#[cfg(feature = "streaming")]
+mod streaming_definition {
+    use std::{convert::Infallible, pin::Pin};
+
+    use ranvier_core::{__macro_support::futures_core::Stream, streaming::StreamingTransition};
+    use ranvier_macros::streaming_transition;
+
+    const STREAM_LINE: u32 = line!() + 2;
+    #[streaming_transition]
+    async fn located_stream(
+        input: i32,
+    ) -> Result<Pin<Box<dyn Stream<Item = i32> + Send>>, Infallible> {
+        let _ = input;
+        unreachable!("only metadata is inspected")
+    }
+
+    #[test]
+    fn streaming_definition_source_points_at_the_annotated_function() {
+        let source = located_stream
+            .definition_source()
+            .expect("#[streaming_transition] should record its definition");
+        assert_eq!(source.file, file!());
+        assert_eq!(source.line, STREAM_LINE);
+    }
+}

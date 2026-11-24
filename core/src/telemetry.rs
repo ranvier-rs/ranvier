@@ -59,6 +59,10 @@ where
     type Error = T::Error;
     type Resources = T::Resources;
 
+    fn definition_source(&self) -> Option<crate::schematic::SourceLocation> {
+        self.inner.definition_source()
+    }
+
     async fn run(
         &self,
         input: From,
